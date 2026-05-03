@@ -1,0 +1,72 @@
+name: n8n-stack
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: n8n-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-n8n}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-n8n} -d ${POSTGRES_DB:-n8n}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # ---- Database ----
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # ---- Network identity ----
+      # N8N_HOST is what shows in webhook URLs displayed in the UI.
+      # WEBHOOK_URL is the actual URL external services should hit.
+      # Both should point to how the Pi is reachable from your devices.
+      N8N_HOST: ${N8N_HOST:-192.168.20.10}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://192.168.20.10:5678/}
+
+      # ---- Time ----
+      GENERIC_TIMEZONE: America/Chicago
+      TZ: America/Chicago
+
+      # ---- Security ----
+      # 32-byte random key used to encrypt stored credentials. NEVER lose this —
+      # if you do, all stored credentials become unrecoverable. Backed up via
+      # the n8n_data volume in pi-backup.sh.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      # ---- Production defaults ----
+      # N8N_RUNNERS_ENABLED and EXECUTIONS_PROCESS removed — deprecated as of
+      # the version pulled May 3, 2026. Task runners are enabled by default now.
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+
+      # ---- Logging ----
+      N8N_LOG_LEVEL: info
+      N8N_LOG_OUTPUT: console
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  postgres_data:
+  n8n_data:
