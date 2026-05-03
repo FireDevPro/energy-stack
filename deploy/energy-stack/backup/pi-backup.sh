@@ -44,11 +44,22 @@ else
     log "WARN: influxdb container not running, skipping InfluxDB backup"
 fi
 
+# n8n Postgres dump (n8n-stack). Captures all workflows, executions,
+# credentials. Pair with /home/chris/n8n in the restic paths below — the .env
+# there holds the encryption key that decrypts the credentials in this dump.
+if docker ps --format '{{.Names}}' | grep -qx n8n-postgres; then
+    log "Dumping n8n Postgres"
+    PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' /home/chris/n8n/.env | cut -d= -f2-) \
+        docker exec -e PGPASSWORD n8n-postgres pg_dump -U n8n n8n > "$STAGE_DIR/n8n-postgres.sql" || \
+        log "WARN: n8n-postgres dump failed, continuing"
+fi
+
 BACKUP_OK=0
 
 # Run backup as root to capture Docker-owned files
 restic backup \
   /home/chris/energy-stack \
+  /home/chris/n8n \
   /home/chris/chris-brain \
   /home/chris/dns-stack \
   /home/chris/Network_Management \

@@ -11,11 +11,14 @@ If the Pi is bricked, you'll need to retrieve `b2.env` from your password manage
 
 ## What's in each snapshot
 - `/home/chris/energy-stack` — compose file, pollers, dashboards, scheduler, .env (encrypted secrets in `secrets/env.sops.env`)
+- `/home/chris/n8n` — n8n compose file + .env (Postgres password + N8N_ENCRYPTION_KEY — critical for restoring n8n credentials)
 - `/home/chris/chris-brain` — code only (vector data lives in Supabase cloud)
 - `/home/chris/dns-stack`, `/home/chris/Network_Management`, `/home/chris/udm-scripts`
 - `/home/chris/.ssh`, `/home/chris/.config/restic`
 - `/usr/local/bin/pi-backup.sh` — the backup script itself
-- `/tmp/pi-backup.<random>` — per-run staging dir containing `influxdb/influx-backup/` (Influx 2.7 backup format: tar.gz shards + bolt + sqlite + manifest)
+- `/tmp/pi-backup.<random>` — per-run staging dir containing:
+  - `influxdb/influx-backup/` (Influx 2.7 backup format: tar.gz shards + bolt + sqlite + manifest)
+  - `n8n-postgres.sql` (plain SQL dump of the n8n Postgres database — workflows, executions, credentials)
 
 ## Listing snapshots
 ```bash
@@ -79,6 +82,38 @@ docker exec influxdb rm -rf /tmp/influx-backup
 ```
 
 `--full` overwrites everything in the target Influx instance with the backup. For a fresh post-rebuild Pi this is what you want. For partial restore (e.g. just one bucket) read `influx restore --help`.
+
+## Restoring n8n
+
+The n8n backup is a plain SQL dump of the Postgres database staged inside the snapshot at `/tmp/pi-backup.<random>/n8n-postgres.sql`. The `~/n8n/.env` (also restored) contains the encryption key and Postgres password — both are required.
+
+```bash
+source ~/.config/restic/b2.env
+# Restore n8n config + the Postgres dump
+sudo restic restore latest --target / \
+    --include /home/chris/n8n \
+    --include "/tmp/pi-backup.*/n8n-postgres.sql"
+sudo chown -R chris:chris /home/chris/n8n
+
+# Bring n8n stack up (creates empty Postgres on first run)
+cd ~/n8n
+docker compose up -d
+sleep 15  # wait for Postgres healthcheck
+
+# Find the dumped SQL
+DUMP=$(ls /tmp/pi-backup.*/n8n-postgres.sql | head -1)
+
+# Restore the database (drops and recreates n8n schema)
+PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' ~/n8n/.env | cut -d= -f2-) \
+  docker exec -i -e PGPASSWORD n8n-postgres psql -U n8n -d n8n -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' ~/n8n/.env | cut -d= -f2-) \
+  docker exec -i -e PGPASSWORD n8n-postgres psql -U n8n -d n8n < "$DUMP"
+
+# Restart n8n to re-read schema and decrypt stored credentials
+docker compose restart n8n
+```
+
+**The N8N_ENCRYPTION_KEY in `.env` MUST match what was active when the credentials were created.** That's why the `.env` restore is critical — losing it means stored credentials in the dump become unrecoverable (workflows still work, but you'd have to re-enter every API key, password, OAuth token).
 
 ## Verifying the backup is healthy
 ```bash
