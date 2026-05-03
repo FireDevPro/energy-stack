@@ -332,18 +332,21 @@ from(bucket: "{bucket}")
 
 
 def poller_last_writes(query_api, bucket: str) -> dict:
-    """For each major measurement, return the last-write timestamp (UTC)."""
+    """For each major continuous-data measurement, return the last-write timestamp (UTC).
+    Excludes haven-ingest because it only writes when CSVs land (could legitimately
+    be days quiet between weekly drops)."""
     measurements = [
         ("comed.prices", "comed-poller"),
         ("eagle.meter", "eagle-poller"),
         ("refoss.channel", "refoss-poller"),
         ("nws.forecast", "nws-poller"),
+        ("hvac.thermostat", "thermostat-poller"),
     ]
     out = {}
     for meas, name in measurements:
         flux = f'''
 from(bucket: "{bucket}")
-  |> range(start: -1h)
+  |> range(start: -2h)
   |> filter(fn: (r) => r._measurement == "{meas}")
   |> last()
   |> keep(columns: ["_time"])
@@ -419,9 +422,17 @@ def check_poller_silence(query_api, bucket: str, threshold_min: int) -> list[Ale
             continue
         # last_ts is a datetime
         age_min = (now - last_ts).total_seconds() / 60
-        # Poller-specific tolerances: comed naturally lags 5-15 min; nws polls every 30 min.
-        tol = {"comed-poller": 25, "nws-poller": 45, "refoss-poller": threshold_min,
-                "eagle-poller": threshold_min}.get(poller, threshold_min)
+        # Per-poller tolerances. Each is roughly 2-3× the natural poll interval —
+        # tolerates a single transient API failure without firing, alerts on two
+        # consecutive misses (the "this is actually broken" signal).
+        # Native intervals: comed 60s, refoss 30s, eagle 30s, nws 30 min, thermostat 10 min.
+        tol = {
+            "comed-poller": 25,        # 60s × 25 = lots of buffer for ComEd backend hiccups
+            "refoss-poller": threshold_min,  # default 10 min for sub-minute pollers
+            "eagle-poller": threshold_min,
+            "nws-poller": 70,          # 30 min × 2 + buffer; one miss is fine, two = real
+            "thermostat-poller": 30,   # 10 min × 3; tolerates two missed polls
+        }.get(poller, threshold_min)
         if age_min > tol:
             out.append(Alert(
                 key=f"silent:{poller}",
