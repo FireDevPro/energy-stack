@@ -1,0 +1,257 @@
+{
+  "uid": "hvac-scheduler",
+  "title": "HVAC Scheduler — Decisions & Actions",
+  "tags": ["energy", "hvac", "scheduler"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Today's Day-Type",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "import \"date\"\nfrom(bucket: \"energy\")\n  |> range(start: -36h)\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"reason\")\n  |> last()\n  |> keep(columns: [\"day_type\", \"_value\"])\n  |> map(fn: (r) => ({ _value: r.day_type }))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "MILD": { "color": "blue", "index": 0 } } },
+            { "type": "value", "options": { "NORMAL": { "color": "green", "index": 1 } } },
+            { "type": "value", "options": { "HOT_5CP_RISK": { "color": "red", "index": 2 } } },
+            { "type": "value", "options": { "VACATION": { "color": "purple", "index": 3 } } }
+          ],
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background", "graphMode": "none", "textMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Forecast High",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -36h)\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"high_f\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit", "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 65 },
+              { "color": "yellow", "value": 82 },
+              { "color": "orange", "value": 90 },
+              { "color": "red", "value": 95 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "area", "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Forecast Dewpoint",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -36h)\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"max_dewpoint_f\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit", "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 50 },
+              { "color": "yellow", "value": 60 },
+              { "color": "orange", "value": 65 },
+              { "color": "red", "value": 70 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "area", "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Heat Advisory",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -36h)\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"is_heat_advisory\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "No", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "ACTIVE", "color": "red", "index": 1 } } }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background", "graphMode": "none", "textMode": "value"
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Setpoint History (Cool / Heat) vs Indoor Temp",
+      "description": "Pi-pushed setpoints overlaid with measured indoor temperature. Shows what the scheduler intended and what the house actually did.",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"cool_setpoint_f\")\n  |> yield(name: \"Cool setpoint pushed\")"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"heat_setpoint_f\")\n  |> yield(name: \"Heat setpoint pushed\")"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"indoor_temp_before_f\")\n  |> yield(name: \"Indoor temp at action time\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit", "decimals": 1,
+          "custom": {
+            "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2,
+            "fillOpacity": 0, "showPoints": "always", "pointSize": 6
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Indoor temp at action time" },
+            "properties": [
+              { "id": "custom.lineInterpolation", "value": "smooth" },
+              { "id": "custom.showPoints", "value": "never" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["last", "min", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Recent Decisions (last 30)",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -30d)\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\")\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 30)\n  |> keep(columns: [\"_time\", \"decision_for_date\", \"day_type\", \"high_f\", \"max_dewpoint_f\", \"is_heat_advisory\", \"reason\"])"
+        }
+      ],
+      "options": { "showHeader": true, "footer": { "show": false } }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Recent Actions (last 30)",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -7d)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\")\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 30)\n  |> keep(columns: [\"_time\", \"day_type\", \"action_label\", \"cool_setpoint_f\", \"heat_setpoint_f\", \"applied\", \"error\", \"hvac_mode_before\", \"indoor_temp_before_f\"])"
+        }
+      ],
+      "options": { "showHeader": true, "footer": { "show": false } }
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Actions Fired (last 7d)",
+      "gridPos": { "x": 0, "y": 23, "w": 8, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -7d)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"applied\")\n  |> count()"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Actions Applied (last 7d)",
+      "description": "Count of actions where applied=1. In dry-run mode this stays zero.",
+      "gridPos": { "x": 8, "y": 23, "w": 8, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -7d)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"applied\")\n  |> sum()"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Override Active",
+      "gridPos": { "x": 16, "y": 23, "w": 8, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -1d)\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"setpoint_reason\")\n  |> last()"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    }
+  ]
+}

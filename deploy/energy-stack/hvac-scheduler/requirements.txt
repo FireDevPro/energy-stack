@@ -1,0 +1,2 @@
+influxdb-client==1.48.0
+pyControl4==2.0.2

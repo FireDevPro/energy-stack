@@ -1,0 +1,12 @@
+# energy-stack — SOPS configuration
+# Secrets encrypted to two age recipients:
+#   windows — Chris's workstation (%APPDATA%\sops\age\keys.txt)
+#   pi-lab  — runtime host 192.168.20.10 (~/.config/sops/age/keys.txt)
+
+creation_rules:
+  # Matches both the plaintext .env (used as input when re-encrypting) and
+  # secrets/*.sops.env (the committed ciphertext). Same recipients for both.
+  - path_regex: \.env$
+    age: >-
+      age1damv2x6qzqxfg83g89e72ynse6p98x7r2vxfyf7yjhm4p807ndpqnvrjm6,
+      age1gfyca3tscgxsse5gs3kshcfdv7zj6xm82czf2elv5vvl095rrg0q2r2gek

@@ -1,0 +1,411 @@
+{
+  "uid": "home-energy-full",
+  "title": "Home Energy — Full",
+  "tags": ["energy", "comprehensive"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 100, "type": "row", "title": "Right now", "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }
+    },
+    {
+      "id": 1, "type": "stat", "title": "Current Demand",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\") |> last()"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "yellow", "value": 3 },
+            { "color": "orange", "value": 5 }, { "color": "red", "value": 8 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 2, "type": "stat", "title": "ComEd Price (5-min)",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -30m) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\") |> last()"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }, { "color": "green", "value": 3 },
+            { "color": "yellow", "value": 5 }, { "color": "orange", "value": 10 }, { "color": "red", "value": 20 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Today's Cost (so far)",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "import \"date\"\nstart = date.truncate(t: now(), unit: 1d)\nkwh = from(bucket: \"energy\") |> range(start: start) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> sum() |> map(fn: (r) => ({ r with _value: r._value / 1000.0 }))\nprice = from(bucket: \"energy\") |> range(start: start) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"hourly_avg\") |> mean()\njoin(tables: {kwh: kwh, price: price}, on: [\"_start\"], method: \"inner\") |> map(fn: (r) => ({ _value: r._value_kwh * r._value_price / 100.0, _time: now() }))"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "decimals": 2 }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Top Circuit Right Now",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel != \"em:1\" and r.channel != \"em:7\") |> last() |> sort(columns: [\"_value\"], desc: true) |> limit(n: 1) |> keep(columns: [\"name\", \"_value\"])"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "watt", "decimals": 0 }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*power.*/" }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" }
+    },
+
+    {
+      "id": 200, "type": "row", "title": "24h profile", "collapsed": false,
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 1 }
+    },
+    {
+      "id": 10, "type": "timeseries",
+      "title": "Whole-Home Demand (EAGLE + Refoss overlay)",
+      "description": "Billing-grade EAGLE meter alongside the Refoss split-phase mains sum. Should track within a few percent.",
+      "gridPos": { "x": 0, "y": 7, "w": 12, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\") |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false) |> yield(name: \"EAGLE\")"
+        },
+        {
+          "refId": "B", "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false) |> pivot(rowKey: [\"_time\"], columnKey: [\"channel\"], valueColumn: \"_value\") |> map(fn: (r) => ({ _time: r._time, _value: (r[\"em:1\"] + r[\"em:7\"]) / 1000.0 })) |> yield(name: \"Refoss mains\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "kwatt", "decimals": 2,
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 11, "type": "timeseries",
+      "title": "ComEd 5-min Price (with hourly avg)",
+      "gridPos": { "x": 12, "y": 7, "w": 12, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\") |> yield(name: \"5-min\")"
+        },
+        {
+          "refId": "B", "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"hourly_avg\") |> yield(name: \"hourly avg (billed)\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 2,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 15 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+
+    {
+      "id": 300, "type": "row", "title": "Per-circuit detail", "collapsed": false,
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 }
+    },
+    {
+      "id": 20, "type": "bargauge", "title": "Current Power by Circuit (live)",
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 12 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel != \"em:1\" and r.channel != \"em:7\") |> last() |> sort(columns: [\"_value\"], desc: true) |> keep(columns: [\"name\", \"_value\"])"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "orange", "value": 800 }, { "color": "red", "value": 2000 }
+          ]}
+        }
+      },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "showUnfilled": true, "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "Top 8 Circuits — 24h Power",
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 12 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel != \"em:1\" and r.channel != \"em:7\") |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false) |> top(n: 8, columns: [\"_value\"]) |> keep(columns: [\"_time\", \"_value\", \"name\"])"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "watt", "decimals": 0,
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 1.5, "fillOpacity": 5 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+
+    {
+      "id": 400, "type": "row", "title": "Cost analysis", "collapsed": false,
+      "gridPos": { "x": 0, "y": 29, "w": 24, "h": 1 }
+    },
+    {
+      "id": 30, "type": "stat", "title": "Cost / hour (right now)",
+      "gridPos": { "x": 0, "y": 30, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "demand = from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\") |> last()\nprice = from(bucket: \"energy\") |> range(start: -30m) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\") |> last()\njoin(tables: {d: demand, p: price}, on: [\"_start\"], method: \"inner\") |> map(fn: (r) => ({ _value: r._value_d * r._value_p / 100.0, _time: now() }))"
+      }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 3 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 31, "type": "stat", "title": "Today kWh",
+      "gridPos": { "x": 6, "y": 30, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1d)) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> sum() |> map(fn: (r) => ({ r with _value: r._value / 1000.0 }))"
+      }],
+      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 1 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 32, "type": "stat", "title": "EAGLE Lifetime Summation",
+      "gridPos": { "x": 12, "y": 30, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"delivered_kwh\") |> last()"
+      }],
+      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 2 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 33, "type": "stat", "title": "Average ComEd Price (today)",
+      "gridPos": { "x": 18, "y": 30, "w": 6, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1d)) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"hourly_avg\") |> mean()"
+      }],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+
+    {
+      "id": 500, "type": "row", "title": "HVAC scheduler + climate", "collapsed": false,
+      "gridPos": { "x": 0, "y": 35, "w": 24, "h": 1 }
+    },
+    {
+      "id": 40, "type": "stat", "title": "Today's Day-Type",
+      "gridPos": { "x": 0, "y": 36, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -36h) |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"reason\") |> last() |> map(fn: (r) => ({ _value: r.day_type }))"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "MILD": { "color": "blue" } } },
+            { "type": "value", "options": { "NORMAL": { "color": "green" } } },
+            { "type": "value", "options": { "HOT_5CP_RISK": { "color": "red" } } },
+            { "type": "value", "options": { "VACATION": { "color": "purple" } } }
+          ]
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" }
+    },
+    {
+      "id": 41, "type": "stat", "title": "Forecast Tomorrow",
+      "gridPos": { "x": 6, "y": 36, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2h) |> filter(fn: (r) => r._measurement == \"nws.forecast\" and r.for_period == \"tomorrow\" and r._field == \"high_f\") |> last()"
+      }],
+      "fieldConfig": { "defaults": { "unit": "fahrenheit", "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 42, "type": "timeseries", "title": "Indoor Temp (recorded by scheduler at action time)",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"indoor_temp_before_f\") |> yield(name: \"Indoor temp\")"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "fahrenheit", "decimals": 1,
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 5, "showPoints": "always", "pointSize": 5 } }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 43, "type": "stat", "title": "Heat Advisory",
+      "gridPos": { "x": 0, "y": 40, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2h) |> filter(fn: (r) => r._measurement == \"nws.forecast\" and r.for_period == \"today\" and r._field == \"is_heat_advisory\") |> last()"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "None", "color": "green" } } },
+            { "type": "value", "options": { "1": { "text": "ACTIVE", "color": "red" } } }
+          ]
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "textMode": "value" }
+    },
+    {
+      "id": 44, "type": "stat", "title": "Tomorrow Dewpoint",
+      "gridPos": { "x": 6, "y": 40, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2h) |> filter(fn: (r) => r._measurement == \"nws.forecast\" and r.for_period == \"tomorrow\" and r._field == \"max_dewpoint_f\") |> last()"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "fahrenheit", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }, { "color": "green", "value": 50 },
+            { "color": "yellow", "value": 60 }, { "color": "orange", "value": 65 }, { "color": "red", "value": 70 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+
+    {
+      "id": 600, "type": "row", "title": "Power quality + system health", "collapsed": false,
+      "gridPos": { "x": 0, "y": 44, "w": 24, "h": 1 }
+    },
+    {
+      "id": 50, "type": "stat", "title": "L1 / L2 Voltage",
+      "gridPos": { "x": 0, "y": 45, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"voltage_v\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> keep(columns: [\"channel\", \"_value\"])"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "volt", "decimals": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null }, { "color": "orange", "value": 110 }, { "color": "green", "value": 115 },
+            { "color": "orange", "value": 130 }, { "color": "red", "value": 135 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 51, "type": "stat", "title": "Mains PF",
+      "gridPos": { "x": 6, "y": 45, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_factor\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> mean()"
+      }],
+      "fieldConfig": { "defaults": { "decimals": 2 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 52, "type": "stat", "title": "Refoss WiFi RSSI",
+      "gridPos": { "x": 12, "y": 45, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"refoss.system\" and r._field == \"wifi_rssi_dbm\") |> last()"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "dB", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null }, { "color": "orange", "value": -80 },
+            { "color": "yellow", "value": -70 }, { "color": "green", "value": -60 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 53, "type": "table", "title": "Poller Last-Write Age",
+      "gridPos": { "x": 18, "y": 45, "w": 6, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "import \"date\"\nnowt = now()\ncomed = from(bucket: \"energy\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"comed.prices\") |> last() |> map(fn: (r) => ({ source: \"comed\", age_min: float(v: int(v: nowt) - int(v: r._time)) / 60000000000.0 })) |> keep(columns: [\"source\", \"age_min\"])\neagle = from(bucket: \"energy\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"eagle.meter\") |> last() |> map(fn: (r) => ({ source: \"eagle\", age_min: float(v: int(v: nowt) - int(v: r._time)) / 60000000000.0 })) |> keep(columns: [\"source\", \"age_min\"])\nrefoss = from(bucket: \"energy\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"refoss.channel\") |> last() |> map(fn: (r) => ({ source: \"refoss\", age_min: float(v: int(v: nowt) - int(v: r._time)) / 60000000000.0 })) |> keep(columns: [\"source\", \"age_min\"])\nnws = from(bucket: \"energy\") |> range(start: -2h) |> filter(fn: (r) => r._measurement == \"nws.forecast\") |> last() |> map(fn: (r) => ({ source: \"nws\", age_min: float(v: int(v: nowt) - int(v: r._time)) / 60000000000.0 })) |> keep(columns: [\"source\", \"age_min\"])\nunion(tables: [comed, eagle, refoss, nws])"
+      }],
+      "options": { "showHeader": true, "footer": { "show": false } }
+    },
+
+    {
+      "id": 700, "type": "row", "title": "HVAC equipment health", "collapsed": false,
+      "gridPos": { "x": 0, "y": 49, "w": 24, "h": 1 }
+    },
+    {
+      "id": 60, "type": "timeseries", "title": "Daily AC kWh (em:2 + em:8) — last 30 days",
+      "description": "Daily kWh consumed by the AC compressors. Trending up at constant outdoor temps may indicate refrigerant leak, dirty coils, or compressor degradation. Once TCC is wired in Phase 4, this can be normalized as kWh-per-cooling-degree-day for true efficiency tracking.",
+      "gridPos": { "x": 0, "y": 50, "w": 12, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:2\" or r.channel == \"em:8\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> map(fn: (r) => ({ r with _value: r._value * 24.0 / 1000.0 })) |> sum(column: \"_value\") |> yield(name: \"AC kWh/day\")"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "kwatth", "decimals": 1,
+          "custom": { "drawStyle": "bars", "lineWidth": 0, "fillOpacity": 80 } }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max", "sum"] } }
+    },
+    {
+      "id": 61, "type": "timeseries", "title": "Daily Furnace Blower kWh (em:9) — last 30 days",
+      "gridPos": { "x": 12, "y": 50, "w": 12, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "from(bucket: \"energy\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel == \"em:9\") |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> map(fn: (r) => ({ r with _value: r._value * 24.0 / 1000.0 })) |> yield(name: \"Furnace blower kWh/day\")"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "kwatth", "decimals": 2,
+          "custom": { "drawStyle": "bars", "lineWidth": 0, "fillOpacity": 80 } }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max", "sum"] } }
+    },
+    {
+      "id": 62, "type": "stat", "title": "AC % of Whole-Home (last 24h)",
+      "gridPos": { "x": 0, "y": 58, "w": 8, "h": 4 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "ac = from(bucket: \"energy\") |> range(start: -24h) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:2\" or r.channel == \"em:8\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> sum() |> map(fn: (r) => ({ r with _value: r._value }))\nhome = from(bucket: \"energy\") |> range(start: -24h) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> sum()\njoin(tables: {a: ac, h: home}, on: [\"_start\"], method: \"inner\") |> map(fn: (r) => ({ _value: r._value_a / r._value_h * 100.0, _time: now() }))"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "min": 0, "max": 100 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    }
+  ]
+}

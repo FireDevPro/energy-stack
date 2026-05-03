@@ -1,0 +1,32 @@
+# Secrets — plaintext .env never committed (SOPS-encrypted env.sops.env IS committed)
+.env
+.env.*
+!.env.example
+*.creds
+*.token
+*.pem
+*.key
+secrets/*.env
+!secrets/*.sops.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.local
+*.bak
+
+# Backup artifacts
+backup-*/
+restore/

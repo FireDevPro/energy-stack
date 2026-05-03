@@ -1,0 +1,167 @@
+{
+  "uid": "home-energy-overview",
+  "title": "Home Energy — Overview",
+  "tags": ["energy", "phase-3.4"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Current demand (EAGLE)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "orange", "value": 5 },
+              { "color": "red", "value": 8 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "wideLayout": true,
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Current price (ComEd 5-min)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -30m)\n  |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": { "neutral": 0 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 20 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "wideLayout": true,
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Whole-home demand (last 24h)",
+      "description": "EAGLE (billing-grade meter) and Refoss (per-circuit local, sum of split-phase mains em:1 + em:7) overlaid. They should track within a few percent.",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"EAGLE\")"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\"))\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"channel\"], valueColumn: \"_value\")\n  |> map(fn: (r) => ({ _time: r._time, _value: (r[\"em:1\"] + r[\"em:7\"]) / 1000.0 }))\n  |> yield(name: \"Refoss\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "pointSize": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "ComEd 5-minute real-time price (last 24h)",
+      "description": "¢ per kWh, published every 5 minutes by ComEd Hourly Pricing.",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\")\n  |> yield(name: \"5-min price\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": false,
+            "pointSize": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    }
+  ]
+}
