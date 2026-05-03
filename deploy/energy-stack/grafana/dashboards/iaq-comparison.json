@@ -1,0 +1,176 @@
+{
+  "uid": "iaq-comparison",
+  "title": "IAQ — Haven (return mix) vs Thermostat (wall)",
+  "tags": ["energy", "iaq", "haven", "hvac"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Indoor Temperature — Haven (return-air mix) vs Thermostat (wall)",
+      "description": "Haven measures return air temperature in the duct, only when blower is moving air (sparse). Thermostat reports continuous wall-sensor temperature. Bias = thermostat is in a warmer/cooler spot than the house mixed average.",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"haven.airquality\" and r._field == \"temp_f\")\n  |> map(fn: (r) => ({ r with _field: \"Haven return-air \\u00b0F\" }))"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.thermostat\" and r._field == \"indoor_temp_f\")\n  |> map(fn: (r) => ({ r with _field: \"Thermostat wall \\u00b0F\" }))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "pointSize": 4, "spanNulls": false }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Indoor Relative Humidity — Haven (return mix) vs Thermostat (wall)",
+      "description": "Haven RH in return duct (sparse, blower-running) vs thermostat humidity sensor. Hallway-thermostat RH often reads drier than the actual mixed-house RH because moisture loads (cooking, showers, basements) get pulled into the return.",
+      "gridPos": { "x": 0, "y": 10, "w": 24, "h": 10 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"haven.airquality\" and r._field == \"humidity_pct\")\n  |> map(fn: (r) => ({ r with _field: \"Haven return-air %RH\" }))"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.thermostat\" and r._field == \"humidity_pct\")\n  |> map(fn: (r) => ({ r with _field: \"Thermostat wall %RH\" }))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "humidity",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "pointSize": 4, "spanNulls": false }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Bias: Thermostat − Haven (positive = thermostat reads warmer than house mix)",
+      "description": "Joins the two series on time. Sustained positive bias means your thermostat lives in a hot spot; sustained negative means a cool spot. Diurnal swings (sun on the wall) show as periodic patterns.",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "haven = from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"haven.airquality\" and r._field == \"temp_f\")\n  |> aggregateWindow(every: 10m, fn: mean, createEmpty: false)\n\nstat = from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.thermostat\" and r._field == \"indoor_temp_f\")\n  |> aggregateWindow(every: 10m, fn: mean, createEmpty: false)\n\njoin(tables: { h: haven, s: stat }, on: [\"_time\"])\n  |> map(fn: (r) => ({ _time: r._time, _value: r._value_s - r._value_h, _field: \"bias_thermostat_minus_haven_f\" }))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit",
+          "custom": { "drawStyle": "line", "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": -1 },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Haven tVOC (return air, ppb)",
+      "description": "Total Volatile Organic Compounds in return air. Spikes correlate with cooking, cleaning, off-gassing from new items. Haven thresholds: Good <212, Fair 212-850, Poor >850.",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"haven.airquality\" and r._field == \"tvoc_ppb\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ppb",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 212 },
+              { "color": "red", "value": 850 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Blower Activity — Haven Airflow CFM vs Refoss em:9 (blower circuit W)",
+      "description": "Cross-validation: where Haven shows airflow > 0, the blower circuit (Refoss em:9 — Furnace Blower) should show non-trivial watts. Disagreement signals sensor or wiring problem.",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"haven.airquality\" and r._field == \"airflow_cfm\")\n  |> map(fn: (r) => ({ r with _field: \"Haven Airflow CFM\" }))"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel == \"em:9\")\n  |> map(fn: (r) => ({ r with _field: \"Furnace Blower W\" }))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2, "spanNulls": false }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Manual Override Events (last 7 days)",
+      "description": "When you nudged the thermostat away from what the scheduler last set. Each spike = a manual override detected.",
+      "gridPos": { "x": 0, "y": 36, "w": 24, "h": 6 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"hvac.overrides\" and (r._field == \"delta_cool_f\" or r._field == \"delta_heat_f\"))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "fahrenheit",
+          "custom": { "drawStyle": "points", "pointSize": 8 }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

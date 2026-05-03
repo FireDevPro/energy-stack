@@ -139,6 +139,44 @@ services:
     volumes:
       - hvac_scheduler_data:/data
 
+  thermostat-poller:
+    build: ./thermostat-poller
+    container_name: thermostat-poller
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      CONTROL4_EMAIL: ${CONTROL4_EMAIL}
+      CONTROL4_PASSWORD: ${CONTROL4_PASSWORD}
+      CONTROL4_CONTROLLER_IP: ${CONTROL4_CONTROLLER_IP:-192.168.1.30}
+      CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
+      THERMOSTAT_POLL_INTERVAL: ${THERMOSTAT_POLL_INTERVAL:-600}
+      OVERRIDE_GRACE_MIN: ${OVERRIDE_GRACE_MIN:-5}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+    volumes:
+      - thermostat_poller_data:/data
+
+  haven-ingest:
+    build: ./haven-ingest
+    container_name: haven-ingest
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      HAVEN_INBOX_DIR: /inbox/haven
+      HAVEN_SCAN_INTERVAL: ${HAVEN_SCAN_INTERVAL:-60}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+    volumes:
+      - ./inbox/haven:/inbox/haven
+
   telegram-notifier:
     build: ./telegram-notifier
     container_name: telegram-notifier
@@ -223,5 +261,6 @@ volumes:
   influxdb_config:
   grafana_data:
   hvac_scheduler_data:
+  thermostat_poller_data:
   loki_data:
   promtail_positions:

@@ -11,6 +11,8 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [refoss-poller](#refoss-poller) — per-circuit power
 - [nws-poller](#nws-poller) — weather forecast + alerts
 - [hvac-scheduler](#hvac-scheduler) — Control4 setpoint pushes
+- [thermostat-poller](#thermostat-poller) — continuous thermostat reads + override detection
+- [haven-ingest](#haven-ingest) — Haven IAQ CSV ingest
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
 - [webdashboard](#webdashboard) — nginx static
 - [webdashboard-api](#webdashboard-api) — FastAPI live data backend
@@ -232,6 +234,81 @@ Decides tomorrow's day-type at 21:00 local, then fires schedule actions througho
 **Healthcheck:** `/tmp/last_tick_ok` touched every minute regardless of whether actions fired — failure means the scheduler is wedged.
 
 **Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [`HVAC_LOGIC.md`](HVAC_LOGIC.md).
+
+---
+
+## thermostat-poller
+
+Build: `./thermostat-poller` · Cycle: `THERMOSTAT_POLL_INTERVAL` (default 600 s = 10 min, the TCC rate-limit floor) · Volume: `thermostat_poller_data` (`/data`)
+
+Continuous reads of VisionPRO state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
+
+**Two outputs:**
+
+1. **`hvac.thermostat`** — every poll cycle:
+
+   | Tag | Field | Notes |
+   |---|---|---|
+   | `thermostat_id` | `indoor_temp_f`, `humidity_pct`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` (running/idle), `fan_mode`, `hold_mode` | Continuous time-series of full thermostat state. Use for Grafana panels, calibration vs. Haven, anomaly detection. |
+
+2. **`hvac.overrides`** — only when current setpoints differ from the last `hvac.actions` row by ≥ 0.5°F AND the last action was > `OVERRIDE_GRACE_MIN` ago (default 5 min):
+
+   | Tag | Field | Notes |
+   |---|---|---|
+   | `thermostat_id`, `source="manual_override"` | `expected_cool_setpoint_f`, `actual_cool_setpoint_f`, `delta_cool_f`, `expected_heat_setpoint_f`, `actual_heat_setpoint_f`, `delta_heat_f`, `last_action_label`, `minutes_since_last_action`, `indoor_temp_f`, `humidity_pct`, `hvac_mode` | One row per poll cycle while overridden. v1 doesn't dedupe — at 10-min cadence, the data volume is tiny. |
+
+**Env:**
+- `CONTROL4_EMAIL`, `CONTROL4_PASSWORD`, `CONTROL4_CONTROLLER_IP`, `CONTROL4_THERMOSTAT_ID` — same as `hvac-scheduler`
+- `THERMOSTAT_POLL_INTERVAL` — seconds (default 600)
+- `OVERRIDE_GRACE_MIN` — minutes after a scheduler action before counting setpoint mismatch as an override (default 5)
+- `INFLUXDB_*` — standard
+
+**Healthcheck:** `/tmp/last_poll_ok` marker, `find -mmin -15` (allows up to 15 min staleness on a 10-min poll interval).
+
+**Why this exists:** the `hvac-scheduler` snapshots thermostat state only at action-firing moments (~4-7 timestamps per day). That's too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. This poller fills both gaps.
+
+---
+
+## haven-ingest
+
+Build: `./haven-ingest` · Cycle: `HAVEN_SCAN_INTERVAL` (default 60 s) · Bind mount: `./inbox/haven:/inbox/haven`
+
+Watches `~/energy-stack/inbox/haven/` for Haven IAQ CSV exports from the homeowner portal (my.haveniaq.com). Filename pattern: `CAM_<device-id>_<start>_to_<end>.csv`. Parses each file, writes points to InfluxDB, then moves to `inbox/haven/processed/` on success or `inbox/haven/failed/` on error (with a sidecar `.error` file containing the parse error).
+
+**Why CSV instead of API:** Haven has no public API at any tier (verified May 2026 via dealer-portal probe + Pi-hole DNS analysis showing the device only talks to `haven-r1.azure-devices.net` over Azure IoT Hub MQTT with cert pinning). The homeowner portal's CSV export is the only way out.
+
+**Env:**
+- `HAVEN_INBOX_DIR` — directory to watch (default `/inbox/haven`)
+- `HAVEN_SCAN_INTERVAL` — seconds between directory scans (default 60)
+- `INFLUXDB_*` — standard
+
+**Writes** (measurement `haven.airquality`):
+
+| Tag | Field | Coverage | Notes |
+|---|---|---|---|
+| `device_id` (from filename, e.g. `0000-6267`) | `temp_f`, `temp_c`, `humidity_pct`, `tvoc_ppb` | 100% | Continuous — sensors don't need flowing air |
+| | `pm25_ugm3`, `airflow_cfm` | ~3% | Flow-dependent — only populated when blower is running |
+| | `pm25_status`, `tvoc_status`, `combined_status` | 100% | "good" / "fair" / "poor" buckets |
+
+**Idempotent:** all points use the timestamp from the CSV (ISO 8601 UTC). Re-importing the same week is a no-op (Influx upserts on measurement+tags+timestamp).
+
+**Workflow:**
+1. Export weekly from my.haveniaq.com → save somewhere accessible (e.g. Downloads)
+2. Drop the CSV into `~/energy-stack/inbox/haven/` on Pi-lab (`scp` from Windows works)
+3. Within 60 s, the service ingests it and moves to `inbox/haven/processed/`
+4. If something goes wrong, file lands in `inbox/haven/failed/` with `.error` sidecar — fix the issue, drop it back in the inbox
+
+**Manual trigger:**
+```bash
+# Force an immediate scan (bypass the 60s wait)
+docker compose restart haven-ingest
+```
+
+**Healthcheck:** `/tmp/last_scan_ok` marker, `find -mmin -5`.
+
+**Crucial flow-dependent insight:** the sparse `airflow_cfm` and `pm25_ugm3` rows aren't a defect — they're **only populated when the blower is moving air past the duct sensor**. This means:
+- Non-null `airflow_cfm` rows = blower runtime ground truth (cross-validate against Refoss em:9 furnace blower power)
+- Non-null `airflow_cfm` value = real measured CFM at that moment, useful for delivered-BTU calc when paired with future supply-air temp instrumentation
 
 ---
 

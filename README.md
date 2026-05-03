@@ -37,6 +37,8 @@ NWS forecast  (public,     30min) ─┤    (energy bucket)   │ webdashboard-a
 | `refoss-poller` (30 s, 18 channels + system) | Active |
 | `nws-poller` (30 min, forecast today/tomorrow/day2 + active alerts) | Active |
 | `hvac-scheduler` (Control4 → Honeywell VisionPRO 8000) | Active |
+| `thermostat-poller` (continuous 10-min Control4 reads + override detection) | Active (May 2026) |
+| `haven-ingest` (Haven IAQ CSV → InfluxDB) | Active (May 2026) |
 | `telegram-notifier` (daily 8 AM + 5 min alert checker) | Active |
 | `webdashboard` + `webdashboard-api` (live data, port 8081) | Active |
 | `loki` + `promtail` (log aggregation) | Active |

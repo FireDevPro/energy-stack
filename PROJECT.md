@@ -319,6 +319,23 @@ Research review (May 2026, three agents, sources include NREL/Davis Energy Group
 
 Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. Logged in [HVAC_LOGIC.md](docs/HVAC_LOGIC.md) as a known re-tune opportunity, not yet applied.
 
+### Haven IAQ CSV ingest + thermostat-poller (May 3, 2026)
+
+The "Haven data is unreachable" conclusion was wrong. The homeowner portal at `my.haveniaq.com` has a CSV export per device (`CAM_<device-id>_<start>_to_<end>.csv` filename pattern). 7-day export = ~2,000 rows of 5-min samples. Columns: timestamp, PM2.5 + status, tVOC + status, temp °C/°F, RH%, combined status, airflow CFM. Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are sparse (~3% coverage) because they're flow-dependent measurements that only populate when the blower is moving air past the return-duct sensor.
+
+The flow-dependence is actually a feature: non-null airflow CFM rows give blower-runtime ground truth (cross-validates against Refoss em:9 furnace blower power), and the measured CFM value at that moment becomes useful for delivered-BTU calc when paired with future supply-air temp instrumentation.
+
+Two new services shipped:
+
+- **`haven-ingest`** — watches `~/energy-stack/inbox/haven/` for CSV exports, parses, writes `haven.airquality` measurement. Idempotent on timestamp. Files move to `processed/` on success or `failed/` on parse error. Workflow: export weekly from my.haveniaq.com → scp to Pi → service ingests within 60 s.
+- **`thermostat-poller`** — continuous 10-min Control4 reads of VisionPRO state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
+
+Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.
+
+New Grafana dashboard: `iaq-comparison.json` — Haven (return-air mix) vs thermostat (wall) for both temp and RH, plus a derived bias panel (positive = thermostat reads warmer than house mix), tVOC trend, blower-activity cross-validation (Haven CFM vs Refoss em:9), and manual override events.
+
+Why this matters for the existing scheduler: the return-air mix is a **fundamentally better whole-home signal** than a single wall thermostat (volume-weighted average of every room contributing to the return). Hallway thermostats often read drier than the actual house average because moisture loads (cooking, showers, basements) get pulled into the return mix. The new data makes calibration vs. mixed-air the diagnosis path for "does the humid override threshold need re-tuning."
+
 ### Other research findings (parked)
 
 - **`gridstatus` Python lib** — would be the right wrapper for PJM DataMiner2 once API key is available

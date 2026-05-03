@@ -17,6 +17,8 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `refoss-poller` | Refoss EM16P 18 channels, 30 s | — | [SERVICES.md#refoss-poller](../../docs/SERVICES.md#refoss-poller) |
 | `nws-poller` | NWS forecast (today/tomorrow/day2) + alerts, 30 min | — | [SERVICES.md#nws-poller](../../docs/SERVICES.md#nws-poller) |
 | `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
+| `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
+| `haven-ingest` | Watches `inbox/haven/` for Haven IAQ CSV exports → InfluxDB | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
 | `webdashboard` | nginx static (sci-fi HUD, live data via API) | 8081 | [SERVICES.md#webdashboard](../../docs/SERVICES.md#webdashboard) |
 | `webdashboard-api` | FastAPI backend for webdashboard | (8082, internal) | [SERVICES.md#webdashboard-api](../../docs/SERVICES.md#webdashboard-api) |
@@ -145,6 +147,8 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | `influxdb_config` | influxdb | InfluxDB config |
 | `grafana_data` | grafana | Dashboards (only modifications; provisioned dashboards are read-only mounts), users, alerts state |
 | `hvac_scheduler_data` | hvac-scheduler | `/data/director_token.json` (Control4 token), `/data/overrides.json` (manual day-type / vacation overrides) |
+| `thermostat_poller_data` | thermostat-poller | `/data/director_token.json` (its own Control4 token, independent of hvac-scheduler) |
+| (bind mount) `./inbox/haven` | haven-ingest | CSV inbox: drop new Haven exports here. Service moves them to `processed/` on success or `failed/` on parse error. |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
 
