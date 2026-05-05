@@ -242,11 +242,13 @@ def extract_delivery_block(text: str) -> tuple[float, str]:
 
 # Match the TAXES header. Two real variants we've seen, regardless of
 # whether whitespace was stripped during PDF extraction:
-#   "TAXES & FEES $6.35"  / "TAXES&FEES $6.35"
-#   "TAXES, FEES & OTHER CREDITS -$27.98" / "TAXES, FEES & OTHER CREDITS-$27.98"
+#   "TAXES & FEES $6.35"  / "TAXES&FEES $6.35"  (fixed-rate bills)
+#   "TAXES, FEES & OTHER CREDITS -$27.98" / ...CREDITS-$27.98  (Hourly bills)
+# Explicit alternation is faster than nested-quantifier regex and avoids
+# catastrophic-backtracking shape; new ComEd wording lands here as a one-line edit.
 _TAXES_HEADER = (
     r"TAXES"
-    r"(?:[ ,]?\s*(?:&|FEES|OTHER|CREDITS|\s)*)*"
+    r"(?:\s*&\s*FEES|,?\s*FEES\s*&\s*OTHER\s*CREDITS)"
     r"\s*(-?\$?[\d,]+\.\d{2})"
 )
 
@@ -367,12 +369,23 @@ def parse_line_items(body: str, category: str) -> list[LineItem]:
 # ---- Top-level composer ----
 
 
+# Single-account guard. The script is intentionally pinned to one account so
+# accidentally feeding another household's bill (template-shared utility) fails
+# loudly. If the home ever has a second meter, this becomes a set/env var.
 EXPECTED_ACCOUNT = "9999999991"
+
+# Cycle-adjustment / final / first-month bills observed at 2-7 days with 0 kWh.
+# Padded to 10 to absorb future variance without flipping legit short cycles.
+TRANSITION_MAX_DAYS = 10
 
 
 class BillParseError(Exception):
     """Raised when a bill cannot be parsed cleanly: missing required fields,
-    wrong account, or section totals that don't reconcile to total due."""
+    wrong account, or section totals that don't reconcile to total due.
+
+    All field-level extractors raise ValueError on extraction failure;
+    parse_bill catches those and re-raises as BillParseError so callers
+    have a single exception class to catch for any parse failure."""
 
 
 def parse_total_due(text: str) -> float:
@@ -380,24 +393,33 @@ def parse_total_due(text: str) -> float:
     if not m:
         m = re.search(r"Service\s*Period\s*Total\s*(-?\$?[\d,]+\.\d{2})", text)
     if not m:
-        raise BillParseError("could not find Total Amount Due")
+        raise ValueError("could not find Total Amount Due")
     return _money(m.group(1))
 
 
 def parse_bill(text: str) -> Bill:
     """Compose a Bill from extracted parts. Validates account_no and
-    that the per-block totals reconcile to total_due (within $0.01)."""
-    account_no = parse_account_no(text)
+    that the per-block totals reconcile to total_due (within $0.01).
+
+    Wraps all field-extractor ValueErrors as BillParseError so callers
+    have one exception class to catch."""
+    try:
+        account_no = parse_account_no(text)
+    except ValueError as e:
+        raise BillParseError(str(e)) from e
     if account_no != EXPECTED_ACCOUNT:
         raise BillParseError(
             f"account_no {account_no} does not match expected {EXPECTED_ACCOUNT}"
         )
 
-    rate_plan = parse_rate_plan(text)
-    issued = parse_issued_date(text)
-    service_from, service_to, service_days = parse_service_period(text)
-    kwh = parse_kwh(text)
-    total_due = parse_total_due(text)
+    try:
+        rate_plan = parse_rate_plan(text)
+        issued = parse_issued_date(text)
+        service_from, service_to, service_days = parse_service_period(text)
+        kwh = parse_kwh(text)
+        total_due = parse_total_due(text)
+    except ValueError as e:
+        raise BillParseError(str(e)) from e
 
     # Day-count sanity: ComEd's count is inclusive of the start date, so
     # calendar diff + 1 should equal stated days. Tolerate +/- 1, raise otherwise.
@@ -407,7 +429,7 @@ def parse_bill(text: str) -> Bill:
             f"service_days {service_days} disagrees with calendar diff {actual_days}"
         )
 
-    bill_type = "transition" if (kwh == 0 and service_days < 10) else "normal"
+    bill_type = "transition" if (kwh == 0 and service_days < TRANSITION_MAX_DAYS) else "normal"
 
     supply_total, supply_body = extract_supply_block(text)
     delivery_total, delivery_body = extract_delivery_block(text)
