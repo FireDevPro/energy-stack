@@ -394,10 +394,11 @@ the source is genuinely tabular (water, gas, property tax).
 
 **Schema**: `comed.bill` (top-line per cycle: total_due, kwh, peak_kw,
 supply/delivery/taxes/misc totals) + `comed.bill_lineitems` (full GL
-breakdown). Idempotency: SHA-256 of (account, from, to) → same Influx
-(measurement, tags, timestamp) → safe to re-run same bill.
+breakdown). Idempotency comes from Influx upserts: re-running a bill writes
+the same `(measurement, account_no + rate_plan + bill_type, service_to @
+23:59:59 CDT)` tuple, which collides and overwrites — safe to retry.
 
-**Dashboard**: `grafana/dashboards/comed-bill-reconciliation.json` —
+**Dashboard**: `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json` —
 bill-vs-projected, EAGLE-vs-billed-kWh, capacity-charge tracker, and a
 stub forward-projection panel. The projection panel's full formula
 (supply-so-far + delivery estimate + capacity + taxes estimate + days-remaining
