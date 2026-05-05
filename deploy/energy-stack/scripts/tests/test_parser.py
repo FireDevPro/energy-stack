@@ -1,16 +1,20 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from comed_parser import (
     Bill,
+    BillParseError,
     LineItem,
     bill_id,
-    normalize_text,
     extract_delivery_block,
     extract_misc_block,
     extract_supply_block,
     extract_taxes_block,
+    normalize_text,
     parse_account_no,
+    parse_bill,
     parse_issued_date,
     parse_kwh,
     parse_line_items,
@@ -247,3 +251,60 @@ def test_parse_line_items_sums_to_block_total_hourly_taxes():
     total, body = extract_taxes_block(text)
     items = parse_line_items(body, category="TAXES_FEES_CREDITS")
     assert abs(sum(i.amount for i in items) - total) < 0.01
+
+
+# ---- Task 10: parse_bill composer + validation ----
+
+
+def test_parse_bill_hourly_april():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    bill = parse_bill(text)
+    assert bill.account_no == "9999999991"
+    assert bill.rate_plan == "Residential - Hourly Single"
+    assert bill.bill_type == "normal"
+    assert bill.service_from == date(2026, 3, 24)
+    assert bill.service_to == date(2026, 4, 23)
+    assert bill.service_days == 30
+    assert bill.kwh == 1715
+    assert bill.peak_kw == 6.56
+    assert bill.total_due == 247.67
+    assert bill.supply_total == 146.83
+    assert bill.delivery_total == 128.82
+    assert bill.taxes_total == -27.98
+    assert bill.misc_total == 0.00
+    # Line items aggregated across all blocks
+    assert len(bill.line_items) >= 18  # 5 supply + 4 delivery + 12 taxes
+
+
+def test_parse_bill_fixed_september():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    bill = parse_bill(text)
+    assert bill.rate_plan == "Residential - Single"
+    assert bill.kwh == 1367
+    assert bill.peak_kw is None  # no capacity charge on fixed
+    assert bill.total_due == 247.83
+
+
+def test_parse_bill_transition_is_marked():
+    text = _norm_fixture("transition_aug2025.txt")
+    bill = parse_bill(text)
+    assert bill.bill_type == "transition"
+    assert bill.kwh == 0
+    assert bill.service_days < 10
+
+
+def test_parse_bill_validates_totals():
+    """If supply + delivery + taxes + misc != total_due, raise."""
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    # Tamper the text so totals won't balance
+    bad = text.replace("Total Amount Due 247.67", "Total Amount Due 999.99") \
+              .replace("Total Amount Due $247.67", "Total Amount Due $999.99")
+    with pytest.raises(BillParseError, match="totals do not balance"):
+        parse_bill(bad)
+
+
+def test_parse_bill_rejects_wrong_account():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    bad = text.replace("9999999991", "9999999999")
+    with pytest.raises(BillParseError, match="account_no"):
+        parse_bill(bad)

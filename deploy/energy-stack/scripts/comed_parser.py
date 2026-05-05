@@ -287,6 +287,101 @@ def parse_line_items(body: str, category: str) -> list[LineItem]:
     return items
 
 
+# ---- Top-level composer ----
+
+
+EXPECTED_ACCOUNT = "9999999991"
+
+
+class BillParseError(Exception):
+    """Raised when a bill cannot be parsed cleanly: missing required fields,
+    wrong account, or section totals that don't reconcile to total due."""
+
+
+def parse_total_due(text: str) -> float:
+    m = re.search(r"Total\s*Amount\s*Due\s*(-?\$?[\d,]+\.\d{2})", text)
+    if not m:
+        m = re.search(r"Service\s*Period\s*Total\s*(-?\$?[\d,]+\.\d{2})", text)
+    if not m:
+        raise BillParseError("could not find Total Amount Due")
+    return _money(m.group(1))
+
+
+def parse_bill(text: str) -> Bill:
+    """Compose a Bill from extracted parts. Validates account_no and
+    that the per-block totals reconcile to total_due (within $0.01)."""
+    account_no = parse_account_no(text)
+    if account_no != EXPECTED_ACCOUNT:
+        raise BillParseError(
+            f"account_no {account_no} does not match expected {EXPECTED_ACCOUNT}"
+        )
+
+    rate_plan = parse_rate_plan(text)
+    issued = parse_issued_date(text)
+    service_from, service_to, service_days = parse_service_period(text)
+    kwh = parse_kwh(text)
+    total_due = parse_total_due(text)
+
+    # Day-count sanity: ComEd's count is inclusive of the start date, so
+    # calendar diff + 1 should equal stated days. Tolerate +/- 1, raise otherwise.
+    actual_days = (service_to - service_from).days + 1
+    if abs(actual_days - service_days) > 1:
+        raise BillParseError(
+            f"service_days {service_days} disagrees with calendar diff {actual_days}"
+        )
+
+    bill_type = "transition" if (kwh == 0 and service_days < 10) else "normal"
+
+    supply_total, supply_body = extract_supply_block(text)
+    delivery_total, delivery_body = extract_delivery_block(text)
+    taxes_total, taxes_body = extract_taxes_block(text)
+    try:
+        misc_total, misc_body = extract_misc_block(text)
+    except ValueError:
+        misc_total, misc_body = 0.0, ""
+
+    line_items = (
+        parse_line_items(supply_body, "SUPPLY")
+        + parse_line_items(delivery_body, "DELIVERY")
+        + parse_line_items(taxes_body, "TAXES_FEES_CREDITS")
+        + (parse_line_items(misc_body, "MISC") if misc_body else [])
+    )
+
+    # Capacity charge -> peak_kw (only present on Hourly plans).
+    peak_kw = None
+    for li in line_items:
+        if li.line_item == "Capacity Charge" and li.unit == "kW":
+            peak_kw = li.quantity
+            break
+
+    component_sum = supply_total + delivery_total + taxes_total + misc_total
+    if abs(component_sum - total_due) >= 0.01:
+        raise BillParseError(
+            f"totals do not balance: "
+            f"supply {supply_total} + delivery {delivery_total} + "
+            f"taxes {taxes_total} + misc {misc_total} = {component_sum:.2f}, "
+            f"but total_due = {total_due}"
+        )
+
+    return Bill(
+        account_no=account_no,
+        rate_plan=rate_plan,
+        bill_type=bill_type,
+        issued_date=issued,
+        service_from=service_from,
+        service_to=service_to,
+        service_days=service_days,
+        kwh=kwh,
+        peak_kw=peak_kw,
+        total_due=total_due,
+        supply_total=supply_total,
+        delivery_total=delivery_total,
+        taxes_total=taxes_total,
+        misc_total=misc_total,
+        line_items=line_items,
+    )
+
+
 def parse_kwh(text: str) -> int:
     """Extract billed kWh.
 
