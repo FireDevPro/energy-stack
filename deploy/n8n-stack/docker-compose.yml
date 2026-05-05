@@ -44,6 +44,11 @@ services:
       N8N_PORT: 5678
       N8N_PROTOCOL: http
       WEBHOOK_URL: ${WEBHOOK_URL:-http://192.168.20.10:5678/}
+      # LAN-only home deployment behind UDM firewall, no public exposure.
+      # Disable the secure-cookie requirement so we can use the UI from other
+      # LAN devices over plain HTTP. Revisit with TLS via reverse proxy (Caddy
+      # or nginx) if this ever needs to be reachable from outside the LAN.
+      N8N_SECURE_COOKIE: "false"
 
       # ---- Time ----
       GENERIC_TIMEZONE: America/Chicago
