@@ -71,7 +71,13 @@ jobs:
       - name: Sync to ~/energy-stack
         shell: bash
         run: |
-          rsync -av --delete --exclude '.env' \
+          # Runtime paths excluded from --delete: .env (chmod 600 on Pi),
+          # .env.* (backups), inbox/ (haven-ingest's bind-mounted CSV inbox
+          # whose contents are owned by the container UID, not chris).
+          rsync -av --delete \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'inbox' \
             ./deploy/energy-stack/ \
             $HOME/energy-stack/
 
@@ -112,7 +118,9 @@ jobs:
       - name: Sync to ~/n8n
         shell: bash
         run: |
-          rsync -av --delete --exclude '.env' \
+          rsync -av --delete \
+            --exclude '.env' \
+            --exclude '.env.*' \
             ./deploy/n8n-stack/ \
             $HOME/n8n/
 
