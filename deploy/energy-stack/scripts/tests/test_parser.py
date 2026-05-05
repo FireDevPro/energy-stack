@@ -1,5 +1,9 @@
 from datetime import date
-from comed_parser import Bill, LineItem, bill_id
+from pathlib import Path
+
+from comed_parser import Bill, LineItem, bill_id, normalize_text
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_bill_dataclass_construction():
@@ -47,3 +51,17 @@ def test_bill_id_changes_with_inputs():
     a = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
     b = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 24))  # different to-date
     assert a != b
+
+
+# ---- Task 5: normalize_text ----
+
+
+def test_normalize_text_collapses_whitespace():
+    assert normalize_text("a   b\nc\t d") == "a b c d"
+
+
+def test_normalize_text_handles_real_fixture():
+    raw = (FIXTURES / "hourly_single_apr2026.txt").read_text(encoding="utf-8")
+    norm = normalize_text(raw)
+    # The Capacity Charge line should now be one continuous token sequence
+    assert "Capacity Charge 6.56 kW" in norm
