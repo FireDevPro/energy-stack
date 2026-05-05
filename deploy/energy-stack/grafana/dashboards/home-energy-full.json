@@ -70,12 +70,12 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel != \"em:1\" and r.channel != \"em:7\") |> last() |> sort(columns: [\"_value\"], desc: true) |> limit(n: 1) |> keep(columns: [\"name\", \"_value\"])"
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and r.channel != \"em:1\" and r.channel != \"em:7\") |> last() |> group() |> sort(columns: [\"_value\"], desc: true) |> limit(n: 1) |> map(fn: (r) => ({ r with _time: now() })) |> pivot(rowKey: [\"_time\"], columnKey: [\"name\"], valueColumn: \"_value\")"
       }],
       "fieldConfig": {
         "defaults": { "unit": "watt", "decimals": 0 }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*power.*/" }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" }
     },
 
     {
@@ -142,7 +142,7 @@
       }],
       "fieldConfig": {
         "defaults": {
-          "unit": "watt", "decimals": 0,
+          "unit": "watt", "decimals": 0, "displayName": "${__field.labels.name}",
           "thresholds": { "mode": "absolute", "steps": [
             { "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "orange", "value": 800 }, { "color": "red", "value": 2000 }
           ]}
@@ -176,7 +176,7 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "demand = from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\") |> last()\nprice = from(bucket: \"energy\") |> range(start: -30m) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\") |> last()\njoin(tables: {d: demand, p: price}, on: [\"_start\"], method: \"inner\") |> map(fn: (r) => ({ _value: r._value_d * r._value_p / 100.0, _time: now() }))"
+        "query": "demand = from(bucket: \"energy\") |> range(start: -30m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"demand_kw\") |> last()\nprice = from(bucket: \"energy\") |> range(start: -30m) |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r.period_type == \"5min\") |> last()\njoin(tables: {d: demand, p: price}, on: [\"_start\"], method: \"inner\") |> map(fn: (r) => ({ _value: r._value_d * r._value_p / 100.0, _time: now() }))"
       }],
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 3 } },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
@@ -187,20 +187,31 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1d)) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> sum() |> map(fn: (r) => ({ r with _value: r._value / 1000.0 }))"
+        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1d)) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> integral(unit: 1h) |> group() |> sum() |> map(fn: (r) => ({ r with _value: r._value / 1000.0 }))"
       }],
       "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 1 } },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
     },
     {
-      "id": 32, "type": "stat", "title": "EAGLE Lifetime Summation",
-      "gridPos": { "x": 12, "y": 30, "w": 6, "h": 5 },
+      "id": 32, "type": "stat", "title": "Delivered Today (EAGLE)",
+      "gridPos": { "x": 12, "y": 30, "w": 3, "h": 5 },
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"delivered_kwh\") |> last()"
+        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1d)) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"delivered_kwh\") |> spread()"
       }],
-      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 2 } },
+      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 1 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 34, "type": "stat", "title": "Delivered This Month (EAGLE)",
+      "gridPos": { "x": 15, "y": 30, "w": 3, "h": 5 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [{
+        "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "query": "import \"date\"\nfrom(bucket: \"energy\") |> range(start: date.truncate(t: now(), unit: 1mo)) |> filter(fn: (r) => r._measurement == \"eagle.meter\" and r._field == \"delivered_kwh\") |> spread()"
+      }],
+      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 0 } },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
     },
     {
@@ -225,19 +236,25 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -36h) |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"reason\") |> last() |> map(fn: (r) => ({ _value: r.day_type }))"
+        "query": "from(bucket: \"energy\") |> range(start: -36h) |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r._field == \"reason\") |> group() |> last() |> keep(columns: [\"_time\", \"day_type\"]) |> rename(columns: {day_type: \"_value\"})"
       }],
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "MILD": { "color": "blue" } } },
-            { "type": "value", "options": { "NORMAL": { "color": "green" } } },
-            { "type": "value", "options": { "HOT_5CP_RISK": { "color": "red" } } },
-            { "type": "value", "options": { "VACATION": { "color": "purple" } } }
+            {
+              "type": "value",
+              "options": {
+                "MILD":            { "text": "MILD",         "color": "blue",   "index": 0 },
+                "NORMAL":          { "text": "NORMAL",       "color": "green",  "index": 1 },
+                "HOT_5CP_RISK":    { "text": "HOT 5CP",      "color": "red",    "index": 2 },
+                "HOT_STREAK_DAY1": { "text": "HOT STREAK",   "color": "red",    "index": 3 },
+                "VACATION":        { "text": "VACATION",     "color": "purple", "index": 4 }
+              }
+            }
           ]
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^Value$/" }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
     },
     {
       "id": 41, "type": "stat", "title": "Forecast Tomorrow",
@@ -251,12 +268,12 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
     },
     {
-      "id": 42, "type": "timeseries", "title": "Indoor Temp (recorded by scheduler at action time)",
+      "id": 42, "type": "timeseries", "title": "Indoor Temp (10-min thermostat reads)",
       "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"hvac.actions\" and r._field == \"indoor_temp_before_f\") |> yield(name: \"Indoor temp\")"
+        "query": "from(bucket: \"energy\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"hvac.thermostat\" and r._field == \"indoor_temp_f\") |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false) |> yield(name: \"Indoor temp\")"
       }],
       "fieldConfig": {
         "defaults": { "unit": "fahrenheit", "decimals": 1,
@@ -311,10 +328,10 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"voltage_v\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> keep(columns: [\"channel\", \"_value\"])"
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"voltage_v\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> map(fn: (r) => ({ r with channel: if r.channel == \"em:1\" then \"L1\" else \"L2\" })) |> keep(columns: [\"channel\", \"_value\"])"
       }],
       "fieldConfig": {
-        "defaults": { "unit": "volt", "decimals": 1,
+        "defaults": { "unit": "volt", "decimals": 1, "displayName": "${__field.labels.channel}",
           "thresholds": { "mode": "absolute", "steps": [
             { "color": "red", "value": null }, { "color": "orange", "value": 110 }, { "color": "green", "value": 115 },
             { "color": "orange", "value": 130 }, { "color": "red", "value": 135 }
@@ -329,7 +346,7 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_factor\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> mean()"
+        "query": "from(bucket: \"energy\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_factor\" and (r.channel == \"em:1\" or r.channel == \"em:7\")) |> last() |> group() |> mean()"
       }],
       "fieldConfig": { "defaults": { "decimals": 2 } },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
@@ -374,7 +391,7 @@
       "datasource": { "type": "influxdb", "uid": "influxdb" },
       "targets": [{
         "refId": "A", "datasource": { "type": "influxdb", "uid": "influxdb" },
-        "query": "from(bucket: \"energy\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:2\" or r.channel == \"em:8\")) |> aggregateWindow(every: 1m, fn: mean, createEmpty: false) |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> map(fn: (r) => ({ r with _value: r._value * 24.0 / 1000.0 })) |> sum(column: \"_value\") |> yield(name: \"AC kWh/day\")"
+        "query": "from(bucket: \"energy\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"refoss.channel\" and r._field == \"power_w\" and (r.channel == \"em:2\" or r.channel == \"em:8\")) |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> map(fn: (r) => ({ r with _value: r._value * 24.0 / 1000.0 })) |> group(columns: [\"_time\"]) |> sum() |> group() |> yield(name: \"AC kWh/day\")"
       }],
       "fieldConfig": {
         "defaults": { "unit": "kwatth", "decimals": 1,
