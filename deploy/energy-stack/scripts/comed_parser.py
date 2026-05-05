@@ -190,6 +190,103 @@ def extract_misc_block(text: str) -> tuple[float, str]:
     )
 
 
+# ---- Line-item extractor ----
+
+# An amount always carries a $; a credit can attach the leading minus to
+# either the rate (X-0.03186) or the dollar (-$54.64) or both back-to-back
+# ("X-0.03186-$54.64"). Quantities never have $.
+_AMOUNT = r"-?\$[\d,]+\.\d{2}"
+# Label: starts with capital, then word chars + spaces/&/-//. No digits, no $.
+_LABEL = r"[A-Z][A-Za-z][A-Za-z &/.\-]*?[A-Za-z]"
+
+# Shape A: label + qty + unit + X + rate + amount
+#   "Distribution Facility Charge 1,715 kWh X 0.06267 $107.48"
+#   "Capacity Charge 6.56 kWX 8.32925 $54.64"            (kW glued to X)
+#   "Carbon-Free Energy Resource Adj 1,715 kWh X-0.03186-$54.64"
+_SHAPE_A = re.compile(
+    r"(" + _LABEL + r")\s+([\d,]+(?:\.\d+)?)\s*(kWh|kW)\s*X\s*(-?[\d.]+)\s*(" + _AMOUNT + r")"
+)
+
+# Shape A2: label + qty + unit + amount (NO X, NO rate)
+#   "Electricity Supply Charge 1,715 kWh $42.15"
+_SHAPE_A2 = re.compile(
+    r"(" + _LABEL + r")\s+([\d,]+(?:\.\d+)?)\s*(kWh|kW)\s+(" + _AMOUNT + r")"
+)
+
+# Shape B: label + $base + X + percentage + amount
+#   "Franchise Cost $117.67 X 1.73900%$2.05"
+#   "Low Income Discount $260.71 X-5% -$13.04"
+_SHAPE_B = re.compile(
+    r"(" + _LABEL + r")\s+\$([\d,]+(?:\.\d+)?)\s*X\s*(-?[\d.]+)\s*%\s*(" + _AMOUNT + r")"
+)
+
+# Shape C: label + amount (no qty, no rate)
+#   "Customer Charge $15.35", "Purchased Electricity Adjustment $30.41",
+#   "AC Interruption Option Credit -$10.00", "State Tax $5.66"
+_SHAPE_C = re.compile(
+    r"(" + _LABEL + r")\s+(" + _AMOUNT + r")"
+)
+
+_LINE_ITEM_PATTERNS = [_SHAPE_A, _SHAPE_A2, _SHAPE_B, _SHAPE_C]
+
+
+def parse_line_items(body: str, category: str) -> list[LineItem]:
+    """Extract every line item in a normalized block body.
+
+    Walks the body left-to-right. At each position, tries each shape; the
+    longest match wins (most specific). On no match, advance one char and
+    retry. This naturally handles bodies that begin with whitespace and
+    rejects fragments that don't terminate in a $ amount.
+    """
+    items: list[LineItem] = []
+    pos = 0
+    while pos < len(body):
+        best_match = None
+        best_pat_idx = None
+        for idx, pat in enumerate(_LINE_ITEM_PATTERNS):
+            m = pat.match(body, pos)
+            if m and (best_match is None or m.end() > best_match.end()):
+                best_match = m
+                best_pat_idx = idx
+        if best_match is None:
+            pos += 1
+            continue
+        groups = best_match.groups()
+        label = groups[0].strip()
+        if best_pat_idx == 0:
+            # Shape A: qty + unit + X + rate + amount
+            items.append(LineItem(
+                category=category, line_item=label,
+                amount=_money(groups[4]),
+                quantity=float(groups[1].replace(",", "")),
+                unit=groups[2], rate=float(groups[3]),
+            ))
+        elif best_pat_idx == 1:
+            # Shape A2: qty + unit + amount (no rate)
+            items.append(LineItem(
+                category=category, line_item=label,
+                amount=_money(groups[3]),
+                quantity=float(groups[1].replace(",", "")),
+                unit=groups[2], rate=None,
+            ))
+        elif best_pat_idx == 2:
+            # Shape B: $-base * percentage
+            items.append(LineItem(
+                category=category, line_item=label,
+                amount=_money(groups[3]),
+                quantity=float(groups[1].replace(",", "")),
+                unit="$", rate=float(groups[2]) / 100.0,
+            ))
+        else:
+            # Shape C: bare label + amount
+            items.append(LineItem(
+                category=category, line_item=label,
+                amount=_money(groups[1]),
+            ))
+        pos = best_match.end()
+    return items
+
+
 def parse_kwh(text: str) -> int:
     """Extract billed kWh.
 

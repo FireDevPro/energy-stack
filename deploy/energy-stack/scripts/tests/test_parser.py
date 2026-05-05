@@ -13,6 +13,7 @@ from comed_parser import (
     parse_account_no,
     parse_issued_date,
     parse_kwh,
+    parse_line_items,
     parse_rate_plan,
     parse_service_period,
 )
@@ -183,3 +184,66 @@ def test_extract_misc_block_normal_is_zero():
     text = _norm_fixture("hourly_single_apr2026.txt")
     total, body = extract_misc_block(text)
     assert total == 0.0
+
+
+# ---- Task 9: line-item extractor ----
+
+
+def test_parse_line_items_supply_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    _, body = extract_supply_block(text)
+    items = parse_line_items(body, category="SUPPLY")
+    labels = {i.line_item: i for i in items}
+    assert labels["Electricity Supply Charge"].amount == 42.15
+    assert labels["Capacity Charge"].amount == 54.64
+    assert labels["Capacity Charge"].quantity == 6.56
+    assert labels["Capacity Charge"].unit == "kW"
+    assert labels["Capacity Charge"].rate == 8.32925
+    assert labels["Transmission Services Charge"].amount == 18.57
+    assert labels["Misc Procurement Components Chg"].amount == 1.06
+    assert labels["Purchased Electricity Adjustment"].amount == 30.41
+
+
+def test_parse_line_items_supply_fixed_no_capacity():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    _, body = extract_supply_block(text)
+    items = parse_line_items(body, category="SUPPLY")
+    labels = {i.line_item for i in items}
+    assert "Capacity Charge" not in labels
+    assert "Electricity Supply Charge" in labels
+
+
+def test_parse_line_items_delivery_includes_fixed_charges():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    _, body = extract_delivery_block(text)
+    items = parse_line_items(body, category="DELIVERY")
+    labels = {i.line_item: i for i in items}
+    assert labels["Customer Charge"].amount == 15.35
+    assert labels["Customer Charge"].quantity is None  # fixed, no qty
+    assert labels["Distribution Facility Charge"].amount == 107.48
+    assert labels["Distribution Facility Charge"].quantity == 1715
+    assert labels["Distribution Facility Charge"].unit == "kWh"
+    assert labels["Distribution Facility Charge"].rate == 0.06267
+
+
+def test_parse_line_items_taxes_with_credit():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    _, body = extract_taxes_block(text)
+    items = parse_line_items(body, category="TAXES_FEES_CREDITS")
+    labels = {i.line_item: i for i in items}
+    assert labels["Carbon-Free Energy Resource Adj"].amount == -54.64
+    assert labels["Carbon-Free Energy Resource Adj"].rate == -0.03186
+
+
+def test_parse_line_items_sums_to_block_total_hourly_supply():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_supply_block(text)
+    items = parse_line_items(body, category="SUPPLY")
+    assert abs(sum(i.amount for i in items) - total) < 0.01
+
+
+def test_parse_line_items_sums_to_block_total_hourly_taxes():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_taxes_block(text)
+    items = parse_line_items(body, category="TAXES_FEES_CREDITS")
+    assert abs(sum(i.amount for i in items) - total) < 0.01
