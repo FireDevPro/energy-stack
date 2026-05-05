@@ -5,13 +5,12 @@ Line protocol reference:
 Tag/field keys and string values containing spaces or commas must be
 backslash-escaped.
 """
-import os
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-from comed_parser import Bill, LineItem
+from comed_parser import Bill
 
 
 CHICAGO_OFFSET_HOURS = -5  # CDT in summer, CST in winter — accept up to 1h drift
@@ -31,7 +30,7 @@ def _esc_str_field(s: str) -> str:
     return s.replace("\\", r"\\").replace('"', r"\"")
 
 
-def _service_to_ns(d) -> int:
+def _service_to_ns(d: date) -> int:
     """Convert service_to date to nanosecond UTC timestamp,
     anchored at 23:59:59 America/Chicago (CDT)."""
     naive = datetime(d.year, d.month, d.day, 23, 59, 59)

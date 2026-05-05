@@ -68,12 +68,23 @@ def main():
     )
     print(f"  wrote to InfluxDB: 1 comed.bill + {len(bill.line_items)} bill_lineitems")
 
-    # Move PDF to processed/
+    # Move PDF to processed/. Influx write already succeeded above, so on
+    # filesystem failure here we tell the operator the data is safe and the
+    # move is the only thing left to retry (idempotent — re-running the script
+    # upserts the same Influx points and tries the move again).
     processed_dir = pdf_path.parent / "processed"
     processed_dir.mkdir(exist_ok=True)
     new_name = f"comed-{bill.service_to.isoformat()}-{bill.service_from.isoformat()}.pdf"
     dest = processed_dir / new_name
-    shutil.move(str(pdf_path), str(dest))
+    try:
+        shutil.move(str(pdf_path), str(dest))
+    except OSError as e:
+        print(
+            f"warning: Influx write succeeded but move failed: {e}\n"
+            f"  PDF still at {pdf_path}; safe to re-run (Influx write is idempotent).",
+            file=sys.stderr,
+        )
+        sys.exit(5)
     print(f"  moved to {dest}")
 
 

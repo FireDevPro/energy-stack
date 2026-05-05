@@ -55,16 +55,34 @@ Then: `comed-ingest ~/Downloads/comed-bill.pdf`
 
 ### Idempotency
 
-`bill_id = sha256(account_no || service_from || service_to)` is encoded
-implicitly via Influx's (measurement, tag set, timestamp) deduplication.
-Re-running the same bill upserts the same points — safe to retry on errors.
+Re-running the same bill upserts the same Influx points because the
+`(measurement, tag set, timestamp)` tuple — `(comed.bill, account_no +
+rate_plan + bill_type, service_to @ 23:59:59 CDT)` — is identical between
+runs. Safe to retry on errors.
+
+If ComEd re-issues a bill with corrections (same service window, different
+amounts), re-running this script overwrites the previous values for that
+window. There's no audit history kept of the prior amounts.
 
 ### Validation
 
-The parser refuses to write if any of these fail (PDF stays in inbox):
-- `account_no != 9999999991` (your account)
+The parser refuses to write if any of these fail (PDF stays in inbox,
+non-zero exit code):
+- `account_no != 9999999991` (the household's account; guard against
+  feeding someone else's bill)
+- Required fields missing (kWh, total due, rate plan, etc.)
 - `supply + delivery + taxes + misc != total_due` (within $0.01)
-- `service_days` doesn't match calendar diff (off-by-one tolerated)
+- `service_days` doesn't match calendar diff by more than 1 day
+
+### Exit codes
+
+| Code | Meaning                                          |
+|------|--------------------------------------------------|
+| 0    | Success — Influx written, PDF moved              |
+| 2    | Argument is not a file                           |
+| 3    | Parse failed (validation gate or extractor)      |
+| 4    | `INFLUX_TOKEN` env var missing                   |
+| 5    | Influx write succeeded but PDF move failed (safe to re-run) |
 
 ### Dry run
 
