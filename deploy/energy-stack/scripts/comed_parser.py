@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
@@ -36,3 +37,10 @@ class Bill:
         if self.kwh == 0:
             return 0.0
         return round(self.total_due / self.kwh, 6)
+
+
+def bill_id(account_no: str, service_from: date, service_to: date) -> str:
+    """Deterministic SHA-256 hash for idempotent ingest. Same account +
+    service window always yields the same id."""
+    payload = f"{account_no}|{service_from.isoformat()}|{service_to.isoformat()}"
+    return hashlib.sha256(payload.encode()).hexdigest()

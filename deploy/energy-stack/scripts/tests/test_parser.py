@@ -1,5 +1,5 @@
 from datetime import date
-from comed_parser import Bill, LineItem
+from comed_parser import Bill, LineItem, bill_id
 
 
 def test_bill_dataclass_construction():
@@ -34,3 +34,16 @@ def test_line_item_dataclass_construction():
     )
     assert li.amount == 54.64
     assert li.unit == "kW"
+
+
+def test_bill_id_is_deterministic():
+    a = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
+    b = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
+    assert a == b
+    assert len(a) == 64  # SHA-256 hex
+
+
+def test_bill_id_changes_with_inputs():
+    a = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
+    b = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 24))  # different to-date
+    assert a != b
