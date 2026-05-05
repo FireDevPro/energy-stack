@@ -30,18 +30,25 @@ INFLUX_BUCKET=energy
 
 ### Monthly workflow
 
+The actual normal path: Chris hands the PDF to Claude Code in chat once a
+month and asks it to ingest. Claude runs the same scp + ssh flow below — the
+operator-direct path is the fallback for when Chris wants to do it himself.
+
 1. ComEd email arrives → click "View bill" on portal → download PDF (2FA required)
-2. From workstation:
+2. From workstation (or from Claude after Chris drops the PDF):
    ```
    scp <bill>.pdf pi-lab:~/energy-stack/inbox/comed/
-   ssh pi-lab
-   cd ~/energy-stack/scripts && source .venv/bin/activate
-   set -a; source ~/energy-stack/.env; set +a
-   python parse_comed_bill.py ~/energy-stack/inbox/comed/<bill>.pdf
+   ssh pi-lab "cd ~/energy-stack/scripts && source .venv/bin/activate && \
+     set -a; source ~/energy-stack/.env; set +a && \
+     python parse_comed_bill.py ~/energy-stack/inbox/comed/<bill>.pdf"
    ```
 3. Script: parses → writes to Influx → moves PDF to `inbox/comed/processed/comed-YYYY-MM-DD-...pdf`
+4. Claude (or operator) verifies the new bill landed and the dashboard updates correctly. Common quick-checks:
+   - `comed.bill_lineitems` for the new period has expected categories present (SUPPLY, DELIVERY, TAXES_FEES_CREDITS)
+   - `total_due` ≈ `supply + delivery + taxes + misc` (the script's validation gate enforces this; if it wrote, totals balanced)
+   - Capacity Charge `peak_kw` and `amount` match the prior month for any bill before June 2026 (PJM 5CP is locked annually); after June 2026, watch for the step-change.
 
-### Optional: workstation alias
+### Optional: workstation alias for the operator-direct path
 
 In your workstation shell profile:
 ```bash
@@ -93,10 +100,28 @@ python parse_comed_bill.py file.pdf --dry-run
 
 ### Backfill
 
-Loop over historical bills:
+Loop over historical bills using the same script per file:
 ```
 for f in ~/energy-stack/inbox/comed/backfill/*.pdf; do
     python parse_comed_bill.py "$f"
 done
 ```
 Idempotency makes this re-runnable. Duplicates collapse automatically.
+
+### Generating line protocol locally (rare path)
+
+For batch backfill of many bills at once, or for debugging a parse offline,
+you can call `comed_parser.parse_pdf` + `comed_influx.bill_to_line_protocol`
+directly to write `.lp` files, then apply with `influx write --file`. **One
+gotcha if you do this on Windows**: Python's text-mode file writes convert
+`\n` to `\r\n`, and InfluxDB's `influx write` rejects every line as "bad
+timestamp" because the trailing `\r` attaches to the ns integer. Two ways to
+avoid:
+
+- **Strip on Pi after scp**: `sed -i 's/\r$//' /tmp/backfill.lp` then apply
+- **Write LF directly from Python**: open the file with `newline=""` (or
+  `open(path, "wb")` and encode manually)
+
+The production script (`parse_comed_bill.py`) is immune — it writes via the
+`influxdb_client` library over HTTP, which never serializes through a file,
+so the CRLF issue cannot occur on the normal path.
