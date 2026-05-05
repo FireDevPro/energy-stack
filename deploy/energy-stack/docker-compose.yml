@@ -168,14 +168,17 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      HAVEN_INBOX_DIR: /inbox/haven
-      HAVEN_SCAN_INTERVAL: ${HAVEN_SCAN_INTERVAL:-60}
+      HAVEN_AUTH0_DOMAIN: ${HAVEN_AUTH0_DOMAIN:-haven-production.auth0.com}
+      HAVEN_CLIENT_ID: ${HAVEN_CLIENT_ID}
+      HAVEN_REFRESH_TOKEN: ${HAVEN_REFRESH_TOKEN}
+      HAVEN_DEVICE_ID: ${HAVEN_DEVICE_ID:-3645}
+      HAVEN_OUTDOOR_ID: ${HAVEN_OUTDOOR_ID:-60585}
+      HAVEN_POLL_INTERVAL: ${HAVEN_POLL_INTERVAL:-300}
+      HAVEN_BACKFILL_DAYS: ${HAVEN_BACKFILL_DAYS:-7}
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
-    volumes:
-      - ./inbox/haven:/inbox/haven
 
   telegram-notifier:
     build: ./telegram-notifier
