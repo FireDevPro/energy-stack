@@ -179,6 +179,8 @@ services:
       INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+    volumes:
+      - haven_ingest_data:/data
 
   telegram-notifier:
     build: ./telegram-notifier
@@ -265,5 +267,6 @@ volumes:
   grafana_data:
   hvac_scheduler_data:
   thermostat_poller_data:
+  haven_ingest_data:
   loki_data:
   promtail_positions:

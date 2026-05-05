@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 
 # UID 1009 -- one above thermostat-poller
-RUN useradd --system --no-create-home --uid 1009 havenpoll
+RUN useradd --system --no-create-home --uid 1009 havenpoll && \
+    mkdir -p /data && chown havenpoll /data
 USER havenpoll
 
 ENV PYTHONUNBUFFERED=1

@@ -26,7 +26,13 @@ Measurements written:
 Environment variables:
     HAVEN_AUTH0_DOMAIN      Auth0 tenant (default haven-production.auth0.com)
     HAVEN_CLIENT_ID         Auth0 app client ID
-    HAVEN_REFRESH_TOKEN     Long-lived refresh token (captured once from browser)
+    HAVEN_REFRESH_TOKEN     Bootstrap refresh token (captured once from browser login).
+                            After the first successful exchange, the rotated token is
+                            persisted to HAVEN_TOKEN_FILE and this env var is no longer
+                            consulted.
+    HAVEN_TOKEN_FILE        Path to persist the rotating refresh token across restarts
+                            (default /data/haven_token.json). Mount a named volume at
+                            /data so the file survives container recreation.
     HAVEN_DEVICE_ID         Indoor device numeric ID (e.g. 3645)
     HAVEN_OUTDOOR_ID        Outdoor station numeric ID (e.g. 60585)
     HAVEN_POLL_INTERVAL     Seconds between live polls (default 300)
@@ -67,6 +73,7 @@ class Config:
     auth0_domain: str
     client_id: str
     refresh_token: str
+    token_file: Path
     device_id: str
     outdoor_id: str
     poll_interval: float
@@ -88,7 +95,8 @@ class Config:
         return Config(
             auth0_domain=os.environ.get("HAVEN_AUTH0_DOMAIN", "haven-production.auth0.com"),
             client_id=required("HAVEN_CLIENT_ID"),
-            refresh_token=required("HAVEN_REFRESH_TOKEN"),
+            refresh_token=os.environ.get("HAVEN_REFRESH_TOKEN", ""),
+            token_file=Path(os.environ.get("HAVEN_TOKEN_FILE", "/data/haven_token.json")),
             device_id=required("HAVEN_DEVICE_ID"),
             outdoor_id=required("HAVEN_OUTDOOR_ID"),
             poll_interval=float(os.environ.get("HAVEN_POLL_INTERVAL", "300")),
@@ -101,13 +109,48 @@ class Config:
 
 
 class TokenManager:
-    """Manages the Auth0 access token via refresh token exchange."""
+    """Manages the Auth0 access token via refresh token exchange.
+
+    Token precedence on startup:
+      1. Token file (HAVEN_TOKEN_FILE) — persisted from previous run
+      2. HAVEN_REFRESH_TOKEN env var — bootstrap only
+
+    After each successful exchange the rotated refresh_token is written to the
+    token file so container restarts are fully self-sustaining.
+    """
 
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._refresh_token = cfg.refresh_token
+        self._refresh_token = self._load_token()
+
+    def _load_token(self) -> str:
+        tf = self._cfg.token_file
+        if tf.exists():
+            try:
+                data = json.loads(tf.read_text())
+                token = data.get("refresh_token", "")
+                if token:
+                    log("info", "token_loaded_from_file", path=str(tf))
+                    return token
+            except Exception as exc:
+                log("warning", "token_file_unreadable", path=str(tf), error=str(exc))
+        token = self._cfg.refresh_token
+        if not token:
+            log("error", "no_refresh_token",
+                msg="Set HAVEN_REFRESH_TOKEN or provide a token file at HAVEN_TOKEN_FILE")
+            sys.exit(2)
+        log("info", "token_loaded_from_env")
+        return token
+
+    def _save_token(self, refresh_token: str) -> None:
+        tf = self._cfg.token_file
+        try:
+            tf.parent.mkdir(parents=True, exist_ok=True)
+            tf.write_text(json.dumps({"refresh_token": refresh_token}))
+        except Exception as exc:
+            log("warning", "token_file_write_failed", path=str(tf), error=str(exc))
 
     def headers(self) -> dict:
         return {
@@ -132,8 +175,8 @@ class TokenManager:
         self._access_token = data["access_token"]
         self._expires_at = time.monotonic() + data.get("expires_in", 86400)
         if "refresh_token" in data:
-            # Rotating refresh token — update in memory
             self._refresh_token = data["refresh_token"]
+            self._save_token(self._refresh_token)
         log("info", "token_refreshed", expires_in=data.get("expires_in"))
 
 
