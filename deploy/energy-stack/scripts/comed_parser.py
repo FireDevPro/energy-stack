@@ -63,6 +63,11 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     # Insert space between lowercase-uppercase: "ChargeCustomer" -> "Charge Customer"
     text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    # Insert space at "ALLCAPSWord" boundaries: "ACInterruption" -> "AC Interruption",
+    # "ILElectricity" -> "IL Electricity", "UPDATESComEd" -> "UPDATES ComEd".
+    # The rule: at least two consecutive uppercase letters followed by an
+    # uppercase + lowercase pair. Run-of-caps stays intact ("METERINFORMATION").
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
     # Insert space between letter-digit and digit-letter: "Charge1715" -> "Charge 1715"
     text = re.sub(r"([a-zA-Z])(\d)", r"\1 \2", text)
     text = re.sub(r"(\d)([a-zA-Z])", r"\1 \2", text)
@@ -116,6 +121,73 @@ def parse_account_no(text: str) -> str:
     if not m:
         raise ValueError("could not find 'Account # N'")
     return m.group(1)
+
+
+def _money(s: str) -> float:
+    """Parse '$1,234.56' or '-$1,234.56' or '$0.00' to float."""
+    s = s.replace(",", "").replace("$", "").strip()
+    return float(s)
+
+
+def _extract_block(text: str, start_pat: str, end_pat: str) -> tuple[float, str]:
+    """Generic block extractor. start_pat must capture the block's $ total
+    in group 1. end_pat is the start anchor of the next section.
+    Returns (total, body_between_start_and_end)."""
+    start = re.search(start_pat, text)
+    if not start:
+        raise ValueError(f"could not find block start: {start_pat}")
+    end = re.search(end_pat, text[start.end():])
+    if not end:
+        raise ValueError(f"could not find block end: {end_pat}")
+    total = _money(start.group(1))
+    body = text[start.end(): start.end() + end.start()]
+    return total, body
+
+
+def extract_supply_block(text: str) -> tuple[float, str]:
+    return _extract_block(
+        text,
+        r"SUPPLY\s*-\s*ComEd\s*(-?\$?[\d,]+\.\d{2})",
+        r"DELIVERY\s*-\s*ComEd",
+    )
+
+
+def extract_delivery_block(text: str) -> tuple[float, str]:
+    return _extract_block(
+        text,
+        r"DELIVERY\s*-\s*ComEd\s*(-?\$?[\d,]+\.\d{2})",
+        r"TAXES",
+    )
+
+
+# Match the TAXES header. Two real variants we've seen, regardless of
+# whether whitespace was stripped during PDF extraction:
+#   "TAXES & FEES $6.35"  / "TAXES&FEES $6.35"
+#   "TAXES, FEES & OTHER CREDITS -$27.98" / "TAXES, FEES & OTHER CREDITS-$27.98"
+# Use a non-greedy `.*?` between TAXES and the dollar amount so we only
+# consume the header line itself, not the entire body. The amount is the
+# first dollar value (with optional leading minus and dollar sign) following.
+_TAXES_HEADER = (
+    r"TAXES"
+    r"(?:[ ,]?\s*(?:&|FEES|OTHER|CREDITS|\s)*)*"
+    r"\s*(-?\$?[\d,]+\.\d{2})"
+)
+
+
+def extract_taxes_block(text: str) -> tuple[float, str]:
+    return _extract_block(
+        text,
+        _TAXES_HEADER,
+        r"(?:Service\s*Period\s*Total|MISCELLANEOUS)",
+    )
+
+
+def extract_misc_block(text: str) -> tuple[float, str]:
+    return _extract_block(
+        text,
+        r"MISCELLANEOUS\s*(-?\$?[\d,]+\.\d{2})",
+        r"(?:Total\s*Amount\s*Due|UPDATES)",
+    )
 
 
 def parse_kwh(text: str) -> int:

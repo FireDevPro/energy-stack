@@ -6,6 +6,10 @@ from comed_parser import (
     LineItem,
     bill_id,
     normalize_text,
+    extract_delivery_block,
+    extract_misc_block,
+    extract_supply_block,
+    extract_taxes_block,
     parse_account_no,
     parse_issued_date,
     parse_kwh,
@@ -132,3 +136,50 @@ def test_parse_kwh_fixed():
 def test_parse_kwh_transition_is_zero():
     text = _norm_fixture("transition_aug2025.txt")
     assert parse_kwh(text) == 0
+
+
+# ---- Task 8: block extractors ----
+
+
+def test_extract_supply_block_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_supply_block(text)
+    assert total == 146.83
+    assert "Capacity Charge" in body
+    assert "Electricity Supply Charge" in body
+
+
+def test_extract_supply_block_fixed():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    total, body = extract_supply_block(text)
+    assert total == 137.36
+    assert "Capacity Charge" not in body  # fixed-rate has no capacity
+    assert "Electricity Supply Charge" in body
+
+
+def test_extract_delivery_block_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_delivery_block(text)
+    assert total == 128.82
+    assert "Customer Charge" in body
+    assert "Distribution Facility Charge" in body
+
+
+def test_extract_taxes_block_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_taxes_block(text)
+    assert total == -27.98
+    assert "Carbon-Free Energy Resource Adj" in body
+
+
+def test_extract_taxes_block_fixed_has_ac_credit():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    total, body = extract_taxes_block(text)
+    assert total == 6.35
+    assert "AC Interruption Option Credit" in body
+
+
+def test_extract_misc_block_normal_is_zero():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    total, body = extract_misc_block(text)
+    assert total == 0.0
