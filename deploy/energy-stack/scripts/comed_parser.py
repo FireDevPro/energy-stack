@@ -1,8 +1,30 @@
+"""ComEd bill parser.
+
+Reads a residential ComEd bill PDF and returns a structured `Bill` object
+with per-section totals and individual line items. Designed to handle both
+modern bills (where pypdf preserves whitespace) and older 2024-2025 bills
+(where pypdf jams adjacent words together).
+
+Top-down read order:
+  1. Dataclasses: `LineItem`, `Bill`.
+  2. Identity helper: `bill_id`.
+  3. Text normalization: `normalize_text`.
+  4. Header extractors: service period, issued date, account, rate plan, kWh.
+  5. Block extractors: SUPPLY, DELIVERY, TAXES, MISCELLANEOUS.
+  6. Line-item extractor: `parse_line_items` (4 shapes).
+  7. Composer + validation: `parse_bill`, `parse_total_due`, `BillParseError`.
+  8. PDF entrypoint: `parse_pdf`.
+"""
+
 import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
+
+
+# ---- Dataclasses ----
 
 
 @dataclass
@@ -18,7 +40,7 @@ class LineItem:
 @dataclass
 class Bill:
     account_no: str
-    rate_plan: str  # "Residential-Single" | "Residential-HourlySingle"
+    rate_plan: str  # "Residential - Single" | "Residential - Hourly Single"
     bill_type: str  # "normal" | "transition"
     issued_date: date
     service_from: date
@@ -40,11 +62,17 @@ class Bill:
         return round(self.total_due / self.kwh, 6)
 
 
+# ---- Identity ----
+
+
 def bill_id(account_no: str, service_from: date, service_to: date) -> str:
     """Deterministic SHA-256 hash for idempotent ingest. Same account +
     service window always yields the same id."""
     payload = f"{account_no}|{service_from.isoformat()}|{service_to.isoformat()}"
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+# ---- Text normalization ----
 
 
 def normalize_text(text: str) -> str:
@@ -55,7 +83,9 @@ def normalize_text(text: str) -> str:
     (older bills are jammed: "SERVICEFROM8/25/25THROUGH9/23/25"). Newer
     bills already have spaces. This normalizer:
       1. Collapses any whitespace run (spaces/tabs/newlines) to one space.
-      2. Inserts a space at lower->upper, letter<->digit, and before $.
+      2. Inserts a space at lower->upper, ALLCAPS->Word, letter<->digit,
+         and before $.
+      3. Repairs known electrical units split by step 2 ("k Wh" -> "kWh").
 
     Note: this does NOT split UPPER->UPPER glue (e.g. "SERVICEFROM"). Regex
     callers must use \\s* between literal multi-word tokens to tolerate that.
@@ -123,6 +153,56 @@ def parse_account_no(text: str) -> str:
     return m.group(1)
 
 
+def parse_rate_plan(text: str) -> str:
+    """Returns 'Residential - Hourly Single' or 'Residential - Single'.
+    Order matters: try 'Hourly Single' first since 'Single' is a substring."""
+    m = re.search(r"Residential\s*-\s*Hourly\s*Single\b", text, re.IGNORECASE)
+    if m:
+        return "Residential - Hourly Single"
+    m = re.search(r"Residential\s*-\s*Single\b", text, re.IGNORECASE)
+    if m:
+        return "Residential - Single"
+    raise ValueError("could not find rate plan")
+
+
+def parse_kwh(text: str) -> int:
+    """Extract billed kWh.
+
+    Strategy: a transition (cycle-adjust) bill reports billed usage in the
+    'Current Month NN.N avg.temp 0 kWh 0% from last year' summary even though
+    the meter row may show a non-zero raw read for the partial cycle. So we
+    check that summary first -- if it carries the '% from last year' marker,
+    use it (it's the bill's stated billed-kWh). Otherwise fall back to the
+    METER INFORMATION row which is the canonical figure for normal bills.
+    """
+    # Transition marker: "Current Month <temp>[degree] avg.temp <N> kWh <N>%
+    # from last year". The degree symbol in our fixtures is the masculine
+    # ordinal indicator (chr 186), which Python's \W does NOT match -- so
+    # we use [^A-Za-z0-9.] to skip any one degree-like glyph.
+    m = re.search(
+        r"Current\s*Month\s+[\d.]+\s*[^A-Za-z0-9.]?\s*avg\.?\s*temp\s+(\d+)\s*kWh\s+\d+\s*%\s*from\s*last\s*year",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        return int(m.group(1))
+
+    # Normal: meter row pattern. After normalization, fixed/transition bills
+    # show "Totalk Wh" instead of "Total kWh" because the lower->upper rule
+    # split kWh -- so we use \s* and tolerate that.
+    m = re.search(
+        r"General\s*Service\s+Total\s*k\s*Wh\s+Actual\s+Actual\s+(\d+)",
+        text,
+    )
+    if m:
+        return int(m.group(1))
+
+    raise ValueError("could not find kWh in meter info or transition summary")
+
+
+# ---- Money + block extractors ----
+
+
 def _money(s: str) -> float:
     """Parse '$1,234.56' or '-$1,234.56' or '$0.00' to float."""
     s = s.replace(",", "").replace("$", "").strip()
@@ -164,9 +244,6 @@ def extract_delivery_block(text: str) -> tuple[float, str]:
 # whether whitespace was stripped during PDF extraction:
 #   "TAXES & FEES $6.35"  / "TAXES&FEES $6.35"
 #   "TAXES, FEES & OTHER CREDITS -$27.98" / "TAXES, FEES & OTHER CREDITS-$27.98"
-# Use a non-greedy `.*?` between TAXES and the dollar amount so we only
-# consume the header line itself, not the entire body. The amount is the
-# first dollar value (with optional leading minus and dollar sign) following.
 _TAXES_HEADER = (
     r"TAXES"
     r"(?:[ ,]?\s*(?:&|FEES|OTHER|CREDITS|\s)*)*"
@@ -382,48 +459,17 @@ def parse_bill(text: str) -> Bill:
     )
 
 
-def parse_kwh(text: str) -> int:
-    """Extract billed kWh.
+# ---- PDF entrypoint ----
 
-    Strategy: a transition (cycle-adjust) bill reports billed usage in the
-    'Current Month NN.N avg.temp 0 kWh 0% from last year' summary even though
-    the meter row may show a non-zero raw read for the partial cycle. So we
-    check that summary first -- if it carries the '% from last year' marker,
-    use it (it's the bill's stated billed-kWh). Otherwise fall back to the
-    METER INFORMATION row which is the canonical figure for normal bills.
+
+def parse_pdf(path: Union[str, Path]) -> Bill:
+    """Read a ComEd bill PDF and return a parsed Bill.
+
+    Pages 1+2 carry the entire charge breakdown, meter info, and totals;
+    page 3+ is boilerplate. Imports pypdf lazily so unit tests on extracted
+    text fixtures don't require the dependency.
     """
-    # Transition marker: "Current Month <temp>[degree] avg.temp <N> kWh <N>%
-    # from last year". The degree symbol in our fixtures is the masculine
-    # ordinal indicator (chr 186), which Python's \W does NOT match -- so
-    # we use [^A-Za-z0-9.] to skip any one degree-like glyph.
-    m = re.search(
-        r"Current\s*Month\s+[\d.]+\s*[^A-Za-z0-9.]?\s*avg\.?\s*temp\s+(\d+)\s*kWh\s+\d+\s*%\s*from\s*last\s*year",
-        text,
-        re.IGNORECASE,
-    )
-    if m:
-        return int(m.group(1))
-
-    # Normal: meter row pattern. After normalization, fixed/transition bills
-    # show "Totalk Wh" instead of "Total kWh" because the lower->upper rule
-    # split kWh -- so we use \s* and tolerate that.
-    m = re.search(
-        r"General\s*Service\s+Total\s*k\s*Wh\s+Actual\s+Actual\s+(\d+)",
-        text,
-    )
-    if m:
-        return int(m.group(1))
-
-    raise ValueError("could not find kWh in meter info or transition summary")
-
-
-def parse_rate_plan(text: str) -> str:
-    """Returns 'Residential - Hourly Single' or 'Residential - Single'.
-    Order matters: try 'Hourly Single' first since 'Single' is a substring."""
-    m = re.search(r"Residential\s*-\s*Hourly\s*Single\b", text, re.IGNORECASE)
-    if m:
-        return "Residential - Hourly Single"
-    m = re.search(r"Residential\s*-\s*Single\b", text, re.IGNORECASE)
-    if m:
-        return "Residential - Single"
-    raise ValueError("could not find rate plan")
+    import pypdf  # local import to keep test-fixture path dependency-free
+    reader = pypdf.PdfReader(str(path))
+    text = "".join(p.extract_text() + "\n" for p in reader.pages[:2])
+    return parse_bill(normalize_text(text))

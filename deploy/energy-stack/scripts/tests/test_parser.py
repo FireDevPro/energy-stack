@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from pathlib import Path
 
@@ -308,3 +309,17 @@ def test_parse_bill_rejects_wrong_account():
     bad = text.replace("9999999991", "9999999999")
     with pytest.raises(BillParseError, match="account_no"):
         parse_bill(bad)
+
+
+# ---- Task 11: PDF -> Bill ----
+
+
+@pytest.mark.skipif(
+    not os.environ.get("COMED_TEST_PDF"),
+    reason="set COMED_TEST_PDF to a bill PDF path to run",
+)
+def test_parse_bill_from_pdf_file_endtoend():
+    from comed_parser import parse_pdf
+    bill = parse_pdf(os.environ["COMED_TEST_PDF"])
+    assert bill.account_no == "9999999991"
+    assert bill.total_due > 0
