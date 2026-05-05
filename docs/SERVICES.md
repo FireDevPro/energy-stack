@@ -392,3 +392,31 @@ JSON parsing pipeline lifts `level` and `msg` fields from each log line as Loki 
 ```
 
 Available in Grafana → Explore → Loki datasource.
+
+---
+
+## parse_comed_bill.py (manual script, not a service)
+
+**Path**: `deploy/energy-stack/scripts/parse_comed_bill.py`
+**Run by**: operator, by hand, on Pi-lab when a new bill arrives
+**Frequency**: ~12x/year
+
+**Env vars**:
+- `INFLUX_URL` (default `http://localhost:8086`)
+- `INFLUX_TOKEN` (required)
+- `INFLUX_ORG` (default `home`)
+- `INFLUX_BUCKET` (default `energy`)
+
+**Writes**:
+- `comed.bill` measurement: 1 point per bill, timestamped at service_to 23:59:59 CDT
+  - Tags: `account_no`, `rate_plan`, `bill_type`
+  - Fields: `total_due`, `kwh`, `peak_kw` (null on fixed-rate),
+            `supply_total`, `delivery_total`, `taxes_total`, `misc_total`,
+            `effective_rate_per_kwh`, `service_days`, `issued_date`,
+            `service_from`, `service_to`
+- `comed.bill_lineitems`: 18-25 points per bill, same timestamp
+  - Tags: `account_no`, `category` (SUPPLY|DELIVERY|TAXES_FEES_CREDITS|MISC),
+          `line_item`
+  - Fields: `amount`, `quantity` (optional), `unit` (optional), `rate` (optional)
+
+**Workflow**: see `deploy/energy-stack/scripts/README.md`

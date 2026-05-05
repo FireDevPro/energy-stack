@@ -363,3 +363,47 @@ Full research output: agent reports retained in session transcripts; key finding
 | Ecowitt GW1200 + WN32 + Rain Shield | Outdoor temp/humidity/barometric sensor (local push) | LAN; en route May 2026 | **Pending hardware delivery** |
 | ComEd Smart Meter | Utility meter | Via EAGLE-3 Zigbee HAN | Connected |
 | ~~Sense Energy Monitor~~ | ~~Whole-home power + device detection~~ | — | Removed April 2026 (replaced by Refoss EM16P) |
+
+---
+
+## Phase 8 — ComEd Bill Ingest (May 2026)
+
+Manual-upload Python script (`deploy/energy-stack/scripts/parse_comed_bill.py`)
+that parses ComEd bill PDFs into InfluxDB. Run by hand each month after
+downloading the PDF from the ComEd portal. Backfilled 9 historical bills
+covering 8/2025-4/2026.
+
+**Why bills, not just real-time telemetry**: the dashboard's cost calc
+(`Σ power × hourly_supply_price`) was supply-only. Real bills add delivery,
+capacity, riders, and taxes — typically 40-70% on top. The capacity charge
+in particular is what the HVAC scheduler exists to suppress (latest bill:
+$54.64 from `6.56 kW × $8.32925`, locked annually from prior summer's PJM
+5CP). Without bill ingest, no way to measure scheduler effectiveness.
+
+**Why script not container**: 12 events/year, parser is the only hard
+part. A service loop, Dockerfile, healthcheck, and Telegram failure-alert
+wiring add LOC and zero capability over `python parse_comed_bill.py file.pdf`.
+
+**Why pypdf not Docling**: empirically tested both. Docling table inference
+conflates layout-adjacent columns on ComEd's multi-column print layout
+(SUPPLY values mixed with DELIVERY values in the same table row, or DELIVERY
+section header dropped entirely). pypdf's flat reading order keeps each line
+item adjacent to its values, so the regex `Capacity Charge\s*([\d.]+)\s*kW`
+is unambiguous. Docling stays in the kit for future utility ingests where
+the source is genuinely tabular (water, gas, property tax).
+
+**Schema**: `comed.bill` (top-line per cycle: total_due, kwh, peak_kw,
+supply/delivery/taxes/misc totals) + `comed.bill_lineitems` (full GL
+breakdown). Idempotency comes from Influx upserts: re-running a bill writes
+the same `(measurement, account_no + rate_plan + bill_type, service_to @
+23:59:59 CDT)` tuple, which collides and overwrites — safe to retry.
+
+**Dashboard**: `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json` —
+bill-vs-projected, EAGLE-vs-billed-kWh, capacity-charge tracker, and a
+stub forward-projection panel. The projection panel's full formula
+(supply-so-far + delivery estimate + capacity + taxes estimate + days-remaining
+extrapolation) is sketched but lands as a follow-on after a few cycles
+of data accumulate.
+
+Spec: `docs/phase-8-comed-bill-ingest-design.md`
+Plan: `docs/phase-8-comed-bill-ingest-plan.md`
