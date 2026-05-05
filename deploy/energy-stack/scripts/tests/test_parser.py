@@ -8,6 +8,7 @@ from comed_parser import (
     normalize_text,
     parse_account_no,
     parse_issued_date,
+    parse_kwh,
     parse_rate_plan,
     parse_service_period,
 )
@@ -113,3 +114,21 @@ def test_parse_rate_plan_hourly():
 def test_parse_rate_plan_fixed():
     text = _norm_fixture("fixed_single_sep2025.txt")
     assert parse_rate_plan(text) == "Residential - Single"
+
+
+# ---- Task 7: kWh extractor ----
+
+
+def test_parse_kwh_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    assert parse_kwh(text) == 1715
+
+
+def test_parse_kwh_fixed():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    assert parse_kwh(text) == 1367
+
+
+def test_parse_kwh_transition_is_zero():
+    text = _norm_fixture("transition_aug2025.txt")
+    assert parse_kwh(text) == 0

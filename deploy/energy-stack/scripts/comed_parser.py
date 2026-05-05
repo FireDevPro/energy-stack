@@ -118,6 +118,41 @@ def parse_account_no(text: str) -> str:
     return m.group(1)
 
 
+def parse_kwh(text: str) -> int:
+    """Extract billed kWh.
+
+    Strategy: a transition (cycle-adjust) bill reports billed usage in the
+    'Current Month NN.N avg.temp 0 kWh 0% from last year' summary even though
+    the meter row may show a non-zero raw read for the partial cycle. So we
+    check that summary first -- if it carries the '% from last year' marker,
+    use it (it's the bill's stated billed-kWh). Otherwise fall back to the
+    METER INFORMATION row which is the canonical figure for normal bills.
+    """
+    # Transition marker: "Current Month <temp>[degree] avg.temp <N> kWh <N>%
+    # from last year". The degree symbol in our fixtures is the masculine
+    # ordinal indicator (chr 186), which Python's \W does NOT match -- so
+    # we use [^A-Za-z0-9.] to skip any one degree-like glyph.
+    m = re.search(
+        r"Current\s*Month\s+[\d.]+\s*[^A-Za-z0-9.]?\s*avg\.?\s*temp\s+(\d+)\s*kWh\s+\d+\s*%\s*from\s*last\s*year",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        return int(m.group(1))
+
+    # Normal: meter row pattern. After normalization, fixed/transition bills
+    # show "Totalk Wh" instead of "Total kWh" because the lower->upper rule
+    # split kWh -- so we use \s* and tolerate that.
+    m = re.search(
+        r"General\s*Service\s+Total\s*k\s*Wh\s+Actual\s+Actual\s+(\d+)",
+        text,
+    )
+    if m:
+        return int(m.group(1))
+
+    raise ValueError("could not find kWh in meter info or transition summary")
+
+
 def parse_rate_plan(text: str) -> str:
     """Returns 'Residential - Hourly Single' or 'Residential - Single'.
     Order matters: try 'Hourly Single' first since 'Single' is a substring."""
