@@ -1,0 +1,84 @@
+ReturnonlythisportionwithyourcheckmadepayabletoComEd.Pleasewriteyouraccountnumberonyourcheck.
+ExampleCustomer123ExampleStAnytown,IL60000(555)555-0100
+ComEddeliverselectricitytoyourhome.ComEd.com1.800.334.7661
+$25.58
+$4.93
+CURRENTCHARGESSUMMARYSeereversesidefordetails
+SERVICEFROM8/18/25THROUGH8/25/25(7DAYS)Residential-Single
+ComEdprovidesyourenergy.ComEd.com1.800.334.7661
+$34.00 $64.51CurrentCharges
+Page1of5 Issued8/25/25Account#9999999991PaymentDeductedon9/16/25 $64.51
+CurrentMonth 71.8ºavg.temp
+0kWh 0%fromlastyear
+LastMonth 0ºavg.temp
+0kWh
+LastYear 0ºavg.temp
+0kWhTen100Wlightbulbsfor1hour=1kWh
+PaymentDeductedon9/16/25 $64.51PaymentAmount:
+999999999100000645152590064516
+Account#9999999991
+0000534    SL         H    1167 60000                   -C24-00-P00000-I            
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+9999-99-9999993-9999-9999993
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+EXAMPLE CUSTOMER                               
+123 EXAMPLE ST                             
+ANYTOWN, IL 60000                              
+                                                  
+                                                  
+[postnet-barcode-redacted]
+COMED                         
+PO BOX 6111                   
+CAROL STREAM, IL 60197-6111   
+                              
+                              
+English 1.800.EDISON1(1.800.334.7661)Español 1.800.95.LUCES(1.800.955.8237)Hearing/SpeechImpaired 1.800.526.0844(TTY)
+ReadDatesMeterNumber LoadType ReadingType Previous Present DifferenceMultiplier Usage8/18-8/25999999990 GeneralService TotalkWh Actual Actual 340METERINFORMATION
+Issued8/25/25Account#9999999991
+1SERVICEADDRESS123ExampleStAnytown,IL60000 ElectricChoiceID:9999999992 $64.51
+(continuedonnextpage)
+Page2of5
+CHARGEDETAILSResidential-Single8/18/25-8/25/25(7Days)
+SUPPLY-ComEd $34.00ElectricitySupplyCharge 340kWhX0.08261 $28.09TransmissionServicesCharge 340kWhX0.01767 $6.01PurchasedElectricityAdjustment -$0.10
+DELIVERY-ComEd $25.58CustomerCharge $3.62StandardMeteringCharge $0.94DistributionFacilityCharge 340kWhX0.06055 $20.59ILElectricityDistributionCharge 340kWhX0.00125 $0.43TAXES&FEES $4.93EnvironmentalCostRecoveryAdj 340kWhX0.00010 $0.03RenewablePortfolioStandard 340kWhX0.00502 $1.71CoaltoSolarandEnergyStorageFund 340kWhX0.00005 $0.02ZeroEmissionStandard 340kWhX0.00195 $0.66Carbon-FreeEnergyResourceAdj 340kWhX-0.00781 -$2.66EnergyEfficiencyPrograms 340kWhX0.00376 $1.28EnergyTransitionAssistance 340kWhX0.00072 $0.24FranchiseCost $22.36X0.017441 $0.39StateTax $1.12MunicipalTax $2.14ServicePeriodTotal $64.51
+MISCELLANEOUS $0.00TotalAmountDue $64.51UPDATESComEd•PRICETOCOMPARE:TheComEdelectricsupplypricetocompareis10.028centsperkWh.Thispricedoesnotincludeamonthlypurchasedelectricityadjustmentfactor.Formoreinformationandsupplieroffersvisithttps://www.pluginillinois.org/fixedrate.aspx.FormoreinformationonComEdbilllineitemsgotoComEd.com/UnderstandBill.•TheamountofthisbillwillbeautomaticallydeductedfromyourbankaccountonSeptember16,2025.
+PaymentDeductedon9/16/25 $64.51
+9999-99-9999994-9999-9999994

@@ -1,0 +1,89 @@
+ReturnonlythisportionwithyourcheckmadepayabletoComEd.Pleasewriteyouraccountnumberonyourcheck.
+ExampleCustomer123ExampleStAnytown,IL60000(555)555-0100
+ComEddeliverselectricitytoyourhome.ComEd.com1.800.334.7661
+$104.12
+$6.35
+CURRENTCHARGESSUMMARYSeereversesidefordetails
+SERVICEFROM8/25/25THROUGH9/23/25(29DAYS)Residential-Single
+ComEdprovidesyourenergy.ComEd.com1.800.334.7661
+$137.36 $247.83CurrentCharges
+Page1of3 Issued9/23/25Account#9999999991PaymentDeductedon10/15/25$247.83Thankyouforyourpaymentstotaling$64.51.
+CurrentMonth 67.6ºavg.temp
+47.1kWh
+LastMonth 80.7ºavg.temp
+48.6kWh
+LastYear 0ºavg.temp
+0kWhTen100Wlightbulbsfor1hour=1kWh
+0 0 0 0 0 0 00 0 0 0
+340
+1367
+TOTALUSAGE(kWh)2024 2025
+Currentmonth'sreadingisActual.SEPOCTNOVDECJANFEBMARAPRMAYJUNJULAUGSEP
+PaymentDeductedon10/15/25$247.83PaymentAmount:
+999999999100002478352880247833
+Account#9999999991
+0005329    SL         H    1187 60000                   -C23-00-P00000-I            
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+9999-99-9999991-9999-9999991
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+[imb-barcode-redacted]
+EXAMPLE CUSTOMER                               
+123 EXAMPLE ST                             
+ANYTOWN, IL 60000                              
+                                                  
+                                                  
+[postnet-barcode-redacted]
+COMED                         
+PO BOX 6111                   
+CAROL STREAM, IL 60197-6111   
+                              
+                              
+English 1.800.EDISON1(1.800.334.7661)Español 1.800.95.LUCES(1.800.955.8237)Hearing/SpeechImpaired 1.800.526.0844(TTY)
+ReadDatesMeterNumber LoadType ReadingType Previous Present DifferenceMultiplier Usage8/25-9/23999999990 GeneralService TotalkWh Actual Actual 1367METERINFORMATION
+Issued9/23/25Account#9999999991
+1SERVICEADDRESS123ExampleStAnytown,IL60000 ElectricChoiceID:9999999992 $247.83
+(continuedonnextpage)
+Page2of3
+CHARGEDETAILSResidential-Single8/25/25-9/23/25(29Days)
+SUPPLY-ComEd $137.36ElectricitySupplyCharge 1,367kWhX0.08260 $112.91TransmissionServicesCharge 1,367kWhX0.01767 $24.15PurchasedElectricityAdjustment $0.30
+DELIVERY-ComEd $104.12CustomerCharge $15.56StandardMeteringCharge $4.02DistributionFacilityCharge 1,367kWhX0.06059 $82.83ILElectricityDistributionCharge 1,367kWhX0.00125 $1.71TAXES&FEES $6.35ACInterruptionOptionCredit -$10.00EnvironmentalCostRecoveryAdj 1,367kWhX0.00010 $0.14RenewablePortfolioStandard 1,367kWhX0.00502 $6.86CoaltoSolarandEnergyStorageFund 1,367kWhX0.00005 $0.07ZeroEmissionStandard 1,367kWhX0.00189 $2.58Carbon-FreeEnergyResourceAdj 1,367kWhX-0.01031 -$14.09EnergyEfficiencyPrograms 1,367kWhX0.00376 $5.14EnergyTransitionAssistance 1,367kWhX0.00072 $0.98FranchiseCost $91.03X0.017356 $1.58StateTax $4.51
+MunicipalTax $8.58ServicePeriodTotal $247.83MISCELLANEOUS $0.00Charges/Creditsfrompreviousbill $64.51ThankYouforYourPaymentof$64.51onSeptember16,2025TotalAmountDue $247.83UPDATESComEd•PRICETOCOMPARE:TheComEdelectricsupplypricetocompareis10.027centsperkWh.Thispricedoesnotincludeamonthlypurchasedelectricityadjustmentfactor.Formoreinformationandsupplieroffersvisithttps://www.pluginillinois.org/fixedrate.aspx.FormoreinformationonComEdbilllineitemsgotoComEd.com/UnderstandBill.•TheamountofthisbillwillbeautomaticallydeductedfromyourbankaccountonOctober15,2025.
+PaymentDeductedon10/15/25$247.83
+9999-99-9999991-9999-9999991
