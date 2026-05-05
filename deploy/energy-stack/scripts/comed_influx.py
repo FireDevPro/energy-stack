@@ -5,7 +5,12 @@ Line protocol reference:
 Tag/field keys and string values containing spaces or commas must be
 backslash-escaped.
 """
+import os
 from datetime import datetime, timezone, timedelta
+
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+
 from comed_parser import Bill, LineItem
 
 
@@ -82,3 +87,12 @@ def bill_to_line_protocol(bill: Bill) -> str:
         )
 
     return "\n".join(lines)
+
+
+def write_bill(bill: Bill, *, url: str, token: str, org: str, bucket: str) -> None:
+    """Write a parsed bill to InfluxDB. Idempotent: re-writing the same bill
+    produces upserts because (measurement, tags, timestamp) collide."""
+    lp = bill_to_line_protocol(bill)
+    with InfluxDBClient(url=url, token=token, org=org, timeout=30_000) as client:
+        write_api = client.write_api(write_options=SYNCHRONOUS)
+        write_api.write(bucket=bucket, record=lp)
