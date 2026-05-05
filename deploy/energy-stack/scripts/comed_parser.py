@@ -73,6 +73,58 @@ def normalize_text(text: str) -> str:
     # also catch "k WX" (older fixtures jam W and the multiplier X together).
     text = re.sub(r"(?<!\w)k Wh(?!\w)", "kWh", text)
     text = re.sub(r"(?<!\w)k W(?=\s|X|$)", "kW", text)
-    # Repair "Com Ed" -> "ComEd" (the literal brand string).
-    text = re.sub(r"\bCom Ed\b", "ComEd", text)
+    # Repair "Com Ed" -> "ComEd" anywhere it survived the boundary rules
+    # (older bills may have it glued to the next word: "Com Edprovides...").
+    text = text.replace("Com Ed", "ComEd")
     return text
+
+
+# ---- Header extractors ----
+
+
+def _parse_mdy(s: str) -> date:
+    """Parse 'M/D/YY' or 'M/D/YYYY' to date. Two-digit years assume 20xx."""
+    m, d, y = s.split("/")
+    yy = int(y)
+    if yy < 100:
+        yy += 2000
+    return date(yy, int(m), int(d))
+
+
+def parse_service_period(text: str) -> tuple[date, date, int]:
+    """Returns (from_date, to_date, days). Tolerates SERVICE FROM glued in
+    older bills ('SERVICEFROM') via \\s* between every token."""
+    m = re.search(
+        r"SERVICE\s*FROM\s*(\d+/\d+/\d+)\s*THROUGH\s*(\d+/\d+/\d+)\s*\(\s*(\d+)\s*DAYS?\s*\)",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        raise ValueError("could not find SERVICE FROM ... THROUGH ... (N DAYS)")
+    return (_parse_mdy(m.group(1)), _parse_mdy(m.group(2)), int(m.group(3)))
+
+
+def parse_issued_date(text: str) -> date:
+    m = re.search(r"Issued\s*(\d+/\d+/\d+)", text)
+    if not m:
+        raise ValueError("could not find 'Issued M/D/YY'")
+    return _parse_mdy(m.group(1))
+
+
+def parse_account_no(text: str) -> str:
+    m = re.search(r"Account\s*#\s*(\d+)", text)
+    if not m:
+        raise ValueError("could not find 'Account # N'")
+    return m.group(1)
+
+
+def parse_rate_plan(text: str) -> str:
+    """Returns 'Residential - Hourly Single' or 'Residential - Single'.
+    Order matters: try 'Hourly Single' first since 'Single' is a substring."""
+    m = re.search(r"Residential\s*-\s*Hourly\s*Single\b", text, re.IGNORECASE)
+    if m:
+        return "Residential - Hourly Single"
+    m = re.search(r"Residential\s*-\s*Single\b", text, re.IGNORECASE)
+    if m:
+        return "Residential - Single"
+    raise ValueError("could not find rate plan")

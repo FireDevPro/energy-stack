@@ -1,7 +1,16 @@
 from datetime import date
 from pathlib import Path
 
-from comed_parser import Bill, LineItem, bill_id, normalize_text
+from comed_parser import (
+    Bill,
+    LineItem,
+    bill_id,
+    normalize_text,
+    parse_account_no,
+    parse_issued_date,
+    parse_rate_plan,
+    parse_service_period,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -65,3 +74,42 @@ def test_normalize_text_handles_real_fixture():
     norm = normalize_text(raw)
     # The Capacity Charge line should now be one continuous token sequence
     assert "Capacity Charge 6.56 kW" in norm
+
+
+# ---- Task 6: header extractors ----
+
+
+def _norm_fixture(name: str) -> str:
+    return normalize_text((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def test_parse_service_period_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    result = parse_service_period(text)
+    assert result == (date(2026, 3, 24), date(2026, 4, 23), 30)
+
+
+def test_parse_service_period_fixed():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    result = parse_service_period(text)
+    assert result == (date(2025, 8, 25), date(2025, 9, 23), 29)
+
+
+def test_parse_issued_date_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    assert parse_issued_date(text) == date(2026, 4, 24)
+
+
+def test_parse_account_no():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    assert parse_account_no(text) == "9999999991"
+
+
+def test_parse_rate_plan_hourly():
+    text = _norm_fixture("hourly_single_apr2026.txt")
+    assert parse_rate_plan(text) == "Residential - Hourly Single"
+
+
+def test_parse_rate_plan_fixed():
+    text = _norm_fixture("fixed_single_sep2025.txt")
+    assert parse_rate_plan(text) == "Residential - Single"
