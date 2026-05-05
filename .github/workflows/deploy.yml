@@ -1,0 +1,140 @@
+name: Deploy to Pi
+
+# Triggers a deployment when:
+#   - Anything in deploy/ changes on main, OR
+#   - The workflow file itself changes on main, OR
+#   - Manually dispatched from the Actions UI
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Force deploy a stack regardless of detected changes'
+        required: false
+        default: 'auto'
+        type: choice
+        options: [auto, energy-stack, n8n-stack, both]
+
+# Self-hosted runner is the Pi itself, so all rsyncs are local cp-style
+# (faster than network rsync) and docker compose runs against the Pi's
+# own daemon. ~/energy-stack/.env and ~/n8n/.env stay put across deploys.
+jobs:
+  detect:
+    runs-on: self-hosted
+    outputs:
+      energy-stack: ${{ steps.changes.outputs.energy-stack }}
+      n8n-stack: ${{ steps.changes.outputs.n8n-stack }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed stacks
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Manual override
+          case "${{ inputs.stack || 'auto' }}" in
+            energy-stack) echo "energy-stack=true" >> $GITHUB_OUTPUT; echo "n8n-stack=false" >> $GITHUB_OUTPUT ;;
+            n8n-stack)    echo "energy-stack=false" >> $GITHUB_OUTPUT; echo "n8n-stack=true" >> $GITHUB_OUTPUT ;;
+            both)         echo "energy-stack=true" >> $GITHUB_OUTPUT; echo "n8n-stack=true" >> $GITHUB_OUTPUT ;;
+            *)
+              # Auto-detect from the diff
+              CHANGED=$(git diff --name-only HEAD^ HEAD || git ls-files)
+              echo "Changed files:"
+              echo "$CHANGED" | sed 's/^/  /'
+              if echo "$CHANGED" | grep -q '^deploy/energy-stack/'; then
+                echo "energy-stack=true" >> $GITHUB_OUTPUT
+              else
+                echo "energy-stack=false" >> $GITHUB_OUTPUT
+              fi
+              if echo "$CHANGED" | grep -q '^deploy/n8n-stack/'; then
+                echo "n8n-stack=true" >> $GITHUB_OUTPUT
+              else
+                echo "n8n-stack=false" >> $GITHUB_OUTPUT
+              fi
+              ;;
+          esac
+
+  deploy-energy-stack:
+    needs: detect
+    if: needs.detect.outputs.energy-stack == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync to ~/energy-stack
+        shell: bash
+        run: |
+          rsync -av --delete --exclude '.env' \
+            ./deploy/energy-stack/ \
+            $HOME/energy-stack/
+
+      - name: Build and deploy
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          cd $HOME/energy-stack
+          docker compose pull --quiet
+          # Build picks up Dockerfile changes; layer cache makes unchanged services fast
+          docker compose build --quiet
+          docker compose up -d --remove-orphans
+          echo ""
+          echo "=== Service status ==="
+          docker compose ps
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          cd $HOME/energy-stack
+          # Wait briefly for services to settle, then check none crashed
+          sleep 10
+          UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
+          if [ -n "$UNHEALTHY" ]; then
+            echo "::error::Some services not healthy after deploy:"
+            echo "$UNHEALTHY"
+            exit 1
+          fi
+          echo "All services healthy."
+
+  deploy-n8n-stack:
+    needs: detect
+    if: needs.detect.outputs.n8n-stack == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync to ~/n8n
+        shell: bash
+        run: |
+          rsync -av --delete --exclude '.env' \
+            ./deploy/n8n-stack/ \
+            $HOME/n8n/
+
+      - name: Deploy
+        shell: bash
+        run: |
+          cd $HOME/n8n
+          docker compose pull --quiet
+          docker compose up -d --remove-orphans
+          echo ""
+          echo "=== Service status ==="
+          docker compose ps
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          cd $HOME/n8n
+          sleep 10
+          UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
+          if [ -n "$UNHEALTHY" ]; then
+            echo "::error::n8n services not healthy after deploy:"
+            echo "$UNHEALTHY"
+            exit 1
+          fi
+          echo "All services healthy."
