@@ -44,7 +44,7 @@ A workstation alias (`comed-ingest <pdf>`) collapses steps 2-3 into one command.
 
 **Failure path**: script run by hand, errors print to stderr. PDF stays in `inbox/` until re-run succeeds. No Telegram alerting needed (the operator is already in the terminal when running it).
 
-**Idempotency**: `bill_id = sha256(account_no || service_from || service_to)`. Re-running the same bill upserts the same Influx points (same measurement + tags + timestamp = overwrite). The duplicate file (`1c785f6f`) in the existing backfill set will collapse onto its twin (`d54d630c`) automatically.
+**Idempotency**: re-running the same bill upserts the same Influx points because the `(measurement, tag set, timestamp)` tuple — `(comed.bill, account_no + rate_plan + bill_type, service_to @ 23:59:59 CDT)` — is identical between runs. No application-level dedup required; InfluxDB's natural upsert behavior handles it. The duplicate file (`1c785f6f`) in the existing backfill set collapses onto its twin (`d54d630c`) automatically. (Note: an earlier draft of this spec described a SHA-256-derived `bill_id` tag; the implementation moved to natural upsert because it's simpler and avoids a high-cardinality tag for no purpose.)
 
 ### Why a script and not a container
 
@@ -146,8 +146,8 @@ RATE_PLAN_FIXED  = "Residential - Single"
 **Validation gates** (all must pass before writing to Influx; any failure → print line numbers, exit non-zero, leave PDF in `inbox/`):
 
 1. `abs((supply_total + delivery_total + taxes_total + misc_total) - total_due) < 0.01`
-2. `(service_to - service_from).days == service_days` from header
-3. `kwh > 0` unless `bill_type == transition`
+2. `(service_to - service_from).days == service_days` from header (off-by-one tolerated for ComEd's inclusive day count)
+3. `kwh > 0` UNLESS the bill qualifies as a transition stub (`kwh == 0 AND service_days < TRANSITION_MAX_DAYS`, i.e. cycle-adjustment bills under 10 days). A `kwh == 0` full-cycle bill is treated as a parser miss and refused.
 4. `account_no == 9999999991` (guards against accidentally ingesting someone else's bill)
 
 ## Backfill

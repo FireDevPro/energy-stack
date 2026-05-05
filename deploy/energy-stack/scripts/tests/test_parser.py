@@ -8,7 +8,6 @@ from comed_parser import (
     Bill,
     BillParseError,
     LineItem,
-    bill_id,
     extract_delivery_block,
     extract_misc_block,
     extract_supply_block,
@@ -58,19 +57,6 @@ def test_line_item_dataclass_construction():
     )
     assert li.amount == 54.64
     assert li.unit == "kW"
-
-
-def test_bill_id_is_deterministic():
-    a = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
-    b = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
-    assert a == b
-    assert len(a) == 64  # SHA-256 hex
-
-
-def test_bill_id_changes_with_inputs():
-    a = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 23))
-    b = bill_id("9999999991", date(2026, 3, 24), date(2026, 4, 24))  # different to-date
-    assert a != b
 
 
 # ---- Task 5: normalize_text ----

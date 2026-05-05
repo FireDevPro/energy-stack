@@ -7,16 +7,18 @@ modern bills (where pypdf preserves whitespace) and older 2024-2025 bills
 
 Top-down read order:
   1. Dataclasses: `LineItem`, `Bill`.
-  2. Identity helper: `bill_id`.
-  3. Text normalization: `normalize_text`.
-  4. Header extractors: service period, issued date, account, rate plan, kWh.
-  5. Block extractors: SUPPLY, DELIVERY, TAXES, MISCELLANEOUS.
-  6. Line-item extractor: `parse_line_items` (4 shapes).
-  7. Composer + validation: `parse_bill`, `parse_total_due`, `BillParseError`.
-  8. PDF entrypoint: `parse_pdf`.
+  2. Text normalization: `normalize_text`.
+  3. Header extractors: service period, issued date, account, rate plan, kWh.
+  4. Block extractors: SUPPLY, DELIVERY, TAXES, MISCELLANEOUS.
+  5. Line-item extractor: `parse_line_items` (4 shapes).
+  6. Composer + validation: `parse_bill`, `parse_total_due`, `BillParseError`.
+  7. PDF entrypoint: `parse_pdf`.
+
+Idempotency on the write side comes from InfluxDB's natural upsert
+behavior: writes with the same (measurement, tag set, timestamp) tuple
+collide and overwrite. No application-level dedup needed.
 """
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -60,16 +62,6 @@ class Bill:
         if self.kwh == 0:
             return 0.0
         return round(self.total_due / self.kwh, 6)
-
-
-# ---- Identity ----
-
-
-def bill_id(account_no: str, service_from: date, service_to: date) -> str:
-    """Deterministic SHA-256 hash for idempotent ingest. Same account +
-    service window always yields the same id."""
-    payload = f"{account_no}|{service_from.isoformat()}|{service_to.isoformat()}"
-    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 # ---- Text normalization ----
@@ -430,6 +422,15 @@ def parse_bill(text: str) -> Bill:
         )
 
     bill_type = "transition" if (kwh == 0 and service_days < TRANSITION_MAX_DAYS) else "normal"
+
+    # Refuse zero-kWh bills that don't qualify as transition stubs — kWh==0 on
+    # a full-cycle bill almost certainly means the meter row regex missed; safer
+    # to fail loud than to write a misleading 0-usage row.
+    if kwh == 0 and bill_type == "normal":
+        raise BillParseError(
+            f"kwh=0 on a normal-length bill (service_days={service_days}) — "
+            f"likely a parser miss, not a true zero-usage cycle"
+        )
 
     supply_total, supply_body = extract_supply_block(text)
     delivery_total, delivery_body = extract_delivery_block(text)

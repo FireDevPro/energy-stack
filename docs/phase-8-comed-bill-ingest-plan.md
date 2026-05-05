@@ -27,7 +27,7 @@
 | `deploy/energy-stack/scripts/tests/fixtures/hourly_single_apr2026.txt` | Pre-extracted text from `d54d630c` (April 2026, Hourly Single) |
 | `deploy/energy-stack/scripts/tests/fixtures/fixed_single_sep2025.txt` | Pre-extracted text from `dff224a6` (Sept 2025, Residential - Single) |
 | `deploy/energy-stack/scripts/tests/fixtures/transition_aug2025.txt` | Pre-extracted text from `4ace3f0e` (transition stub) |
-| `grafana/dashboards/comed-bill-reconciliation.json` | New dashboard (4 panels) |
+| `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json` | New dashboard (4 panels) |
 | `PROJECT.md` | Append Phase 8 entry |
 | `docs/SERVICES.md` | Append script entry |
 | `.gitignore` (root) | Add `deploy/energy-stack/inbox/` |
@@ -53,7 +53,7 @@ touch deploy/energy-stack/scripts/tests/__init__.py
 File: `deploy/energy-stack/scripts/requirements.txt`
 ```
 pypdf==5.10.0
-influxdb-client==1.49.0
+influxdb-client==1.48.0
 pytest==8.3.0
 ```
 
@@ -1652,13 +1652,13 @@ rmdir ~/energy-stack/inbox/comed/backfill
 ## Task 16: Grafana Dashboard
 
 **Files:**
-- Create: `grafana/dashboards/comed-bill-reconciliation.json`
+- Create: `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json`
 
 The dashboard has 4 panels matching the spec.
 
 - [ ] **Step 1: Write the dashboard JSON**
 
-File: `grafana/dashboards/comed-bill-reconciliation.json`
+File: `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json`
 
 Build the dashboard skeleton with 4 panels. Use the existing `home-energy-overview.json` as a template for tags/datasource/refresh interval.
 
@@ -1758,7 +1758,7 @@ Note: panels A's "Projected" target and panel F's full forward-projection formul
 
 Sync the file to Pi (it's auto-loaded via Grafana provisioning):
 ```bash
-scp grafana/dashboards/comed-bill-reconciliation.json pi-lab:~/energy-stack/grafana/dashboards/
+scp deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json pi-lab:~/energy-stack/grafana/dashboards/
 ssh pi-lab "docker exec energy-stack-grafana-1 kill -HUP 1"
 ```
 Open Grafana → Dashboards → "ComEd Bill Reconciliation" should appear with all 4 panels rendering data from the backfilled bills.
@@ -1766,7 +1766,7 @@ Open Grafana → Dashboards → "ComEd Bill Reconciliation" should appear with a
 - [ ] **Step 3: Commit**
 
 ```bash
-git add grafana/dashboards/comed-bill-reconciliation.json
+git add deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json
 git commit -m "feat: add comed bill reconciliation dashboard (4 panels)"
 ```
 
@@ -1814,7 +1814,7 @@ supply/delivery/taxes/misc totals) + `comed.bill_lineitems` (full GL
 breakdown). Idempotency: SHA-256 of (account, from, to) → same Influx
 (measurement, tags, timestamp) → safe to re-run same bill.
 
-**Dashboard**: `grafana/dashboards/comed-bill-reconciliation.json` —
+**Dashboard**: `deploy/energy-stack/grafana/dashboards/comed-bill-reconciliation.json` —
 bill-vs-projected, EAGLE-vs-billed-kWh, capacity-charge tracker, and a
 stub forward-projection panel. The projection panel's full formula
 (supply-so-far + delivery estimate + capacity + taxes estimate + days-remaining
