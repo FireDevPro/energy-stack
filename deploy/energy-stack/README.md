@@ -27,22 +27,23 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 
 ## Authoring & deployment
 
-Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. Deploy with:
+Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. **Deployment is automatic via GitHub Actions** — `git push` to `main` triggers the [Deploy to Pi workflow](../../.github/workflows/deploy.yml), which runs on a self-hosted runner installed on Pi-lab itself. The runner detects which compose project changed (`deploy/energy-stack/` vs `deploy/n8n-stack/`), rsyncs it into place, runs `docker compose build && docker compose up -d`, and verifies services are healthy. End-to-end ~30-60 s for a single-service change.
+
+Manual deployment is still supported for local-only testing:
 
 ```bash
 rsync -av --delete --exclude '.env' \
   "D:/Projects/energy-proxy/deploy/energy-stack/" \
   chris@192.168.20.10:~/energy-stack/
-```
-
-The `.env` file lives ONLY on Pi-lab (chmod 600). Never committed (`.gitignore`), never rsynced (`--exclude`). The SOPS-encrypted equivalent (`secrets/env.sops.env`) IS committed and IS rsynced — that's the recovery path.
-
-Rebuild only the service you changed:
-
-```bash
 ssh chris@192.168.20.10 \
   "cd ~/energy-stack && docker compose build hvac-scheduler && docker compose up -d hvac-scheduler"
 ```
+
+But anything you push to `main` will overwrite local-only edits on the next deploy. Best practice is one of: commit your change → push → CI deploys, OR work on a branch.
+
+The `.env` file lives ONLY on Pi-lab (chmod 600). Never committed (`.gitignore`), never rsynced (CI workflow excludes it, manual rsync above excludes it). The SOPS-encrypted equivalent (`secrets/env.sops.env`) IS committed and IS deployed — that's the recovery path.
+
+To force a redeploy without making a code change: GitHub Actions UI → "Deploy to Pi" workflow → "Run workflow" → pick `energy-stack`, `n8n-stack`, or `both`.
 
 ## First-time bootstrap (Pi-lab)
 
