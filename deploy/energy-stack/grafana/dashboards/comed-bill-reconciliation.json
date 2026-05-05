@@ -1,0 +1,162 @@
+{
+  "uid": "comed-bill-reconciliation",
+  "title": "ComEd Bill Reconciliation",
+  "tags": ["energy", "comed", "billing"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": { "from": "now-2y", "to": "now" },
+  "timezone": "America/Chicago",
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "A — Bill total vs InfluxDB-projected total",
+      "description": "Per-cycle bill total ($) compared with a forward-projected estimate from InfluxDB (Refoss whole-home W * ComEd hourly price, integrated over the bill window). v1: only the Bill series is real; the Projected series is a documented stub returning zero — implementation deferred until several cycles of data accumulate.",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "Bill",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.bill\" and r._field == \"total_due\" and r.bill_type == \"normal\")\n  |> keep(columns: [\"_time\", \"_value\"])\n  |> yield(name: \"Bill\")"
+        },
+        {
+          "refId": "Projected",
+          "hide": false,
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "// STUB (v1): projected-total overlay deferred — see docs/phase-8-comed-bill-ingest-plan.md Task 16.\n// Target: for each bill cycle, sum (Refoss whole-home W * ComEd hourly price)\n// over [service_from, service_to) and compare against the bill total above.\n// Implementation needs a join between the bill cycles and the energy/price\n// streams; non-trivial Flux deferred until ~3+ cycles of data accumulate.\nfrom(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.bill\" and r._field == \"total_due\")\n  |> map(fn: (r) => ({ r with _value: 0.0 }))\n  |> keep(columns: [\"_time\", \"_value\"])\n  |> yield(name: \"Projected (stub)\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0,
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "type": "barchart",
+      "title": "B — EAGLE kWh vs billed kWh per cycle",
+      "description": "Bill-side kWh per cycle. Compare against EAGLE meter integration over the same window to validate the meter is reading what the utility is billing.",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "Billed",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.bill\" and r._field == \"kwh\" and r.bill_type == \"normal\")\n  |> keep(columns: [\"_time\", \"_value\"])\n  |> yield(name: \"Billed kWh\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0,
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "D — Capacity charge tracker",
+      "description": "Peak kW (locked annually from prior summer's PJM 5CP) and the resulting Capacity Charge line item per bill. The HVAC scheduler exists primarily to suppress this peak.",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 9 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "PeakKW",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.bill\" and r._field == \"peak_kw\")\n  |> keep(columns: [\"_time\", \"_value\"])\n  |> yield(name: \"Peak kW\")"
+        },
+        {
+          "refId": "CapacityCharge",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"comed.bill_lineitems\" and r.line_item == \"Capacity Charge\" and r._field == \"amount\")\n  |> keep(columns: [\"_time\", \"_value\"])\n  |> yield(name: \"Capacity Charge ($)\")"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "pointSize": 5
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "PeakKW" },
+            "properties": [{ "id": "unit", "value": "kwatt" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "CapacityCharge" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "F — Forward projection (current cycle)",
+      "description": "v1: shows the most recent bill total. The full forward-projection formula (supply-so-far + delivery estimate + capacity + taxes estimate + days-remaining extrapolation) is sketched in the design doc and lands as a follow-on after a few cycles of real data accumulate.",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 6 },
+      "datasource": { "type": "influxdb", "uid": "influxdb" },
+      "targets": [
+        {
+          "refId": "MostRecentBill",
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"energy\")\n  |> range(start: -90d)\n  |> filter(fn: (r) => r._measurement == \"comed.bill\" and r._field == \"total_due\" and r.bill_type == \"normal\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "wideLayout": true,
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    }
+  ]
+}
