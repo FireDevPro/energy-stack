@@ -164,12 +164,51 @@ WantedBy=multi-user.target
 - On disconnect, **do not** buffer indefinitely in-memory. Drop the oldest continuous-state messages on backpressure (the latest value is what subscribers want anyway, since retain is ON). Events are different: keep a small bounded queue (e.g., last 100 events) and replay on reconnect; lose the oldest if the queue fills. Operator visibility: log structured JSON to systemd journal.
 - The publisher does not buffer to disk. If the broker is unreachable for hours, that's a stack-level outage and we accept the gap. Fault events of significance will be re-emitted on the next bus frame matching the fault state, since faults are persistent equipment conditions, not transient signals.
 
-**Source of decoded frames**: the publisher reads from the same place the existing `comfortnet-decode` CLI reads. Two reasonable paths:
+**Source of decoded frames**: the publisher runs the existing decoder pipeline in-process, fed by raw bytes from the serial port. Single systemd service (`comfortnet.service`) that captures + decodes + publishes; capture-only mode remains available via `comfortnet-decode` for ad-hoc debugging.
 
-- **In-process**: link `comfortnet.framing` + `comfortnet.decoders` directly. Publisher runs the decoder pipeline itself, fed by raw bytes from the serial port. This means the publisher process *is* the capture process, and `comfortnet-capture` either becomes a different mode of the same binary or merges. Cleaner.
-- **Out-of-process**: capture continues to write rotating `.bin` files; publisher tails the latest file and decodes. More complex, more failure modes.
+**Async-compatibility audit of the existing decoder layers** (verified with Chris, 2026-05-05):
 
-Recommend **in-process / merged**: one systemd service (`comfortnet.service`) that captures, decodes, and publishes in a single process. Capture-only mode remains available via `comfortnet-decode` for ad-hoc debugging. Update HANDOFF accordingly.
+| Layer | Async-friendly? | Notes |
+|-------|-----------------|-------|
+| `comfortnet.decoders.crc.fletcher_variant` | yes — pure CPU | call inline from async context, microseconds per frame at 50 B/s bus rate |
+| `Frame` accessors, `iter_mdi` | yes — pure CPU | inline OK |
+| `iter_furnace_status` / `iter_furnace_sensors` / `iter_ac_sensors` / `iter_thermostat_config` / `iter_user_menu` | yes — pure CPU | inline OK |
+| `parse_user_menu`, `decode_packed_temp` | yes — pure CPU | inline OK |
+| `comfortnet.framing.iter_frames` | needs thin adapter | takes a sync `Iterable[tuple[int, int]]`. Write a small `aiter_frames(async_records, gap_ms=...)` that mirrors the gap-slicing logic over an `AsyncIterator`. ~20 lines |
+| `comfortnet.replay.iter_records` | sync file reader | one-shot replays from async context: `await loop.run_in_executor(None, list, iter_records(path))`. For live streaming use `aiofiles` or rewrite |
+| `comfortnet.capture.capture.py` | **needs replacing for live use** | uses blocking `serial.Serial` (pyserial). Swap to `pyserial-asyncio` or `aioserial`; the writer pattern ports cleanly |
+
+**Implementation skeleton** for the live decode → publish loop:
+
+```python
+async def main():
+    ser = await serial_asyncio.open_serial_connection(
+        url='/dev/hvac485', baudrate=9600,
+    )
+    async with aiomqtt.Client(...) as mqtt:
+        async for ts_ns, b in aiter_serial_bytes(ser):
+            async for frame in aiter_frames([(ts_ns, b)], gap_ms=3.5):
+                if not (frame.is_well_formed() and frame.is_crc_valid()):
+                    continue
+                for status in iter_furnace_status(frame):  # sync, fast
+                    await mqtt.publish(
+                        'home/utility-room/hvac/comfortnet/heat_actual_pct',
+                        status.heat_actual_pct,
+                    )
+                # ... and so on for sensors, AC, user_menu
+```
+
+**Concrete prerequisites for the publisher implementation PR**:
+
+1. New module `comfortnet.publisher` with the async loop above plus reconnect / backpressure logic
+2. Thin async adapter `comfortnet.framing.aiter_frames(async_records, gap_ms=...)` (~20 lines, mirrors `iter_frames`)
+3. Async serial source helper `aiter_serial_bytes(reader)` that produces `(ts_ns, byte)` tuples
+4. Add `pyserial-asyncio` and `aiomqtt` to `pyproject.toml`
+5. Replace or wrap `comfortnet.capture.capture.py`'s pyserial loop; the rotating-`.bin` writer pattern stays intact for replay-corpus generation
+
+The existing decoder modules (CRC, frame, all `iter_*`) are touched only at the import site; no changes needed for async use.
+
+Update HANDOFF in the comfortnet repo to reflect the merged service shape.
 
 ## Consumer (Telegraf in `energy-stack`)
 
@@ -246,6 +285,6 @@ Phased so each phase is independently revertible. None of these touch existing b
 ## Open decisions for follow-on work
 
 - **Retention of in-memory event queue on the publisher**: 100 events feels right but is a guess. Revisit after a week of operation.
-- **Whether to merge `comfortnet-capture` and `comfortnet-publisher` into a single service**: recommend yes (in-process), but worth confirming during implementation that the decoder pipeline doesn't have any blocking calls that would interfere with MQTT keepalives.
+- ~~Whether to merge `comfortnet-capture` and `comfortnet-publisher` into a single service~~: resolved. Merge into one in-process service; the audit above lists exactly which layers are async-safe inline and which need adapters.
 - **n8n event consumers**: which events trigger which automations? Recommend starting with fault events → Telegram and demand-vs-actual-mismatch → log-only, expand from there.
 - **Active polling**: deferred from this design. If we revisit, the threshold is whether the CTK04's static-fingerprint-only behavior on organic polls is a real problem for any use case the data isn't already covering via the Control4 path. Currently it isn't.
