@@ -28,6 +28,75 @@ modify the algorithm or default seed without filing an OSF amendment.** The
 pinned-snapshot test in `tests/test_randomize_arms.py` will fail loud if the
 seed-to-output mapping ever drifts.
 
+## backfill_pjm.py — one-shot 5-year ComEd PJM backfill
+
+Pulls historical hourly data the live `pjm-dm2-poller` doesn't cover (it only
+writes today's / forward-looking points). Two feeds, both ComEd-zone-only:
+
+- `da_hrl_lmps` for `pnode_id=33092371` → `pjm.lmp_da_hourly`
+- `hrl_load_metered` for `zone=CE` → `pjm.metered_load`
+
+**Note**: ComEd's PJM zone code is `CE` (Commonwealth Edison), not `COMED`,
+in `hrl_load_metered`. Filtering on `zone=COMED` returns zero rows.
+Empirically verified — see the `test_comed_zone_code_is_CE_not_COMED`
+test guard.
+
+### Usage
+
+```bash
+python backfill_pjm.py                          # default 2021..(last full year)
+python backfill_pjm.py --years 2024,2025
+python backfill_pjm.py --feed metered_load      # one feed only
+python backfill_pjm.py --dry-run
+```
+
+### Archive boundary (phase 1 limitation)
+
+PJM splits `da_hrl_lmps` data into "standard" (last 731 days) and
+"archived" (older). Archive queries reject the `pnode_id` filter, so they
+need different query logic (filter by `type=Zone`, parse client-side).
+This script targets the standard tier only and **skips** years that fall
+entirely or partially before the archive boundary, with a clear log line:
+
+```
+2022: SKIPPED (archive) -- da_hrl_lmps year 2022: starts 2022-01-01,
+older than archive cutoff 2024-05-05 (731-day window). Phase 1 backfill
+skips this; archive-tier support is phase 2.
+```
+
+`hrl_load_metered` has no archive cutoff (`archiveCutoffDays=null` in its
+metadata), so all years backfill cleanly regardless of age.
+
+### Output (verified live, dry-run)
+
+For `python backfill_pjm.py --years 2024,2025 --dry-run`:
+
+```
+da_lmp  2024: SKIPPED (archive)
+da_lmp  2025: 8760 rows -> 8760 points
+metered 2024: 8784 rows -> 8784 points (leap year, 366 days × 24h)
+metered 2025: 8760 rows -> 8760 points
+Total: 26,304 points in ~37 seconds
+```
+
+Idempotent: re-runs upsert by `(measurement, tag set, timestamp)`. Safe to
+re-run for "this year" weekly to keep partial-year data fresh without
+double-counting.
+
+### Sequencing
+
+After `pjm-dm2-poller` is live and writing forward, this script lands the
+historical training corpus the future 5CP-probability classifier needs.
+Run order on pi-lab:
+
+```bash
+# After pjm-dm2-poller deployed and a few days of live data are in:
+python backfill_pjm.py --feed metered_load --dry-run     # sanity check
+python backfill_pjm.py --feed metered_load               # 5 yrs metered load
+python backfill_pjm.py --feed da_lmp                     # last 1-2 yrs DA LMP
+python scrape_pjm_5cp_pdf.py --years 2021,2022,2023,2024,2025  # 5CP labels
+```
+
 ## scrape_pjm_5cp_pdf.py — annual PJM 5CP coincident-peak PDF ingest
 
 The 5 hours per summer that determine the next year's PJM capacity charges
