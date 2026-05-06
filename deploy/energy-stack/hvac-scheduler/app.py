@@ -89,10 +89,17 @@ class ScheduleAction:
     hour: int
     minute: int
     label: str
-    cool_setpoint_f: int
+    # cool_setpoint_f is None when release_hold=True; the action only flips
+    # the thermostat back to schedule mode without changing setpoints.
+    cool_setpoint_f: int | None = None
     heat_setpoint_f: int = HEAT_SETPOINT_FLOOR_F
     fan_mode: str | None = None  # 'Auto' | 'On' | 'Circulate' | None=don't touch
     cool_setpoint_humid_f: int | None = None  # used if today's max dewpoint > HUMID_DEWPOINT_F
+    # When True: clear the thermostat's Permanent hold so the device's own
+    # baseline schedule resumes. Used by MILD_SCHEDULE to release a hold left
+    # over from yesterday's NORMAL/HOT cycle. Skips setpoint and fan_mode
+    # writes; only calls set_hold_mode("Schedule").
+    release_hold: bool = False
 
 
 # NORMAL day: 82-94F forecast. Pre-cool, coast, recover, sleep.
@@ -122,8 +129,14 @@ HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(21, 0, "SLEEP",            cool_setpoint_f=73),
 ]
 
-# MILD day: forecast <82F. No active scheduling; thermostat baseline handles it.
-MILD_SCHEDULE: list[ScheduleAction] = []
+# MILD day: forecast <82F. No active scheduling; thermostat baseline handles
+# it — but a single 00:05 release-hold action clears any Permanent hold left
+# over from yesterday (e.g. SLEEP=73 from a NORMAL day's last action). Without
+# this, the thermostat would stay pinned to the previous day's last setpoint
+# instead of returning to its own baseline schedule.
+MILD_SCHEDULE: list[ScheduleAction] = [
+    ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True),
+]
 
 # HOT STREAK DAY 1: tomorrow AND day-after both forecast HOT. Heat wave starting.
 # Pre-cool starts an HOUR earlier and goes 2 degrees DEEPER than a one-day HOT
@@ -392,7 +405,14 @@ def schedule_for(day_type: str) -> list[ScheduleAction]:
 
 def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None) -> tuple[int, str]:
     """Return (setpoint_to_apply, reason) — picks the humid override if dewpoint
-    is high enough and an override is defined for this action."""
+    is high enough and an override is defined for this action.
+
+    For release_hold actions there is no setpoint to apply; returns (0,
+    "release_hold") so callers can record a sentinel without dispatching a
+    setpoint write.
+    """
+    if action.release_hold:
+        return 0, "release_hold"
     if (action.cool_setpoint_humid_f is not None
             and today_dewpoint_f is not None
             and today_dewpoint_f > HUMID_DEWPOINT_F):
@@ -547,16 +567,32 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict:
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
                           state: dict, dry_run: bool) -> tuple[bool, str | None]:
-    """Apply heat + cool setpoints, optional fan mode, then HOLD_MODE='Permanent'.
-    Heat setpoint is always paired so the system works correctly in Auto mode.
-    Returns (applied, error)."""
-    hvac_mode = state.get("hvac_mode") or ""
-    # Cool / Auto -> apply normally. Heat -> skip (heating-season no-op so we don't
-    # accidentally fight the furnace). Off -> also skip.
-    if hvac_mode not in ("Cool", "Auto"):
-        return False, f"hvac_mode_not_cooling ({hvac_mode!r})"
+    """Apply the action to the thermostat. Returns (applied, error).
+
+    Two execution paths:
+      * release_hold action: clears the Permanent hold so the thermostat's
+        baseline schedule resumes. Idempotent; runs regardless of hvac_mode
+        (set_hold_mode("Schedule") is safe even in Heat/Off — it just becomes
+        a no-op when no hold is active).
+      * Setpoint action: applies heat + cool setpoints, optional fan mode,
+        then HOLD_MODE='Permanent' to pin the override against the
+        thermostat's own schedule. Skipped when hvac_mode is not Cool/Auto
+        (so we don't accidentally fight a heating-season furnace).
+    """
     if dry_run:
         return False, None  # logged as not-applied with no error
+
+    if action.release_hold:
+        try:
+            climate = await c4.get_climate()
+            await c4.call_with_reauth(lambda: climate.set_hold_mode("Schedule"))
+            return True, None
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    hvac_mode = state.get("hvac_mode") or ""
+    if hvac_mode not in ("Cool", "Auto"):
+        return False, f"hvac_mode_not_cooling ({hvac_mode!r})"
     try:
         climate = await c4.get_climate()
         # Always set both heat and cool — protects against narrow-deadband
