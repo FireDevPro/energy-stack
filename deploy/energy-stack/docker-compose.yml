@@ -25,6 +25,20 @@ services:
       retries: 3
       start_period: 20s
 
+  influx-init:
+    # One-shot post-bootstrap provisioning for the longterm bucket and the
+    # 1-min downsample task. Idempotent; runs on every `compose up -d`.
+    # Design: docs/INFLUXDB_RETENTION.md
+    build: ./influx-init
+    container_name: influx-init
+    restart: "no"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+
   grafana:
     image: grafana/grafana-oss:11.4.0
     container_name: grafana
