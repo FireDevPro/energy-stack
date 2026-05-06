@@ -318,7 +318,13 @@ services:
       - mosquitto_data:/mosquitto/data
       - /opt/mosquitto-certs:/mosquitto/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 8883 --cafile /mosquitto/certs/ca.crt -u telegraf -P $${MOSQUITTO_TELEGRAF_PASSWORD} -t '$$SYS/broker/uptime' -C 1 -W 5 >/dev/null 2>&1"]
+      # mosquitto_sub -E: connect, subscribe, exit on SUBACK — validates TLS,
+      # auth, and ACL grant in one round-trip without waiting for a message.
+      # Hostname `mosquitto` matches the cert's DNS:mosquitto SAN (verified
+      # via SSL_set_tlsext_host_name in mosquitto's net_mosq.c). $SYS topics
+      # are deny-by-default under acl_file, so we use an authorized topic
+      # from telegraf's ACL grant.
+      test: ["CMD-SHELL", "mosquitto_sub -E -h mosquitto -p 8883 --cafile /mosquitto/certs/ca.crt -u telegraf -P $${MOSQUITTO_TELEGRAF_PASSWORD} -t 'home/utility-room/hvac/comfortnet/+' -W 5 >/dev/null 2>&1"]
       interval: 30s
       timeout: 10s
       retries: 3
