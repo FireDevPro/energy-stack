@@ -319,7 +319,7 @@ Build: `./telegram-notifier` · Two cycles: daily summary at `SUMMARY_HOUR` + al
 Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram bots Chris uses). Sends:
 
 - **Daily summary** at 8 AM local (HTML-formatted): yesterday's cost, kWh, peak demand, fridge anomaly check, HVAC schedule fired, weather forecast for today.
-- **Alerts**, checked every 5 min (deduplicated 30 min): poller silent (no marker file write in 10 min), price spike (current 5min > $TELEGRAM_PRICE_SPIKE_C ¢/kWh), fridge anomaly (recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline).
+- **Alerts**, checked every 5 min (deduplicated 30 min): poller silent (no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min), price spike (current 5min > $TELEGRAM_PRICE_SPIKE_C ¢/kWh), fridge anomaly (recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline).
 - **Backup notifications** (separate path — not by this service, but by `pi-backup.sh` reading the same `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `.env`).
 
 **Env:**
