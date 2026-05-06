@@ -139,7 +139,7 @@ class TokenManager:
         token = self._cfg.refresh_token
         if not token:
             log("error", "no_refresh_token",
-                msg="Set HAVEN_REFRESH_TOKEN or provide a token file at HAVEN_TOKEN_FILE")
+                detail="Set HAVEN_REFRESH_TOKEN or provide a token file at HAVEN_TOKEN_FILE")
             sys.exit(2)
         log("info", "token_loaded_from_env")
         return token
