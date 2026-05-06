@@ -24,6 +24,9 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `webdashboard-api` | FastAPI backend for webdashboard | (8082, internal) | [SERVICES.md#webdashboard-api](../../docs/SERVICES.md#webdashboard-api) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `promtail` | Container log shipper → Loki | — | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
+| `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
+| `mosquitto-init` | Generates broker password file from env vars (one-shot) | — | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
+| `telegraf` | MQTT consumer → InfluxDB (continuous → energy, events → energy-longterm) | — | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
 
 ## Authoring & deployment
 
@@ -152,6 +155,61 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | (bind mount) `./inbox/haven` | haven-ingest | CSV inbox: drop new Haven exports here. Service moves them to `processed/` on success or `failed/` on parse error. |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
+
+## ComfortNet pipeline deployment (profile=mqtt)
+
+The Mosquitto broker, password-init container, and Telegraf consumer are profile-gated so the standard `compose up -d` ignores them. They run only when `--profile mqtt` is set or `COMPOSE_PROFILES=mqtt` is in the environment. Design: [`../../docs/COMFORTNET_PIPELINE.md`](../../docs/COMFORTNET_PIPELINE.md).
+
+**One-time setup on Pi-lab:**
+
+```bash
+# 1. Generate TLS material (CA + server cert + server key, 10-year expiry).
+ssh chris@192.168.20.10
+sudo mkdir -p /opt/mosquitto-certs
+cd /opt/mosquitto-certs
+sudo OUT_DIR=. sh ~/energy-stack/mosquitto/scripts/gen-certs.sh
+sudo chown -R 1883:1883 /opt/mosquitto-certs
+# ca.key stays on Pi-lab (back it up offline if you want easy renewal).
+
+# 2. Distribute ca.crt to clients.
+# Pi 3B publisher (when implemented):
+scp /opt/mosquitto-certs/ca.crt comfortnet:/etc/comfortnet/ca.crt
+
+# 3. Set the three MQTT passwords in .env (see .env.example for the keys).
+# Then re-encrypt secrets/env.sops.env per the SOPS section below.
+```
+
+**Bring the pipeline up:**
+
+```bash
+docker compose --profile mqtt up -d
+# or (persistent across deploys):
+echo 'COMPOSE_PROFILES=mqtt' >> .env
+docker compose up -d
+```
+
+**Smoke test from Pi-lab** (broker only, before publisher exists):
+
+```bash
+# Subscribe in one terminal
+mosquitto_sub -h localhost -p 8883 --cafile /opt/mosquitto-certs/ca.crt \
+  -u telegraf -P "$MOSQUITTO_TELEGRAF_PASSWORD" \
+  -t 'home/utility-room/hvac/comfortnet/+'
+
+# Publish a test message in another
+mosquitto_pub -h localhost -p 8883 --cafile /opt/mosquitto-certs/ca.crt \
+  -u comfortnet-publisher -P "$MOSQUITTO_PUBLISHER_PASSWORD" \
+  -t 'home/utility-room/hvac/comfortnet/heat_actual_pct' \
+  -m '{"value": 35.0, "ts": "2026-05-05T22:00:00Z"}'
+
+# Check it landed in InfluxDB
+docker exec -it influxdb influx query \
+  'from(bucket:"energy") |> range(start:-1m) |> filter(fn:(r) => r._measurement == "home/utility-room/hvac/comfortnet/heat_actual_pct") |> last()'
+```
+
+The broker stays up across `compose up -d` runs. To stop: `docker compose --profile mqtt stop mosquitto telegraf mosquitto-init`.
+
+**Cert renewal**: `gen-certs.sh` is safe to re-run; it'll skip CA generation if `ca.key` and `ca.crt` already exist, and regenerate `server.crt` + `server.key` against the same CA. Restart the broker after renewal: `docker compose restart mosquitto`. Clients (publisher, Telegraf) only need the CA cert and don't change.
 
 ## Related
 

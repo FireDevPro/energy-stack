@@ -1,0 +1,18 @@
+# Mosquitto ACL file. Format per `mosquitto.conf(5)`.
+# Three identities; least privilege per role.
+# Design: docs/COMFORTNET_PIPELINE.md
+
+# comfortnet-publisher: writes telemetry from the Pi 3B sniffer.
+# May publish to its topic tree, no read access.
+user comfortnet-publisher
+topic write home/utility-room/hvac/comfortnet/#
+
+# telegraf: subscribes for InfluxDB writes (continuous + events).
+# Read-only.
+user telegraf
+topic read home/utility-room/hvac/comfortnet/#
+
+# n8n: subscribes for event-driven automation (faults, stage changes).
+# Read-only, scoped to events subtree.
+user n8n
+topic read home/utility-room/hvac/comfortnet/events/#

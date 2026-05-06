@@ -275,6 +275,75 @@ services:
       - promtail_positions:/tmp
     command: -config.file=/etc/promtail/config.yml
 
+  # ---- ComfortNet HVAC pipeline (profile: mqtt) ----
+  # Design: docs/COMFORTNET_PIPELINE.md
+  #
+  # Profile-gated so the standard `compose up -d` ignores them. The TLS
+  # material at /opt/mosquitto-certs/ on Pi-lab must exist before bringing
+  # these up; see deploy/energy-stack/mosquitto/scripts/gen-certs.sh and
+  # the README's "ComfortNet pipeline deployment" section.
+  #
+  # To enable: `docker compose --profile mqtt up -d`
+  # or set COMPOSE_PROFILES=mqtt in the environment.
+
+  mosquitto-init:
+    # One-shot: regenerates the broker password file from env vars on every
+    # `compose --profile mqtt up -d`. Idempotent. Mosquitto depends on this
+    # service completing successfully before it starts.
+    profiles: ["mqtt"]
+    build: ./mosquitto-init
+    container_name: mosquitto-init
+    restart: "no"
+    environment:
+      MOSQUITTO_PUBLISHER_PASSWORD: ${MOSQUITTO_PUBLISHER_PASSWORD}
+      MOSQUITTO_TELEGRAF_PASSWORD: ${MOSQUITTO_TELEGRAF_PASSWORD}
+      MOSQUITTO_N8N_PASSWORD: ${MOSQUITTO_N8N_PASSWORD}
+    volumes:
+      - mosquitto_passwords:/mosquitto/passwords
+
+  mosquitto:
+    profiles: ["mqtt"]
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acls:/mosquitto/config/acls:ro
+      - mosquitto_passwords:/mosquitto/passwords:ro
+      - mosquitto_data:/mosquitto/data
+      - /opt/mosquitto-certs:/mosquitto/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 8883 --cafile /mosquitto/certs/ca.crt -u telegraf -P $${MOSQUITTO_TELEGRAF_PASSWORD} -t '$$SYS/broker/uptime' -C 1 -W 5 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    environment:
+      MOSQUITTO_TELEGRAF_PASSWORD: ${MOSQUITTO_TELEGRAF_PASSWORD}
+
+  telegraf:
+    profiles: ["mqtt"]
+    image: telegraf:1.32-alpine
+    container_name: telegraf
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /opt/mosquitto-certs:/etc/telegraf/certs:ro
+    environment:
+      MOSQUITTO_TELEGRAF_PASSWORD: ${MOSQUITTO_TELEGRAF_PASSWORD}
+      INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG}
+
 volumes:
   influxdb_data:
   influxdb_config:
@@ -284,3 +353,5 @@ volumes:
   haven_ingest_data:
   loki_data:
   promtail_positions:
+  mosquitto_passwords:
+  mosquitto_data:
