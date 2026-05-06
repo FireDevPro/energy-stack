@@ -341,6 +341,14 @@ def poller_last_writes(query_api, bucket: str) -> dict:
         ("refoss.channel", "refoss-poller"),
         ("nws.forecast", "nws-poller"),
         ("hvac.thermostat", "thermostat-poller"),
+        # ComfortNet HVAC bus sniffer: writes on every decoded furnace/AC frame.
+        # Decoder hit rate is variable — coordinator R2R cycle is ~33s but only
+        # ~12% of 0x82 GetStatusResponse frames are from src_node_type=0x02
+        # (the rest are AC/thermostat traffic our decoders skip), so an idle
+        # bus produces a furnace decode every ~4-5 min on average. Tolerance
+        # set to 30 min in check_poller_silence to comfortably cover quiet
+        # stretches without missing genuine silence.
+        ("hvac.comfortnet", "comfortnet-publisher"),
     ]
     out = {}
     for meas, name in measurements:
@@ -426,12 +434,15 @@ def check_poller_silence(query_api, bucket: str, threshold_min: int) -> list[Ale
         # tolerates a single transient API failure without firing, alerts on two
         # consecutive misses (the "this is actually broken" signal).
         # Native intervals: comed 60s, refoss 30s, eagle 30s, nws 30 min, thermostat 10 min.
+        # ComfortNet has no fixed interval (event-driven by bus traffic);
+        # observed idle rate is one furnace decode every ~5 min.
         tol = {
             "comed-poller": 25,        # 60s × 25 = lots of buffer for ComEd backend hiccups
             "refoss-poller": threshold_min,  # default 10 min for sub-minute pollers
             "eagle-poller": threshold_min,
             "nws-poller": 70,          # 30 min × 2 + buffer; one miss is fine, two = real
             "thermostat-poller": 30,   # 10 min × 3; tolerates two missed polls
+            "comfortnet-publisher": 30,  # variable rate; ~5 min idle, faster when active
         }.get(poller, threshold_min)
         if age_min > tol:
             out.append(Alert(
