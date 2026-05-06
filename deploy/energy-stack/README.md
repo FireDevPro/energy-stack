@@ -85,6 +85,32 @@ InfluxDB bootstraps the org/bucket/admin user **only on first run against an emp
 
 For service-specific operations (manually trigger an HVAC decision, force a poller cycle, etc.) see the [SERVICES.md per-service section](../../docs/SERVICES.md).
 
+## Running tests
+
+Pure-logic unit tests live alongside each service's source as `tests.py` (not shipped to the container — every Dockerfile only `COPY app.py .`). Tests run on the operator's machine against the source.
+
+One-time setup:
+```bash
+pip install -r deploy/energy-stack/requirements-dev.txt
+# Plus each service's runtime requirements for its imports:
+pip install -r deploy/energy-stack/<service>/requirements.txt
+```
+
+Run a service's tests from its directory:
+```bash
+cd deploy/energy-stack/<service>/
+python -m pytest tests.py
+```
+
+`pytest.ini` at `deploy/energy-stack/` is the single source of truth for shared config (currently `asyncio_mode = auto` for the async-using services). Pytest's config discovery walks up from cwd, so individual services don't carry their own.
+
+Currently covered:
+- `nws-poller/tests.py` — 12 cases (tz-aware day bucketing, alert time-slicing)
+- `hvac-scheduler/tests.py` — 15 cases (release_hold action, lazy decision recompute)
+- `telegram-notifier/tests.py` — 13 cases (poller-silence detection, price-spike threshold)
+
+Other services (eagle-poller, refoss-poller, comed-poller, thermostat-poller, haven-ingest, webdashboard-api) have no tests yet — incremental work as bug fixes or behavior changes touch each.
+
 ## Ports
 
 | Port | Service | Reachable from |
