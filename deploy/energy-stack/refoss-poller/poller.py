@@ -126,14 +126,23 @@ def assert_device_present(cfg: Config) -> None:
         mac=info.get("mac"), auth_en=info.get("auth_en"))
 
 
-def fetch_channel_names(cfg: Config) -> dict[str, str]:
-    """Return {channel_key: user_label} for every em:N channel in config."""
-    config = rpc_get(cfg, "Refoss.Config.Get")
-    names = {
+def parse_channel_names(config: dict) -> dict[str, str]:
+    """Extract {channel_key: user_label} from a Refoss.Config.Get response.
+
+    Filters to em:N entries (skips emmerge:N and other config sections),
+    falls back to the channel key if no name was set in the Refoss app.
+    """
+    return {
         key: value.get("name") or key
         for key, value in config.items()
         if key.startswith("em:") and isinstance(value, dict)
     }
+
+
+def fetch_channel_names(cfg: Config) -> dict[str, str]:
+    """Return {channel_key: user_label} for every em:N channel in config."""
+    config = rpc_get(cfg, "Refoss.Config.Get")
+    names = parse_channel_names(config)
     log("info", "channel_names_loaded", count=len(names))
     return names
 
