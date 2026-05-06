@@ -115,10 +115,31 @@ NORMAL_SCHEDULE: list[ScheduleAction] = [
 ]
 
 # HOT/5CP-risk day: forecast >=95F or active heat advisory.
-# Aggressive pre-cool at 04:00, coast starts at 12:00, hard-shutoff 14:00-18:00
-# covers the empirical PJM 5CP window per 2025 data (4 of 5 RTO peaks landed in
-# the 4-5 PM CDT clock hour, but 6/25/2025 hit 1-2 PM, so 14:00 start is needed).
-# Each kW shaved from 5CP saves ~$240-480/yr in next-year capacity charges.
+#
+# ComEd Hourly Pricing capacity charges use TWO separate peak sets:
+#   - PJM 5CP: 5 highest RTO demand hours/year. 2025 empirics: 4 of 5 landed
+#     in the 16-17 CDT hour, 1 (6/25/2025) hit 13-14 CDT.
+#   - ComEd 5CP: 5 highest ComEd-zone demand hours/year. Historical window
+#     noon-18:00 weekdays per the ComEd Hourly Pricing FAQ.
+#
+# Schedule:
+#   04:00 HOT_PRE_COOL (68°F)   bank thermal mass off-peak
+#   12:00 HOT_COAST (80°F)      coast through ComEd peak window's pre-shutoff
+#                                hours (12-14); 80°F isn't a hard cutoff but
+#                                limits compressor calls during ComEd-only
+#                                peak risk
+#   14:00 HOT_5CP_SHUTOFF (85°F) hard cutoff for the PJM 5CP window AND the
+#                                back half of the ComEd window
+#   18:00 HOT_RECOVER_LOW (78°F) gentle recovery start
+#   21:00 SLEEP (73°F)
+#
+# Open tradeoff: extending the shutoff start back to 12:00 (instead of coast
+# at 80°F) would tighten ComEd 5CP avoidance at a real comfort cost during
+# the noon-14 window. Currently leaning on the coast setpoint as a softer
+# response there.
+#
+# Each kW shaved from a 5CP hour saves ~$240-480/yr in next-year capacity
+# charges; the math is the same whether the peak is PJM or ComEd.
 HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(4,  0, "HOT_PRE_COOL",     cool_setpoint_f=68),
     ScheduleAction(12, 0, "HOT_COAST",        cool_setpoint_f=80, fan_mode="Circulate",

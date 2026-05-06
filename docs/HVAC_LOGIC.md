@@ -13,7 +13,7 @@ Companion to [`SERVICES.md#hvac-scheduler`](SERVICES.md#hvac-scheduler) (which c
 - [Overrides](#overrides)
 - [Thermostat fallback (when Pi is offline)](#thermostat-fallback-when-pi-is-offline)
 - [Honeywell ISU settings (the "set once" stuff)](#honeywell-isu-settings-the-set-once-stuff)
-- [PJM 5CP context](#pjm-5cp-context)
+- [Capacity peak context (PJM 5CP + ComEd 5CP)](#capacity-peak-context-pjm-5cp--comed-5cp)
 - [What this scheduler does NOT do](#what-this-scheduler-does-not-do)
 
 ---
@@ -239,15 +239,28 @@ These ISU values are not in code anywhere — they're physical thermostat config
 
 ---
 
-## PJM 5CP context
+## Capacity peak context (PJM 5CP + ComEd 5CP)
 
-PJM (the regional transmission operator covering Illinois) charges capacity based on each customer's demand during the **5 highest summer demand hours of the year** ("5 Coincident Peak"). For residential customers on Hourly Pricing + Delivery TOD, each kW shaved during a 5CP hour saves approximately **$240-480/yr in next-year capacity charges**.
+ComEd Hourly Pricing capacity charges depend on the customer's demand during **two separate sets** of peak hours:
 
-5CP windows always fall in summer (June–September) and almost always between 14:00 and 18:00 CDT. From 2025 empirical data:
-- 4 of 5 RTO peaks landed in the 16:00-17:00 hour
-- 1 (June 25, 2025) hit 13:00-14:00
+- **PJM 5CP.** The 5 highest RTO-wide demand hours of the year, set by PJM (the regional transmission operator covering Illinois). 2025 empirical data:
+  - 4 of 5 RTO peaks landed in the 16:00-17:00 CDT hour.
+  - 1 (June 25, 2025) hit 13:00-14:00 CDT.
+- **ComEd 5CP.** The 5 highest ComEd-zone demand hours of the year, set by ComEd. Historical window: **noon-18:00 weekdays** in summer per the ComEd Hourly Pricing FAQ. ComEd's zone peaks can land earlier in the day than PJM's RTO-wide peaks because metro-Chicago load shape differs from the broader RTO.
 
-The HVAC `HOT_SCHEDULE` and `HOT_STREAK_DAY1` schedules use a hard-shutoff window 14:00-18:00 to cover the empirical range. The scheduler doesn't need to predict WHICH days are 5CP days (PJM only declares them after the fact); it just needs to be aggressive on every HOT day. Hitting all five 5CPs costs ~$200 in extra cooling kWh and saves ~$1200+ in capacity charges = clear net win.
+For residential customers on Hourly Pricing + Delivery TOD, each kW shaved during *any* 5CP hour (PJM or ComEd) saves approximately **$240-480/yr in next-year capacity charges**. The math is the same regardless of which peak set the hour belongs to.
+
+The scheduler doesn't need to predict WHICH days are 5CP days (neither PJM nor ComEd declares them until after the season); it just needs to be aggressive on every HOT day.
+
+### Schedule coverage of the two peak windows
+
+| Time | Action | PJM 5CP coverage | ComEd 5CP coverage |
+|------|--------|------------------|---------------------|
+| 12:00-14:00 | `HOT_COAST` 80°F | low risk (1/5 historical) | **partial** — 80°F limits compressor calls but isn't a hard cutoff |
+| 14:00-18:00 | `HOT_5CP_SHUTOFF` 85°F | high risk (4/5 historical) | high risk (back half of ComEd window) |
+| 18:00+ | `HOT_RECOVER_LOW` 78°F → `HOT_RECOVER` 75°F | post-window recovery | post-window recovery |
+
+The 12:00-14:00 ComEd-only window is currently covered by the looser COAST setpoint rather than full shutoff. Open tradeoff: tighten that window by extending the shutoff back to 12:00, at a real comfort cost during those two hours. Empirically, ComEd 5CP hours haven't all clustered at noon-14; if/when actual zone-peak history shows that window matters more, the schedule can shift.
 
 ---
 
