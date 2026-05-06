@@ -13,6 +13,7 @@ import pytest
 import app
 from app import (
     DAYTYPE_HOT,
+    DAYTYPE_MILD,
     DAYTYPE_NORMAL,
     MILD_SCHEDULE,
     NORMAL_SCHEDULE,
@@ -21,6 +22,7 @@ from app import (
     execute_action,
     fetch_today_decision,
     resolve_cool_setpoint,
+    run_decision_revisit,
 )
 
 
@@ -256,3 +258,142 @@ def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypa
     # Both today AND tomorrow must be queried so streak detection works.
     assert "today" in captured["queried"]
     assert "tomorrow" in captured["queried"]
+
+
+# ---- run_decision_revisit: intra-day forecast re-evaluation ---------------
+
+
+def _make_revisit_cfg(bucket: str = "energy"):
+    """Build a Config-shaped object with just what run_decision_revisit reads.
+    Avoids constructing the full Config (which would need every env-var
+    field). app's frozen=True keeps mutability honest; using a Mock for the
+    one attribute we need."""
+    cfg = MagicMock()
+    cfg.influx_bucket = bucket
+    return cfg
+
+
+def test_revisit_no_change_does_not_overwrite(monkeypatch):
+    """When the live forecast still classifies as the stored day_type,
+    revisit must NOT write a new decision (no-op log only)."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_NORMAL)
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: {"high_f": 87.0,
+                                          "max_dewpoint_f": 60.0,
+                                          "is_heat_advisory": 0})
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_not_called()
+
+
+def test_revisit_escalates_normal_to_hot_when_forecast_busts_up(monkeypatch):
+    """The bug-the-research-flagged scenario: 21:00 yesterday committed
+    NORMAL based on 88°F forecast; morning forecast now says 96°F. Revisit
+    must overwrite the stored decision so the noon coast and 14:00 shutoff
+    fire under HOT_SCHEDULE."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_NORMAL)
+    # Today HOT, tomorrow NORMAL — plain HOT, not streak.
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, period: (
+                            {"high_f": 96.0, "max_dewpoint_f": 70.0,
+                             "is_heat_advisory": 0}
+                            if period == "today"
+                            else {"high_f": 86.0, "max_dewpoint_f": 60.0,
+                                  "is_heat_advisory": 0}
+                        ))
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_called_once()
+    # The Point passed to write should carry the new HOT day_type as a tag.
+    point = write_api.write.call_args.kwargs.get("record")
+    assert point is not None
+    assert dict(point._tags).get("day_type") == DAYTYPE_HOT
+
+
+def test_revisit_de_escalates_hot_to_normal_when_forecast_cools(monkeypatch):
+    """Symmetric: forecast yesterday said 96 (HOT), this morning's update
+    says 88 (NORMAL). Revisit overwrites so we don't unnecessarily run the
+    aggressive HOT shutoff."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_HOT)
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: {"high_f": 88.0,
+                                          "max_dewpoint_f": 60.0,
+                                          "is_heat_advisory": 0})
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_called_once()
+    point = write_api.write.call_args.kwargs.get("record")
+    assert dict(point._tags).get("day_type") == DAYTYPE_NORMAL
+
+
+def test_revisit_no_forecast_does_not_overwrite(monkeypatch):
+    """If today's forecast can't be read (NWS poller down, fresh deploy),
+    revisit logs a warning and does NOT touch the stored decision —
+    the 21:00 commitment stands."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_NORMAL)
+    monkeypatch.setattr(app, "fetch_latest_forecast", lambda *a, **kw: None)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_not_called()
+
+
+def test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot(monkeypatch):
+    """Streak detection must work in the revisit path too — if today
+    becomes HOT and tomorrow's forecast is also HOT, today should
+    re-classify as HOT_STREAK_DAY1, not just HOT, so we get the deeper
+    pre-cool tomorrow morning."""
+    from app import DAYTYPE_HOT_STREAK_DAY1
+
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_NORMAL)
+
+    def _forecast(q, b, period):
+        if period == "today":
+            return {"high_f": 96.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
+        if period == "tomorrow":
+            return {"high_f": 97.0, "max_dewpoint_f": 71.0, "is_heat_advisory": 0}
+        return None
+
+    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_called_once()
+    point = write_api.write.call_args.kwargs.get("record")
+    assert dict(point._tags).get("day_type") == DAYTYPE_HOT_STREAK_DAY1
+
+
+def test_revisit_handles_no_stored_decision_yet(monkeypatch):
+    """First-run case: no decision was ever written, but a forecast
+    arrived. Revisit treats stored=None as 'differs from new', writes
+    the decision."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: {"high_f": 90.0,
+                                          "max_dewpoint_f": 65.0,
+                                          "is_heat_advisory": 0})
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    # Wrote the freshly-classified decision.
+    write_api.write.assert_called_once()
+

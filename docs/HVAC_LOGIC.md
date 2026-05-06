@@ -35,10 +35,13 @@ The 2-stage compressor is what makes the pre-cool strategy viable — stage 1 (~
 
 ## Decision flow
 
-The scheduler runs two separate cycles:
+The scheduler runs three cycles:
 
 1. **Daily decision @ 21:00 local** — read tomorrow's NWS forecast (+ day-after for streak detection) + latest ComEd 5-min price. Classify into a day-type. Write `hvac.decisions` row with the reasoning.
-2. **Schedule check every minute** — at HH:MM matching any `ScheduleAction` in today's schedule, fire that action: read thermostat state snapshot, push setpoints + fan, log to `hvac.actions`.
+2. **Intra-day revisit @ each `SCHEDULER_REVISIT_HOURS` (default 06:00, 11:00 local)** — re-poll today's forecast and re-classify. If the day-type shifted (e.g. yesterday's NORMAL forecast became today's HOT after a morning forecast update), overwrite the stored decision. The schedule check picks up the new value on its next tick. **Already-fired actions stay fired**; future actions in the new schedule fire at their scheduled times. Catches the ~1-in-3 marginal-day forecast bust documented in NWS verification literature ([NSSL/Brooks public-forecast verification](https://www.nssl.noaa.gov/users/brooks/public_html/media/okcmed.html); [UW Atmos MOS verification](https://atmos.uw.edu/~jbaars/mvn_paper/mvn_extended.htm)).
+3. **Schedule check every minute** — at HH:MM matching any `ScheduleAction` in today's schedule, fire that action: read thermostat state snapshot, push setpoints + fan, log to `hvac.actions`.
+
+**Why intra-day revisit but not multi-source/multi-model**: NWS api.weather.gov is already NBM-blended (HRRR + GFS + ECMWF + RAP + GEFS, MOS-corrected, URMA-bias-corrected per the [NOAA NBM docs](https://vlab.noaa.gov/web/mdl/nbm)). The dominant residual error for a single home is local site bias, not forecast-model choice — so the highest-leverage upgrade is bias correction with a personal weather station against NWS, not switching forecast sources. Bias correction lands when the Ecowitt has 14+ days of paired observation history.
 
 ```
 21:00 ─► Read forecast(tomorrow), forecast(day2), comed_price
@@ -53,6 +56,16 @@ The scheduler runs two separate cycles:
          │
          ▼
        Write hvac.decisions(decision_for_date=tomorrow, day_type=...)
+
+06:00 + 11:00 (revisit) ─► Read forecast(today), forecast(tomorrow), comed_price
+                            │
+                            ▼
+                          decide_day_type(today, day2_forecast=tomorrow)
+                            │
+                            ├─ same as stored decision  ─► no-op (log only)
+                            └─ different                ─► Overwrite hvac.decisions
+                                                          (next schedule-check tick
+                                                          uses new day_type)
 
 Each minute ─► day_type = fetch_today_decision(today) (or override)
               ─► For each ScheduleAction whose (hour,minute) matches now:
