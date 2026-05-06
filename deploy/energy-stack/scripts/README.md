@@ -3,6 +3,31 @@
 Operator scripts for the energy-stack. Each is a single-purpose Python script
 run by hand (not a service). Tests run with `pytest`; deps in `requirements.txt`.
 
+## randomize_arms.py — pre-registered experiment-arm assignment
+
+Generates the binding Arm A / Arm B week-level assignment for the residential
+HVAC controls field study described in [`docs/EXPERIMENT_DESIGN.md`](../../../docs/EXPERIMENT_DESIGN.md).
+Block-of-2 randomization using a pre-committed seed (default `20260601` from
+EXPERIMENT_DESIGN.md §13). Same seed + same date range → same CSV, every time.
+
+Default run produces [`docs/experiment-assignments-summer-2026.csv`](../../../docs/experiment-assignments-summer-2026.csv):
+
+```bash
+python randomize_arms.py
+# → 18 rows, 9 Arm A weeks + 9 Arm B weeks, 2026-06-01 .. 2026-09-28
+```
+
+Other invocations:
+
+- Future cooling-season run: `--seed 20270601 --start 2027-06-01 --end 2027-09-30`
+- Inspect without writing: `--dry-run`
+- Custom output path: `--output /tmp/foo.csv`
+
+This script is the binding artifact behind the OSF pre-registration. **Do not
+modify the algorithm or default seed without filing an OSF amendment.** The
+pinned-snapshot test in `tests/test_randomize_arms.py` will fail loud if the
+seed-to-output mapping ever drifts.
+
 ## parse_comed_bill.py — ComEd bill ingest
 
 Parses a ComEd bill PDF and writes the structured data to InfluxDB:
