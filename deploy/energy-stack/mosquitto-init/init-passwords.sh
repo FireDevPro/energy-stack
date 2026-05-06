@@ -13,10 +13,12 @@ PASSWORD_FILE="/mosquitto/passwords/passwords"
 
 log() { echo "[mosquitto-init] $*"; }
 
-# Start fresh so removed users actually disappear from the file.
-: > "$PASSWORD_FILE"
+# Start fresh so removed users actually disappear from the file. Must be a
+# real `rm -f` (not `: > FILE`): mosquitto_passwd's `-c` flag refuses to
+# overwrite an existing file, even an empty one.
+rm -f "$PASSWORD_FILE"
 
-# -b: read password from CLI (not stdin). -c: create file (only the first call).
+# -b: read password from CLI (not stdin). -c: create file (first call only).
 mosquitto_passwd -b -c "$PASSWORD_FILE" comfortnet-publisher "$MOSQUITTO_PUBLISHER_PASSWORD"
 mosquitto_passwd -b    "$PASSWORD_FILE" telegraf            "$MOSQUITTO_TELEGRAF_PASSWORD"
 mosquitto_passwd -b    "$PASSWORD_FILE" n8n                 "$MOSQUITTO_N8N_PASSWORD"
