@@ -10,6 +10,12 @@ Design:
   * Daily at DECISION_HOUR (default 21:00 local), decides tomorrow's
     day-type from latest nws.forecast snapshot. Decision written to
     `hvac.decisions` measurement for traceability.
+  * At each `SCHEDULER_REVISIT_HOURS` (default 06:00, 11:00 local),
+    re-evaluates today's day-type against the latest forecast and
+    overwrites the stored decision if it shifted. Catches forecast-bust
+    days where the 21:00-yesterday commitment was wrong (NWS day-1
+    max-T forecasts mis-classify ~1 in 3 marginal Midwest summer days
+    per NSSL/Brooks public-forecast verification).
   * At each schedule transition time (e.g., 06:00, 13:00, 19:00, 22:00),
     looks up the day-type for TODAY and pushes the corresponding
     COOL_SETPOINT_F + HOLD_MODE='Permanent' to the thermostat.
@@ -37,6 +43,9 @@ Environment variables:
     CONTROL4_THERMOSTAT_ID      C4 item id (default 3231)
     SCHEDULER_DRY_RUN           "true"|"false" (default "true")
     SCHEDULER_DECISION_HOUR     Hour-of-day to decide tomorrow (default 21)
+    SCHEDULER_REVISIT_HOURS     Comma-separated local hours at which to re-poll
+                                today's forecast and re-classify if it shifted
+                                (default "6,11"; empty disables)
     SCHEDULER_TZ                IANA tz (default America/Chicago)
     INFLUXDB_URL                http://influxdb:8086
     INFLUXDB_TOKEN              admin or write token
@@ -292,6 +301,7 @@ class Config:
     influx_bucket: str
     token_file: Path
     overrides_file: Path
+    revisit_hours: tuple[int, ...]
 
     @staticmethod
     def from_env() -> "Config":
@@ -301,6 +311,16 @@ class Config:
                 log("error", "missing_env", var=name)
                 sys.exit(2)
             return v
+
+        revisit_raw = os.environ.get("SCHEDULER_REVISIT_HOURS", "6,11")
+        try:
+            revisit_hours = tuple(sorted({
+                int(h.strip()) for h in revisit_raw.split(",") if h.strip()
+            }))
+        except ValueError:
+            log("error", "invalid_revisit_hours", raw=revisit_raw)
+            sys.exit(2)
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
@@ -315,6 +335,14 @@ class Config:
             influx_bucket=required("INFLUXDB_BUCKET"),
             token_file=Path(os.environ.get("DIRECTOR_TOKEN_FILE", "/data/director_token.json")),
             overrides_file=Path(os.environ.get("OVERRIDES_FILE", OVERRIDES_FILE_DEFAULT)),
+            # Local hours at which to re-poll today's NWS forecast and re-classify
+            # the day-type if it shifted enough to change the schedule. Default
+            # 06:00 + 11:00 catches the morning forecast refresh AND the late-
+            # morning update before the noon coast transition. NWS day-1 max-T
+            # forecasts mis-classify ~1 in 3 marginal Midwest summer days
+            # (per NSSL/Brooks public-forecast verification); the day-ahead-only
+            # commitment leaves that error in place all day. Empty = disabled.
+            revisit_hours=revisit_hours,
         )
 
 
@@ -528,6 +556,9 @@ class FiringState:
     """Track what's already fired today so we don't double-execute."""
     last_decision_date: str = ""
     fired_actions: set[tuple[str, int, int]] = field(default_factory=set)  # (date, hour, minute)
+    # (date, revisit_hour) tuples for the intra-day forecast revisit checks.
+    # Separate set so the revisit cadence doesn't interact with action firing.
+    fired_revisits: set[tuple[str, int]] = field(default_factory=set)
 
 
 def write_decision(write_api, bucket: str, decision_for_date: str,
@@ -631,6 +662,49 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         return True, None
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
+
+
+def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> None:
+    """Re-evaluate today's day-type against the latest NWS forecast.
+
+    Runs at each ``cfg.revisit_hours`` to catch forecast-bust days where
+    the 21:00-yesterday commitment turned out wrong (NWS day-1 max-T
+    forecasts mis-classify ~1 in 3 marginal Midwest summer days per
+    NSSL/Brooks public-forecast verification). If the live forecast
+    classifies today differently than the stored decision, overwrite it;
+    the next ``run_schedule_check`` tick uses the new day-type
+    automatically. Already-fired actions stay fired (no retroactive
+    catch-up); future actions in the new schedule will fire at their
+    scheduled times.
+
+    Logs the comparison either way so operator can audit.
+    """
+    stored = _read_stored_decision(query_api, cfg.influx_bucket, today_iso)
+    today_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "today")
+    if today_forecast is None:
+        log("warn", "revisit_no_forecast", today=today_iso, stored=stored)
+        return
+
+    tomorrow_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
+    comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
+    new_day_type, reasons = decide_day_type(today_forecast, day2_forecast=tomorrow_forecast)
+
+    if stored == new_day_type:
+        log("info", "revisit_no_change",
+            today=today_iso,
+            day_type=stored,
+            forecast_high_f=today_forecast.get("high_f"),
+            forecast_dewpoint_f=today_forecast.get("max_dewpoint_f"))
+        return
+
+    log("info", "revisit_reclassified",
+        today=today_iso,
+        old_day_type=stored,
+        new_day_type=new_day_type,
+        forecast_high_f=today_forecast.get("high_f"),
+        is_heat_advisory=reasons.get("is_heat_advisory"),
+        reason=reasons.get("reason"))
+    write_decision(write_api, cfg.influx_bucket, today_iso, new_day_type, reasons, comed_price)
 
 
 async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: ZoneInfo,
@@ -807,6 +881,9 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     if fired_anything:
         # Prune fired_actions to today only (keep memory bounded)
         firing.fired_actions = {k for k in firing.fired_actions if k[0] == today_iso}
+        # Same prune for revisits — keys are (date_iso, hour); date drift would
+        # otherwise grow the set monotonically.
+        firing.fired_revisits = {k for k in firing.fired_revisits if k[0] == today_iso}
 
 
 # ---- Main loop -------------------------------------------------------------
@@ -867,6 +944,17 @@ async def main_async(cfg: Config) -> int:
                     await run_decision(cfg, c4, query_api, write_api, tz, firing)
                 except Exception as exc:
                     log("error", "decision_failed", error=str(exc), error_type=type(exc).__name__)
+
+            # Intra-day forecast revisit at each cfg.revisit_hours[*]:00
+            today_iso = now_local.date().isoformat()
+            revisit_key = (today_iso, now_local.hour)
+            if (now_local.hour in cfg.revisit_hours and now_local.minute == 0
+                    and revisit_key not in firing.fired_revisits):
+                firing.fired_revisits.add(revisit_key)
+                try:
+                    run_decision_revisit(cfg, query_api, write_api, today_iso)
+                except Exception as exc:
+                    log("error", "revisit_failed", error=str(exc), error_type=type(exc).__name__)
 
             # Schedule actions
             try:
