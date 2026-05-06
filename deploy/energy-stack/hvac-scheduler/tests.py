@@ -10,12 +10,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app
 from app import (
+    DAYTYPE_HOT,
+    DAYTYPE_NORMAL,
     MILD_SCHEDULE,
     NORMAL_SCHEDULE,
     HOT_SCHEDULE,
     ScheduleAction,
     execute_action,
+    fetch_today_decision,
     resolve_cool_setpoint,
 )
 
@@ -171,3 +175,84 @@ async def test_execute_setpoint_action_skipped_when_in_heat_mode():
     assert applied is False
     assert error and "hvac_mode_not_cooling" in error
     climate.set_hold_mode.assert_not_awaited()
+
+
+# ---- fetch_today_decision: lazy recompute on missing/stale decision -------
+
+
+def test_fetch_today_decision_returns_stored_value(monkeypatch):
+    """Happy path: decision was written at 21:00 yesterday, present today."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_HOT)
+    # Recompute path must NOT be touched.
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            AssertionError("forecast should not be queried when stored")))
+    write_api = MagicMock()
+
+    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
+
+    assert result == DAYTYPE_HOT
+    write_api.write.assert_not_called()  # no recompute, no write
+
+
+def test_fetch_today_decision_recomputes_when_stored_missing(monkeypatch):
+    """If the 21:00 decision didn't run, today's first schedule check
+    pulls today's live forecast and decides — the actual P2 fix."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+    today_forecast = {"high_f": 97.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
+
+    def _forecast(query_api, bucket, period):
+        return today_forecast if period == "today" else {"high_f": 88.0}
+
+    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.5)
+    write_api = MagicMock()
+
+    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
+
+    # Forecast high 97 → HOT_5CP_RISK.
+    assert result == DAYTYPE_HOT
+    # Recomputed decision was persisted so subsequent calls find it.
+    write_api.write.assert_called_once()
+
+
+def test_fetch_today_decision_falls_back_to_normal_when_no_forecast(monkeypatch):
+    """When BOTH the stored decision AND today's forecast are missing,
+    return NORMAL but do NOT persist (avoid writing a junk sentinel)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+    monkeypatch.setattr(app, "fetch_latest_forecast", lambda *a, **kw: None)
+    write_api = MagicMock()
+
+    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
+
+    assert result == DAYTYPE_NORMAL
+    # Critical: don't persist a fallback decision — it'd hide the real
+    # issue (missing forecast) on every subsequent check.
+    write_api.write.assert_not_called()
+
+
+def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypatch):
+    """Recompute must include the day-after forecast so today can be
+    correctly classified as HOT_STREAK_DAY1 when tomorrow is also HOT."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+
+    captured = {}
+
+    def _forecast(query_api, bucket, period):
+        captured.setdefault("queried", []).append(period)
+        if period == "today":
+            return {"high_f": 96.0}
+        if period == "tomorrow":
+            return {"high_f": 97.0}
+        return None
+
+    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: None)
+    write_api = MagicMock()
+
+    fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
+
+    # Both today AND tomorrow must be queried so streak detection works.
+    assert "today" in captured["queried"]
+    assert "tomorrow" in captured["queried"]

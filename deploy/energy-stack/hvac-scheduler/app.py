@@ -655,13 +655,14 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
         dry_run=cfg.dry_run)
 
 
-def fetch_today_decision(query_api, bucket: str, today_iso: str) -> str:
-    """Look up day-type decision made for today. Falls back to NORMAL."""
+def _read_stored_decision(query_api, bucket: str, decision_for_date: str) -> str | None:
+    """Return the persisted day-type for ``decision_for_date``, or None if
+    no decision was ever written."""
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -36h)
   |> filter(fn: (r) => r._measurement == "hvac.decisions"
-                    and r.decision_for_date == "{today_iso}")
+                    and r.decision_for_date == "{decision_for_date}")
   |> last()
   |> keep(columns: ["day_type"])
 '''
@@ -670,7 +671,53 @@ from(bucket: "{bucket}")
             day_type = record.values.get("day_type")
             if day_type:
                 return day_type
-    return DAYTYPE_NORMAL
+    return None
+
+
+def fetch_today_decision(query_api, write_api, bucket: str, today_iso: str) -> str:
+    """Look up day-type decision for today. If missing, recompute lazily
+    from the live forecast and persist.
+
+    Recovery mechanism for any reason today's decision wasn't written at
+    yesterday's 21:00 (scheduler down, InfluxDB unreachable, NWS API
+    failure, container restart mid-decision, clock skew, first run with
+    no history). The first schedule check on a day with no stored
+    decision pulls today's live forecast, runs the same classification
+    logic, persists the result, and returns it. Subsequent checks find
+    the stored value normally.
+
+    Falls back to DAYTYPE_NORMAL only when the stored decision AND today's
+    forecast are both missing — at which point there's nothing to
+    recompute against, and we don't write the fallback to InfluxDB
+    (avoids polluting the decision history with a sentinel).
+    """
+    stored = _read_stored_decision(query_api, bucket, today_iso)
+    if stored is not None:
+        return stored
+
+    log("info", "today_decision_missing_recomputing", today=today_iso)
+
+    today_forecast = fetch_latest_forecast(query_api, bucket, "today")
+    if today_forecast is None:
+        log("warn", "today_decision_no_forecast_falling_back",
+            today=today_iso, day_type=DAYTYPE_NORMAL)
+        return DAYTYPE_NORMAL
+
+    # Day-after for streak detection — today might be HOT_STREAK_DAY1 if
+    # tomorrow is also HOT.
+    tomorrow_forecast = fetch_latest_forecast(query_api, bucket, "tomorrow")
+    comed_price = fetch_latest_comed(query_api, bucket)
+
+    day_type, reasons = decide_day_type(today_forecast, day2_forecast=tomorrow_forecast)
+
+    log("info", "today_decision_recomputed",
+        today=today_iso, day_type=day_type,
+        reason=reasons.get("reason"),
+        high_f=reasons.get("high_f"),
+        comed_price_now=comed_price)
+
+    write_decision(write_api, bucket, today_iso, day_type, reasons, comed_price)
+    return day_type
 
 
 def vacation_schedule(override: Override) -> list[ScheduleAction]:
@@ -712,7 +759,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         schedule = schedule_for(day_type)
         override_note = active_override.note
     else:
-        day_type = fetch_today_decision(query_api, cfg.influx_bucket, today_iso)
+        day_type = fetch_today_decision(query_api, write_api, cfg.influx_bucket, today_iso)
         schedule = schedule_for(day_type)
         override_note = ""
 
