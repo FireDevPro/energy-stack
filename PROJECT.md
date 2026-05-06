@@ -2,7 +2,7 @@
 
 **Project**: `D:\Projects\energy-proxy`
 **Started**: 2025
-**Last Updated**: April 2026
+**Last Updated**: May 2026
 
 ---
 
@@ -124,7 +124,7 @@ the single visualization layer. State is durable: InfluxDB on a persistent volum
 
 ## Target Architecture
 
-The collector layer matches "Current Architecture" above. What's still ahead is more dashboards (Phase 3.4 is partially done — overview dashboard live, deeper Refoss/cost/HVAC panels still to build) and TCC integration (Phase 4).
+The collector layer matches "Current Architecture" above. Phase 3.4 dashboards and Phase 4 thermostat integration both landed in May 2026 (see Development Roadmap below). Active follow-on work: InfluxDB downsampling design, PJM Data Miner API onboarding, and ComfortNet HVAC-sniffer integration (see `docs/COMFORTNET_USE_CASES.md`).
 
 **Grafana dashboards will provide:**
 - Real-time "right now" view (10-30s auto-refresh): current demand, current rate, current cost/hour, top circuits by power
@@ -152,14 +152,21 @@ Phase 5 when the Sense hardware was removed.
 ### Phase 3.3 — EAGLE-3 Poller
 Add EAGLE-3 polling to the proxy using the tested Local API. Write instantaneous demand and cumulative summation to InfluxDB. This is billing-grade ground truth.
 
-### Phase 3.4 — Grafana Dashboards (in progress)
-First dashboard live: **Home Energy — Overview** at `grafana/dashboards/home-energy-overview.json` (provisioned, auto-loaded). Four panels: current EAGLE demand, current ComEd 5-min price, 24h whole-home demand (EAGLE + Refoss `em:1+em:7` overlay), and 24h ComEd 5-min price chart. Updated in Phase 5 to swap the Sense overlay for Refoss split-phase mains. Still to build: per-circuit breakdowns (top-N circuits by power, HVAC vs other, fridge cluster), cost computation panels (price × demand integrated to $/hr), daily/weekly/monthly summaries, EAGLE-vs-Refoss agreement panel (sanity check).
+### Phase 3.4 — Grafana Dashboards ✅ (May 2026)
+Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
+- `home-energy-overview.json` — current EAGLE demand, current ComEd 5-min price, 24h whole-home demand (EAGLE + Refoss `em:1+em:7` overlay), 24h ComEd price chart.
+- `home-energy-full.json` — per-circuit breakdowns, cost panels (price × demand integrated to $/hr), daily/weekly/monthly summaries, EAGLE-vs-Refoss agreement panel.
+- `hvac-scheduler.json` — scheduler decision history, day-type, override events, runtime correlation.
+- `comed-bill-reconciliation.json` — Phase 8 bill-vs-meter reconciliation (4 panels).
+- `iaq-comparison.json` — HAVEN indoor/outdoor air-quality comparison.
 
-### Phase 5 — Webdashboard prototype (April 2026)
-Sci-fi HUD prototype generated via `claude.ai/design` and deployed as the `webdashboard` nginx container on the energy-stack at `http://192.168.20.10:8081/`. Static React + Babel-standalone (in-browser JSX compilation) — no build step, files served as-is from `deploy/energy-stack/webdashboard/`. Three-zone hero (price + ring + 24h chart), animated power-flow diagram, active-loads list, voltage/freq gauges, climate panel, cost stack with projections, EAGLE summation tile, scrolling ticker, scanlines, and a 60-tick sweep ring. Tweaks panel exposes 5 accent colors, density, motion intensity, scenarios, scanlines, and ticker on/off. **Currently mock-data only** — wiring to live InfluxDB requires building a `/api/energy` endpoint (probably a small Python `aiohttp` service alongside the existing pollers, queriable from the JSX via fetch). This is an additive second view; Grafana remains the production visualization.
+The fixed Flux cost-calc pattern is shared with `webdashboard-api` and `telegram-notifier` daily summary.
 
-### Phase 4 — TCC Thermostat Integration
-Add Honeywell TCC polling (~10 min interval) for indoor/outdoor temp, humidity, setpoints, equipment status. Write to InfluxDB as context data for HVAC correlation panels.
+### Phase 5 — Webdashboard ✅ (May 2026)
+Sci-fi HUD originally generated via `claude.ai/design` and deployed as the `webdashboard` nginx container at `http://192.168.20.10:8081/`. Static React + Babel-standalone (in-browser JSX compilation), no build step, files served as-is from `deploy/energy-stack/webdashboard/`. Live data is served by the `webdashboard-api` FastAPI service (`/api/energy/snapshot`) which queries InfluxDB directly using the same Flux cost-calc pattern as the Grafana cost panels and `telegram-notifier`. This is an additive second view; Grafana remains the production visualization.
+
+### Phase 4 — Thermostat Integration ✅ (May 2026)
+Implemented via the Control4 EA-5 path rather than the originally-planned direct Honeywell TCC API: `thermostat-poller` container reads via `pyControl4.C4Climate` every 10 minutes, with override-detection logic, and writes to `hvac.thermostat`. The Control4 path was simpler and more reliable than direct TCC. Direct TCC remains a fallback option if Control4 ever loses access.
 
 ### Phase 5 — Refoss EM16P ✅ (April 2026)
 Complete. Sense hardware removed and replaced with Refoss EM16P at `192.168.20.140` (homelab VLAN, auth disabled). New `refoss-poller` container in `energy-stack` polls `Refoss.Status.Get` every 30 s — single round-trip per cycle returns all 18 `em:N` channels plus `sys`/`wifi` blocks. Channel labels are sourced from the device's own `Refoss.Config.Get` (whatever was named in the Refoss app) and refreshed automatically when `sys.cfg_rev` increments. Measurements: `refoss.channel` (one point per channel) and `refoss.system`. The `sense-poller` container was removed from compose; old `energy_proxy.py`, `dashboard.html`, launchers, and Sense `.env` credentials were deleted from the Windows-side repo.
@@ -174,11 +181,10 @@ Automated load management based on real-time pricing and demand data.
 
 ## Known Follow-ups
 
-- **Refoss CT polarity on em:5 and em:14**: both circuits sit on B-phase breakers but the EM16P's voltage reference wire is on A phase, so power is reported as negative (small return-energy values accumulate). Fix in the Refoss app by setting per-channel `factor` to `-1` for `em:5` (Master Bedroom) and `em:14` (Basement Micro/Fridge). Confirm with `curl http://192.168.20.140/rpc/Refoss.Config.Get` after — the field shows up alongside `name` for each `em:N`. Poller will pick up the corrected sign automatically; no code change needed.
-- **InfluxDB downsampling**: single `energy` bucket with infinite retention chosen for Phase 3.1 (YAGNI). Revisit after Phase 3.4 dashboards are in place and data cardinality/query patterns are known. Candidate design: `energy-longterm` bucket + Flux task downsampling 1-minute aggregates. Refoss adds ~18 channels × 10 fields per 30 s cycle, so cardinality bears watching.
+- **InfluxDB downsampling**: single `energy` bucket with infinite retention chosen for Phase 3.1 (YAGNI). Revisit now that Phase 3.4 dashboards are in place and cardinality is known. Candidate design: `energy-longterm` bucket + Flux task downsampling to 1-minute aggregates. Refoss adds ~18 channels × 10 fields per 30 s cycle; ComfortNet integration (see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md)) will add another per-frame stream. Worth deciding the downsampling design before the ComfortNet pipeline lands.
+- **PJM Data Miner API onboarding**: pending. Non-member access requires emailing `accountmanager@pjm.com` with the internal-business-use confirmation statement (PJM tech-support reply, May 2026). After username and API access are provisioned, build a `pjm-poller` container for LMP, 5CP candidates, and system-load context to feed the HVAC scheduler.
+- **ComfortNet HVAC sniffer integration**: see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md). Plumbing not yet started (HANDOFF steps 7-8 in the `comfortnet` repo): Mosquitto + Telegraf containers, MQTT topics under `home/<location>/hvac/comfortnet/<field>`, new `hvac.comfortnet` measurement.
 - **SOPS encryption** (complete, April 2026): `.env` is mirrored as age-encrypted `deploy/energy-stack/secrets/env.sops.env`, committed to the repo. Recipients: Windows workstation + Pi-lab. Rotation workflow documented in `deploy/energy-stack/README.md`. Both age private keys must be stored in 1Password (single-host loss is recoverable; both-host loss is not).
-- **Grafana dashboards**: overview dashboard live (`home-energy-overview.json`); per-circuit / cost / HVAC panels are Phase 3.4 follow-on. Refoss-specific panels compute whole-home aggregate as `em:1 + em:7` (the two split-phase mains) since the device's `emmerge:N` rollups return empty on firmware 3.1.8.
-- **Versioning energy-proxy**: project is not a git repo yet. Phase 5 added a third poller and deleted ~6 Windows-side files; risk of accidental loss is rising. Worth `git init` + private GitHub push as a snapshot.
 
 ---
 
