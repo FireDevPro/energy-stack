@@ -30,6 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -54,6 +55,7 @@ class Config:
     influx_token: str
     influx_org: str
     influx_bucket: str
+    tz: ZoneInfo
 
     @staticmethod
     def from_env() -> "Config":
@@ -75,6 +77,12 @@ class Config:
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
             influx_bucket=required("INFLUXDB_BUCKET"),
+            # Anchor day-bucket and "now" to the user's wall-clock tz, NOT the
+            # container's. Containers are typically UTC, so without this, at
+            # 21:00 America/Chicago the poller would label calendar days one
+            # day ahead of what the scheduler expects — choosing tomorrow's
+            # day-type from the wrong forecast.
+            tz=ZoneInfo(os.environ.get("SCHEDULER_TZ", "America/Chicago")),
         )
 
 
@@ -132,12 +140,49 @@ def is_heat_related(event_text: str) -> bool:
     return any(k in t for k in ("heat advisory", "excessive heat", "heat warning"))
 
 
-def aggregate_period(periods: list[dict], target_date) -> dict:
-    """Roll up hourly periods that fall on `target_date` (local-time)."""
+def alert_window(alert: dict) -> tuple[datetime | None, datetime | None]:
+    """Return (start, end) datetimes for an alert's hazardous-conditions window.
+
+    Per the NWS API, the actual hazard window is bounded by ``onset`` (or
+    ``effective`` if onset isn't set) on the start side and ``ends`` (or
+    ``expires``) on the end side. Either bound may be missing — caller treats
+    None as open-ended on that side.
+    """
+    props = alert.get("properties") or {}
+    start_str = props.get("onset") or props.get("effective")
+    end_str = props.get("ends") or props.get("expires")
+    start = parse_iso(start_str) if start_str else None
+    end = parse_iso(end_str) if end_str else None
+    return start, end
+
+
+def heat_active_on_date(alerts: list[dict], target_date, tz: ZoneInfo) -> bool:
+    """True if any heat-related alert overlaps ``target_date`` in ``tz``.
+
+    Each forecast period (today/tomorrow/day2) needs a per-day flag; a single
+    alert that's ending tonight should not bias tomorrow as HOT.
+    """
+    day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=tz)
+    day_end = day_start + timedelta(days=1)
+    for a in alerts:
+        if not is_heat_related((a.get("properties") or {}).get("event", "")):
+            continue
+        start, end = alert_window(a)
+        # Open-ended bound = treat as overlapping that side.
+        if start is not None and start >= day_end:
+            continue
+        if end is not None and end <= day_start:
+            continue
+        return True
+    return False
+
+
+def aggregate_period(periods: list[dict], target_date, tz: ZoneInfo) -> dict:
+    """Roll up hourly periods that fall on `target_date` in ``tz``."""
     matching = []
     for p in periods:
         try:
-            dt_local = parse_iso(p["startTime"]).astimezone()
+            dt_local = parse_iso(p["startTime"]).astimezone(tz)
         except Exception:
             continue
         if dt_local.date() == target_date:
@@ -170,9 +215,14 @@ def aggregate_period(periods: list[dict], target_date) -> dict:
     }
 
 
-def build_forecast_points(periods: list[dict], alerts: list[dict]) -> list[Point]:
-    """Build today / tomorrow / day2 snapshot points with alert overlay."""
-    now_local = datetime.now().astimezone()
+def build_forecast_points(periods: list[dict], alerts: list[dict], tz: ZoneInfo) -> list[Point]:
+    """Build today / tomorrow / day2 snapshot points with alert overlay.
+
+    Days are bucketed in ``tz`` (the user's wall-clock zone). Heat-advisory
+    flags are time-sliced per period: an alert ending tonight only flags
+    today, not tomorrow or day2.
+    """
+    now_local = datetime.now(tz)
     today = now_local.date()
     days = {
         "today":    today,
@@ -180,19 +230,16 @@ def build_forecast_points(periods: list[dict], alerts: list[dict]) -> list[Point
         "day2":     today + timedelta(days=2),
     }
 
-    # Active heat advisory flag (any heat-related alert active right now is enough
-    # for the scheduler's purposes -- we don't time-slice alerts to specific days)
-    heat_active = any(
-        is_heat_related((a.get("properties") or {}).get("event", ""))
-        for a in alerts
-    )
+    # Cross-period summary stays as "what's currently active anywhere" — useful
+    # context for diagnostics. Per-period heat flag is computed below.
     alert_summary = "; ".join(
         sorted({(a.get("properties") or {}).get("event", "") for a in alerts if a.get("properties")})
     )[:240]
 
     points = []
     for period_label, target_date in days.items():
-        agg = aggregate_period(periods, target_date)
+        agg = aggregate_period(periods, target_date, tz)
+        heat_active = heat_active_on_date(alerts, target_date, tz)
         p = (Point("nws.forecast")
              .tag("for_period", period_label)
              .field("period_date", target_date.isoformat())
@@ -242,7 +289,7 @@ async def poll_once(client: NWSClient, write_api, cfg: Config) -> None:
             log("warn", "alerts_fetch_failed", error=str(exc), error_type=type(exc).__name__)
             alerts = []
 
-    forecast_points = build_forecast_points(periods, alerts)
+    forecast_points = build_forecast_points(periods, alerts, cfg.tz)
     alert_points = build_alert_points(alerts)
 
     # Influx write errors NOT caught -- bubble up, Docker restarts container
