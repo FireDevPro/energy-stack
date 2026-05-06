@@ -245,43 +245,34 @@ from(bucket: "{bucket}")
     }
 
 
-def detect_and_write_override(query_api, write_api, cfg: Config, snap: dict) -> dict | None:
-    """If current setpoints differ from last applied action (after grace period),
-    write hvac.overrides row and return the override summary. Returns None if
-    no override or last action data unavailable."""
-    last = fetch_last_action(query_api, cfg.influx_bucket)
-    if not last:
-        return None
+def classify_override(snap: dict, last: dict, override_grace_min: float) -> dict | None:
+    """Decide whether the current thermostat snapshot represents a manual
+    override of the last applied scheduler action.
+
+    Returns a summary dict when:
+      * Both expected and actual setpoints (heat AND cool) are present, AND
+      * It has been at least ``override_grace_min`` minutes since the last
+        applied action (avoids flagging the action's own write as an
+        override before the read-back settles), AND
+      * Either the cool or heat setpoint differs from the action's setpoint
+        by 0.5°F or more (sub-half-degree differences are rounding noise).
+
+    Returns None on any condition above failing.
+    """
     expected_cool = last.get("cool_setpoint_f")
     expected_heat = last.get("heat_setpoint_f")
     actual_cool = snap.get("cool_setpoint_f")
     actual_heat = snap.get("heat_setpoint_f")
     minutes_since = last.get("minutes_since_last_action")
-    if expected_cool is None or expected_heat is None or actual_cool is None or actual_heat is None:
+    if (expected_cool is None or expected_heat is None
+            or actual_cool is None or actual_heat is None):
         return None
-    if minutes_since is None or minutes_since < cfg.override_grace_min:
+    if minutes_since is None or minutes_since < override_grace_min:
         return None
     delta_cool = float(actual_cool) - float(expected_cool)
     delta_heat = float(actual_heat) - float(expected_heat)
     if abs(delta_cool) < 0.5 and abs(delta_heat) < 0.5:
         return None  # within rounding; not an override
-
-    p = (Point("hvac.overrides")
-         .tag("thermostat_id", str(cfg.thermostat_id))
-         .tag("source", "manual_override")
-         .field("expected_cool_setpoint_f", float(expected_cool))
-         .field("actual_cool_setpoint_f", float(actual_cool))
-         .field("delta_cool_f", float(delta_cool))
-         .field("expected_heat_setpoint_f", float(expected_heat))
-         .field("actual_heat_setpoint_f", float(actual_heat))
-         .field("delta_heat_f", float(delta_heat))
-         .field("last_action_label", str(last.get("action_label") or ""))
-         .field("minutes_since_last_action", float(minutes_since))
-         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
-         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
-         .field("hvac_mode", str(snap.get("hvac_mode") or ""))
-         )
-    write_api.write(bucket=cfg.influx_bucket, record=p)
     return {
         "expected_cool_f": expected_cool,
         "actual_cool_f": actual_cool,
@@ -292,6 +283,36 @@ def detect_and_write_override(query_api, write_api, cfg: Config, snap: dict) -> 
         "minutes_since_last_action": minutes_since,
         "last_action_label": last.get("action_label"),
     }
+
+
+def detect_and_write_override(query_api, write_api, cfg: Config, snap: dict) -> dict | None:
+    """If current setpoints differ from last applied action (after grace period),
+    write hvac.overrides row and return the override summary. Returns None if
+    no override or last action data unavailable."""
+    last = fetch_last_action(query_api, cfg.influx_bucket)
+    if not last:
+        return None
+    summary = classify_override(snap, last, cfg.override_grace_min)
+    if summary is None:
+        return None
+
+    p = (Point("hvac.overrides")
+         .tag("thermostat_id", str(cfg.thermostat_id))
+         .tag("source", "manual_override")
+         .field("expected_cool_setpoint_f", float(summary["expected_cool_f"]))
+         .field("actual_cool_setpoint_f", float(summary["actual_cool_f"]))
+         .field("delta_cool_f", float(summary["delta_cool_f"]))
+         .field("expected_heat_setpoint_f", float(summary["expected_heat_f"]))
+         .field("actual_heat_setpoint_f", float(summary["actual_heat_f"]))
+         .field("delta_heat_f", float(summary["delta_heat_f"]))
+         .field("last_action_label", str(summary["last_action_label"] or ""))
+         .field("minutes_since_last_action", float(summary["minutes_since_last_action"]))
+         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
+         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
+         .field("hvac_mode", str(snap.get("hvac_mode") or ""))
+         )
+    write_api.write(bucket=cfg.influx_bucket, record=p)
+    return summary
 
 
 async def main_async(cfg: Config) -> int:
