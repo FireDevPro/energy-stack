@@ -28,6 +28,69 @@ modify the algorithm or default seed without filing an OSF amendment.** The
 pinned-snapshot test in `tests/test_randomize_arms.py` will fail loud if the
 seed-to-output mapping ever drifts.
 
+## scrape_pjm_5cp_pdf.py — annual PJM 5CP coincident-peak PDF ingest
+
+The 5 hours per summer that determine the next year's PJM capacity charges
+are not exposed in the Data Miner 2 API at the Non-Member tier. PJM publishes
+them in an annual PDF, revised mid-November of the same year. This script
+fetches and parses that PDF, then writes each peak as a point to the
+`pjm.coincident_peak` InfluxDB measurement.
+
+### Usage
+
+```bash
+python scrape_pjm_5cp_pdf.py                      # last summer (default)
+python scrape_pjm_5cp_pdf.py --year 2024
+python scrape_pjm_5cp_pdf.py --years 2021,2022,2023,2024,2025  # backfill
+python scrape_pjm_5cp_pdf.py --pdf /path/to/local.pdf --year 2024
+python scrape_pjm_5cp_pdf.py --year 2024 --dry-run
+```
+
+### Annual cron (pi-lab)
+
+The PDF is published mid-November. A single cron entry around November 20
+each year keeps the dataset current:
+
+```cron
+0 9 20 11 * cd ~/energy-stack/scripts && source .venv/bin/activate && \
+  set -a; source ~/energy-stack/.env; set +a && \
+  python scrape_pjm_5cp_pdf.py >> /var/log/pjm-5cp.log 2>&1
+```
+
+### Output schema
+
+One Influx point per (summer, peak_rank) pair:
+
+| Element | Value |
+|---|---|
+| Measurement | `pjm.coincident_peak` |
+| Tag | `summer_year` (e.g. `"2024"`) |
+| Tag | `peak_rank` (`"1"` highest RTO MW through `"5"` lowest of the five) |
+| Field | `peak_load_mw` (RTO peak in MW) |
+| Field | `comed_zone_load_mw` (ComEd's coincident load in MW) |
+| Timestamp | The actual 5CP hour, **hour-beginning EPT**. PJM publishes "Hour Ending EPT" so we subtract 1 hour for stack-wide hour-beginning consistency. |
+
+### Validation gates (will refuse to write if any fail)
+
+- Exactly 5 peaks parsed from page 1
+- Exactly 5 ComEd-zonal MW values from page 2
+- All 5 dates fall within (June 1, October 31) of the target year
+- RTO peak MW values within `[50_000, 250_000]` (sanity)
+- ComEd zonal MW values within `[5_000, 30_000]` (sanity)
+- Year extracted from PDF header matches `--year` flag
+
+If any gate fails, no Influx writes happen and the script exits non-zero.
+This is the layout-drift-detection mechanism: if PJM changes the PDF format
+materially, we fail loud rather than silently writing garbage.
+
+### URL pattern
+
+`https://www.pjm.com/-/media/DotCom/planning/res-adeq/load-forecast/summer-{YEAR}-peaks-and-5cps.pdf`
+
+Confirmed working for summers 2021 through 2025. Older years (≤2020) either
+don't exist at that URL pattern or PJM never published them at that location;
+manual handling required if pre-2021 data is ever needed.
+
 ## parse_comed_bill.py — ComEd bill ingest
 
 Parses a ComEd bill PDF and writes the structured data to InfluxDB:
