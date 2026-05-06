@@ -106,7 +106,7 @@ def post_eagle(cfg: Config, body: str, timeout_s: float = 10.0) -> ET.Element:
 def assert_meter_present(cfg: Config) -> None:
     """Confirm the configured meter is visible on startup. Exit non-zero if not."""
     root = post_eagle(cfg, "<Command><Name>device_list</Name></Command>")
-    addresses = [e.text for e in root.iter("HardwareAddress") if e.text]
+    addresses = extract_hardware_addresses(root)
     if cfg.meter_hw not in addresses:
         log(
             "error",
@@ -116,6 +116,29 @@ def assert_meter_present(cfg: Config) -> None:
         )
         sys.exit(3)
     log("info", "meter_found", hw_address=cfg.meter_hw)
+
+
+def extract_variable_value(root: ET.Element, zigbee_name: str) -> float | None:
+    """Pull a named variable's float value from a device_query XML response.
+
+    EAGLE-3 returns values as pre-formatted ASCII strings with units, like
+    ``"1.602 kW"`` or ``"78967.773 kWh"``. The split-and-float parses any
+    unit suffix uniformly. Returns None if the variable isn't in the response
+    or the Value element is empty.
+    """
+    for variable in root.iter("Variable"):
+        name_el = variable.find("Name")
+        value_el = variable.find("Value")
+        if name_el is None or value_el is None or not value_el.text:
+            continue
+        if name_el.text == zigbee_name:
+            return float(value_el.text.split()[0])
+    return None
+
+
+def extract_hardware_addresses(root: ET.Element) -> list[str]:
+    """Pull all <HardwareAddress> text from a device_list response."""
+    return [e.text for e in root.iter("HardwareAddress") if e.text]
 
 
 def query_one_variable(cfg: Config, zigbee_name: str) -> float | None:
@@ -136,14 +159,7 @@ def query_one_variable(cfg: Config, zigbee_name: str) -> float | None:
         "</Command>"
     )
     root = post_eagle(cfg, body)
-    for variable in root.iter("Variable"):
-        name_el = variable.find("Name")
-        value_el = variable.find("Value")
-        if name_el is None or value_el is None or not value_el.text:
-            continue
-        if name_el.text == zigbee_name:
-            return float(value_el.text.split()[0])
-    return None
+    return extract_variable_value(root, zigbee_name)
 
 
 def query_meter(cfg: Config) -> dict[str, float]:
