@@ -76,16 +76,33 @@ class Config:
         )
 
 
+def parse_current_hour_avg(data: list) -> float | None:
+    """Pull the price from a ``type=currenthouraverage`` response payload."""
+    if not data:
+        return None
+    return float(data[0]["price"])
+
+
+def parse_latest_5min(data: list) -> tuple[int, float] | None:
+    """Pick the most recent (millisUTC, price_cents) tuple from a
+    ``type=5minutefeed`` response payload.
+
+    The API returns entries unordered (or close to it); pick the largest
+    millisUTC rather than trusting position. Returns None on empty input.
+    """
+    if not data:
+        return None
+    latest = max(data, key=lambda entry: int(entry["millisUTC"]))
+    return int(latest["millisUTC"]), float(latest["price"])
+
+
 def fetch_current_hour_avg(cfg: Config) -> float | None:
     response = requests.get(
         f"{cfg.api_base}?type=currenthouraverage&format=json",
         timeout=(5.0, 15.0),
     )
     response.raise_for_status()
-    data = response.json()
-    if not data:
-        return None
-    return float(data[0]["price"])
+    return parse_current_hour_avg(response.json())
 
 
 def fetch_latest_5min(cfg: Config) -> tuple[int, float] | None:
@@ -95,11 +112,7 @@ def fetch_latest_5min(cfg: Config) -> tuple[int, float] | None:
         timeout=(5.0, 15.0),
     )
     response.raise_for_status()
-    data = response.json()
-    if not data:
-        return None
-    latest = max(data, key=lambda entry: int(entry["millisUTC"]))
-    return int(latest["millisUTC"]), float(latest["price"])
+    return parse_latest_5min(response.json())
 
 
 def write_points(write_api, cfg: Config, hourly_avg: float | None,
