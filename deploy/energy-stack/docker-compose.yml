@@ -136,6 +136,24 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
+  pjm-dm2-poller:
+    build: ./pjm-dm2-poller
+    container_name: pjm-dm2-poller
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      PJM_DM2_API_KEY: ${PJM_DM2_API_KEY}
+      # Hourly wake; each fetcher fires only on its scheduled local hours.
+      # See deploy/energy-stack/pjm-dm2-poller/app.py FEED_SCHEDULE.
+      PJM_DM2_POLL_INTERVAL: ${PJM_DM2_POLL_INTERVAL:-3600}
+      PJM_DM2_TZ: ${SCHEDULER_TZ:-America/Chicago}
+      INFLUX_URL: http://influxdb:8086
+      INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET}
+
   hvac-scheduler:
     build: ./hvac-scheduler
     container_name: hvac-scheduler

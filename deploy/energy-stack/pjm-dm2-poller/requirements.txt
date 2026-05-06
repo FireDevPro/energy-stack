@@ -1,0 +1,3 @@
+aiohttp==3.11.10
+influxdb-client==1.48.0
+tzdata
