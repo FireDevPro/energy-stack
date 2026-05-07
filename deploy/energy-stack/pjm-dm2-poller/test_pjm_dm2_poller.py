@@ -461,8 +461,9 @@ async def test_poll_once_skips_peak_forecast_in_off_season(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poll_once_continues_when_one_feed_fails(monkeypatch):
+async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
     cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))
+    _stub_health_marker(monkeypatch, tmp_path)
 
     client = MagicMock()
     calls: list[str] = []
@@ -479,13 +480,200 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch):
     # Both feeds were attempted; the failure of one didn't abort the cycle
     assert "load_frcstd_7_day" in calls
     assert "ops_sum_frcst_peak_rto" in calls
-    # Only the successful feed wrote
-    write_api.write.assert_called_once()
+
+    # Three writes expected: 1 success-data (peak_forecast points)
+    # plus one pjm.feed_status row per attempted feed.
+    measurements = _measurements_written(write_api)
+    assert measurements.count("pjm.peak_forecast_rto") == 1
+    assert measurements.count("pjm.feed_status") == 2
+
+
+# =========================================================================
+# Health-marker gating + per-feed status (CodeX 2026-05-07 P2)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_health_marker_touched_on_idle_cycle(monkeypatch, tmp_path):
+    """A cycle where no feed was due (e.g., 03:00 Tuesday in May) should
+    still touch the marker — the loop is alive and there's nothing to
+    fail. Loss of liveness in this case = the loop wedged."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT
+    marker = _stub_health_marker(monkeypatch, tmp_path)
+
+    client = MagicMock()
+    client.fetch = MagicMock()  # Should never be called on an idle cycle
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+
+    assert marker.exists(), "marker must be touched on idle cycles"
+
+
+@pytest.mark.asyncio
+async def test_health_marker_touched_when_at_least_one_feed_succeeds(monkeypatch, tmp_path):
+    """Mixed-outcome cycle: one due feed succeeds, one fails. CodeX's
+    recommendation is to keep the marker fresh as long as ANY due feed
+    worked — per-feed alerting handles the partial-failure case via
+    pjm.feed_status."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))  # cooling season 13:00
+    marker = _stub_health_marker(monkeypatch, tmp_path)
+
+    async def maybe_fail(feed, params):
+        if feed == "load_frcstd_7_day":
+            raise RuntimeError("PJM HTTP 500")
+        return [_peak_item()]
+    client = MagicMock()
+    client.fetch = maybe_fail
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+    assert marker.exists(), "marker must be touched when ANY due feed succeeds"
+
+
+@pytest.mark.asyncio
+async def test_health_marker_NOT_touched_when_all_due_feeds_fail(monkeypatch, tmp_path):
+    """The bug CodeX caught: previously the marker was touched
+    unconditionally, hiding persistent auth/schema/4xx behind a healthy
+    container. With every due feed failing the marker must stay stale so
+    the Dockerfile HEALTHCHECK can flip the container unhealthy."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))  # 13:00 in cooling season
+    marker = _stub_health_marker(monkeypatch, tmp_path)
+
+    async def always_fail(feed, params):
+        raise RuntimeError("PJM HTTP 401")
+    client = MagicMock()
+    client.fetch = always_fail
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+    assert not marker.exists(), \
+        "marker must stay stale when every due feed fails"
+
+
+@pytest.mark.asyncio
+async def test_feed_status_row_written_on_success(monkeypatch, tmp_path):
+    """Every successful feed attempt writes one pjm.feed_status row tagged
+    success=true with points_written field. Independent of whether the
+    feed itself wrote anything (an empty NSPL response is still success)."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))
+    _stub_health_marker(monkeypatch, tmp_path)
+
+    async def fake_fetch(feed, params):
+        if feed == "load_frcstd_7_day":
+            return [_forecast_item(15, 13)]
+        if feed == "ops_sum_frcst_peak_rto":
+            return [_peak_item()]
+        return []
+    client = MagicMock()
+    client.fetch = fake_fetch
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+
+    status_lines = _status_rows(write_api)
+    assert len(status_lines) == 2  # one per due feed
+    for line in status_lines:
+        assert "pjm.feed_status" in line
+        assert "success=true" in line
+
+
+@pytest.mark.asyncio
+async def test_feed_status_row_written_on_failure(monkeypatch, tmp_path):
+    """A failing feed writes a pjm.feed_status row tagged success=false
+    with the exception type as a field. This is the surface that
+    telegram-notifier and Grafana alerting query for per-feed health,
+    independent of the container healthcheck."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))
+    _stub_health_marker(monkeypatch, tmp_path)
+
+    async def all_fail(feed, params):
+        raise RuntimeError("PJM HTTP 401: unauthorized")
+    client = MagicMock()
+    client.fetch = all_fail
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+
+    status_lines = _status_rows(write_api)
+    assert len(status_lines) == 2  # one per due feed at 13:00 in summer
+    for line in status_lines:
+        assert "pjm.feed_status" in line
+        assert "success=false" in line
+        assert "RuntimeError" in line  # error_type field carries exception class
+
+
+@pytest.mark.asyncio
+async def test_feed_status_failure_to_write_does_not_break_cycle(monkeypatch, tmp_path):
+    """If the pjm.feed_status write itself errors (transient Influx
+    blip), the cycle must NOT raise and the marker logic must still
+    apply. Status writes are observability, not control."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))
+    marker = _stub_health_marker(monkeypatch, tmp_path)
+
+    write_api = MagicMock()
+
+    async def fake_fetch(feed, params):
+        if feed == "load_frcstd_7_day":
+            return [_forecast_item(15, 13)]
+        if feed == "ops_sum_frcst_peak_rto":
+            return [_peak_item()]
+        return []
+
+    # Make the *status* write fail (the second arg is a list of one Point;
+    # data writes pass a list with multiple points). A simple proxy: any
+    # write whose record list has exactly one point is treated as a
+    # status write and fails.
+    def selective_write(*, bucket, record):
+        if len(record) == 1 and "pjm.feed_status" in record[0].to_line_protocol():
+            raise RuntimeError("Influx transient error")
+        return None
+    write_api.write = MagicMock(side_effect=selective_write)
+
+    client = MagicMock()
+    client.fetch = fake_fetch
+
+    # Must not raise
+    await poll_once(client, write_api, cfg)
+    # And the cycle still counts as healthy (data writes succeeded)
+    assert marker.exists()
 
 
 # =========================================================================
 # helpers
 # =========================================================================
+
+
+def _measurements_written(write_api: MagicMock) -> list[str]:
+    """Extract the measurement name from each Point passed to write_api.write."""
+    out: list[str] = []
+    for call in write_api.write.call_args_list:
+        record = call.kwargs.get("record") or (call.args[1] if len(call.args) > 1 else [])
+        for pt in record:
+            line = pt.to_line_protocol()
+            out.append(line.split(",", 1)[0].split(" ", 1)[0])
+    return out
+
+
+def _status_rows(write_api: MagicMock) -> list[str]:
+    """Line-protocol strings for every pjm.feed_status point written."""
+    out: list[str] = []
+    for call in write_api.write.call_args_list:
+        record = call.kwargs.get("record") or (call.args[1] if len(call.args) > 1 else [])
+        for pt in record:
+            line = pt.to_line_protocol()
+            if line.startswith("pjm.feed_status"):
+                out.append(line)
+    return out
+
+
+def _stub_health_marker(monkeypatch, tmp_path):
+    """Redirect HEALTH_MARKER to a temp path so tests can assert touch state
+    without touching /tmp."""
+    from pathlib import Path
+    marker = Path(tmp_path) / "last_poll_ok"
+    monkeypatch.setattr("app.HEALTH_MARKER", marker)
+    return marker
 
 
 def _stub_config_at(monkeypatch, when: datetime) -> Config:
