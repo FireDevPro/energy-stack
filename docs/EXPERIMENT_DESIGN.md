@@ -143,7 +143,7 @@ Stopping criteria for the broader study: minimum one cooling season of valid dat
 ## 10. Open-data plan
 
 - **Telemetry**: full sub-minute multi-year dataset published as Apache Parquet (one file per measurement per year) on Zenodo with DOI. License: CC BY 4.0.
-- **Metadata**: [Brick Schema](https://brickschema.org/) JSON-LD turtle file describing every published point, its unit, sampling cadence, and provenance. One-time tagging effort against the existing InfluxDB measurements (`hvac.thermostat`, `hvac.comfortnet`, `refoss.channel`, `nws.forecast`, `weather.ecowitt`, `comed.bill`, `comed.price`, `hvac.actions`, `hvac.thermal_model`).
+- **Metadata**: [Brick Schema](https://brickschema.org/) JSON-LD turtle file describing every published point, its unit, sampling cadence, and provenance. One-time tagging effort against the existing InfluxDB measurements (`hvac.thermostat`, `hvac.comfortnet`, `refoss.channel`, `nws.forecast`, `weather.ecowitt`, `comed.bill`, `comed.prices`, `hvac.actions`, `hvac.thermal_model`, `pjm.lmp_da_hourly`, `pjm.metered_load`, `pjm.coincident_peak`).
 - **Code**: this repository tagged at the commit hash referenced in the OSF pre-registration. Zenodo automatically generates a citable DOI from the tagged GitHub release.
 - **Bills**: parsed bill data (cost line items, peak kW, kWh) included; original PDFs withheld due to embedded account info.
 - **Pre-registration**: OSF project URL referenced in published methods section. OSF page is public from the moment it's filed.

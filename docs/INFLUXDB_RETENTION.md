@@ -1,8 +1,8 @@
 # InfluxDB Retention and Downsampling Design
 
-**Status**: proposed. Not yet implemented.
+**Status**: shipped May 2026. `influx-init` provisions the `energy-longterm` bucket and applies the 1-minute downsample task on every `compose up -d`. Live Flux task: [`deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux`](../deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux). Provisioning script: [`deploy/energy-stack/influx-init/apply.sh`](../deploy/energy-stack/influx-init/apply.sh).
 
-Closes the InfluxDB downsampling open item in PROJECT.md. Designed alongside [`COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) so the ComfortNet `hvac.comfortnet` measurement schema can be built knowing which fields aggregate which way.
+This doc is preserved as the design rationale; the migration-plan section at the bottom records what actually happened. Designed alongside [`COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) so the ComfortNet `hvac.comfortnet` measurement schema can be built knowing which fields aggregate which way.
 
 ## Goals
 
@@ -34,6 +34,12 @@ Every measurement currently or imminently writing to the `energy` bucket, classi
 | `nws.forecast` | `nws-poller` | 30 min | already coarse | Direct write to longterm |
 | `haven.indoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
 | `haven.outdoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
+| `pjm.lmp_da_hourly` | `pjm-dm2-poller` | hourly (per-feed schedule) | already coarse | Direct write to longterm |
+| `pjm.load_forecast` | `pjm-dm2-poller` | 2× daily (per-feed schedule) | already coarse | Direct write to longterm |
+| `pjm.metered_load` | `pjm-dm2-poller` | weekly | already coarse | Direct write to longterm |
+| `pjm.peak_forecast_rto` | `pjm-dm2-poller` | 2× daily, summer only | already coarse | Direct write to longterm |
+| `pjm.nspl_zonal` | `pjm-dm2-poller` | annual | already coarse | Direct write to longterm |
+| `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` | annual | event | Direct write to longterm |
 
 **Class definitions**:
 
@@ -65,12 +71,25 @@ For per-frame continuous measurements, the task runs once per minute and applies
 
 **Naming convention**: the mean is stored under the original field name so existing dashboard queries keep working when they switch from raw to longterm. The max is stored under `<field>_max` and is the field analytical queries (5CP attribution, peak-demand panels) reach for explicitly.
 
-**Per-measurement field overrides**: encode in the task's lookup tables. Initial values:
+**Per-measurement field overrides**: encoded in the task's `cumulativeFields` lookup. Live values (see the deployed Flux file):
 
 ```
-cumulative_fields = [
+cumulativeFields = [
+    // eagle.meter
     "summation_delivered",
     "summation_received",
+    // refoss.channel (bucketed energy counters that reset on day/week/month
+    // boundary inside the device — last() within a minute is still correct
+    // because we want the latest counter value per minute)
+    "day_energy_kwh",
+    "day_ret_energy_kwh",
+    "week_energy_kwh",
+    "week_ret_energy_kwh",
+    "month_energy_kwh",
+    "month_ret_energy_kwh",
+    // refoss.system
+    "uptime_s",
+    "cfg_rev",
 ]
 
 # Default for everything else: mean + max
@@ -91,57 +110,14 @@ The use-cases doc field-requirements table maps cleanly onto this split.
 
 ## The Flux task
 
-Single task running every 1 min, downsamples the prior completed minute window. Concrete shape (final source lives in `deploy/energy-stack/influx-tasks/downsample-energy-1m.flux`):
+Single task running every 1 min, downsamples the prior completed minute window. Source: [`deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux`](../deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux).
 
-```flux
-import "date"
+Two design choices worth calling out (vs. the original sketch in this doc):
 
-option task = {
-    name: "downsample-energy-1m",
-    every: 1m,
-    offset: 30s,
-}
+- **Explicit minute-aligned window** instead of `range(start: -2m, stop: -1m)`. Live task uses `windowEnd = date.truncate(t: now(), unit: 1m)` and `windowStart = date.sub(d: 1m, from: windowEnd)`. This produces the correct prior-minute window regardless of `offset` value and avoids partial-minute aggregates if the task firing isn't itself minute-aligned.
+- **Expanded `cumulativeFields`** to include the Refoss bucketed-energy counters (`day_energy_kwh`, `week_energy_kwh`, `month_energy_kwh` and their `_ret` variants) plus `uptime_s` and `cfg_rev`. These reset inside the device on day/week/month boundaries, but `last()` within a 1-minute window is still correct: we want the most recent counter value per minute, not the mean of running values.
 
-src = "energy"
-dst = "energy-longterm"
-
-aggregateMeasurements = [
-    "eagle.meter",
-    "refoss.channel",
-    "refoss.system",
-    "hvac.comfortnet",
-]
-
-cumulativeFields = [
-    "summation_delivered",
-    "summation_received",
-]
-
-base = from(bucket: src)
-    |> range(start: -2m, stop: -1m)
-    |> filter(fn: (r) => contains(value: r._measurement, set: aggregateMeasurements))
-
-// Cumulative counters: last(), keep field name
-base
-    |> filter(fn: (r) => contains(value: r._field, set: cumulativeFields))
-    |> aggregateWindow(every: 1m, fn: last, createEmpty: false)
-    |> to(bucket: dst)
-
-// Continuous fields: mean(), keep field name
-base
-    |> filter(fn: (r) => not contains(value: r._field, set: cumulativeFields))
-    |> aggregateWindow(every: 1m, fn: mean, createEmpty: false)
-    |> to(bucket: dst)
-
-// Continuous fields: max(), suffix _max
-base
-    |> filter(fn: (r) => not contains(value: r._field, set: cumulativeFields))
-    |> aggregateWindow(every: 1m, fn: max, createEmpty: false)
-    |> map(fn: (r) => ({r with _field: r._field + "_max"}))
-    |> to(bucket: dst)
-```
-
-**Why the 30-second offset**: the task starts 30 seconds after the minute boundary so any in-flight writes from the per-frame pollers complete before the window is read. `range(start: -2m, stop: -1m)` then reads the prior fully-closed minute, not the partial current one.
+**Why the 30-second offset**: the task starts 30 seconds after the minute boundary so any in-flight writes from the per-frame pollers complete before the window is read.
 
 **Tag preservation**: `aggregateWindow` preserves all existing tags by default. Don't add `set()` or `map()` calls that touch tag keys, or cardinality drifts between buckets.
 
@@ -174,22 +150,27 @@ Total at the 10-year mark: 280 MB raw + 5.2 GB longterm + InfluxDB index/WAL ove
 
 If ComfortNet's actual emit rate turns out higher than the ~5 frames/cycle estimate (more decoded message types, write traffic in v2), redo the projection but the order of magnitude doesn't change.
 
-## Migration plan
+## Migration plan (history of what shipped)
 
-Phased to minimize risk. Each phase is independently revertible.
+Originally laid out as a 5-phase rollout. What actually happened (May 2026):
 
-1. **Create `energy-longterm` bucket** on `pi-lab`'s InfluxDB with infinite retention. Provision via the existing compose / setup-script pattern in `deploy/energy-stack/`. No data flowing yet.
-2. **Deploy the Flux task** as a one-shot Influx config alongside compose (or via the InfluxDB CLI on first run). Verify: after one minute, `energy-longterm` should contain mean + max for `eagle.meter` and `refoss.channel`. Let it run for 24 h before proceeding. If it fails, just delete the task; nothing else changes.
-3. **Reroute coarse + event pollers** to write directly to `energy-longterm`. One poller at a time, in this order: `nws-poller`, `comed-poller`, `thermostat-poller`, `haven-ingest`, `comed-bill` ingest, `hvac-scheduler` (events). After each, verify writes land in longterm and stop landing in raw. Bump container env: `INFLUX_BUCKET=energy-longterm`.
-4. **Set 90-day retention on `energy`**. Last step. After this, the historical pre-task data starts rolling off; only fields covered by the downsampling task survive in longterm. Skip if you change your mind about whether to ever drop raw.
-5. **Add the healthcheck**. Influx deadman check + telegram-notifier daily-summary line.
+1. ✅ **`energy-longterm` bucket** provisioned on `pi-lab` with infinite retention via `influx-init`'s `apply.sh` (idempotent — runs on every `compose up -d`).
+2. ✅ **Flux task deployed** via the same `influx-init` script — picks up the file at `tasks/downsample-energy-1m.flux` and either creates or updates the `downsample-energy-1m` task. Tested: longterm receives mean + max for `eagle.meter` and `refoss.channel` within one minute of a fresh deploy.
+3. **Pollers writing to longterm** — coarse + event measurements go direct: `comed.prices`, `nws.forecast`, `hvac.thermostat`, `hvac.actions`, `hvac.overrides`, `haven.indoor`, `haven.outdoor`, `comed.bill*`. Per-frame writers (`eagle.meter`, `refoss.channel`, `refoss.system`) still write to `energy` and the task downsamples.
+4. **Retention on `energy`** — currently still infinite while we accumulate enough data to comfortably step it down. The 90-day cap is the documented target; it can be applied at any time without downstream impact, since longterm covers everything past 90 days.
+5. **Healthcheck** — not yet wired. Open follow-up: add an InfluxDB deadman check on `energy-longterm` filtered to a sentinel measurement, and a "downsampling task: ok / stale" line in the `telegram-notifier` daily summary. Without this, a silent task failure could go undetected for weeks.
 
-ComfortNet integration lands after step 4 and is built knowing the retention design.
+ComfortNet integration comes online when the Pi-3B publisher ships frames; the broker + telegraf consumer are already deployed under compose profile `mqtt`. The task's `aggregateMeasurements` already includes `hvac.comfortnet`, so downsampling activates automatically once the measurement starts seeing writes.
 
-## Open decisions before implementing
+## Closed-out design questions
 
-1. **Does anyone actually want backfill?** April-May 2026 raw data exists only in `energy`; it'll roll off 90 days after step 4. Backfilling into longterm is a one-shot Flux script: doable, marginal value. **Recommendation: skip.** If you ever want long-horizon trends covering this initial period, accept the gap.
-2. **Refoss CT polarity fix on `em:5` and `em:14`** is now done (Refoss app `factor=-1`). Mean+max aggregation handles signed values correctly so this is no longer a concern, but flag it here in case there's another sign-flip lurking.
-3. **`max()` on temperatures and percentages**: useful or noise? Power max is unambiguously useful (peak demand → 5CP). Temperature max is mildly useful (peak heat). Percentage max is useful for "did we ever hit 100% firing rate this hour?" Keep it; the storage cost is negligible.
-4. **Cumulative counter handling in longterm**: `last()` per minute is correct for cumulative kWh. Cross-check after step 2 by computing `delta(summation_delivered)` over a known interval in both buckets and confirming agreement.
-5. **Per-measurement aggregation overrides**: the cumulative-fields list is the only override needed today. ComfortNet may need per-field rules once the schema lands; the task structure supports this with minimal change (extend `cumulativeFields` or add a `lastFields` set).
+1. **Backfill?** No. Raw April-May 2026 data will roll off when the 90-day retention is applied; we're accepting that gap.
+2. **Refoss CT polarity fix on `em:5` and `em:14`**: done in the Refoss app via `factor=-1`. Mean+max handles signed values correctly.
+3. **`max()` on temperatures and percentages**: kept. Power max is unambiguously useful for 5CP attribution; the rest are cheap and occasionally answer "did we ever hit X" questions.
+4. **Cumulative counter handling in longterm**: `last()` per minute is correct. Spot-checked by computing `delta(summation_delivered)` over a known interval in both buckets — values agree.
+5. **Per-measurement aggregation overrides**: the cumulative-fields list captures everything we need today. Refoss bucketed-energy counters (`day_energy_kwh` etc.) were added to the live list; they reset inside the device but `last()` per minute is still the right reducer.
+
+## Open follow-ups
+
+- **Step 5 healthcheck** (above) — biggest gap. A silent task failure today produces no alert.
+- **Apply 90-day retention on `energy`** — operational cleanup once we're confident the longterm data is correct end-to-end. Reversible by re-setting retention before the boundary is hit.

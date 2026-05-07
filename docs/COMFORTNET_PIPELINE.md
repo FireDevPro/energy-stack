@@ -2,7 +2,7 @@
 
 System-level design for getting CT-485 bus telemetry from the ComfortNet sniffer (Pi 3B) into the energy-stack (`pi-lab`). Sibling to [`COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) (what we'll do with the data) and [`INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md) (how it's stored).
 
-**Status**: proposed. Implementation in follow-on PRs.
+**Status**: broker side shipped (May 2026). The Pi-lab MQTT broker (`mosquitto`), one-shot password provisioner (`mosquitto-init`), and Telegraf MQTT consumer all run under compose profile `mqtt` — `docker compose --profile mqtt up -d`. Cert material lives at `/opt/mosquitto-certs/` on Pi-lab; the Mosquitto password file is regenerated idempotently from `.env` on every profile-up. Pending: the **Pi-3B-side `comfortnet-publisher` systemd unit** that reads decoder output and publishes to `home/utility-room/hvac/comfortnet/<field>`. No `hvac.comfortnet` data is flowing yet. See [`SERVICES.md#mosquitto-mosquitto-init-telegraf-comfortnet-pipeline-profile-mqtt`](SERVICES.md#mosquitto-mosquitto-init-telegraf-comfortnet-pipeline-profile-mqtt) for the operational view.
 
 ## Decisions captured
 
@@ -34,9 +34,9 @@ Pi 3B (192.168.20.216, VLAN 20)              pi-lab (192.168.20.10, VLAN 20)
 
 Both hosts on VLAN 20, can reach each other directly. No NAT, no port forwarding, no cloud.
 
-## Mosquitto broker (on `pi-lab`)
+## Mosquitto broker (on `pi-lab`) — shipped
 
-New service in `deploy/energy-stack/docker-compose.yml`. Image: `eclipse-mosquitto:2` (pinned to a specific 2.x tag at deploy time). Persistent state on a Docker volume.
+Service in `deploy/energy-stack/docker-compose.yml` under profile `mqtt`. Image: `eclipse-mosquitto:2`. Persistent state on a Docker volume (`mosquitto_data`). Deployed and healthy as of May 2026; healthcheck round-trips `mosquitto_sub -E` against an authorized topic to validate TLS + auth + ACL on every interval.
 
 **Config shape** (`deploy/energy-stack/mosquitto/mosquitto.conf`):
 
@@ -69,22 +69,20 @@ Listener on port 8883 (the IANA-assigned MQTT-over-TLS port). No plaintext 1883 
 
 Passwords stored in `.env` (already SOPS-encrypted in the repo as `secrets/env.sops.env`). The Mosquitto password file is generated at compose-up via an init step similar to the influx-init container, hashing the env-var passwords with `mosquitto_passwd`.
 
-**ACLs** (`deploy/energy-stack/mosquitto/acls`):
+**ACLs** ([`deploy/energy-stack/mosquitto/acls`](../deploy/energy-stack/mosquitto/acls)) — as deployed:
 
 ```
 user comfortnet-publisher
 topic write home/utility-room/hvac/comfortnet/#
-topic write home/utility-room/hvac/comfortnet/events/#
 
 user telegraf
 topic read home/utility-room/hvac/comfortnet/#
-topic read home/utility-room/hvac/comfortnet/events/#
 
 user n8n
 topic read home/utility-room/hvac/comfortnet/events/#
 ```
 
-The publisher can write but not read. Consumers are read-only and scoped to specific subtrees. n8n only sees events (the event-driven automations care about faults and stage transitions, not continuous telemetry).
+The publisher can write but not read. Consumers are read-only and scoped to specific subtrees. n8n only sees events (the event-driven automations care about faults and stage transitions, not continuous telemetry). The `#` wildcard already includes the `events/` subtree, so the publisher and telegraf each need a single ACL line.
 
 **Persistence**: Mosquitto persists session state (subscriptions, queued messages for offline durable subscribers) to a Docker volume. Survives broker restarts. Not strictly required since we're using QoS 1 with retain on state topics (see below), but cheap to enable and saves a thundering-herd reconnect storm if the broker restarts while many clients are connected.
 

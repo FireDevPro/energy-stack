@@ -333,8 +333,10 @@ from(bucket: "{bucket}")
 
 def poller_last_writes(query_api, bucket: str) -> dict:
     """For each major continuous-data measurement, return the last-write timestamp (UTC).
-    Excludes haven-ingest because it only writes when CSVs land (could legitimately
-    be days quiet between weekly drops)."""
+    Excludes haven-ingest. Originally excluded because the CSV-watcher only ran on
+    weekly drops; haven-ingest is now an API poller (5-min cadence), so it could be
+    silence-checked. Left out for now to avoid noisy alerts when the HAVEN cloud has
+    a transient blip; revisit if the alerting tolerance is lowered."""
     measurements = [
         ("comed.prices", "comed-poller"),
         ("eagle.meter", "eagle-poller"),
