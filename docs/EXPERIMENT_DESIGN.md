@@ -113,7 +113,7 @@ A calendar week is included in primary analysis if and only if:
 
 **Minimum analyzable sample**: if fewer than 6 valid blocks (12 weeks) survive these exclusions by end of summer 2026, the primary test is reported with a flag noting reduced power, and the study continues into summer 2027 per §8.
 
-These rules are pre-committed per [CodeX 2026-05-07](docs/PROJECT_REVIEW_2026-05-07.md) recommendation that "a cool week, a mild summer, or a baseline week with zero exceedance can dominate the denominator and make the analysis fragile after the fact."
+These rules are pre-committed per the CodeX 2026-05-07 review recommendation that "a cool week, a mild summer, or a baseline week with zero exceedance can dominate the denominator and make the analysis fragile after the fact."
 
 ## 7. M&V protocol and statistical analysis plan
 
