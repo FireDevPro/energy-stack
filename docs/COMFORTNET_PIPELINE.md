@@ -220,48 +220,23 @@ Update HANDOFF in the comfortnet repo to reflect the merged service shape.
 
 ## Consumer (Telegraf in `energy-stack`)
 
-New service in `deploy/energy-stack/docker-compose.yml`. Image: `telegraf:1.31` or current. Mounts `deploy/energy-stack/telegraf/telegraf.conf` read-only.
+Lives in [`deploy/energy-stack/docker-compose.yml`](../deploy/energy-stack/docker-compose.yml) under compose profile `mqtt`. The live config is at [`deploy/energy-stack/telegraf/telegraf.conf`](../deploy/energy-stack/telegraf/telegraf.conf) — that file is the source of truth for what's deployed; what follows is the design summary.
 
-**Config shape**:
+**Two-block consumer pattern** (one block per topic subtree, each with its own output binding):
 
-```toml
-[[inputs.mqtt_consumer]]
-  servers = ["tcp://mosquitto:8883"]  # internal compose network
-  topics = [
-    "home/utility-room/hvac/comfortnet/+",
-    "home/utility-room/hvac/comfortnet/events/+",
-  ]
-  qos = 1
-  client_id = "telegraf-energy-stack"
-  persistent_session = true            # only honored if client_id is set
-  username = "telegraf"
-  password = "${MOSQUITTO_TELEGRAF_PASSWORD}"
-  tls_enable = true
-  tls_ca = "/etc/telegraf/certs/ca.crt"
-  insecure_skip_verify = false
-  data_format = "json"
-  json_time_key = "ts"
-  json_time_format = "2006-01-02T15:04:05Z07:00"
-  max_undelivered_messages = 1000
+- **Continuous block** subscribes to `home/+/hvac/comfortnet/+` and outputs to the `energy` bucket (downsampled to `energy-longterm` by the 1-min Flux task). `name_override = "hvac.comfortnet"`. JSON payloads use the field name as the JSON key (`{"heat_actual_pct": 35.0, "ts": "..."}`) so the InfluxDB field name is recovered from the payload directly without topic-parsing for fields. `topic_tag = ""` drops the topic itself to avoid tag-cardinality bloat. The `location` tag is extracted from the topic via `topic_parsing` (`_/location/_/_/_`).
+- **Events block** subscribes to `home/+/hvac/comfortnet/events/+` and outputs to `energy-longterm` directly (events are point-in-time, never aggregated). `name_override = "hvac.comfortnet.events"`. The event type is extracted from the topic's last segment via `topic_parsing` (`_/location/_/_/_/event_type`). Each event payload carries its own typed fields (e.g., a fault payload has `critical_fault` and `minor_fault` as separate JSON keys).
 
-[[outputs.influxdb_v2]]
-  urls = ["http://influxdb:8086"]
-  token = "${INFLUXDB_INIT_ADMIN_TOKEN}"
-  organization = "${INFLUXDB_INIT_ORG}"
-  bucket = "energy"
-  bucket_tag = "_bucket_override"      # routes events to longterm directly
-```
+**Bucket routing**: Telegraf's `tagpass` filter on each output block selects only metrics carrying the matching `bucket_route` tag (set inside each input block). Two outputs, two filters — no shared per-metric `bucket_tag` override, no clever single-block trick.
 
-The HANDOFF flagged a few Telegraf gotchas that this config has to handle:
+**Telegraf gotchas the live config handles** (per the original ComfortNet HANDOFF + observed):
 
-- **`client_id` must be set** for `persistent_session = true` to take effect. Silently ignored otherwise.
-- **QoS 1 on both publish and subscribe**, paired with persistent session, gives at-least-once delivery across reconnects.
-- **`max_undelivered_messages`** caps the in-flight backlog; tune against `metric_batch_size` to avoid pipeline stalls.
-- **Reconnect backoff**: Telegraf defaults are reasonable; cap if needed.
+- `client_id` is set on each input block so `persistent_session = true` actually takes effect (silently ignored without it).
+- QoS 1 on subscribe, paired with persistent session, gives at-least-once delivery across reconnects.
+- `max_undelivered_messages = 1000` caps in-flight backlog; tune against `metric_batch_size` to avoid pipeline stalls.
+- TLS material lives at `/opt/mosquitto-certs/` on Pi-lab; both blocks reference `tls_ca = "/etc/telegraf/certs/ca.crt"`.
 
-**Routing events to `energy-longterm` directly**: the `bucket_tag` mechanism lets us tag a metric with a per-record bucket override. The publisher tags event-topic payloads with `_bucket_override = "energy-longterm"`; continuous-topic payloads omit the tag and route to `energy` (the default bucket). This means events bypass the downsampling task entirely, matching the retention design.
-
-Alternative: two separate `[[inputs.mqtt_consumer]]` blocks each with its own `[[outputs.influxdb_v2]]`. Simpler to reason about, slightly more config. **Recommend the two-block approach** for clarity; the `bucket_tag` trick is clever but obscure.
+> An earlier draft of this doc sketched a one-block config using `bucket_tag = "_bucket_override"` to route events. That approach was rejected during implementation in favor of the two-block pattern (clearer to reason about, no per-metric override trick). CodeX pass 2 (2026-05-07) caught the stale sketch lingering in the doc; replaced.
 
 ## InfluxDB schema
 

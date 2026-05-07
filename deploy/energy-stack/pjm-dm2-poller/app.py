@@ -437,18 +437,25 @@ async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
     """One pass through the feed schedule. Each feed fires only when its
     Schedule says so; a single feed failure does not abort the cycle.
 
-    Health-marker semantics (CodeX 2026-05-07): the loop's liveness signal
-    `/tmp/last_poll_ok` is touched when EITHER no feed was due this cycle
-    (legitimate idle wake) OR at least one due feed succeeded. A cycle
-    where every due feed fails leaves the marker untouched, so the
-    Dockerfile HEALTHCHECK can flip the container unhealthy after the
-    configured staleness window — instead of the prior "loop is alive
-    therefore healthy" semantics that hid auth failures, schema drift,
-    and persistent PJM 4xx/5xx behind a green status.
+    Health-marker semantics (CodeX pass 2, 2026-05-07): the
+    `/tmp/last_poll_ok` marker is **loop-liveness only** — touched on
+    every cycle regardless of whether any due feed succeeded. The earlier
+    feed-success-gating attempt was unsound: a 17:00 cycle with all due
+    feeds failing would leave the marker stale, but the next 18:00 idle
+    cycle would refresh it again, so the staleness budget never actually
+    fired on real failures. More fundamentally, Docker HEALTHCHECK is
+    semantically "should this container be restarted?" — restarting the
+    poller does not fix a PJM API outage, an expired API key, or schema
+    drift, so flipping the container unhealthy on feed failures is
+    operationally wrong even when the gating logic technically works.
 
-    Per-feed status is also written to `pjm.feed_status` on every attempt
-    (success or failure), so feed-level alerting can run independently
-    of the container healthcheck.
+    Data-freshness alerting belongs in the data layer, not the container
+    healthcheck. Every feed attempt (success or failure) writes a row to
+    `pjm.feed_status` tagged by `feed` and `success`. A telegram-notifier
+    or Grafana deadman alert against that measurement, with per-feed
+    expected cadence (DA LMP daily, NSPL annually, etc.), is the correct
+    surface for "did the data flow when it was supposed to?" — and a
+    follow-up PR will wire it.
     """
     now_local = datetime.now(cfg.tz)
     due_feeds: list[str] = []
@@ -479,15 +486,14 @@ async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
                                error_type=type(exc).__name__,
                                error_msg=str(exc))
 
-    cycle_healthy = (not due_feeds) or bool(fired)
-    if cycle_healthy:
-        HEALTH_MARKER.touch()
+    # Always touch on a clean loop pass — see docstring. Per-feed health
+    # lives in pjm.feed_status, queried by downstream alerting.
+    HEALTH_MARKER.touch()
 
     log("info", "poll_cycle_done",
         local_hour=now_local.hour, weekday=now_local.weekday(),
         month=now_local.month,
-        due=due_feeds, fired=fired, failed=failed,
-        cycle_healthy=cycle_healthy)
+        due=due_feeds, fired=fired, failed=failed)
 
 
 # ---------------------------------------------------------------------------
