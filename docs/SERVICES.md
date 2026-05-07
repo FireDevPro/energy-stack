@@ -360,7 +360,7 @@ Build: `./haven-ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) 
 
 Polls the HAVEN cloud API every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) before entering steady-state polling.
 
-**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN is shipping an official Pro API at `havenapi.tzoa.io` in summer 2026; we'll switch when that lands.
+**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN's official Pro API at `havenapi.tzoa.io` is live as of May 2026; migrating from the Auth0-sniffed path to the official endpoints is an open follow-on.
 
 **Env:**
 - `HAVEN_AUTH0_DOMAIN` — Auth0 tenant (default `haven-production.auth0.com`)
