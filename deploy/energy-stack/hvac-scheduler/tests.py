@@ -112,7 +112,7 @@ async def test_execute_release_hold_calls_set_hold_mode_schedule():
     c4, climate = _mock_c4_client()
     action = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
 
-    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=0,
+    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=0, heat_setpoint_to_apply=60,
                                            state={"hvac_mode": "Cool"}, dry_run=False)
 
     assert applied is True
@@ -130,7 +130,7 @@ async def test_execute_release_hold_runs_regardless_of_hvac_mode():
     c4, climate = _mock_c4_client()
     action = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
 
-    applied, _err = await execute_action(c4, action, cool_setpoint_to_apply=0,
+    applied, _err = await execute_action(c4, action, cool_setpoint_to_apply=0, heat_setpoint_to_apply=60,
                                           state={"hvac_mode": "Heat"}, dry_run=False)
     assert applied is True
     climate.set_hold_mode.assert_awaited_once_with("Schedule")
@@ -140,7 +140,7 @@ async def test_execute_release_hold_dry_run_does_not_call_thermostat():
     c4, climate = _mock_c4_client()
     action = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
 
-    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=0,
+    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=0, heat_setpoint_to_apply=60,
                                            state={"hvac_mode": "Cool"}, dry_run=True)
     assert applied is False
     assert error is None
@@ -157,7 +157,7 @@ async def test_execute_setpoint_action_still_pins_permanent_hold():
     action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79,
                              fan_mode="Circulate")
 
-    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79,
+    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
                                            state={"hvac_mode": "Cool"}, dry_run=False)
     assert applied is True
     assert error is None
@@ -172,7 +172,7 @@ async def test_execute_setpoint_action_skipped_when_in_heat_mode():
     c4, climate = _mock_c4_client()
     action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
 
-    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79,
+    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
                                            state={"hvac_mode": "Heat"}, dry_run=False)
     assert applied is False
     assert error and "hvac_mode_not_cooling" in error
@@ -397,3 +397,99 @@ def test_revisit_handles_no_stored_decision_yet(monkeypatch):
     # Wrote the freshly-classified decision.
     write_api.write.assert_called_once()
 
+
+
+# ---- safety supervisor ----------------------------------------------------
+
+from safety_supervisor import (  # noqa: E402
+    DECISION_APPROVED,
+    DECISION_CLAMPED,
+    DECISION_EMERGENCY,
+    EMERGENCY_COOL_TARGET_F,
+    EMERGENCY_INDOOR_F,
+    SAFE_COOL_MAX_F,
+    SAFE_COOL_MIN_F,
+    SupervisorDecision,
+    validate_setpoints,
+)
+
+
+def test_supervisor_approves_in_range_setpoints():
+    """Happy path: setpoints within bounds + indoor temp comfortable."""
+    d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.5})
+    assert d.decision == DECISION_APPROVED
+    assert d.cool_setpoint_f == 75
+    assert d.heat_setpoint_f == 60
+    assert d.reason is None
+    assert not d.needs_alert
+
+
+def test_supervisor_clamps_cool_setpoint_too_low():
+    """A controller bug producing cool=55 must not reach the thermostat."""
+    d = validate_setpoints(55, 60, snapshot={"indoor_temp_f": 73.0})
+    assert d.decision == DECISION_CLAMPED
+    assert d.cool_setpoint_f == SAFE_COOL_MIN_F
+    assert "cool_55_to_65" in (d.reason or "")
+    assert d.needs_alert
+
+
+def test_supervisor_clamps_cool_setpoint_too_high():
+    """cool=95 would leave AC sitting idle; clamp to safe upper bound."""
+    d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 73.0})
+    assert d.decision == DECISION_CLAMPED
+    assert d.cool_setpoint_f == SAFE_COOL_MAX_F
+    assert "cool_95_to_86" in (d.reason or "")
+
+
+def test_supervisor_clamps_heat_setpoint():
+    """Heat-side bounds are also enforced."""
+    d = validate_setpoints(75, 80, snapshot={"indoor_temp_f": 73.0})
+    assert d.decision == DECISION_CLAMPED
+    assert d.heat_setpoint_f == 75  # SAFE_HEAT_MAX_F
+
+
+def test_supervisor_emergency_overrides_when_indoor_too_hot():
+    """Even if the schedule says cool=85 (HOT_5CP_SHUTOFF), if indoor
+    temp is already 87°F, force the AC to engage at the emergency target."""
+    d = validate_setpoints(85, 60, snapshot={"indoor_temp_f": 87.0})
+    assert d.decision == DECISION_EMERGENCY
+    assert d.cool_setpoint_f == EMERGENCY_COOL_TARGET_F
+    assert "indoor_87.0F" in (d.reason or "")
+    assert d.needs_alert
+
+
+def test_supervisor_emergency_threshold_inclusive():
+    """Boundary check: indoor exactly at the emergency threshold triggers."""
+    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR_F})
+    assert d.decision == DECISION_EMERGENCY
+
+
+def test_supervisor_no_emergency_below_threshold():
+    """Just below the emergency threshold means clamping/approving normally."""
+    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR_F - 0.1})
+    assert d.decision == DECISION_APPROVED
+
+
+def test_supervisor_handles_missing_indoor_temp():
+    """If the C4 read failed and indoor_temp_f is None, we can't fire the
+    emergency rule but we still validate range bounds."""
+    d = validate_setpoints(75, 60, snapshot={})
+    assert d.decision == DECISION_APPROVED
+    d2 = validate_setpoints(55, 60, snapshot={"indoor_temp_f": None})
+    assert d2.decision == DECISION_CLAMPED
+
+
+def test_supervisor_emergency_takes_precedence_over_clamp():
+    """If both rules would apply (out-of-range cool setpoint AND indoor too
+    hot), emergency wins so the AC actually engages aggressively."""
+    d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 88.0})
+    assert d.decision == DECISION_EMERGENCY
+    assert d.cool_setpoint_f == EMERGENCY_COOL_TARGET_F
+
+
+def test_supervisor_decision_is_immutable():
+    """SupervisorDecision is frozen; downstream code can't accidentally mutate
+    it after the fact."""
+    d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.0})
+    with pytest.raises((AttributeError, Exception)):
+        d.cool_setpoint_f = 99   # type: ignore[misc]
