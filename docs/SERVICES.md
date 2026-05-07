@@ -449,7 +449,7 @@ Available in Grafana → Explore → Loki datasource.
 
 Three services gated behind compose profile `mqtt`. The standard `docker compose up -d` ignores them; bring them up with `docker compose --profile mqtt up -d` (or set `COMPOSE_PROFILES=mqtt`).
 
-**Status:** broker side deployed and healthy on Pi-lab. The Pi-3B-side `comfortnet-publisher` systemd unit (which reads decoder output and publishes frames) is not yet implemented — so no `hvac.comfortnet` data is flowing yet. Historical design at [`archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md); live publisher implementation at [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet).
+**Status:** live as of May 2026. Broker, telegraf consumer, and the Pi-3B-side `comfortnet-publisher` systemd unit are all deployed and healthy; `hvac.comfortnet` is flowing fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` plus their `*_demand_pct` counterparts. Live publisher implementation at [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet); historical design at [`archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md). Open follow-on: extend the decoder to handle the write side of the user-menu protocol (currently only `0xC1` GetUserMenuResponse is decoded).
 
 | Service | Image / Build | Purpose |
 |---|---|---|
