@@ -292,13 +292,24 @@ def build_nspl_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
 # ---------------------------------------------------------------------------
 
 
-async def fetch_da_lmp_for_today(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
-    """Pull today's DA LMPs for ComEd zone (24 rows)."""
+async def fetch_da_lmp_for_tomorrow(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """Pull tomorrow's DA LMPs for ComEd zone (24 rows).
+
+    PJM's day-ahead market clears around 16:00 ET; this fetcher fires at
+    17:00 local (per FEED_SCHEDULE) so tomorrow's hourly DA prices are
+    posted by then. ComEd's Hourly Pricing FAQ confirms day-ahead prices
+    are available after 5 p.m. CT.
+
+    `row_is_current=true` filters out superseded revisions when PJM
+    re-posts a price.
+    """
+    target = (now_local + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.0")
     items = await client.fetch(
         "da_hrl_lmps",
         {
             "pnode_id": COMED_PNODE_ID,
-            "datetime_beginning_ept": now_local.strftime("%Y-%m-%dT00:00:00.0"),
+            "datetime_beginning_ept": target,
+            "row_is_current": "true",
             "rowCount": 50,
             "startRow": 1,
         },
@@ -377,7 +388,7 @@ async def fetch_annual_nspl(client: PJMClient, cfg: Config, now_local: datetime)
 FEED_DISPATCHERS: dict[
     str, Callable[[PJMClient, Config, datetime], Awaitable[list[Point]]]
 ] = {
-    "da_hrl_lmps": fetch_da_lmp_for_today,
+    "da_hrl_lmps": fetch_da_lmp_for_tomorrow,
     "load_frcstd_7_day": fetch_load_forecast,
     "hrl_load_metered": fetch_metered_load_last_week,
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,

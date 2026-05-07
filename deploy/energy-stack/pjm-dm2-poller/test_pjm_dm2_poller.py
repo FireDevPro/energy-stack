@@ -28,6 +28,7 @@ from app import (
     build_metered_load_points,
     build_nspl_points,
     build_peak_forecast_points,
+    fetch_da_lmp_for_tomorrow,
     poll_once,
 )
 
@@ -100,6 +101,40 @@ def test_schedule_day_of_month_restriction():
 
 def test_da_lmp_fires_at_17_only():
     assert FEED_SCHEDULE["da_hrl_lmps"] == Schedule(hours=(17,))
+
+
+def test_da_lmp_fetcher_queries_tomorrow_not_today():
+    """The 17:00 CT da_hrl_lmps run is for *tomorrow's* day-ahead prices,
+    which PJM posts after the day-ahead market clears at ~16:00 ET. A
+    2026-07-10T17:00 fetch must request datetime_beginning_ept=2026-07-11.
+    Querying today produces already-past prices that are useless for
+    forecast-bias modeling and scheduler planning."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 10, 17, 0, tzinfo=CHICAGO)
+
+    import asyncio
+    asyncio.run(fetch_da_lmp_for_tomorrow(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "da_hrl_lmps"
+    assert captured["params"]["datetime_beginning_ept"] == "2026-07-11T00:00:00.0"
+    assert captured["params"]["pnode_id"] == COMED_PNODE_ID
+    assert captured["params"]["row_is_current"] == "true"
+
+
+def test_da_lmp_dispatcher_points_at_tomorrow_fetcher():
+    """FEED_DISPATCHERS['da_hrl_lmps'] must reference the tomorrow fetcher,
+    not the historical 'for_today' name. Belt-and-braces pin that the
+    rename in app.py also propagated to the dispatch table."""
+    assert FEED_DISPATCHERS["da_hrl_lmps"] is fetch_da_lmp_for_tomorrow
 
 
 def test_load_forecast_fires_twice_daily():

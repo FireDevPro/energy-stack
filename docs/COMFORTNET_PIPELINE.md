@@ -107,7 +107,17 @@ home/utility-room/hvac/comfortnet/dehumidify_demand_pct float
 home/utility-room/hvac/comfortnet/stage                int
 ```
 
-Retain ON means subscribers reconnecting see the last known value immediately, no need to wait for the next bus frame. Each topic carries a JSON payload `{"value": <number>, "ts": <iso8601>}` so timestamps survive into Telegraf and InfluxDB without depending on the broker's receive time.
+Retain ON means subscribers reconnecting see the last known value immediately, no need to wait for the next bus frame.
+
+**Payload format** (one message per topic, retained):
+
+```json
+{"heat_actual_pct": 35.0, "ts": "2026-07-15T14:23:01.000Z"}
+```
+
+The JSON key matches the topic's last segment, and Telegraf's JSON parser uses that key as the InfluxDB field name. **Don't publish `{"value": <number>, "ts": ...}`** — the `mqtt_consumer` plugin in [`telegraf.conf`](../deploy/energy-stack/telegraf/telegraf.conf) does not topic-parse fields, so a generic `"value"` key would collapse every continuous topic into one indistinct field on the `hvac.comfortnet` measurement.
+
+The deliberate tradeoff (chosen in `telegraf.conf` for cardinality reasons): the topic carries the field name redundantly with the JSON key, but the topic itself is dropped (`topic_tag = ""`) so it doesn't bloat InfluxDB tag cardinality. The JSON key is the only field-name source on the InfluxDB side. CodeX review on 2026-05-07 caught the doc/config mismatch.
 
 **Event topics** (retain OFF, QoS 1):
 

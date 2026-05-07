@@ -87,7 +87,7 @@ For service-specific operations (manually trigger an HVAC decision, force a poll
 
 ## Running tests
 
-Pure-logic unit tests live alongside each service's source as `tests.py` (not shipped to the container — every Dockerfile only `COPY app.py .`). Tests run on the operator's machine against the source.
+Pure-logic unit tests live alongside each service's source as `test_<service>.py` (not shipped to the container — every Dockerfile only `COPY app.py .`). Tests run on the operator's machine against the source.
 
 One-time setup:
 ```bash
@@ -96,20 +96,31 @@ pip install -r deploy/energy-stack/requirements-dev.txt
 pip install -r deploy/energy-stack/<service>/requirements.txt
 ```
 
-Run a service's tests from its directory:
+Run all service tests in one go via the wrapper:
+```bash
+bash deploy/energy-stack/run_tests.sh
+```
+
+Or focus on one service:
 ```bash
 cd deploy/energy-stack/<service>/
-python -m pytest tests.py
+python -m pytest .
 ```
+
+> Why a wrapper rather than a single `pytest` invocation: every service has its own `app.py` (or `poller.py`) source file, and pytest's default `prepend` import mode caches the first one it loads in `sys.modules`. A single `pytest deploy/energy-stack` call would let one service's tests "see" another service's app.py. The wrapper runs each service in its own pytest process, sidestepping the collision. The proper fix (rename hyphens to underscores + `__init__.py` for proper packages) is on the followups list — see [pytest.ini](pytest.ini) for context.
 
 `pytest.ini` at `deploy/energy-stack/` is the single source of truth for shared config (currently `asyncio_mode = auto` for the async-using services). Pytest's config discovery walks up from cwd, so individual services don't carry their own.
 
 Currently covered:
-- `nws-poller/tests.py` — 12 cases (tz-aware day bucketing, alert time-slicing)
-- `hvac-scheduler/tests.py` — 15 cases (release_hold action, lazy decision recompute)
-- `telegram-notifier/tests.py` — 13 cases (poller-silence detection, price-spike threshold)
+- `nws-poller/test_nws_poller.py` (tz-aware day bucketing, alert time-slicing)
+- `hvac-scheduler/test_hvac_scheduler.py` (release_hold action, lazy decision recompute, safety supervisor)
+- `telegram-notifier/test_telegram_notifier.py` (poller-silence detection, price-spike threshold)
+- `pjm-dm2-poller/test_pjm_dm2_poller.py` (per-feed schedule, point builders, DA-LMP-tomorrow regression)
+- `thermostat-poller/test_thermostat_poller.py` (override detection)
 
-Other services (eagle-poller, refoss-poller, comed-poller, thermostat-poller, haven-ingest) have no tests yet — incremental work as bug fixes or behavior changes touch each.
+Other services (eagle-poller, refoss-poller, comed-poller, haven-ingest) have no tests yet — incremental work as bug fixes or behavior changes touch each.
+
+> **History note**: until 2026-05-07 every service's tests file was named `tests.py`. The CodeX review caught that pytest couldn't collect more than one of them in a single invocation (duplicate top-level `tests` module name). The rename to `test_<service>.py` makes single-pass collection from the stack root work correctly.
 
 ## Ports
 

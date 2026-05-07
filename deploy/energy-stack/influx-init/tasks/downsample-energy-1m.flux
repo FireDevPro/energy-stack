@@ -45,11 +45,20 @@ aggregateMeasurements = [
 
 // Cumulative counters: aggregated via last() so the value at end-of-window
 // represents the running total at that timestamp, not the mean of running totals.
+//
+// CAUTION: these names must match the field names the producing pollers
+// actually write. eagle-poller writes `delivered_kwh`/`received_kwh` (NOT
+// the upstream zigbee names `summation_*`). Misnamed entries silently fall
+// through to the mean()/max() branches and corrupt the longterm bucket
+// for billing reconciliation and research M&V — verified by the CodeX
+// review on 2026-05-07.
 cumulativeFields = [
-    // eagle.meter
-    "summation_delivered",
-    "summation_received",
-    // refoss.channel
+    // eagle.meter (cumulative kWh delivered/received from utility meter)
+    "delivered_kwh",
+    "received_kwh",
+    // refoss.channel (bucketed energy counters that reset on day/week/month
+    // boundary inside the device — last() within a minute is still correct
+    // because we want the latest counter value per minute)
     "day_energy_kwh",
     "day_ret_energy_kwh",
     "week_energy_kwh",

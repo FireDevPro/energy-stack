@@ -166,7 +166,7 @@ deploy/energy-stack/
 │   ├── Dockerfile
 │   ├── app.py                   # main service loop (FEED_SCHEDULE + dispatchers + point builders)
 │   ├── requirements.txt         # aiohttp, influxdb-client
-│   └── tests.py                 # canned-payload tests for each point builder
+│   └── test_pjm_dm2_poller.py   # canned-payload tests for each point builder
 ├── scripts/
 │   ├── backfill_pjm.py          # one-shot 5-year history backfill
 │   └── scrape_pjm_5cp_pdf.py    # annual 5CP PDF parser
@@ -176,7 +176,7 @@ The originally-planned `feeds.py` constants module collapsed into top-of-file co
 
 ## Testing
 
-`pytest` in `pjm-dm2-poller/tests.py` (matching the pattern in `nws-poller/tests.py`):
+`pytest` in `pjm-dm2-poller/test_pjm_dm2_poller.py` (matching the pattern in `nws-poller/test_nws_poller.py`):
 
 - Mock httpx responses against canned JSON fixtures (one per measurement). Fixtures derived from real `/metadata` responses to keep schemas honest.
 - Test the timezone conversion (PJM ept → UTC) on DST boundaries.
