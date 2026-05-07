@@ -208,7 +208,7 @@ sudo chown -R 1883:1883 /opt/mosquitto-certs
 # ca.key stays on Pi-lab (back it up offline if you want easy renewal).
 
 # 2. Distribute ca.crt to clients.
-# Pi 3B publisher (when implemented):
+# Pi 3B publisher (live as of May 2026):
 scp /opt/mosquitto-certs/ca.crt comfortnet:/etc/comfortnet/ca.crt
 
 # 3. Set the three MQTT passwords in .env (see .env.example for the keys).
@@ -224,7 +224,7 @@ echo 'COMPOSE_PROFILES=mqtt' >> .env
 docker compose up -d
 ```
 
-**Smoke test from Pi-lab** (broker only, before publisher exists):
+**Smoke test from Pi-lab** (broker manual publish, useful for verifying broker config independent of the live publisher):
 
 ```bash
 # Subscribe in one terminal

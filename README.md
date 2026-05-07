@@ -45,7 +45,7 @@ Control4 → CTK04AE (10 min reads)   ─┘                    │ HVAC schedul
 | `loki` + `promtail` (log aggregation) | Active |
 | ~~`webdashboard` + `webdashboard-api`~~ | Retired May 2026 — consolidated on Grafana |
 | `influx-init` (one-shot: `energy-longterm` bucket + 1-min downsample task) | Active (May 2026) |
-| ComfortNet pipeline (`mosquitto` + `telegraf`, profile `mqtt`) | Broker deployed; Pi-3B publisher pending |
+| ComfortNet pipeline (`mosquitto` + `telegraf`, profile `mqtt`) + Pi-3B publisher | Active (May 2026) — `hvac.comfortnet` flowing |
 | Grafana dashboards (overview, full, hvac-scheduler, comed-bill-reconciliation, iaq-comparison) | Active |
 | Restic → Backblaze B2 nightly (root cron @ 02:00, Telegram alerts) | Active |
 | `sense-poller` | Retired (Phase 5 — replaced by Refoss) |
@@ -149,7 +149,7 @@ See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path item
 
 Other open items, parked behind the experiment:
 
-- **ComfortNet publisher (Pi 3B side)** — broker + telegraf already shipped; need the systemd publisher reading decoder output and publishing to `home/utility-room/hvac/comfortnet/<field>`
+- **ComfortNet decoder extension for write-side opcodes** — the live publisher decodes the read side of the user-menu protocol; capturing a setting change to extract the SetUserMenu opcode is a follow-on (see `Promithius-DR/comfortnet` `docs/SETTING_REVIEW.md`)
 - **Open-Meteo (ECMWF) as second weather source** — Free; better than NWS for 1-3 day temp since their Oct 2025 IFS upgrade
 - **Forecast bias correction** — pair NWS observations against local Ecowitt sensor (en route May 2026), fit per-station affine bias by lead time
 - **Pre-cool depth retune** — research suggests `HOT_PRE_COOL` could shift 68°F → 71-72°F starting 3am instead of 4am @ 68°F. Will fall out of the SCED study if run as an Arm B variant.

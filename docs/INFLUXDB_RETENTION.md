@@ -24,8 +24,8 @@ Every measurement currently or imminently writing to the `energy` bucket, classi
 | `eagle.meter` | `eagle-poller` | 30 s | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm |
 | `refoss.channel` | `refoss-poller` | 30 s × 18 ch | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm |
 | `refoss.system` | `refoss-poller` | 30 s | per-frame continuous | Raw 90 d → 1-min `mean` longterm |
-| `hvac.comfortnet` (continuous fields) | comfortnet poller (planned) | ~33 s × ~5 frames/cycle | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm |
-| `hvac.comfortnet.events` (planned) | comfortnet poller (planned) | event-driven | event | Direct write to longterm, never aggregate |
+| `hvac.comfortnet` (continuous fields) | comfortnet pipeline (telegraf MQTT consumer) | ~33 s × ~5 frames/cycle | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm |
+| `hvac.comfortnet.events` | comfortnet pipeline (planned write-side decoder) | event-driven | event | Direct write to longterm, never aggregate |
 | `hvac.actions` | `hvac-scheduler` | event-driven | event | Direct write to longterm, never aggregate |
 | `hvac.overrides` | `thermostat-poller` | event-driven | event | Direct write to longterm, never aggregate |
 | `hvac.thermostat` | `thermostat-poller` | 10 min | already coarse | Direct write to longterm |
@@ -93,7 +93,7 @@ cumulativeFields = [
 ]
 
 # Default for everything else: mean + max
-# Future per-measurement overrides go here when ComfortNet schema lands:
+# ComfortNet field-specific overrides (live as of May 2026):
 #   hvac.comfortnet.heat_actual_pct → mean + max
 #   hvac.comfortnet.cfm             → mean + max
 #   hvac.comfortnet.fault_critical  → (excluded; lives in hvac.comfortnet.events)
@@ -162,7 +162,7 @@ Originally laid out as a 5-phase rollout. What actually happened (May 2026):
 4. **Retention on `energy`** — currently still infinite while we accumulate enough data to comfortably step it down. The 90-day cap is the documented target; it can be applied at any time without downstream impact, since longterm covers everything past 90 days.
 5. **Healthcheck** — not yet wired. Open follow-up: add an InfluxDB deadman check on `energy-longterm` filtered to a sentinel measurement, and a "downsampling task: ok / stale" line in the `telegram-notifier` daily summary. Without this, a silent task failure could go undetected for weeks.
 
-ComfortNet integration comes online when the Pi-3B publisher ships frames; the broker + telegraf consumer are already deployed under compose profile `mqtt`. The task's `aggregateMeasurements` already includes `hvac.comfortnet`, so downsampling activates automatically once the measurement starts seeing writes.
+ComfortNet integration is live as of May 2026: the broker + telegraf consumer are deployed under compose profile `mqtt`, the Pi-3B publisher ([`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet)) is shipping frames, and the task's `aggregateMeasurements` includes `hvac.comfortnet` so downsampling is active.
 
 ## Closed-out design questions
 

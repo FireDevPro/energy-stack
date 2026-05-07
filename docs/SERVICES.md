@@ -67,7 +67,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
 | `comed.bill` | `parse_comed_bill.py` (manual) | one point per bill |
 | `comed.bill_lineitems` | `parse_comed_bill.py` (manual) | full GL breakdown |
-| `hvac.comfortnet` | telegraf MQTT consumer (planned) | not yet flowing — depends on Pi-3B publisher |
+| `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
 **Operations:**

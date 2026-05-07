@@ -99,7 +99,7 @@ All sources already write to InfluxDB except Ecowitt, which arrives in May 2026 
 | Source | Measurement | Fields used | Cadence today | Cadence assumed by Step 1 fit |
 |---|---|---|---|---|
 | `thermostat-poller` | `hvac.thermostat` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` | **600 s** (TCC rate floor) | 5 min — gap, see "Cadence reality check" below |
-| `comfortnet` (CT-485 sniffer → MQTT → Telegraf) | `hvac.comfortnet` | `cl_act` (cool stage actual %), `hd_act`, `fan_act` | not yet flowing (publisher pending) | sub-minute |
+| `comfortnet` (CT-485 sniffer → MQTT → Telegraf) | `hvac.comfortnet` | `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` | live (May 2026), sub-minute | sub-minute |
 | `refoss-poller` | `refoss.channel` | `power_w` on the HVAC circuit channels | 30 s | 30 s (independent kW witness, no gap) |
 | `nws-poller` | `nws.forecast` | `high_f`, `low_f`, `max_dewpoint_f` | **daily rollup only** (today/tomorrow/day2) | hourly outdoor temp series — gap |
 | Ecowitt (planned) | `weather.ecowitt` | `outdoor_temp_f`, `solar_radiation_w_m2`, `outdoor_humidity_pct` | not yet installed | 30 s |
@@ -111,14 +111,14 @@ The fit methodology in the §Methodology section was specified at 5-minute caden
 
 - **`hvac.thermostat` is 10-minute, not 5-minute** (Honeywell TCC rate-limit floor; not negotiable until ComfortNet provides sub-minute indoor signal).
 - **`nws-poller` writes daily rollups only** (`for_period` ∈ {today, tomorrow, day2}). The hourly forecast endpoint is fetched internally but not retained as hourly points. Step 1's forward integration against hourly `T_out(t)` cannot run on the existing NWS measurement.
-- **`hvac.comfortnet`** is the authoritative stage signal but is not yet flowing (the broker is up under compose profile `mqtt`, but the Pi-3B publisher hasn't shipped).
+- **`hvac.comfortnet`** is the authoritative stage signal and is live as of May 2026 (broker + telegraf consumer under compose profile `mqtt`; Pi-3B publisher from [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet)). Outdoor temperature remains the gap until Ecowitt arrives.
 
 **Two paths to unblock Step 1**, in order of preference:
 
 1. **Wait for Ecowitt + ComfortNet** (current plan). When both are live, indoor cadence comes from ComfortNet at sub-minute and outdoor from Ecowitt at 30 s. Fit is as designed.
 2. **Resample-and-bound fallback**: rewrite the fit at **15-minute cadence** (LCM of 5 / 10 / 30 min), using `hvac.thermostat` directly and adding a new `for_period=hourly` write path to `nws-poller` (or pulling `forecastGridData` instead of `forecastHourly`). This loosens the Bacher–Madsen skill-score expectation (their `S ∈ [0.7, 0.85]` was at 2-minute cadence; at 15-minute we expect roughly `S ∈ [0.4, 0.65]`). Acceptance threshold drops to `S ≥ 0.35` for the fallback fit.
 
-**Step 1 is therefore blocked on at least one of**: (a) ComfortNet publisher landing, (b) Ecowitt installation + ≥ 14 days of paired observations, OR (c) NWS-poller writing hourly forecast points + acceptance of the looser fallback skill threshold. The implementation PR can still land behind a `THERMAL_MODEL_ENABLED=false` flag, but the fit job won't ratify a model until one of those gates clears.
+**Step 1 is therefore blocked on at least one of**: (a) Ecowitt installation + ≥ 14 days of paired observations, OR (b) NWS-poller writing hourly forecast points + acceptance of the looser fallback skill threshold. ComfortNet publisher landed May 6 2026 and is no longer a gate. The implementation PR can still land behind a `THERMAL_MODEL_ENABLED=false` flag, but the fit job won't ratify a model until one of those gates clears.
 
 ### Why Ecowitt is on the critical path
 
