@@ -96,7 +96,7 @@ n8n persists everything in:
 - **`postgres_data` volume** — workflows, executions, credentials
 - **`n8n_data` volume** — encryption key, instance config, logs
 
-Both volumes live under `/var/lib/docker/volumes/n8n-stack_*/`. To include in nightly restic backups, add a Postgres dump step to `~/energy-stack/backup/pi-backup.sh` (similar to the existing InfluxDB backup). Without that, the n8n volumes are NOT in the existing backup set — TODO for follow-up.
+Both volumes live under `/var/lib/docker/volumes/n8n-stack_*/`. The nightly `pi-backup.sh` script runs a Postgres dump of the n8n container before restic archives `/home/chris/n8n` (alongside the existing InfluxDB backup), so workflows, executions, and credentials are captured each cycle.
 
 ## Related
 
