@@ -72,6 +72,8 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
+from safety_supervisor import validate_setpoints
+
 
 # ---- Config ----------------------------------------------------------------
 
@@ -577,17 +579,24 @@ def write_decision(write_api, bucket: str, decision_for_date: str,
 
 
 def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
-                 cool_applied_f: int, fan_mode_applied: str | None,
+                 cool_applied_f: int, heat_applied_f: int,
+                 fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
-                 thermostat_state_before: dict, error: str | None = None) -> None:
+                 thermostat_state_before: dict, error: str | None = None,
+                 supervisor_decision: str = "approved",
+                 supervisor_reason: str | None = None) -> None:
     p = (Point("hvac.actions")
          .tag("day_type", day_type)
          .tag("action_label", action.label)
          .tag("dry_run", "true" if dry_run else "false")
+         .tag("supervisor_decision", supervisor_decision)
          .field("cool_setpoint_f", float(cool_applied_f))
-         .field("heat_setpoint_f", float(action.heat_setpoint_f))
+         .field("heat_setpoint_f", float(heat_applied_f))
          .field("fan_mode", fan_mode_applied or "")
          .field("setpoint_reason", setpoint_reason)
+         .field("supervisor_reason", supervisor_reason or "")
+         .field("cool_setpoint_proposed_f", float(action.cool_setpoint_f or 0))
+         .field("heat_setpoint_proposed_f", float(action.heat_setpoint_f))
          .field("applied", int(applied))
          .field("error", error or "")
          .field("hvac_mode_before", str(thermostat_state_before.get("hvac_mode") or ""))
@@ -618,8 +627,13 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict:
 
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
+                          heat_setpoint_to_apply: int,
                           state: dict, dry_run: bool) -> tuple[bool, str | None]:
     """Apply the action to the thermostat. Returns (applied, error).
+
+    Both setpoints are passed in explicitly (rather than read from
+    `action.heat_setpoint_f` / etc.) because the safety supervisor may
+    have clamped or overridden them before this call.
 
     Two execution paths:
       * release_hold action: clears the Permanent hold so the thermostat's
@@ -651,7 +665,7 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         # auto-widening when in Auto mode (Honeywell ISU 300 enforces deadband).
         await c4.call_with_reauth(lambda: climate.set_cool_setpoint_f(cool_setpoint_to_apply))
         await asyncio.sleep(1)
-        await c4.call_with_reauth(lambda: climate.set_heat_setpoint_f(action.heat_setpoint_f))
+        await c4.call_with_reauth(lambda: climate.set_heat_setpoint_f(heat_setpoint_to_apply))
         await asyncio.sleep(1)
         # Apply fan mode if specified for this period (e.g., Circulate during coast)
         if action.fan_mode:
@@ -853,18 +867,55 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
 
         cool_to_apply, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
         snapshot = await read_thermostat_snapshot(c4)
-        applied, error = await execute_action(c4, action, cool_to_apply,
+
+        # Safety supervisor: gate the proposed setpoints against hard
+        # bounds and an emergency-indoor-temp override before they reach
+        # the thermostat. Any future controller (Step 1, Step 2, full MPC)
+        # also flows through this; it lives outside the controller layer
+        # on purpose.
+        if action.release_hold:
+            # Release-hold actions don't carry setpoints; nothing to validate.
+            sup_cool = cool_to_apply
+            sup_heat = action.heat_setpoint_f
+            sup_decision = "approved"
+            sup_reason = None
+        else:
+            decision = validate_setpoints(cool_to_apply, action.heat_setpoint_f, snapshot)
+            sup_cool = decision.cool_setpoint_f
+            sup_heat = decision.heat_setpoint_f
+            sup_decision = decision.decision
+            sup_reason = decision.reason
+            if decision.needs_alert:
+                level = "error" if decision.decision == "emergency" else "warn"
+                log(level, "supervisor_intervention",
+                    day_type=day_type,
+                    label=action.label,
+                    decision=decision.decision,
+                    reason=decision.reason,
+                    cool_proposed=cool_to_apply,
+                    cool_applied=decision.cool_setpoint_f,
+                    heat_proposed=action.heat_setpoint_f,
+                    heat_applied=decision.heat_setpoint_f,
+                    indoor_temp_f=snapshot.get("indoor_temp_f"))
+
+        applied, error = await execute_action(c4, action, sup_cool, sup_heat,
                                                snapshot, cfg.dry_run)
         write_action(write_api, cfg.influx_bucket, day_type, action,
-                      cool_to_apply, action.fan_mode, setpoint_reason,
-                      cfg.dry_run, applied, snapshot, error)
+                      sup_cool, sup_heat, action.fan_mode, setpoint_reason,
+                      cfg.dry_run, applied, snapshot, error,
+                      supervisor_decision=sup_decision,
+                      supervisor_reason=sup_reason)
         log("info", "action_fired",
             day_type=day_type,
             label=action.label,
-            cool_setpoint_f=cool_to_apply,
-            heat_setpoint_f=action.heat_setpoint_f,
+            cool_setpoint_f=sup_cool,
+            heat_setpoint_f=sup_heat,
+            cool_setpoint_proposed_f=cool_to_apply,
+            heat_setpoint_proposed_f=action.heat_setpoint_f,
             fan_mode=action.fan_mode,
             setpoint_reason=setpoint_reason,
+            supervisor_decision=sup_decision,
+            supervisor_reason=sup_reason,
             today_dewpoint_f=today_dewpoint_f,
             override_active=bool(active_override),
             override_note=override_note,

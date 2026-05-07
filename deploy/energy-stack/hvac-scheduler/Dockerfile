@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py safety_supervisor.py .
 
 # UID 1007 -- one above the other pollers
 RUN useradd --system --no-create-home --uid 1007 scheduler && mkdir -p /data && chown -R scheduler /app /data
