@@ -396,30 +396,98 @@ FEED_DISPATCHERS: dict[
 }
 
 
+def _write_feed_status(
+    write_api,
+    cfg: Config,
+    feed_name: str,
+    *,
+    success: bool,
+    points: int = 0,
+    error_type: str = "",
+    error_msg: str = "",
+) -> None:
+    """Write one `pjm.feed_status` point recording the outcome of a single
+    feed attempt. Independent of whether the feed itself wrote any data
+    points to the bucket — observability that survives outages.
+
+    Tagged by `feed` and `success` so per-feed dashboards can filter
+    cleanly without parsing field values. Fields carry counts and
+    (truncated) error context for the failure case.
+
+    A failure here (e.g., the influx write itself errors) is logged at
+    `warn` and swallowed — we don't want monitoring to fail the cycle.
+    """
+    point = (
+        Point("pjm.feed_status")
+        .tag("feed", feed_name)
+        .tag("success", "true" if success else "false")
+        .field("points_written", int(points))
+        .field("error_type", error_type)
+        .field("error_msg", error_msg[:200])
+        .time(datetime.now(timezone.utc))
+    )
+    try:
+        write_api.write(bucket=cfg.influx_bucket, record=[point])
+    except Exception as exc:
+        log("warn", "feed_status_write_failed", feed=feed_name,
+            error=str(exc), error_type=type(exc).__name__)
+
+
 async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
     """One pass through the feed schedule. Each feed fires only when its
-    Schedule says so; a single feed failure does not abort the cycle."""
+    Schedule says so; a single feed failure does not abort the cycle.
+
+    Health-marker semantics (CodeX 2026-05-07): the loop's liveness signal
+    `/tmp/last_poll_ok` is touched when EITHER no feed was due this cycle
+    (legitimate idle wake) OR at least one due feed succeeded. A cycle
+    where every due feed fails leaves the marker untouched, so the
+    Dockerfile HEALTHCHECK can flip the container unhealthy after the
+    configured staleness window — instead of the prior "loop is alive
+    therefore healthy" semantics that hid auth failures, schema drift,
+    and persistent PJM 4xx/5xx behind a green status.
+
+    Per-feed status is also written to `pjm.feed_status` on every attempt
+    (success or failure), so feed-level alerting can run independently
+    of the container healthcheck.
+    """
     now_local = datetime.now(cfg.tz)
+    due_feeds: list[str] = []
     fired: list[str] = []
+    failed: list[str] = []
 
     for feed_name, schedule in FEED_SCHEDULE.items():
         if not schedule.should_fire(now_local):
             continue
+        due_feeds.append(feed_name)
         try:
             fetcher = FEED_DISPATCHERS[feed_name]
             points = await fetcher(client, cfg, now_local)
+            n_points = len(points)
             if points:
                 write_api.write(bucket=cfg.influx_bucket, record=points)
-                log("info", "feed_ok", feed=feed_name, points=len(points))
-                fired.append(feed_name)
+                log("info", "feed_ok", feed=feed_name, points=n_points)
+            else:
+                log("info", "feed_empty", feed=feed_name)
+            fired.append(feed_name)
+            _write_feed_status(write_api, cfg, feed_name,
+                               success=True, points=n_points)
         except Exception as exc:
             log("error", "feed_failed", feed=feed_name,
                 error=str(exc), error_type=type(exc).__name__)
+            failed.append(feed_name)
+            _write_feed_status(write_api, cfg, feed_name, success=False,
+                               error_type=type(exc).__name__,
+                               error_msg=str(exc))
+
+    cycle_healthy = (not due_feeds) or bool(fired)
+    if cycle_healthy:
+        HEALTH_MARKER.touch()
 
     log("info", "poll_cycle_done",
         local_hour=now_local.hour, weekday=now_local.weekday(),
-        month=now_local.month, fired=fired)
-    HEALTH_MARKER.touch()
+        month=now_local.month,
+        due=due_feeds, fired=fired, failed=failed,
+        cycle_healthy=cycle_healthy)
 
 
 # ---------------------------------------------------------------------------

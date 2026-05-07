@@ -57,6 +57,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `pjm.peak_forecast_rto` | pjm-dm2-poller | RTO peak-day forecast (cooling season only) |
 | `pjm.nspl_zonal` | pjm-dm2-poller | annual NSPL for `zone=COMED` |
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
+| `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. Surface for per-feed alerting independent of container healthcheck |
 | `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; high_f, dewpoint, reason, comed_price_at_decision |
 | `hvac.actions` | hvac-scheduler | tag `action_label`, `day_type`, `dry_run`, `supervisor_decision`; cool_setpoint_f, heat_setpoint_f, fan_mode, applied, error, supervisor_reason, cool_setpoint_proposed_f, thermostat snapshot before |
 | `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
@@ -271,11 +272,11 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 - `PJM_DM2_TZ` — IANA tz for schedule decisions (default `America/Chicago`, sourced from `SCHEDULER_TZ`)
 - `INFLUX_URL`, `INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET` — Influx connection (note the env var names mirror the bootstrap convention rather than `INFLUXDB_*`)
 
-**Healthcheck:** `/tmp/last_poll_ok` marker.
+**Healthcheck:** `/tmp/last_poll_ok` marker, gated by per-cycle feed-success state (CodeX 2026-05-07 P2). The marker is touched only when EITHER no feed was due (legitimate idle wake) OR at least one due feed succeeded. A cycle where every due feed fails leaves the marker untouched, so persistent auth failures, schema drift, or PJM 4xx/5xx eventually flip the container unhealthy after the 90-min staleness budget. Per-feed status is also written to `pjm.feed_status` on every attempt for finer-grained alerting independent of the container healthcheck.
 
 **Failure modes:**
-- Single-feed failure logged + skipped; cycle continues with other feeds (no abort).
-- Auth (401) → poller continues but logs the error every cycle; surfaces in Loki.
+- Single-feed failure logged + skipped; cycle continues with other feeds (no abort). Failure recorded in `pjm.feed_status` with `success=false` and the exception type.
+- Auth (401) → poller keeps looping (so it can recover when the key is fixed) but every cycle's status row records the failure. Container goes unhealthy after 90 min if auth never recovers and the loop hits a due feed.
 - 429 / 5xx → handled by per-call retry; cycle skip if persistent.
 
 **Design + schema:** [`PJM_DM2_INTEGRATION.md`](PJM_DM2_INTEGRATION.md). Feed catalog: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md).
