@@ -122,22 +122,26 @@ downsampled history.
 
 **Implementation note**: Auth is disabled on the device (open on the homelab VLAN, consistent with the project threat model: local-only, single-user). The `refoss-poller` container caches user-assigned channel labels via `Refoss.Config.Get` and refreshes the cache automatically when the device's `sys.cfg_rev` increments — renaming a circuit in the Refoss app propagates within one poll cycle. Per-channel and system metrics land in `refoss.channel` and `refoss.system` measurements; mains aggregates are computed in Grafana from the two split-phase main channels (`em:1` + `em:7`) since the device's `emmerge:N` rollups return empty objects on this firmware.
 
-### Thermostat Data: Honeywell TCC Cloud API
+### Thermostat Data: Honeywell TCC Cloud API (originally planned, superseded by Phase 4)
 
-**Decision**: Poll the Honeywell Total Connect Comfort API every 10 minutes for context data.
+> **Status**: superseded. The plan in this section was not what shipped. Phase 4 (May 2026) implemented thermostat integration via Control4 EA-5 → Cinegration C4 driver → TCC cloud → RedLINK gateway, not direct TCC polling. See Phase 4 entry in the Development Roadmap below for the actual architecture; this section is retained for historical context on why direct-TCC was originally considered.
 
-**Rationale**:
-- The home uses a Honeywell RedLINK thermostat system with the TCC app
+**Decision (originally)**: Poll the Honeywell Total Connect Comfort API every 10 minutes for context data.
+
+**Rationale (originally)**:
+- The home uses an Amana CTK04AE (Honeywell-OEM whitelabel with native RedLINK) on the TCC app
 - RedLINK has no local API — the gateway is encrypted cloud-only (HTTPS to alarmnet.com, no local endpoints, proprietary 900MHz RF)
 - The TCC cloud API (via `pyhtcc` or `aiosomecomfort` libraries) provides indoor temp, outdoor temp, humidity, setpoints, equipment status, and system mode
 - 10-minute polling interval is the community-tested safe minimum to avoid Honeywell rate limiting (403/500 errors with no graceful backoff)
 - This data is context, not metering — it answers "why is the HVAC running" not "how much is it using"
 - The Resideo Developer API (api.honeywellhome.com/v2, OAuth2) is also available as a cleaner alternative; requires developer registration
 
-**Three API paths identified**:
+**Three API paths originally identified**:
 1. Legacy SOAP: `rs.alarmnet.com/TotalConnectComfort/ws/MobileV2.asmx` (AppID from iOS app, may be retired)
 2. Web portal scraping: `mytotalconnectcomfort.com/portal` via `pyhtcc`/`aiosomecomfort` (battle-tested by Home Assistant community, ~3,200 active installations)
 3. Official REST: `api.honeywellhome.com/v2` (OAuth2, documented, requires developer registration)
+
+**Why this got superseded**: a Control4 EA-5 controller already ran in the house with the Cinegration TCC bridge driver installed. Routing through Control4 was simpler (no separate TCC creds for the stack to manage), more reliable (local Director access without internet round-trip per setpoint push), and let `hvac-scheduler` reuse the same automation infrastructure already maintained for other home automation. Direct TCC remains a fallback option if Control4 ever loses access.
 
 ---
 
