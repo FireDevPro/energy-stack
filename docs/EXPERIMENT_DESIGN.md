@@ -1,6 +1,6 @@
 # Experiment Design — Residential HVAC Controls Field Study (N=1)
 
-**Status**: Pre-registration draft (2026-05-06). Binding once filed to OSF. No data unblinding before pre-registration is filed.
+**Status**: Pre-registration draft (revised 2026-05-07). Binding once filed to OSF. No data unblinding before pre-registration is filed.
 **Owner**: Chris dePaola (owner-as-investigator, owner-as-only-subject)
 **Ethics framing**: unaffiliated owner self-experimentation with no recruited participants. No institutional IRB is currently engaged. If the work is later submitted through an institution, a formal IRB / NHSR determination will be requested at that time. The investigator's working interpretation of the regulatory landscape, and limitations of that interpretation, are documented in §11.
 **Companion docs**: [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (controller methodology for Arm B), [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (current scheduler day-type logic for Arm A), [`INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md) (data persistence guarantees).
@@ -21,11 +21,13 @@ All hypotheses are pre-committed before any data unblinding.
 
 ### Primary hypothesis (H1)
 
-> **Mean weekly within-summer electricity cost** (supply + delivery, normalized to weekly cooling-degree-days) is lower under Arm B than Arm A by at least 5%, on a per-week paired-randomization-test basis.
+> **Mean weekly HVAC-circuit electricity cost** (supply + delivery on the dedicated HVAC Refoss channels, normalized to weekly cooling-degree-days) is lower under Arm B than Arm A by at least 5%, on a per-week paired-randomization-test basis.
 
 **Direction**: one-sided (Arm B < Arm A).
 **Effect-size threshold**: 5% relative reduction at the median.
 **Stat threshold**: randomization test p ≤ 0.05 against the null of no difference, AND bootstrap 95% CI lower bound > 0%.
+
+**Why HVAC-circuit cost rather than whole-home cost as primary** (revised 2026-05-07): the experiment tests a controller, and the controller's authority extends only to the HVAC equipment. Whole-home cost includes uncontrolled loads (cooking, laundry, IT, dehumidifier) that add noise without measuring the scientific claim. The whole-home metric is retained as a household-level reconciliation outcome (§6) for ASHRAE G14 / IPMVP comparability.
 
 ### Secondary hypotheses (H2–H4)
 
@@ -33,7 +35,7 @@ H2 (peak kW, within-summer): mean weekly **maximum 1-hour HVAC kW draw** is lowe
 
 H3 (comfort, within-summer): mean weekly **degree-hours of indoor temperature exceedance above the comfort ceiling** (78°F default; per-day-type ceilings per the existing scheduler) is **not worse** under Arm B than Arm A. Pre-committed non-inferiority margin: **the larger of +20% relative or +4 °F·hr/week absolute**. The absolute fallback prevents the relative margin from becoming meaningless on cool weeks where baseline exceedance is near zero (a common SCED pre-registration pitfall flagged by CodeX 2026-05-07).
 
-H4 (capacity-charge, cross-summer): the **summer-2027 ComEd capacity charge $** (locked from summer-2026 PJM 5CP coincident-peak readings) is lower than the equivalent supply-and-delivery-share-implied prior-baseline projection. Single-shot cross-summer comparison; reported with a 95% CI from the summer-2026 weekly-peak distribution.
+H4 (capacity-charge, cross-summer, descriptive): the **summer-2027 ComEd capacity-charge line item** (determined by summer-2026 PJM 5CP coincident-peak readings) compared to the prior-year capacity-charge line item. Reported descriptively only as a YoY $ delta with 95% CI from the summer-2026 weekly-peak distribution; no directional accept/reject. Descriptive because the YoY comparison mixes controller-driven coincident-load changes with year-to-year changes in PJM/ComEd capacity prices, and disentangling those at N=1 is not credible.
 
 H4 is the only hypothesis that requires waiting until ComEd posts the next year's locked $/kW (typically June 2027). H1–H3 are answered when summer 2026 closes (October 2026 after final bill).
 
@@ -78,21 +80,48 @@ Both arms run the same intra-day forecast revisit, same MILD-release logic, same
 
 **Switch mechanism**: `hvac-scheduler` reads the assignment list at startup of each calendar week and selects Arm A or Arm B logic. Switch is automatic; no investigator action between weeks. Switch logged to `hvac.actions` with explicit `arm` tag.
 
-**Burn-in**: a 7-day burn-in period at the start of any new arm where data are flagged but **not excluded** from the primary analysis. Sensitivity analysis pre-committed: re-run primary analysis excluding burn-in days. If sensitivity changes the H1 conclusion, both results reported.
+**Post-switch washout** (revised 2026-05-07): in an alternating-treatments SCED, transition effects between arms are recurring carryover, not a one-time burn-in. The first **W hours** after each Monday 00:00 CT arm switch are flagged as post-switch washout and **excluded from the primary analysis**, applied identically to both arms.
+
+`W` is set as follows:
+
+- If a ratified pre-study thermal model (per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md)) exists before alternation begins: `W = ceil(2τ / 12h) × 12h`, where τ is the fitted thermal time constant. `W` is clamped to `[24h, 72h]` so a tight envelope can't shrink the washout below physical-air-rebalance time and an unrealistically large τ can't eat more than ~43% of any arm-week.
+- If no ratified τ exists before alternation begins: `W = 48h`. Defended by the upper bound of typical residential cooling envelope τ (10–30h for stick-frame, 30–60h for masonry), which 48h covers comfortably.
+
+The selected `W` is frozen and committed to OSF before any outcome unblinding. The same `W` applies to both arms; asymmetric washouts would bias the comparison.
+
+**Sensitivity analysis** (pre-committed): re-run primary analysis with washout hours **included**. If the sign or significance of H1 differs between primary (washout-excluded) and sensitivity (washout-included), both results are reported and the disagreement is itself the conclusion. Same disagreement-is-the-conclusion discipline as the regression-vs-randomization-test companion analysis in §7.
 
 ## 6. Metrics
 
 All metrics defined precisely so post-hoc redefinition is impossible.
 
+### HVAC channel set (pre-committed)
+
+For all metrics that reference "HVAC-circuit", the set of `refoss.channel` channels is pinned as:
+
+- `em:2` and `em:8` — the two AC compressor legs of the Amana ASXC160481BE 2-stage AC.
+- `em:9` — the Amana AMVM971005CN furnace blower (which moves cool air during cooling cycles as well; cooling-season usage of this channel is dominated by AC duty cycle).
+
+Whole-home electricity is tracked separately on the split-phase mains `em:1 + em:7`. The HVAC channel set is part of the pre-registration record and frozen at the `randomize_arms.py` commit hash.
+
 ### Primary
 
-**`weekly_cost_per_cdd_$/CDD`**: sum of (`hourly_kWh × hourly_supply_price`) + (`hourly_kWh × delivery_rate`) across all hours in the calendar week, divided by sum of `cooling_degree_days_base65F` for the week from NWS reanalysis. CDD computed as `max(0, daily_mean_F - 65)`.
+**`weekly_hvac_cost_per_cdd_$/CDD`** (revised 2026-05-07, promoted from secondary): sum across all hours in the calendar week of (`hvac_circuit_hourly_kWh × hourly_supply_price`) + (`hvac_circuit_hourly_kWh × delivery_rate`), divided by sum of `cooling_degree_days_base65F` for the week from NWS reanalysis. `hvac_circuit_hourly_kWh` is the hourly integral of `refoss.channel.power_w` summed across the HVAC channel set. CDD computed as `max(0, daily_mean_F - 65)`. Capacity-charge components are explicitly excluded — capacity is billed monthly off coincident-peak monthly kW and cannot be allocated cleanly to a single circuit hour-by-hour. Capacity-side effects are addressed in H4.
 
-### Secondary
+**Pricing granularity**: hourly. ComEd's per-hour supply price (`comed.prices` `period_type=hourly_avg`) is used rather than the 5-min real-time price so the metric reconciles cleanly to the bill (which uses hourly average for variable-rate residential customers). A sensitivity using 5-min pricing is pre-committed under §7 if the hourly approximation is challenged.
 
-- **`weekly_peak_kw_1hr`**: maximum of the 1-hour rolling mean of `refoss.channel.power_w` summed across the HVAC circuit channels.
+### Household reconciliation (formerly primary, now secondary)
+
+**`weekly_cost_per_cdd_$/CDD`** (revised 2026-05-07, demoted from primary): sum of (`hourly_kWh × hourly_supply_price`) + (`hourly_kWh × delivery_rate`) across all hours in the calendar week, divided by sum of `cooling_degree_days_base65F` for the week. Whole-home `hourly_kWh` from EAGLE meter (or `em:1 + em:7` Refoss as the cross-validation source). Retained as a reported secondary outcome for ASHRAE G14 / IPMVP whole-facility comparability and for end-to-end ComEd-bill reconciliation. Not the primary statistical test because it includes uncontrolled household loads outside the HVAC controller's authority.
+
+### Secondary (formal tests)
+
+- **`weekly_peak_kw_1hr`**: maximum of the 1-hour rolling mean of `refoss.channel.power_w` summed across the HVAC channel set.
 - **`weekly_comfort_exceedance_F_hr`**: integrated (over the week) of `max(0, indoor_temp_f - comfort_ceiling)`, where the ceiling is 78°F by default and follows day-type if the scheduler defines a different ceiling for that day-type.
-- **`weekly_hvac_kwh_per_cdd`**: total HVAC-circuit kWh / weekly CDD.
+
+### Secondary (descriptive)
+
+- **`weekly_hvac_kwh_per_cdd`**: total HVAC-circuit kWh / weekly CDD. Reported alongside the primary as the energy-only counterpart of the cost-based primary.
 - **`weekly_compressor_cycles`**: count of stage-1-to-on and stage-2-to-on transitions in `hvac.comfortnet.cl_act`, per week.
 - **`weekly_dehumidify_kwh_per_cdd`**: HVAC kWh attributable to humidity-driven cycles (identified via `hvac.comfortnet` dehumidify flag), normalized by CDD.
 
@@ -127,13 +156,23 @@ Primary M&V framework: [ASHRAE Guideline 14-2023](https://webstore.ansi.org/stan
 
 ### Statistical analysis plan
 
-**Primary test (H1)**: paired randomization test ([Heyvaert & Onghena 2014, *Journal of Contextual Behavioral Science* 3(1):51–64](https://doi.org/10.1016/j.jcbs.2013.10.002)) on the per-week metric difference `(weekly_cost_per_cdd_A - weekly_cost_per_cdd_B)`. Test statistic: median of paired differences within blocks (each block contains one A and one B week). Reference distribution: all possible randomization assignments of the observed weeks under the block constraint. p-value: fraction of randomizations giving a test statistic ≥ observed. Effect-size estimate: median paired difference ± bootstrap 95% CI (B = 10,000 resamples).
+**Primary test (H1)**: paired randomization test ([Heyvaert & Onghena 2014, *Journal of Contextual Behavioral Science* 3(1):51–64](https://doi.org/10.1016/j.jcbs.2013.10.002)) on the per-week metric difference `(weekly_hvac_cost_per_cdd_A − weekly_hvac_cost_per_cdd_B)`. Test statistic: median of paired differences within blocks (each block contains one A and one B week). Reference distribution: all possible randomization assignments of the observed weeks under the block constraint. p-value: fraction of randomizations giving a test statistic ≥ observed. Effect-size estimate: median paired difference ± bootstrap 95% CI (B = 10,000 resamples).
 
-**Companion model (parallel report)**: per CodeX 2026-05-07 review, alongside the per-CDD ratio above, fit a weather-normalized regression of weekly HVAC kWh against weekly CDD with an arm dummy: `kWh_week ~ β₀ + β₁·CDD_week + β₂·arm + ε`. Coefficient β₂ is the arm effect with all weather variation absorbed; report point estimate + bootstrap CI. The randomization test on `weekly_cost_per_cdd` is the pre-committed primary; the regression is a sensitivity check that doesn't depend on the per-CDD denominator behaving well at low load. If the two methods disagree on H1, both are reported and the disagreement is itself the conclusion.
+**Companion model (parallel report)**: per CodeX 2026-05-07 review, alongside the per-CDD ratio above, fit a weather-normalized regression of weekly HVAC kWh against weekly CDD with an arm dummy: `kWh_week ~ β₀ + β₁·CDD_week + β₂·arm + ε`. Coefficient β₂ is the arm effect with all weather variation absorbed; report point estimate + bootstrap CI. The randomization test on `weekly_hvac_cost_per_cdd` is the pre-committed primary; the regression is a sensitivity check that doesn't depend on the per-CDD denominator behaving well at low load. If the two methods disagree on H1, both are reported and the disagreement is itself the conclusion.
 
-**Secondary tests (H2, H3)**: same randomization-test framework on each secondary metric. Multiple-comparison correction: **Bonferroni at α = 0.05 / 3 = 0.0167** for the three within-summer secondary hypotheses (H2, H3, H4 deferred to next summer). Pre-committed: report uncorrected p as well, but conclusions reference the corrected threshold.
+**Secondary tests (H2, H3)** — revised 2026-05-07 to **Holm-Bonferroni**: same randomization-test framework on each secondary metric. Multiple-comparison correction across the **two formal-test secondary hypotheses** (H2, H3) by Holm-Bonferroni at family-wise α = 0.05.
 
-**Cross-summer test (H4)**: descriptive only with 95% CI; not powered for hypothesis testing at N=1 cross-summer comparison. Result interpreted in context, not as a formal accept/reject.
+Procedure on the two ordered p-values `p(1) ≤ p(2)`:
+
+1. Reject `H(1)` if `p(1) ≤ 0.05 / 2 = 0.025`.
+2. If `H(1)` rejected, additionally reject `H(2)` if `p(2) ≤ 0.05`.
+3. If `H(1)` not rejected, do not reject `H(2)` regardless of its p-value.
+
+Holm-Bonferroni (rather than plain Bonferroni at α/2 for both) is more powerful at the small-family limit while maintaining family-wise error control, and is pre-registration-friendly because the procedure is fully deterministic given the observed p-values. Pre-committed: report uncorrected p-values alongside, but conclusions reference the Holm-corrected thresholds.
+
+**H4 is excluded from the multiple-comparison family** (revised 2026-05-07): H4 is descriptive only — it has no significance threshold to correct against. Including it in the Bonferroni denominator was inconsistent with its descriptive framing and was costing power on H2 and H3 without buying anything.
+
+**Cross-summer test (H4)**: descriptive only — reported as a YoY $ delta with 95% CI from the summer-2026 weekly-peak distribution. Not a hypothesis test; no accept/reject decision attached. Result interpreted in narrative context.
 
 **Pre-committed analyses NOT in primary plan**: time-of-day decomposition, heat-wave-only subset, day-type-stratified comparison. Any of these, if reported, are flagged as exploratory.
 
@@ -150,7 +189,13 @@ Pre-committed decisions based on summer-2026 outcomes:
 | H1 disconfirmed (CI upper bound < 0%) | Step 1 is **worse** than baseline. Halt Step 1 deployment. Investigate (model-fit quality, integration-point bugs, comfort-loss-driven aggressive cooling). Submit findings as a negative result — these are valuable to the field per Khabbazi's call for honest reporting. |
 | Stop-loss triggered (§2) | Halt alternation immediately, return to Arm A. Document and submit as a "controller failure mode" report. |
 
-Stopping criteria for the broader study: minimum one cooling season of valid data (≥ 12 weeks of paired observations after exclusions). Maximum study window: 3 cooling seasons (through 2028). After 3 seasons, declare and publish, regardless of outcome. Negative or null results are publishable contributions.
+**Minimum analyzable sample for confirmatory interpretation** (revised 2026-05-07):
+
+- **≥ 8 valid blocks** (16 paired weeks) after §6 exclusions: H1, H2, H3 reported as confirmatory under the §7 thresholds. With 8 blocks the paired-randomization-test reference distribution has 2⁸ = 256 arrangements, giving a minimum achievable p ≈ 0.004 — comfortable resolution against the Holm-corrected α = 0.025 floor for the lead secondary.
+- **6–7 valid blocks**: H1 effect estimate and 95% CI reported as **exploratory**; confirmatory interpretation deferred to summer 2027. Resolution at 6 blocks is min p ≈ 0.016, just barely below 0.05 and right at the Holm-corrected 0.025 threshold for the lead secondary, which is too thin to distinguish a true null from a power-limited null.
+- **< 6 valid blocks**: study reported as underpowered; no confirmatory or exploratory effect estimates published from summer 2026 alone. Continue to summer 2027 with the same controllers and seed (`20260602`), re-analyze with combined two-summer dataset.
+
+Stopping criteria for the broader study: minimum one cooling season meeting the ≥ 8-valid-block threshold above, **or** combined two-summer dataset meeting it. Maximum study window: 3 cooling seasons (through 2028). After 3 seasons, declare and publish, regardless of outcome. Negative or null results are publishable contributions.
 
 ## 9. Anonymization plan
 
@@ -200,10 +245,11 @@ The following are binding once this document is filed to OSF and the pre-registr
 1. The hypotheses in §2, with their direction, effect-size thresholds, and statistical thresholds.
 2. The arm definitions in §3, including the commit hash for both controllers.
 3. The randomization seed (`20260601`) and the `randomize_arms.py` script that derives the assignment list.
-4. The metric definitions in §6.
-5. The analysis pipeline at the commit hash referenced in OSF.
-6. The decision rules in §8.
-7. The stop-loss criterion in §2.
+4. The metric definitions in §6, including the HVAC channel set (`em:2 + em:8 + em:9`) and the explicit primary-vs-reconciliation split.
+5. The post-switch washout duration `W` (§5), including the formula `W = ceil(2τ / 12h) × 12h` if a ratified pre-study τ exists, the `[24h, 72h]` clamp, and the `W = 48h` fallback when no ratified τ exists. The selected `W` is frozen and committed to OSF before any outcome unblinding and applied symmetrically to both arms.
+6. The analysis pipeline at the commit hash referenced in OSF, including the Holm-Bonferroni procedure for H2 and H3 (§7) and H4's exclusion from the multiple-comparison family.
+7. The decision rules in §8, including the ≥ 8 valid-block threshold for confirmatory interpretation and the 6-7 block exploratory window.
+8. The stop-loss criterion in §2.
 
 Changes after pre-registration require an amendment posted to OSF with explicit justification, and will be reported as deviations in any published methods section.
 
