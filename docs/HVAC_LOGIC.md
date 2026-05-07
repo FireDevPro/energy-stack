@@ -10,6 +10,7 @@ Companion to [`SERVICES.md#hvac-scheduler`](SERVICES.md#hvac-scheduler) (which c
 - [Schedules](#schedules)
 - [Humid override](#humid-override)
 - [Auto-mode safety (deadband + heat floor)](#auto-mode-safety-deadband--heat-floor)
+- [Safety supervisor (every setpoint push)](#safety-supervisor-every-setpoint-push)
 - [Overrides](#overrides)
 - [Thermostat fallback (when Pi is offline)](#thermostat-fallback-when-pi-is-offline)
 - [Honeywell ISU settings (the "set once" stuff)](#honeywell-isu-settings-the-set-once-stuff)
@@ -160,6 +161,37 @@ This pattern is encoded in `execute_action()`: `set_cool_setpoint_f(...)` → `s
 
 ---
 
+## Safety supervisor (every setpoint push)
+
+`safety_supervisor.validate_setpoints(proposed_cool_f, proposed_heat_f, snapshot)` runs in `execute_action` before any setpoint reaches Control4. The function returns a `SupervisorDecision` whose `decision` field is one of three kinds:
+
+| Decision | Trigger | Action |
+|---|---|---|
+| `approved` | Proposed values inside safe ranges and indoor temp not at emergency level | Pass through unchanged |
+| `clamped` | Cool outside `[65, 86]°F` or heat outside `[55, 75]°F` | Clamp to nearest bound; substitute clamped values |
+| `emergency` | Snapshot reports `indoor_temp_f >= 86°F` | Override cool to 74°F regardless of schedule |
+
+Precedence is emergency > clamp > approved (first match wins). Each `hvac.actions` row is tagged with `supervisor_decision` and carries `supervisor_reason` + `cool_setpoint_proposed_f` fields, so an audit query can compare what the controller asked for against what actually got pushed. The supervisor logs at `warn` for `clamped` and `error` for `emergency` (so Loki LogQL `{compose_service="hvac-scheduler", level=~"warn|error"}` surfaces them immediately).
+
+**Why this exists:** the supervisor is shared infrastructure that gates every controller — baseline RBC today, model-informed Arm B controller in the SCED experiment, anything later. The intent is that no future controller (including a buggy one mid-development) can put unsafe setpoints on the thermostat without crossing this gate.
+
+**Bounds rationale:**
+
+- **Cool `[65, 86]`** — accommodates VACATION setpoints (cool=83) and `HOT_5CP_SHUTOFF` (cool=85) with a small margin. Below 65°F is wasteful overcooling; above 86°F is outside the equipment's design operating envelope.
+- **Heat `[55, 75]`** — well above pipe-freeze territory at the low end, well below summer setpoints at the high end (so it never displaces a real comfort intent).
+- **Emergency `86°F` indoor / `74°F` cool target** — 86°F indoor is uncomfortable enough that no scheduled action should leave the AC sitting idle; 74°F cool target is aggressive enough to actually pull the indoor temp down quickly while staying inside the safe range above.
+
+**What the v1 supervisor does NOT do (deferred):**
+
+- **Setpoint slew-rate limits** across consecutive applies (would need state across calls; not currently tracked between scheduler ticks)
+- **Forecast staleness check** at decision time (cleaner integration with `decide_day_type` than with `execute_action`)
+- **Manual halt sentinel** (e.g. touch `/data/scheduler_halt` to disable all pushes)
+- **Telegram alert routing** on `emergency` (needs the existing `telegram-notifier` queue/topic — separate PR)
+
+Source: [`deploy/energy-stack/hvac-scheduler/safety_supervisor.py`](../deploy/energy-stack/hvac-scheduler/safety_supervisor.py).
+
+---
+
 ## Overrides
 
 File: `/data/overrides.json` (inside the `hvac_scheduler_data` volume).
@@ -286,5 +318,5 @@ Deliberately scoped out (for clarity, and to avoid future scope creep):
 - **EV charging coordination.** No EV in service yet. When one arrives, charging would naturally overlap with the off-peak overnight window, no scheduler involvement needed initially.
 - **Solar awareness.** No PV system. If installed, would need additional inputs (production forecast) and the COAST window logic would change (run AC during midday solar surplus instead of coasting).
 - **Demand response participation in OpenADR.** ComEd doesn't currently expose a residential VTN. Would be straightforward to add as another input to the day-type decision when it does.
-- **Day-ahead pricing forecasts.** ComEd doesn't expose. PJM does via DataMiner2 but requires API access (currently waiting on PJM tech-support email — see PROJECT.md).
-- **Comfort-aware adaptation.** No override-event logging yet. When added (open work item), would let the system learn user preferences and tighten/loosen coast ceilings automatically.
+- **Day-ahead pricing forecasts.** ComEd doesn't expose. PJM DataMiner2 day-ahead LMP is now ingested by `pjm-dm2-poller` into `pjm.lmp_da_hourly` (Phase 9, May 2026), but the scheduler's day-type classifier doesn't yet consume it — that work feeds the forthcoming 5CP-probability classifier and the Arm B model-informed controller.
+- **Comfort-aware adaptation.** Override-event logging shipped May 2026 via `thermostat-poller` (writes `hvac.overrides`). The scheduler doesn't yet *consume* that data to tighten/loosen coast ceilings; that's a follow-on once enough data accumulates.

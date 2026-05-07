@@ -16,12 +16,12 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `comed-poller` | ComEd Hourly Pricing 5min + hourly_avg, 60 s | — | [SERVICES.md#comed-poller](../../docs/SERVICES.md#comed-poller) |
 | `refoss-poller` | Refoss EM16P 18 channels, 30 s | — | [SERVICES.md#refoss-poller](../../docs/SERVICES.md#refoss-poller) |
 | `nws-poller` | NWS forecast (today/tomorrow/day2) + alerts, 30 min | — | [SERVICES.md#nws-poller](../../docs/SERVICES.md#nws-poller) |
-| `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
+| `pjm-dm2-poller` | PJM DataMiner 2 zonal feeds (DA LMP, load forecast, metered, peak, NSPL), per-feed schedule | — | [SERVICES.md#pjm-dm2-poller](../../docs/SERVICES.md#pjm-dm2-poller) |
+| `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes (with safety supervisor) | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
 | `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
-| `haven-ingest` | Watches `inbox/haven/` for Haven IAQ CSV exports → InfluxDB | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
+| `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
+| `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
-| `webdashboard` | nginx static (sci-fi HUD, live data via API) | 8081 | [SERVICES.md#webdashboard](../../docs/SERVICES.md#webdashboard) |
-| `webdashboard-api` | FastAPI backend for webdashboard | (8082, internal) | [SERVICES.md#webdashboard-api](../../docs/SERVICES.md#webdashboard-api) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `promtail` | Container log shipper → Loki | — | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
@@ -109,7 +109,7 @@ Currently covered:
 - `hvac-scheduler/tests.py` — 15 cases (release_hold action, lazy decision recompute)
 - `telegram-notifier/tests.py` — 13 cases (poller-silence detection, price-spike threshold)
 
-Other services (eagle-poller, refoss-poller, comed-poller, thermostat-poller, haven-ingest, webdashboard-api) have no tests yet — incremental work as bug fixes or behavior changes touch each.
+Other services (eagle-poller, refoss-poller, comed-poller, thermostat-poller, haven-ingest) have no tests yet — incremental work as bug fixes or behavior changes touch each.
 
 ## Ports
 
@@ -117,7 +117,6 @@ Other services (eagle-poller, refoss-poller, comed-poller, thermostat-poller, ha
 |---|---|---|
 | 8086 | InfluxDB API + UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3000 | Grafana UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
-| 8081 | Webdashboard (nginx) | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3100 | Loki (Grafana queries it via container network) | Pi-lab localhost only |
 
 No firewall changes required — existing "Allow Trusted to Homelab" ZBF rule covers the user-facing ports.
@@ -178,7 +177,7 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | `grafana_data` | grafana | Dashboards (only modifications; provisioned dashboards are read-only mounts), users, alerts state |
 | `hvac_scheduler_data` | hvac-scheduler | `/data/director_token.json` (Control4 token), `/data/overrides.json` (manual day-type / vacation overrides) |
 | `thermostat_poller_data` | thermostat-poller | `/data/director_token.json` (its own Control4 token, independent of hvac-scheduler) |
-| (bind mount) `./inbox/haven` | haven-ingest | CSV inbox: drop new Haven exports here. Service moves them to `processed/` on success or `failed/` on parse error. |
+| `haven_ingest_data` | haven-ingest | `/data/refresh_token` — HAVEN Auth0 refresh token, rotates on every refresh and persisted across restarts |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
 

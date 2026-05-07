@@ -5,18 +5,19 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 ## Contents
 
 - [influxdb](#influxdb) — time-series storage
+- [influx-init](#influx-init) — one-shot longterm bucket + downsample task provisioning
 - [grafana](#grafana) — visualization
 - [eagle-poller](#eagle-poller) — billing-grade smart meter
 - [comed-poller](#comed-poller) — ComEd Hourly Pricing
 - [refoss-poller](#refoss-poller) — per-circuit power
 - [nws-poller](#nws-poller) — weather forecast + alerts
-- [hvac-scheduler](#hvac-scheduler) — Control4 setpoint pushes
+- [pjm-dm2-poller](#pjm-dm2-poller) — PJM zonal market data (DA LMP, load forecast, metered, peak, NSPL)
+- [hvac-scheduler](#hvac-scheduler) — Control4 setpoint pushes (with safety supervisor)
 - [thermostat-poller](#thermostat-poller) — continuous thermostat reads + override detection
-- [haven-ingest](#haven-ingest) — Haven IAQ CSV ingest
+- [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
-- [webdashboard](#webdashboard) — nginx static
-- [webdashboard-api](#webdashboard-api) — FastAPI live data backend
 - [loki & promtail](#loki--promtail) — log aggregation
+- [mosquitto, mosquitto-init, telegraf](#mosquitto-mosquitto-init-telegraf-comfortnet-pipeline-profile-mqtt) — ComfortNet MQTT pipeline (profile `mqtt`)
 
 ---
 
@@ -36,6 +37,11 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 
 **Healthcheck:** `influx ping` every 30 s. Most depends_on rules in compose use `condition: service_healthy` to wait for InfluxDB before starting downstream services.
 
+**Buckets:**
+
+- `energy` — primary, raw writes, infinite retention. All pollers write here.
+- `energy-longterm` — 1-min downsampled aggregates (mean + max for per-frame measurements) plus event measurements written through. Provisioned and populated by `influx-init` (see below) and a Flux task running on a 1-min cadence. See [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
+
 **Measurements written by other services:**
 
 | Measurement | Written by | Notes |
@@ -46,8 +52,21 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `refoss.system` | refoss-poller | uptime, RSSI, cfg_rev |
 | `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; high_f, max_dewpoint_f, is_heat_advisory, alert_summary |
 | `nws.observation` | nws-poller | nearest-station observation when available |
+| `pjm.lmp_da_hourly` | pjm-dm2-poller | day-ahead LMP for ComEd zonal pnode (`33092371`) — tagged `pnode_id`, `pnode_name`, `zone` |
+| `pjm.load_forecast` | pjm-dm2-poller | 7-day load forecast for `forecast_area=COMED` — tagged `evaluated_at_iso` so revisions stay distinct |
+| `pjm.metered_load` | pjm-dm2-poller | weekly hrl_load_metered for `zone=CE` — tagged `is_verified` |
+| `pjm.peak_forecast_rto` | pjm-dm2-poller | RTO peak-day forecast (cooling season only) |
+| `pjm.nspl_zonal` | pjm-dm2-poller | annual NSPL for `zone=COMED` |
+| `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
 | `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; high_f, dewpoint, reason, comed_price_at_decision |
-| `hvac.actions` | hvac-scheduler | tag `action_label`, `day_type`, `dry_run`; cool_setpoint_f, heat_setpoint_f, fan_mode, applied, error, thermostat snapshot before |
+| `hvac.actions` | hvac-scheduler | tag `action_label`, `day_type`, `dry_run`, `supervisor_decision`; cool_setpoint_f, heat_setpoint_f, fan_mode, applied, error, supervisor_reason, cool_setpoint_proposed_f, thermostat snapshot before |
+| `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
+| `hvac.overrides` | thermostat-poller | one row per poll while setpoints diverge from last `hvac.actions` by ≥0.5°F past `OVERRIDE_GRACE_MIN` |
+| `haven.indoor` | haven-ingest | tagged `device_id`; temp/RH/tVOC continuous, PM2.5/airflow CFM flow-dependent |
+| `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
+| `comed.bill` | `parse_comed_bill.py` (manual) | one point per bill |
+| `comed.bill_lineitems` | `parse_comed_bill.py` (manual) | full GL breakdown |
+| `hvac.comfortnet` | telegraf MQTT consumer (planned) | not yet flowing — depends on Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
 **Operations:**
@@ -72,17 +91,35 @@ docker exec influxdb influx restore /tmp/restore -t "$INFLUXDB_INIT_ADMIN_TOKEN"
 
 ---
 
+## influx-init
+
+Build: `./influx-init` · `restart: "no"` · One-shot per `compose up -d`
+
+Idempotent post-bootstrap provisioning. Runs after `influxdb` is healthy and exits cleanly. Two responsibilities:
+
+1. Create the `energy-longterm` bucket if it doesn't exist (with the configured retention).
+2. Apply the 1-min downsample Flux task at `tasks/downsample-energy-1m.flux`. Task aggregates per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) from `energy` to `energy-longterm` with `mean` and `max` reducers. Event measurements (`hvac.actions`, `hvac.overrides`) are written to `energy-longterm` directly by their producers.
+
+**Env:**
+- `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_ADMIN_TOKEN` — same admin credentials as `influxdb` bootstrap
+
+Design: [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
+
+---
+
 ## grafana
 
 Image: `grafana/grafana-oss:11.4.0` · Port: `3000` · Volumes: `grafana_data`, `./grafana/provisioning:ro`, `./grafana/dashboards:ro`
 
-InfluxDB and Loki provisioned as datasources (read-only via `editable: false`). Three dashboards provisioned from disk:
+InfluxDB and Loki provisioned as datasources (read-only via `editable: false`). Five dashboards provisioned from disk (`grafana/dashboards/`):
 
-| Dashboard | UID | Purpose |
+| Dashboard | File | Purpose |
 |---|---|---|
-| Home Energy — Full | (in `grafana/dashboards/home-energy-full.json`) | Whole-stack view: prices, mains, per-circuit, HVAC scheduler, equipment-health row |
-| Home Energy — Overview | (in `home-energy-overview.json`) | High-level (cost, demand, indoor temp) |
-| HVAC Scheduler | (in `hvac-scheduler.json`) | Day-type history, action timeline, setpoint vs indoor temp |
+| Home Energy — Full | `home-energy-full.json` | Whole-stack view: prices, mains, per-circuit, HVAC scheduler, equipment-health row |
+| Home Energy — Overview | `home-energy-overview.json` | High-level (cost, demand, indoor temp) |
+| HVAC Scheduler | `hvac-scheduler.json` | Day-type history, action timeline, setpoint vs indoor temp |
+| ComEd Bill Reconciliation | `comed-bill-reconciliation.json` | Bill-vs-projected, EAGLE-vs-billed-kWh, capacity-charge tracker, forward-projection (stub) |
+| IAQ Comparison | `iaq-comparison.json` | HAVEN return-air mix vs thermostat wall reading; tVOC; blower cross-validation |
 
 **Env:**
 - `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD` — Grafana admin login
@@ -205,11 +242,53 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 
 ---
 
+## pjm-dm2-poller
+
+Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 3600 s = 1 h)
+
+Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles where it shouldn't fire. Auth header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`. Non-Member tier (6 calls/min ceiling, 50,000 rows/call) is plenty for the steady-state load.
+
+**Per-feed schedule** (all times local per `PJM_DM2_TZ`):
+
+| Feed | Schedule | Output measurement |
+|---|---|---|
+| `da_hrl_lmps` (ComEd zonal pnode `33092371`) | 17:00 daily | `pjm.lmp_da_hourly` |
+| `load_frcstd_7_day` (`forecast_area=COMED`) | 06:00 + 13:00 daily | `pjm.load_forecast` |
+| `hrl_load_metered` (`zone=CE` — note: ComEd's PJM zone code is `CE`, not `COMED`, for this feed) | Sundays 02:00 (last 7 days) | `pjm.metered_load` |
+| `ops_sum_frcst_peak_rto` (`area=PJM RTO`) | 06:00 + 13:00 in Jun–Sep only | `pjm.peak_forecast_rto` |
+| `annual_zonal_nspl` (`zone=COMED` — note: this feed uses `COMED`, not `CE`) | Dec 1, 03:00 | `pjm.nspl_zonal` |
+
+The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a bug. Constants are at the top of `app.py` (`COMED_PNODE_ID`, `COMED_FORECAST_AREA`, `COMED_METERED_ZONE`, `COMED_NSPL_ZONE`).
+
+**Out-of-band scripts** in `deploy/energy-stack/scripts/`:
+
+- `backfill_pjm.py` — one-shot 5-year history backfill (DA LMP + metered load + load forecast). Run once on first deploy.
+- `scrape_pjm_5cp_pdf.py` — annual scraper for the official PJM 5CP PDF; writes `pjm.coincident_peak`. Cron once on November 15.
+
+**Env:**
+- `PJM_DM2_API_KEY` — Non-Member tier subscription key
+- `PJM_DM2_POLL_INTERVAL` — wake interval seconds (default 3600)
+- `PJM_DM2_TZ` — IANA tz for schedule decisions (default `America/Chicago`, sourced from `SCHEDULER_TZ`)
+- `INFLUX_URL`, `INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET` — Influx connection (note the env var names mirror the bootstrap convention rather than `INFLUXDB_*`)
+
+**Healthcheck:** `/tmp/last_poll_ok` marker.
+
+**Failure modes:**
+- Single-feed failure logged + skipped; cycle continues with other feeds (no abort).
+- Auth (401) → poller continues but logs the error every cycle; surfaces in Loki.
+- 429 / 5xx → handled by per-call retry; cycle skip if persistent.
+
+**Design + schema:** [`PJM_DM2_INTEGRATION.md`](PJM_DM2_INTEGRATION.md). Feed catalog: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md).
+
+---
+
 ## hvac-scheduler
 
 Build: `./hvac-scheduler` · Cycle: 1-min ticker · Volume: `hvac_scheduler_data` (`/data`)
 
 Decides tomorrow's day-type at 21:00 local, then fires schedule actions throughout the next day. Each action sets cool + heat setpoints (heat always paired for Auto-mode safety), optionally sets fan mode, then pins `Hold = Permanent` so the thermostat baseline doesn't override.
+
+Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in [`HVAC_LOGIC.md#safety-supervisor-every-setpoint-push`](HVAC_LOGIC.md#safety-supervisor-every-setpoint-push).
 
 **Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Honeywell VisionPRO via Cinegration C4 driver → TCC cloud → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
 
@@ -271,43 +350,35 @@ Continuous reads of VisionPRO state via Control4 EA-5. Independent of `hvac-sche
 
 ## haven-ingest
 
-Build: `./haven-ingest` · Cycle: `HAVEN_SCAN_INTERVAL` (default 60 s) · Bind mount: `./inbox/haven:/inbox/haven`
+Build: `./haven-ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) · Volume: `haven_ingest_data` (`/data`)
 
-Watches `~/energy-stack/inbox/haven/` for Haven IAQ CSV exports from the homeowner portal (my.haveniaq.com). Filename pattern: `CAM_<device-id>_<start>_to_<end>.csv`. Parses each file, writes points to InfluxDB, then moves to `inbox/haven/processed/` on success or `inbox/haven/failed/` on error (with a sidecar `.error` file containing the parse error).
+Polls the HAVEN cloud API every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) before entering steady-state polling.
 
-**Why CSV instead of API:** Haven has no public API at any tier (verified May 2026 via dealer-portal probe + Pi-hole DNS analysis showing the device only talks to `haven-r1.azure-devices.net` over Azure IoT Hub MQTT with cert pinning). The homeowner portal's CSV export is the only way out.
+**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN is shipping an official Pro API at `havenapi.tzoa.io` in summer 2026; we'll switch when that lands.
 
 **Env:**
-- `HAVEN_INBOX_DIR` — directory to watch (default `/inbox/haven`)
-- `HAVEN_SCAN_INTERVAL` — seconds between directory scans (default 60)
+- `HAVEN_AUTH0_DOMAIN` — Auth0 tenant (default `haven-production.auth0.com`)
+- `HAVEN_CLIENT_ID` — Auth0 client ID (extracted from mobile app traffic)
+- `HAVEN_REFRESH_TOKEN` — initial refresh token; rotates per-call after first use, persisted to `/data/haven_token.json`
+- `HAVEN_DEVICE_ID` — indoor sensor device ID (default `3645`)
+- `HAVEN_OUTDOOR_ID` — paired outdoor station ID (default `60585`)
+- `HAVEN_POLL_INTERVAL` — seconds between polls (default 300)
+- `HAVEN_BACKFILL_DAYS` — startup backfill window (default 7)
 - `INFLUXDB_*` — standard
 
-**Writes** (measurement `haven.airquality`):
+**Writes:**
 
-| Tag | Field | Coverage | Notes |
+| Measurement | Tags | Fields | Coverage |
 |---|---|---|---|
-| `device_id` (from filename, e.g. `0000-6267`) | `temp_f`, `temp_c`, `humidity_pct`, `tvoc_ppb` | 100% | Continuous — sensors don't need flowing air |
-| | `pm25_ugm3`, `airflow_cfm` | ~3% | Flow-dependent — only populated when blower is running |
-| | `pm25_status`, `tvoc_status`, `combined_status` | 100% | "good" / "fair" / "poor" buckets |
+| `haven.indoor` | `device_id` | `temp_f`, `temp_c`, `humidity_pct`, `tvoc_ppb`, status enums | 100% on temp/RH/tVOC; `pm25_ugm3` and `airflow_cfm` are flow-dependent (~3%) |
+| `haven.outdoor` | `station_id` | outdoor temp/RH/etc. from the paired station | 100% |
 
-**Idempotent:** all points use the timestamp from the CSV (ISO 8601 UTC). Re-importing the same week is a no-op (Influx upserts on measurement+tags+timestamp).
+**Idempotent on timestamp.** Backfill on startup re-writes the same `(measurement, device_id, ts)` tuples that the prior run wrote — Influx upserts and the data doesn't double.
 
-**Workflow:**
-1. Export weekly from my.haveniaq.com → save somewhere accessible (e.g. Downloads)
-2. Drop the CSV into `~/energy-stack/inbox/haven/` on Pi-lab (`scp` from Windows works)
-3. Within 60 s, the service ingests it and moves to `inbox/haven/processed/`
-4. If something goes wrong, file lands in `inbox/haven/failed/` with `.error` sidecar — fix the issue, drop it back in the inbox
-
-**Manual trigger:**
-```bash
-# Force an immediate scan (bypass the 60s wait)
-docker compose restart haven-ingest
-```
-
-**Healthcheck:** `/tmp/last_scan_ok` marker, `find -mmin -5`.
+**Healthcheck:** `/tmp/last_poll_ok` marker.
 
 **Crucial flow-dependent insight:** the sparse `airflow_cfm` and `pm25_ugm3` rows aren't a defect — they're **only populated when the blower is moving air past the duct sensor**. This means:
-- Non-null `airflow_cfm` rows = blower runtime ground truth (cross-validate against Refoss em:9 furnace blower power)
+- Non-null `airflow_cfm` rows = blower runtime ground truth (cross-validate against Refoss `em:9` furnace blower power)
 - Non-null `airflow_cfm` value = real measured CFM at that moment, useful for delivered-BTU calc when paired with future supply-air temp instrumentation
 
 ---
@@ -332,42 +403,9 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 - `SCHEDULER_TZ` — for "8 AM local" interpretation (default `America/Chicago`)
 - `INFLUXDB_*`
 
-**Cost calculation** uses hourly price-weighted Flux integral with `timeSrc:"_start"` alignment and `timezone.location` for local-midnight truncation — important fix from the bug where naive sum-of-power × current-price over-estimated cost ~2×.
+**Cost calculation** uses hourly price-weighted Flux integral with `timeSrc:"_start"` alignment and `timezone.location` for local-midnight truncation — important fix from the bug where naive sum-of-power × current-price over-estimated cost ~2×. Same Flux pattern is shared with the Grafana cost panels.
 
 **Healthcheck:** runs as a long-lived async loop; container restart on crash.
-
----
-
-## webdashboard
-
-Image: `nginx:alpine` · Port: `8081` · Volume: `./webdashboard:/usr/share/nginx/html:ro`
-
-Static React (Babel-standalone, no build step) serving a sci-fi HUD originally sourced from `claude.ai/design`. Wires to `/api/*` endpoints proxied by nginx to `webdashboard-api` over the container network.
-
-**Files in `webdashboard/`:**
-- `index.html` — entry, loads Babel + React + JSX files in order
-- `data.jsx` — fetches from `/api/energy/snapshot`, polls every 5 s
-- `app.jsx` — top-level layout, wires data into panels
-- `hero.jsx`, `rails.jsx`, `primitives.jsx` — UI components
-- `styles.css` — sci-fi theme
-- `nginx.conf` — proxies `/api/*` → `http://webdashboard-api:8082`
-
-**No env.** All wiring is in `nginx.conf` (the proxy upstream is hardcoded to the container DNS name `webdashboard-api:8082`).
-
----
-
-## webdashboard-api
-
-Build: `./webdashboard-api` · Internal port: 8082 (only reachable from `webdashboard` over the container network)
-
-FastAPI backend that the webdashboard fetches from. Serves a single `/api/energy/snapshot` endpoint returning the most recent values for: current price (5min and hourly), instantaneous demand (eagle), per-circuit power top N (refoss), today's cost-so-far, and HVAC state (today's day-type, current schedule action, indoor T/RH, setpoints).
-
-**Env:**
-- `INFLUXDB_*` — standard
-- `API_PORT` — bind port (default 8082)
-- `CACHE_TTL_S` — response cache TTL (default 5 s — keeps Influx query rate sane while supporting 5 s frontend polling)
-
-**Cost calc** uses the same Flux pattern as `telegram-notifier` (timeSrc-aligned hourly join of refoss mains × hourly_avg ComEd price, in local-day window).
 
 ---
 
@@ -392,6 +430,28 @@ JSON parsing pipeline lifts `level` and `msg` fields from each log line as Loki 
 ```
 
 Available in Grafana → Explore → Loki datasource.
+
+---
+
+## mosquitto, mosquitto-init, telegraf (ComfortNet pipeline, profile `mqtt`)
+
+Three services gated behind compose profile `mqtt`. The standard `docker compose up -d` ignores them; bring them up with `docker compose --profile mqtt up -d` (or set `COMPOSE_PROFILES=mqtt`).
+
+**Status:** broker side deployed and healthy on Pi-lab. The Pi-3B-side `comfortnet-publisher` systemd unit (which reads decoder output and publishes frames) is not yet implemented — so no `hvac.comfortnet` data is flowing yet. See [`COMFORTNET_PIPELINE.md`](COMFORTNET_PIPELINE.md).
+
+| Service | Image / Build | Purpose |
+|---|---|---|
+| `mosquitto-init` | `./mosquitto-init` (one-shot) | Regenerates broker password file from env vars on every `--profile mqtt up`. Idempotent. Mosquitto depends on it via `service_completed_successfully`. |
+| `mosquitto` | `eclipse-mosquitto:2` | TLS-only MQTT broker on `:8883`. Cert material at `/opt/mosquitto-certs/` on Pi-lab (CA + server cert/key generated via `deploy/energy-stack/mosquitto/scripts/`). ACL file gates publishers/consumers per identity. |
+| `telegraf` | `telegraf:1.32-alpine` | MQTT consumer subscribing to `home/utility-room/hvac/comfortnet/+`. Writes received frames into InfluxDB as `hvac.comfortnet` (continuous fields downsample-eligible) and `hvac.comfortnet.events` (event-only, written direct to longterm). |
+
+**Three identities** in the password file: `comfortnet-publisher` (Pi-3B sniffer; write-only on `home/utility-room/hvac/comfortnet/#`), `telegraf` (Pi-lab consumer; read-only on the same subtree), `n8n` (read-only on `home/utility-room/hvac/comfortnet/events/#`).
+
+**Healthcheck:** Mosquitto runs `mosquitto_sub -E` against an authorized topic on every cycle, validating TLS + auth + ACL grant in one round-trip without waiting for a real message. The hostname in the test (`mosquitto`) matches the cert's `DNS:mosquitto` SAN.
+
+**Env:**
+- `MOSQUITTO_PUBLISHER_PASSWORD`, `MOSQUITTO_TELEGRAF_PASSWORD`, `MOSQUITTO_N8N_PASSWORD` — the three identity passwords
+- Telegraf reads `MOSQUITTO_TELEGRAF_PASSWORD`, `INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`
 
 ---
 

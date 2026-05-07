@@ -72,8 +72,10 @@ jobs:
         shell: bash
         run: |
           # Runtime paths excluded from --delete: .env (chmod 600 on Pi),
-          # .env.* (backups), inbox/ (haven-ingest's bind-mounted CSV inbox
-          # whose contents are owned by the container UID, not chris).
+          # .env.* (backups). The `inbox/` exclude is vestigial from the
+          # original haven-ingest CSV-watcher (replaced May 2026 with an
+          # API poller); kept for now so any historical CSV files left on
+          # the Pi don't get blown away by --delete.
           rsync -av --delete \
             --exclude '.env' \
             --exclude '.env.*' \

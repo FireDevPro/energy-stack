@@ -12,6 +12,20 @@ Gain full visibility into the home's most significant ongoing operational cost �
 
 The goal is not just "what am I using right now" but "what did it cost, why, and what can I change."
 
+### Research trajectory
+
+Starting summer 2026, the same instrumentation runs a pre-registered single-case experimental design (SCED) field study comparing a baseline rule-based controller against a thermal-model-informed controller, with the explicit goal of producing a publishable peer-reviewed contribution. The design directly addresses the methodological gap flagged in [Khabbazi et al. 2025](https://arxiv.org/abs/2503.05022) — that 71% of reviewed residential HVAC field studies are confounded by pre/post sequential design, and the field's most consistent unmet need is long-duration randomized within-subject comparisons. We adopt SCED randomization-test methodology (Heyvaert & Onghena 2014) explicitly.
+
+What this means for the project shape:
+
+- **Pre-registration is binding**. Once filed to OSF, hypotheses, arm definitions, randomization seed, metric definitions, statistical analysis plan, and decision rules are locked at a frozen commit hash. See [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md).
+- **Both arms (Arm A baseline RBC and Arm B model-informed) are owned in this repo**. The thermal model methodology is grounded in [Bacher & Madsen 2011](https://doi.org/10.1016/j.enbuild.2011.02.005); design in [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md).
+- **Open data and open code at submission time**. Telemetry published as Apache Parquet on Zenodo (CC BY 4.0), with [Brick Schema](https://brickschema.org/) JSON-LD metadata. Repo tagged at the OSF commit hash; Zenodo issues a citable code DOI.
+- **Negative or null results are publishable**. The decision rule explicitly commits to publishing a negative result if the model-informed controller fails to outperform baseline. Not gating publication on a confirmatory outcome.
+- **N=1, single-occupant household, IECC climate zone 5A**. Generalization claims are bounded; the contribution is methodological as much as substantive.
+
+Practical implication for in-flight work: anything touching the scheduler, thermal model, or telemetry between now and OSF filing is on the critical path for the June 1 experiment start. Operational features that don't directly serve Arm A / Arm B / observability are parked.
+
 ---
 
 ## What Has Been Built
@@ -56,18 +70,23 @@ Rainforest EAGLE-3 gateway connected to the ComEd smart meter via Zigbee HAN. Pr
 ## Current Architecture
 
 ```
-EAGLE-3 (local HTTPS, 30s) ────────┐
-ComEd Pricing API (public, 60s) ───┤   Pi-lab (192.168.20.10)
-Refoss EM16P (local HTTP, 30s) ────┼──► energy-stack compose ──► InfluxDB ──► Grafana
-TCC Thermostat (cloud, 600s) ──────┘   (eagle/comed/refoss          (storage)    (dashboards)
-                                        pollers, planned tcc)
+EAGLE-3 (local HTTPS, 30s) ─────────┐
+ComEd Pricing API (public, 60s) ────┤
+Refoss EM16P (local HTTP, 30s) ─────┤   Pi-lab (192.168.20.10)
+NWS forecast (public, 30min) ───────┼──► energy-stack compose ──► InfluxDB ──► Grafana
+PJM Data Miner 2 (public, hourly) ──┤   (eagle / comed / refoss /     (storage)    (dashboards)
+HAVEN IAQ API (cloud, 5min) ────────┤    nws / pjm-dm2 / haven /
+Control4 → VisionPRO (10min) ───────┘    thermostat / hvac pollers)
 ```
 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
 InfluxDB. The `refoss-poller` (Phase 5) replaced `sense-poller` (retired Phase 1.5).
-The Windows-side `energy_proxy.py` and custom HTML dashboard are gone — Grafana is
-the single visualization layer. State is durable: InfluxDB on a persistent volume.
+The thermostat path uses Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver →
+TCC cloud, not direct TCC API. The Windows-side `energy_proxy.py` and custom HTML
+dashboard are gone — Grafana is the sole visualization layer. State is durable:
+InfluxDB on a persistent volume, with a separate `energy-longterm` bucket for 1-min
+downsampled history.
 
 ---
 
@@ -124,7 +143,7 @@ the single visualization layer. State is durable: InfluxDB on a persistent volum
 
 ## Target Architecture
 
-The collector layer matches "Current Architecture" above. Phase 3.4 dashboards and Phase 4 thermostat integration both landed in May 2026 (see Development Roadmap below). Active follow-on work: InfluxDB downsampling design, PJM Data Miner API onboarding, and ComfortNet HVAC-sniffer integration (see `docs/COMFORTNET_USE_CASES.md`).
+The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, Phase 9 PJM DM2 poller, and Phase 10 safety supervisor all landed by May 2026 (see Development Roadmap below). Active follow-on work: ComfortNet HVAC-sniffer publisher (broker + telegraf already shipped under compose profile `mqtt`; Pi-3B publisher side still pending — see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md) and [`docs/COMFORTNET_PIPELINE.md`](docs/COMFORTNET_PIPELINE.md)) and Arm B (model-informed scheduler) ahead of June 1 experiment start.
 
 **Grafana dashboards will provide:**
 - Real-time "right now" view (10-30s auto-refresh): current demand, current rate, current cost/hour, top circuits by power
@@ -149,8 +168,8 @@ trend, `sense_energy` library, measurements `sense.realtime`, `sense.device`,
 was deleted in Phase 5 cleanup. The `sense-poller` itself was retired in
 Phase 5 when the Sense hardware was removed.
 
-### Phase 3.3 — EAGLE-3 Poller
-Add EAGLE-3 polling to the proxy using the tested Local API. Write instantaneous demand and cumulative summation to InfluxDB. This is billing-grade ground truth.
+### Phase 3.3 — EAGLE-3 Poller ✅ (April 2026)
+Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Design notes in [`docs/phase-3.3-eagle-poller-design.md`](docs/phase-3.3-eagle-poller-design.md); operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller).
 
 ### Phase 3.4 — Grafana Dashboards ✅ (May 2026)
 Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
@@ -160,10 +179,10 @@ Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
 - `comed-bill-reconciliation.json` — Phase 8 bill-vs-meter reconciliation (4 panels).
 - `iaq-comparison.json` — HAVEN indoor/outdoor air-quality comparison.
 
-The fixed Flux cost-calc pattern is shared with `webdashboard-api` and `telegram-notifier` daily summary.
+The fixed Flux cost-calc pattern is shared with `telegram-notifier` daily summary.
 
-### Phase 5 — Webdashboard ✅ (May 2026)
-Sci-fi HUD originally generated via `claude.ai/design` and deployed as the `webdashboard` nginx container at `http://192.168.20.10:8081/`. Static React + Babel-standalone (in-browser JSX compilation), no build step, files served as-is from `deploy/energy-stack/webdashboard/`. Live data is served by the `webdashboard-api` FastAPI service (`/api/energy/snapshot`) which queries InfluxDB directly using the same Flux cost-calc pattern as the Grafana cost panels and `telegram-notifier`. This is an additive second view; Grafana remains the production visualization.
+### Phase 5.5 — Webdashboard (retired May 2026)
+The `webdashboard` nginx container + `webdashboard-api` FastAPI backend shipped as a sci-fi HUD on port 8081, sourced from `claude.ai/design`. Retired in favor of consolidating on Grafana — the additional surface (custom React + Babel-in-browser, FastAPI service, nginx proxy, separate cost-calc code path) wasn't pulling enough weight against a Grafana dashboard with the same data. Code removed from the repo and compose; Grafana is the only visualization layer going forward.
 
 ### Phase 4 — Thermostat Integration ✅ (May 2026)
 Implemented via the Control4 EA-5 path rather than the originally-planned direct Honeywell TCC API: `thermostat-poller` container reads via `pyControl4.C4Climate` every 10 minutes, with override-detection logic, and writes to `hvac.thermostat`. The Control4 path was simpler and more reliable than direct TCC. Direct TCC remains a fallback option if Control4 ever loses access.
@@ -171,20 +190,49 @@ Implemented via the Control4 EA-5 path rather than the originally-planned direct
 ### Phase 5 — Refoss EM16P ✅ (April 2026)
 Complete. Sense hardware removed and replaced with Refoss EM16P at `192.168.20.140` (homelab VLAN, auth disabled). New `refoss-poller` container in `energy-stack` polls `Refoss.Status.Get` every 30 s — single round-trip per cycle returns all 18 `em:N` channels plus `sys`/`wifi` blocks. Channel labels are sourced from the device's own `Refoss.Config.Get` (whatever was named in the Refoss app) and refreshed automatically when `sys.cfg_rev` increments. Measurements: `refoss.channel` (one point per channel) and `refoss.system`. The `sense-poller` container was removed from compose; old `energy_proxy.py`, `dashboard.html`, launchers, and Sense `.env` credentials were deleted from the Windows-side repo.
 
-### Phase 6 — Prometheus/Grafana Migration (if needed)
-If the data volume or query patterns outgrow InfluxDB, migrate to Prometheus. This is unlikely for residential energy monitoring but remains an option.
+### Phase 6 — HVAC Optimization & Observability ✅ (April–May 2026)
+Multi-service expansion that turned the project from monitoring-and-dashboards into actively scheduling HVAC for cost minimization: `nws-poller`, `hvac-scheduler`, `telegram-notifier`, Loki + Promtail log aggregation, and nightly restic backup to Backblaze B2. Detail block under "Phase 6+" further down.
 
-### Phase 7 — Control4 Integration
-Automated load management based on real-time pricing and demand data.
+### Phase 7 — Control4 Integration ✅ (subsumed by Phase 4)
+The originally-described "automated load management based on real-time pricing and demand data" landed via Phase 4's Control4 EA-5 path: the `hvac-scheduler` already pushes setpoints through Control4 (Cinegration C4 driver) based on NWS forecast + ComEd pricing context. No separate Phase 7 deliverable.
+
+### Phase 8 — ComEd Bill Ingest ✅ (May 2026)
+Manual-upload `parse_comed_bill.py` script writes bill PDFs into `comed.bill` and `comed.bill_lineitems`. 9 historical bills backfilled (8/2025-4/2026). Detailed block at the bottom of this doc.
+
+### Phase 9 — PJM Data Miner 2 Poller ✅ (May 2026)
+Non-Member API access provisioned via PJM tech-support (the path the May 2026 Known-Follow-up blocked on). New `pjm-dm2-poller` container fires per-feed on a local-time schedule:
+- `da_hrl_lmps` (ComEd zonal pnode `33092371`) at 17:00 CT — tomorrow's day-ahead LMP after market clear.
+- `load_frcstd_7_day` (`forecast_area=COMED`) at 06:00 + 13:00 CT — 7-day load forecast with `evaluated_at_iso` tags so revisions stay distinct.
+- `hrl_load_metered` (`zone=CE`) Sundays 02:00 CT — last 7 days of metered load, kept fresh for the 5CP-probability training set.
+- `ops_sum_frcst_peak_rto` at 06:00 + 13:00 CT in Jun–Sep — RTO peak-day signal for cross-checking the day-type classifier.
+- `annual_zonal_nspl` (`zone=COMED`) Dec 1 03:00 CT — yearly NSPL snapshot.
+Plus two scripts: `backfill_pjm.py` for one-shot 5-year history (`scripts/`), and `scrape_pjm_5cp_pdf.py` to parse the official PJM 5CP PDF each November. Design + schema in [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md); feed catalog in [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
+
+### Phase 10 — HVAC Scheduler Safety Supervisor ✅ (May 2026)
+New `safety_supervisor.py` module gates every setpoint push the scheduler proposes. Three decision kinds (`approved` / `clamped` / `emergency`):
+- **Clamp** — cool to `[65, 86]°F`, heat to `[55, 75]°F`. Catches a controller bug producing e.g. cool=55 or cool=95.
+- **Emergency** — if thermostat snapshot reports indoor ≥ 86°F, override cool to 74°F regardless of what the schedule says. Catches `HOT_5CP_SHUTOFF` overshoots in real heat-wave conditions.
+- **Approved** — proposed values pass through.
+Decision logged to `hvac.actions` for audit. Shipped before Arm B because the supervisor is shared infrastructure that hangs every controller (RBC and future model-informed) off the same gate.
+
+### Phase 11 — Field Study Pre-Registration (drafted May 2026, filing pending)
+SCED randomized-alternation field study comparing baseline RBC (Arm A) against RBC + Step 1 model-informed (Arm B), week-level alternation, June 1 – Sep 30, 2026. Pre-registration draft in [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md). Assignment list pre-generated and committed: [`deploy/energy-stack/scripts/randomize_arms.py`](deploy/energy-stack/scripts/randomize_arms.py) → [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) (18 weeks, 9 Arm A / 9 Arm B). Pinned-snapshot test fails loud if seed or algorithm ever drifts.
 
 ---
 
 ## Known Follow-ups
 
-- **InfluxDB downsampling**: single `energy` bucket with infinite retention chosen for Phase 3.1 (YAGNI). Revisit now that Phase 3.4 dashboards are in place and cardinality is known. Candidate design: `energy-longterm` bucket + Flux task downsampling to 1-minute aggregates. Refoss adds ~18 channels × 10 fields per 30 s cycle; ComfortNet integration (see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md)) will add another per-frame stream. Worth deciding the downsampling design before the ComfortNet pipeline lands.
-- **PJM Data Miner API onboarding**: pending. Non-member access requires emailing `accountmanager@pjm.com` with the internal-business-use confirmation statement (PJM tech-support reply, May 2026). After username and API access are provisioned, build a `pjm-poller` container for LMP, 5CP candidates, and system-load context to feed the HVAC scheduler.
-- **ComfortNet HVAC sniffer integration**: see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md). Plumbing not yet started (HANDOFF steps 7-8 in the `comfortnet` repo): Mosquitto + Telegraf containers, MQTT topics under `home/<location>/hvac/comfortnet/<field>`, new `hvac.comfortnet` measurement.
+- **Arm B controller (Step 1 model-informed)**: critical path for the June 1 experiment start. Three integration points from [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md): pre-cool depth from envelope-ODE integration, COAST shutoff lead time in closed form, Stage-2-during-5CP advisory log. Prereq: per-house thermal model fit (`τ`, cooling capacities, solar proxy) against existing telemetry.
+- **Arm-switch wiring in `hvac-scheduler`**: read [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) at week boundary, branch to Arm A or Arm B logic, tag every `hvac.actions` row with `arm`. CSV and randomization script committed; scheduler integration not yet wired.
+- **OSF pre-registration filing**: [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md) is currently a draft. Both arms must be pinned at one frozen commit hash before week 1 of alternation.
+- **ComfortNet HVAC publisher (Pi 3B side)**: broker (Mosquitto on `pi-lab`, port 8883 TLS) and `telegraf` MQTT consumer are deployed in compose under profile `mqtt` (see [`docs/COMFORTNET_PIPELINE.md`](docs/COMFORTNET_PIPELINE.md)). Pending: `comfortnet-publisher` systemd unit on the Pi 3B that reads decoder output and publishes to `home/utility-room/hvac/comfortnet/<field>`. New `hvac.comfortnet` measurement will land once frames flow.
+- **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel input to the day-type classifier.
+- **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Needs paired observation history; Ecowitt GW1200 + WN32 hardware en route May 2026.
+- **Phase 8 forward-projection panel**: bill-vs-projected stub exists in `comed-bill-reconciliation.json`; full formula (supply-so-far + delivery + capacity + taxes + extrapolation) lands after a few cycles of bill data accumulate.
+- **Pre-cool depth A/B test**: research review (May 2026) suggests softening `HOT_PRE_COOL` from 68°F starting 4am to 71–72°F starting 3am for ~90% of peak shift at materially less off-peak kWh. Hits the comfort-aware-scheduling research's recommendation set. Will fall out of the SCED study automatically when run as an Arm B variant.
+- **Fridge anomaly detection upgrade**: current univariate threshold; Merlion (Salesforce, BSD-3) is multivariate and a better fit for the 18-channel Refoss surface.
 - **SOPS encryption** (complete, April 2026): `.env` is mirrored as age-encrypted `deploy/energy-stack/secrets/env.sops.env`, committed to the repo. Recipients: Windows workstation + Pi-lab. Rotation workflow documented in `deploy/energy-stack/README.md`. Both age private keys must be stored in 1Password (single-host loss is recoverable; both-host loss is not).
+- **InfluxDB downsampling** (complete, May 2026): `influx-init` container provisions the `energy-longterm` bucket and a 1-minute downsample Flux task on every `compose up -d`. Per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) keep raw 90 d → mean+max longterm; event measurements (`hvac.actions`, `hvac.overrides`) write directly to longterm. See [`docs/INFLUXDB_RETENTION.md`](docs/INFLUXDB_RETENTION.md).
 
 ---
 
@@ -195,24 +243,31 @@ Automated load management based on real-time pricing and demand data.
 | `PROJECT.md` | This document — decisions, architecture, roadmap |
 | `README.md` | Top-level entry point pointing at the live system |
 | `Test-Eagle.ps1` | Ad-hoc EAGLE-3 Local API probe (kept for manual debugging) |
-| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + 3 pollers (eagle, comed, refoss) as a Docker compose project, deployed to Pi-lab via rsync |
+| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + ~10 service containers as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
+| `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
+| `docs/SERVICES.md` | Per-service reference (env vars, fields written, healthchecks) |
+| `docs/HVAC_LOGIC.md` | HVAC scheduler logic, schedules, fallback, ISU settings, safety supervisor, equipment |
+| **Research track** | |
+| `docs/EXPERIMENT_DESIGN.md` | Pre-registration draft for the SCED field study (summer 2026 onwards) |
+| `docs/THERMAL_MODEL_DESIGN.md` | Step 1 affine-fit thermal model for Arm B, methodology grounded in Bacher–Madsen 2011 |
+| `docs/experiment-assignments-summer-2026.csv` | Pre-generated arm assignments (18 weeks, 9 Arm A / 9 Arm B) |
+| `deploy/energy-stack/scripts/randomize_arms.py` | Arm-assignment generator with pinned-snapshot test |
+| **Subsystem designs** | |
+| `docs/PJM_DM2_INTEGRATION.md` | Design + status for the PJM Data Miner 2 poller |
+| `docs/PJM_DM2_FEEDS.md` | Feed catalog with filterable columns and ComEd-specific constants |
+| `docs/INFLUXDB_RETENTION.md` | Retention/downsampling design (`energy` raw + `energy-longterm` aggregates) |
+| `docs/COMFORTNET_PIPELINE.md` | MQTT pipeline for ComfortNet HVAC bus telemetry |
+| `docs/COMFORTNET_USE_CASES.md` | What we'll do with ComfortNet data once it flows |
+| `docs/phase-8-comed-bill-ingest-design.md` | Design for the manual ComEd bill ingest script |
+| `docs/phase-8-comed-bill-ingest-plan.md` | Implementation plan for the same |
 | `docs/phase-3.3-eagle-poller-design.md` | Design notes for the EAGLE-3 poller (historical) |
 | `docs/sessions/session-3.1-influxdb-grafana.md` | Phase 3.1 planning prompt (historical snapshot) |
-| `docs/SERVICES.md` | Per-service reference (env vars, fields written, healthchecks) |
-| `docs/HVAC_LOGIC.md` | HVAC scheduler logic, schedules, fallback, ISU settings, equipment |
-| `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
 
 ---
 
 ## Hardware Inventory
 
-| Device | Role | Connection | Status |
-|---|---|---|---|
-| Rainforest EAGLE-3 | Smart meter gateway (billing-grade) | Ethernet, homelab VLAN, 192.168.20.192:443 | Connected & polling |
-| Refoss EM16P | Per-circuit energy monitoring (2 mains + 16 branch) | Wi-Fi, homelab VLAN, 192.168.20.140 (HTTP, no auth) | Connected & polling (Phase 5, April 2026) |
-| Honeywell RedLINK Thermostat | HVAC context (temp/humidity/setpoints) | Cloud API (TCC) | Not yet integrated |
-| ComEd Smart Meter | Utility meter | Via EAGLE-3 Zigbee HAN | Connected |
-| ~~Sense Energy Monitor~~ | ~~Whole-home power + device detection~~ | — | Removed April 2026 (replaced by Refoss EM16P) |
+See [Updated Hardware Inventory (May 2026)](#updated-hardware-inventory-may-2026) below for the authoritative current state.
 
 ---
 
@@ -237,7 +292,6 @@ A second wave of work that took the project from "monitoring + dashboards" to "a
 - **`nws-poller`** — pulls hourly + daily NWS forecasts (today/tomorrow/day2) and active alerts (heat advisories, etc.) every 30 min. Core input to the day-type decision.
 - **`hvac-scheduler`** — the centerpiece. Daily 21:00 decision classifies tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picks a schedule, fires `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. Pushes to Honeywell VisionPRO 8000 via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → physical thermostat. Token persistence + reauth-on-401. Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
 - **`telegram-notifier`** — daily summary at 8 AM (yesterday's cost / kWh / peak demand / fridge anomaly / scheduler activity / today's forecast) + alert checker every 5 min (poller silence, price spikes, fridge anomalies). Bot: `@EnergyStackBot` (separate from any other Telegram bots used elsewhere).
-- **`webdashboard-api`** — FastAPI backend serving `/api/energy/snapshot` for the webdashboard. Replaced the design-tool mock data with live InfluxDB queries.
 - **`loki` + `promtail`** — log aggregation with Docker service-discovery filtered to the energy-stack project. JSON log lines have `level` and `msg` lifted to Loki labels for easy LogQL filtering in Grafana Explore.
 - **Nightly restic backup** to Backblaze B2 (root cron 02:00). Includes InfluxDB backup staged per-run, energy-stack/, chris-brain/, dns-stack/, Network_Management/, .ssh, .config/restic, and the backup script itself. Telegram notifications on success and failure (failure includes last 20 log lines).
 - **HVAC scheduler dashboard** (`grafana/dashboards/hvac-scheduler.json`): day-type history, action timeline, setpoint vs. indoor temp.
@@ -252,7 +306,7 @@ Initial naive cost calculation (sum of power × current price) over-estimated co
 
 After both fixes: $2.33 (proper price-weighted) vs $4.16 (naive over-estimate) for one observed day. Naive treated all 46 kWh at the current peak 9¢ rate; proper integration weighted each kWh by the actual hourly price at the time it was consumed.
 
-The fixed Flux pattern is now the canonical cost calc — used in `webdashboard-api`, `telegram-notifier` daily summary, and Grafana cost panels.
+The fixed Flux pattern is now the canonical cost calc — used in `telegram-notifier` daily summary and Grafana cost panels.
 
 ---
 
@@ -304,9 +358,9 @@ Initial design assumed ComEd would publish day-ahead price forecasts (would unlo
 - Undocumented `?type=daynexttoday` returns *today's settled* day-ahead prices (already in the past at query time), not tomorrow's
 - True day-ahead source is **PJM DataMiner2 API**, which requires a subscription key
 - PJM API portal signup requires non-VPN egress (Mullvad routes at the gateway broke it for our Trusted VLAN)
-- Non-member ("Other") accounts cannot self-provision DataMiner access via Account Manager — pending PJM tech-support email response (May 2026)
+- Non-member ("Other") accounts cannot self-provision DataMiner access via Account Manager — required emailing PJM tech-support to request provisioning
 
-Net: feature parked. NWS-driven day-type heuristic remains the source of truth. May revisit when DataMiner access lands. The `gridstatus` Python library wraps DataMiner2 cleanly (verified by research agents) — would be the integration path once we have the key.
+**Net: resolved May 2026.** PJM tech-support provisioned Non-Member API access; the `pjm-dm2-poller` service (Phase 9) now writes `pjm.lmp_da_hourly`, `pjm.load_forecast`, `pjm.metered_load`, `pjm.peak_forecast_rto`, and `pjm.nspl_zonal` to InfluxDB on a per-feed schedule. NWS-driven day-type heuristic still drives Arm A's classifier; PJM data is the input to the upcoming 5CP-probability classifier and the Arm B model-informed controller. We use `aiohttp` directly against the DM2 API rather than the `gridstatus` library (the per-feed call set is small enough that the wrapper's abstraction wasn't pulling weight).
 
 ### Mullvad WireGuard at gateway level (relevant for ops)
 
@@ -325,15 +379,18 @@ Research review (May 2026, three agents, sources include NREL/Davis Energy Group
 
 Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. Logged in [HVAC_LOGIC.md](docs/HVAC_LOGIC.md) as a known re-tune opportunity, not yet applied.
 
-### Haven IAQ CSV ingest + thermostat-poller (May 3, 2026)
+### Haven IAQ ingest + thermostat-poller (May 2026)
 
-The "Haven data is unreachable" conclusion was wrong. The homeowner portal at `my.haveniaq.com` has a CSV export per device (`CAM_<device-id>_<start>_to_<end>.csv` filename pattern). 7-day export = ~2,000 rows of 5-min samples. Columns: timestamp, PM2.5 + status, tVOC + status, temp °C/°F, RH%, combined status, airflow CFM. Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are sparse (~3% coverage) because they're flow-dependent measurements that only populate when the blower is moving air past the return-duct sensor.
+The "Haven data is unreachable" conclusion was wrong twice:
 
-The flow-dependence is actually a feature: non-null airflow CFM rows give blower-runtime ground truth (cross-validates against Refoss em:9 furnace blower power), and the measured CFM value at that moment becomes useful for delivered-BTU calc when paired with future supply-air temp instrumentation.
+1. **First pivot (May 3, 2026)** — discovered the homeowner portal at `my.haveniaq.com` has a CSV export per device. Initial `haven-ingest` shipped as a CSV watcher (drop file in inbox → service parses).
+2. **Second pivot (mid-May 2026)** — replaced the CSV watcher with a direct HAVEN API poller (commit `3cccd63`, "Replace haven-ingest CSV watcher with HAVEN API poller"). The cloud app traffic uses Auth0 + a rotating refresh token; sniffing the mobile app's traffic yields a working credential set (`HAVEN_AUTH0_DOMAIN`, `HAVEN_CLIENT_ID`, `HAVEN_REFRESH_TOKEN`). The poller persists the rotating refresh token to its `/data` volume across restarts. Per-poll backfill bounded by `HAVEN_BACKFILL_DAYS` (default 7). HAVEN is shipping an official API at `havenapi.tzoa.io` in summer 2026; we'll switch to that when it's available.
+
+Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are flow-dependent and only populate when the blower is moving air past the return-duct sensor. That flow-dependence is a feature, not a defect: non-null airflow CFM rows give blower-runtime ground truth (cross-validates against Refoss `em:9` furnace blower power), and the measured CFM at that moment becomes useful for delivered-BTU calc when paired with future supply-air temp instrumentation.
 
 Two new services shipped:
 
-- **`haven-ingest`** — watches `~/energy-stack/inbox/haven/` for CSV exports, parses, writes `haven.airquality` measurement. Idempotent on timestamp. Files move to `processed/` on success or `failed/` on parse error. Workflow: export weekly from my.haveniaq.com → scp to Pi → service ingests within 60 s.
+- **`haven-ingest`** — polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
 - **`thermostat-poller`** — continuous 10-min Control4 reads of VisionPRO state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
 
 Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.
@@ -344,13 +401,13 @@ Why this matters for the existing scheduler: the return-air mix is a **fundament
 
 ### Other research findings (parked)
 
-- **`gridstatus` Python lib** — would be the right wrapper for PJM DataMiner2 once API key is available
+- **`gridstatus` Python lib** — alternative wrapper for PJM DataMiner2; not adopted (the `pjm-dm2-poller`'s per-feed call set is small enough that direct `aiohttp` is simpler than the abstraction)
 - **Open-Meteo (ECMWF IFS, 9 km, free since Oct 2025)** — better than NWS at 1-3 day temp forecast; worth running as second weather source
 - **Forecast bias correction** — affine intercept+slope per lead time (NOAA NCEP Office Note 520 method); needs paired observation history (Ecowitt sensor en route)
 - **EMHASS / Predheat** — open-source MILP/MPC layers for HA; worth reading even if not adopting (reference thermal model + tariff abstractions)
 - **Merlion (Salesforce, BSD-3)** — multivariate anomaly detection; better fit for the 18-channel Refoss data than the current univariate threshold approach
 - **OpenADR 3.x** — ComEd doesn't currently expose a residential VTN; revisit if/when they do
-- **Override logging** — every manual thermostat override should be tagged + correlated with current state; foundational for future ML/MPC. Cheap to add, deferred to later session.
+- **Override logging** ✅ shipped May 2026 via `thermostat-poller` automatic override detection: writes `hvac.overrides` rows whenever current thermostat setpoints diverge ≥ 0.5°F from the last `hvac.actions` row by more than `OVERRIDE_GRACE_MIN` (default 5 min). Foundational training data for future ML/MPC layers.
 
 Full research output: agent reports retained in session transcripts; key findings summarized in [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md) and the open-questions section above.
 

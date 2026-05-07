@@ -8,7 +8,7 @@
 
 ## Problem
 
-The `webdashboard-api` cost calc and Grafana cost panels currently estimate cost as `Σ(power × hourly_supply_price)`. This is **supply-side only**. A real ComEd bill adds delivery charges, capacity, riders, taxes, and franchise fees that typically run 40–70% on top of supply cost, so the dashboard's "today's cost" understates the actual bill by a meaningful multiple. There is no feedback loop from real bills to confirm or calibrate the dashboard's estimates, no record of capacity-charge trends (the metric the HVAC scheduler exists to suppress), and no per-cycle EAGLE-vs-billed-kWh sanity check.
+The Grafana cost panels and `telegram-notifier` daily summary currently estimate cost as `Σ(power × hourly_supply_price)`. This is **supply-side only**. A real ComEd bill adds delivery charges, capacity, riders, taxes, and franchise fees that typically run 40–70% on top of supply cost, so the dashboards' "today's cost" understates the actual bill by a meaningful multiple. There is no feedback loop from real bills to confirm or calibrate the estimate, no record of capacity-charge trends (the metric the HVAC scheduler exists to suppress), and no per-cycle EAGLE-vs-billed-kWh sanity check.
 
 Capacity charges in particular: the latest bill (3/24–4/23/26) shows a Capacity Charge of $54.64 — *larger* than the Electricity Supply Charge of $42.15. It's calculated as `peak_kW × $8.32925`, where `peak_kW` is locked annually from the prior summer's PJM 5CP coincident-peak readings. The `hvac-scheduler`'s `HOT_5CP_RISK` day type exists specifically to suppress this peak. Without bill ingest, there is no way to measure whether that strategy is working.
 

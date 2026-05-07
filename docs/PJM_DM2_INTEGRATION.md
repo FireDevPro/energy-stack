@@ -1,9 +1,9 @@
 # PJM Data Miner 2 Integration Design
 
-**Status**: Design proposed (2026-05-06), implementation queued
+**Status**: Phases 1 + 2 shipped May 2026. `pjm-dm2-poller` running in production; backfill complete; 5CP PDF scraper ready for the Nov 2026 annual run. Forward work below.
 **Owner**: Chris dePaola
 **Depends on**: existing `energy-stack` (InfluxDB, Telegram notifier), Non-Member API key on `pi-lab`
-**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) (the field study this data feeds), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (Step 1 controller)
+**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) (the field study this data feeds), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (Step 1 controller). Operational details in [`SERVICES.md#pjm-dm2-poller`](SERVICES.md#pjm-dm2-poller).
 
 ---
 
@@ -93,7 +93,7 @@ Timestamp: `forecast_datetime_beginning_ept` converted to UTC. **Note**: a singl
 
 ### `pjm.metered_load`
 
-One point per hour per zone. Tagged `zone`, `is_verified`.
+One point per hour per zone. Tagged `zone` (`CE` for ComEd), `load_area`, `is_verified`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -101,14 +101,17 @@ One point per hour per zone. Tagged `zone`, `is_verified`.
 
 ### `pjm.peak_forecast_rto`
 
-One point per `generated_at_ept` (PJM's daily peak forecast publication).
+One point per `generated_at_ept` (PJM's daily peak forecast publication). Tagged `area` (`PJM RTO`).
 
 | Field | Type | Notes |
 |---|---|---|
-| `load_forecast` | float | Projected daily peak load (MW) |
-| `projected_peak_datetime_iso` | string | ISO timestamp of expected peak hour |
-| `total_scheduled_capacity` | float | RTO scheduled capacity at peak |
-| `operating_reserve` | float | Reserve at peak (MW) |
+| `load_forecast_mw` | float | Projected daily peak load (MW) |
+| `projected_peak_datetime_ept` | string | EPT timestamp of expected peak hour (string field for downstream parsing) |
+| `total_scheduled_capacity_mw` | float | RTO scheduled capacity at peak |
+| `operating_reserve_mw` | float | Reserve at peak |
+| `internal_scheduled_capacity_mw` | float | Internal-resource component |
+| `scheduled_tie_flow_mw` | float | Net scheduled tie flow at peak |
+| `unscheduled_steam_capacity_mw` | float | Unscheduled steam capacity at peak |
 
 ### `pjm.coincident_peak`
 
@@ -125,7 +128,7 @@ Timestamp: the actual 5CP hour.
 
 ### `pjm.nspl_zonal`
 
-One point per year per zone. Annual scrape.
+One point per year per zone. Annual feed (Dec 1) plus historical years already in the feed. Tagged `zone` (`COMED`) and `year`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -153,26 +156,23 @@ Same secret-handling pattern as `EAGLE_INSTALL_CODE`, `CONTROL4_PASSWORD`, etc.
 - **429**: rate limit. Backoff with exponential delay (start at 30s, max 300s); retry. Should be rare given our 6 calls/day load against a 6/min ceiling.
 - **500/503**: PJM-side outage. Tenacity retry with exponential backoff (60s, 180s, 600s). After 3 failed retries, log warn and skip the cycle. Telegram alert if 24h consecutive failure.
 
-## Code layout
+## Code layout (as shipped)
 
 ```
 deploy/energy-stack/
-├── docker-compose.yml           # +pjm-dm2-poller service entry
-├── .env.example                 # +PJM_DM2_API_KEY placeholder
+├── docker-compose.yml           # pjm-dm2-poller service entry (lines 139-155)
+├── .env.example                 # PJM_DM2_API_KEY placeholder
 ├── pjm-dm2-poller/
 │   ├── Dockerfile
-│   ├── poller.py                # main service loop
-│   ├── feeds.py                 # feed name + filter constants (cite catalog)
-│   ├── requirements.txt         # influxdb-client, httpx, tenacity, structlog
-│   ├── pytest.ini
-│   └── tests.py                 # mock httpx, verify Influx writes
+│   ├── app.py                   # main service loop (FEED_SCHEDULE + dispatchers + point builders)
+│   ├── requirements.txt         # aiohttp, influxdb-client
+│   └── tests.py                 # canned-payload tests for each point builder
 ├── scripts/
 │   ├── backfill_pjm.py          # one-shot 5-year history backfill
-│   ├── scrape_pjm_5cp_pdf.py    # annual 5CP PDF parser
-│   └── dm2_feed_catalog.py      # regenerate PJM_DM2_FEEDS.md from /metadata
+│   └── scrape_pjm_5cp_pdf.py    # annual 5CP PDF parser
 ```
 
-The `scripts/dm2_feed_catalog.py` is included so `PJM_DM2_FEEDS.md` is reproducible from the API rather than hand-maintained — runs at PR review time when feed schemas change, regenerates the catalog file.
+The originally-planned `feeds.py` constants module collapsed into top-of-file constants in `app.py` (`COMED_PNODE_ID`, `COMED_FORECAST_AREA`, `COMED_METERED_ZONE`, `COMED_NSPL_ZONE`) since the feed set is small and stable. The originally-planned `dm2_feed_catalog.py` regenerator was not built — `PJM_DM2_FEEDS.md` is hand-maintained for now; if the feed set grows, the regenerator may become worth building.
 
 ## Testing
 
@@ -185,14 +185,15 @@ The `scripts/dm2_feed_catalog.py` is included so `PJM_DM2_FEEDS.md` is reproduci
 
 ## Sequencing
 
-| When | Milestone |
-|---|---|
-| 2026-05-06 | This design doc + [feed catalog](PJM_DM2_FEEDS.md) committed (current PR). |
-| ~2026-05-10 | `pjm-dm2-poller` implementation PR + `backfill_pjm.py`. ~2 days of work. |
-| ~2026-05-15 | `scripts/scrape_pjm_5cp_pdf.py` lands. Backfill 2020-2024 5CP hours from prior PDFs. |
-| ~2026-05-20 | InfluxDB has 5 years of ComEd metered load + DA LMP + historical 5CP labels. |
-| 2026-Q3 | 5CP-probability classifier model lands as separate PR (depends on this data). |
-| 2026-11-15 | First annual 5CP PDF scrape runs (for summer 2026). |
+| When | Milestone | Status |
+|---|---|---|
+| 2026-05-06 | This design doc + [feed catalog](PJM_DM2_FEEDS.md) committed | ✅ shipped (PR [#27](https://github.com/Promithius-DR/energy-proxy/pull/27)) |
+| 2026-05 | `pjm-dm2-poller` phase 1 (`da_hrl_lmps`, `load_frcstd_7_day`) | ✅ shipped (PR [#29](https://github.com/Promithius-DR/energy-proxy/pull/29)) |
+| 2026-05 | `scripts/backfill_pjm.py` for one-shot 5-year history backfill | ✅ shipped (PR [#31](https://github.com/Promithius-DR/energy-proxy/pull/31)) |
+| 2026-05 | `scripts/scrape_pjm_5cp_pdf.py` + 5-year backfill of 2020-2024 5CP hours | ✅ shipped (PR [#30](https://github.com/Promithius-DR/energy-proxy/pull/30)) |
+| 2026-05 | `pjm-dm2-poller` phase 2 (`hrl_load_metered`, `ops_sum_frcst_peak_rto`, `annual_zonal_nspl`) | ✅ shipped (PR [#32](https://github.com/Promithius-DR/energy-proxy/pull/32)) |
+| 2026-Q3 | 5CP-probability classifier model — depends on `pjm.metered_load` history + `pjm.coincident_peak` labels | Pending (parked behind summer 2026 SCED experiment) |
+| 2026-11-15 | First annual 5CP PDF scrape runs (for summer 2026) | Scheduled |
 
 ## Risks and open questions
 

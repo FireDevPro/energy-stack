@@ -2,6 +2,8 @@
 
 Real-time and historical residential energy monitoring with **dynamic-pricing-aware HVAC scheduling**, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance.
 
+> **Research project**: starting summer 2026, this stack runs a pre-registered SCED field study comparing baseline RBC vs. a thermal-model-informed controller, targeting a peer-reviewed publication. Pre-registration: **[docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md)**. Thermal-model methodology: **[docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md)**.
+
 > Full project history, decisions, and roadmap: **[PROJECT.md](PROJECT.md)**.
 > Operational guide for the stack: **[deploy/energy-stack/README.md](deploy/energy-stack/README.md)**.
 > Per-service detail: **[docs/SERVICES.md](docs/SERVICES.md)**.
@@ -11,19 +13,18 @@ Real-time and historical residential energy monitoring with **dynamic-pricing-aw
 
 ```
                                                           ┌──────────────────────────────┐
-EAGLE-3       (local HTTPS, 30s)  ─┐                      │                              │
-ComEd API     (public,       60s) ─┤                      │ Grafana            (3000)    │
-Refoss EM16P  (local HTTP,   30s) ─┼───► InfluxDB 2.7 ────► Web dashboard      (8081)    │
-NWS forecast  (public,     30min) ─┤    (energy bucket)   │ webdashboard-api   (8082)    │
-                                   │                      │                              │
-                                   │                      │ Telegram notifier            │
-                                   │                      │  (daily summary + alerts)    │
-                                   │                      │                              │
-                                   │                      │ HVAC scheduler ──► Control4 ─┼─► Honeywell
-                                   │                      │  (day-type decision @ 21:00) │   thermostat
-                                   │                      │                              │
-                                   │                      │ Loki + Promtail              │
-                                   └──── log shipping ────► (log aggregation)            │
+EAGLE-3        (local HTTPS,   30s) ─┐                    │                              │
+ComEd API      (public,        60s) ─┤                    │ Grafana            (3000)    │
+Refoss EM16P   (local HTTP,    30s) ─┤                    │  (sole visualization layer)  │
+NWS forecast   (public,      30min) ─┼───► InfluxDB 2.7 ──► Telegram notifier            │
+PJM DataMiner2 (public, per-feed)   ─┤    (energy + ────► │  (daily summary + alerts)    │
+HAVEN cloud    (public,    5 min)   ─┤    energy-longterm)│                              │
+Control4 → VisionPRO (10 min reads) ─┘                    │ HVAC scheduler ──► Control4 ─┼─► Honeywell
+                                                          │  (day-type @ 21:00,          │   thermostat
+                                                          │   safety supervisor on each  │
+                                                          │   setpoint push)             │
+                                                          │                              │
+                                                          │ Loki + Promtail              │
                                                           └──────────────────────────────┘
 ```
 
@@ -36,13 +37,16 @@ NWS forecast  (public,     30min) ─┤    (energy bucket)   │ webdashboard-a
 | `eagle-poller` (30 s, billing-grade demand + summation) | Active |
 | `refoss-poller` (30 s, 18 channels + system) | Active |
 | `nws-poller` (30 min, forecast today/tomorrow/day2 + active alerts) | Active |
-| `hvac-scheduler` (Control4 → Honeywell VisionPRO 8000) | Active |
+| `pjm-dm2-poller` (per-feed schedule: DA LMP, load forecast, metered, peak, NSPL) | Active (May 2026) |
+| `hvac-scheduler` (Control4 → Honeywell VisionPRO 8000, with safety supervisor) | Active |
 | `thermostat-poller` (continuous 10-min Control4 reads + override detection) | Active (May 2026) |
-| `haven-ingest` (Haven IAQ CSV → InfluxDB) | Active (May 2026) |
+| `haven-ingest` (HAVEN cloud API → `haven.indoor` + `haven.outdoor`) | Active (May 2026) |
 | `telegram-notifier` (daily 8 AM + 5 min alert checker) | Active |
-| `webdashboard` + `webdashboard-api` (live data, port 8081) | Active |
 | `loki` + `promtail` (log aggregation) | Active |
-| Grafana dashboards (`home-energy-full`, `home-energy-overview`, `hvac-scheduler`) | Active |
+| ~~`webdashboard` + `webdashboard-api`~~ | Retired May 2026 — consolidated on Grafana |
+| `influx-init` (one-shot: `energy-longterm` bucket + 1-min downsample task) | Active (May 2026) |
+| ComfortNet pipeline (`mosquitto` + `telegraf`, profile `mqtt`) | Broker deployed; Pi-3B publisher pending |
+| Grafana dashboards (overview, full, hvac-scheduler, comed-bill-reconciliation, iaq-comparison) | Active |
 | Restic → Backblaze B2 nightly (root cron @ 02:00, Telegram alerts) | Active |
 | `sense-poller` | Retired (Phase 5 — replaced by Refoss) |
 
@@ -52,7 +56,13 @@ NWS forecast  (public,     30min) ─┤    (energy bucket)   │ webdashboard-a
 Local HTTPS at `192.168.20.192:443`, basic auth, EAGLE-200/3 Local API. Reads instantaneous demand (kW) and cumulative delivered/received energy (kWh) from the ComEd smart meter via Zigbee HAN. Influx measurement: `eagle.meter`.
 
 ### ComEd Hourly Pricing
-Public API at `hourlypricing.comed.com/api`. 5-minute price intervals (¢/kWh) plus current-hour average. Influx measurement: `comed.prices` (tag `period_type` = `5min` | `hourly_avg`). **Day-ahead forecast is NOT exposed by ComEd's public API** — see [PROJECT.md](PROJECT.md) decision log.
+Public API at `hourlypricing.comed.com/api`. 5-minute price intervals (¢/kWh) plus current-hour average. Influx measurement: `comed.prices` (tag `period_type` = `5min` | `hourly_avg`). **Day-ahead forecast is NOT exposed by ComEd's public API** — true day-ahead source is PJM DataMiner2 (see below).
+
+### PJM Data Miner 2 (zonal market context)
+Public API at `api.pjm.com/api/v1`, Non-Member tier (6 calls/min, free). Per-feed schedule: day-ahead LMP at 17:00 CT, 7-day load forecast at 06:00 + 13:00 CT, weekly metered load Sundays 02:00 CT, RTO peak forecast in cooling season, annual NSPL Dec 1. Influx measurements: `pjm.lmp_da_hourly`, `pjm.load_forecast`, `pjm.metered_load`, `pjm.peak_forecast_rto`, `pjm.nspl_zonal`. Plus `pjm.coincident_peak` written by an annual scrape of the official PJM 5CP PDF. See [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md) and [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
+
+### HAVEN IAQ
+Cloud API behind Auth0 (rotating refresh token from mobile app). Polls indoor sensor (return-air mix: temp/RH/tVOC continuous; PM2.5 + airflow CFM flow-dependent) and paired outdoor station every 5 min. Influx measurements: `haven.indoor`, `haven.outdoor`. Official `havenapi.tzoa.io` API arrives summer 2026; we'll switch when it lands.
 
 ### Refoss EM16P (per-circuit local)
 Local HTTP JSON-RPC at `192.168.20.140/rpc`. Single `Refoss.Status.Get` call returns all 18 `em:N` channels (2 split-phase mains + 16 branches) with power, voltage, current, power factor, and day/week/month energy buckets. Channel labels pulled from device's own `Refoss.Config.Get` and refreshed on `cfg_rev` change. Influx measurements: `refoss.channel`, `refoss.system`.
@@ -131,11 +141,17 @@ UniFi-managed home network with multiple VLANs. Relevant for ops:
 
 ## Roadmap
 
-See **[PROJECT.md](PROJECT.md)** for the full phased history. Open items at time of writing:
+See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path items for the June 1, 2026 SCED experiment start (see [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md)):
 
-- **PJM DataMiner2 API access** — pending tech-support email (non-member accounts can't self-provision through Account Manager)
-- **Pre-cool depth retune** — academic research suggests `HOT` schedule could shift 68°F → 71-72°F starting at 3am instead of 4am @ 68°F (90%+ of peak shift, materially less off-peak kWh)
+- **Arm B controller (Step 1 model-informed)** — three integration points from [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md): pre-cool depth from envelope-ODE, COAST shutoff lead time closed-form, Stage-2-during-5CP advisory log. Prereq: per-house thermal model fit.
+- **Arm-switch wiring in `hvac-scheduler`** — read [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) at week boundary, branch logic, tag `hvac.actions` with `arm`.
+- **OSF pre-registration filing** — both arms pinned to one frozen commit hash before week 1.
+
+Other open items, parked behind the experiment:
+
+- **ComfortNet publisher (Pi 3B side)** — broker + telegraf already shipped; need the systemd publisher reading decoder output and publishing to `home/utility-room/hvac/comfortnet/<field>`
 - **Open-Meteo (ECMWF) as second weather source** — Free; better than NWS for 1-3 day temp since their Oct 2025 IFS upgrade
-- **Override logging** — tag every manual thermostat override with state snapshot; foundational for any future ML/MPC layer
-- **Forecast bias correction** — pair NWS observations against local Ecowitt sensor (cart en route May 2026), fit per-station affine bias by lead time
+- **Forecast bias correction** — pair NWS observations against local Ecowitt sensor (en route May 2026), fit per-station affine bias by lead time
+- **Pre-cool depth retune** — research suggests `HOT_PRE_COOL` could shift 68°F → 71-72°F starting 3am instead of 4am @ 68°F. Will fall out of the SCED study if run as an Arm B variant.
 - **Fridge anomaly detection upgrade** to Merlion (multivariate, currently univariate threshold)
+- **Phase 8 forward-projection panel** — full bill-vs-projected formula lands after a few cycles of bill data accumulate
