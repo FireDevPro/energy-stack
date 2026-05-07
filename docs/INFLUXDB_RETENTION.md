@@ -75,9 +75,9 @@ For per-frame continuous measurements, the task runs once per minute and applies
 
 ```
 cumulativeFields = [
-    // eagle.meter
-    "summation_delivered",
-    "summation_received",
+    // eagle.meter (cumulative kWh delivered/received from utility meter)
+    "delivered_kwh",
+    "received_kwh",
     // refoss.channel (bucketed energy counters that reset on day/week/month
     // boundary inside the device — last() within a minute is still correct
     // because we want the latest counter value per minute)
@@ -98,6 +98,8 @@ cumulativeFields = [
 #   hvac.comfortnet.cfm             → mean + max
 #   hvac.comfortnet.fault_critical  → (excluded; lives in hvac.comfortnet.events)
 ```
+
+**Field-name discipline matters here.** The names in `cumulativeFields` must match what the producing pollers actually write. eagle-poller writes `delivered_kwh` / `received_kwh` ([poller.py:49-50](../deploy/energy-stack/eagle-poller/poller.py)), not the upstream Zigbee names `summation_*`. The flux file originally referenced `summation_delivered` / `summation_received`; that misnamed list silently routed EAGLE cumulatives through the `mean()` / `max()` branches and corrupted the longterm bucket for billing reconciliation. Caught by the CodeX review on 2026-05-07; fixed at the same time as this doc edit.
 
 ## ComfortNet schema implications
 

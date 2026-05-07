@@ -162,7 +162,7 @@ deploy/energy-stack/
 ├── hvac-scheduler/
 │   ├── app.py                      # +pre-cool / +COAST integration call sites
 │   ├── thermal_model.py            # NEW: load JSON, integrate envelope ODE, expose helpers
-│   └── tests.py                    # +tests for ratified/unratified branches
+│   └── test_hvac_scheduler.py      # +tests for ratified/unratified branches
 └── (no new container — fit_thermal_model.py is a script, like parse_comed_bill.py)
 ```
 
