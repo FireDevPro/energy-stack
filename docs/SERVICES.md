@@ -274,7 +274,7 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 
 **Healthcheck:** `/tmp/last_poll_ok` is **loop liveness only** — touched on every clean cycle (CodeX pass 2, 2026-05-07 walked back an earlier feed-success-gating attempt). 90-min staleness budget catches a wedged or crashed loop, which is what container restart can fix. Persistent feed failures (expired API key, schema drift, PJM 4xx/5xx) are NOT a container-restart-fixable problem and are deliberately not surfaced via this marker.
 
-**Per-feed health surface:** every feed attempt writes one row to `pjm.feed_status` tagged `feed` and `success`, with `points_written`, `error_type`, and (truncated) `error_msg` fields. This is the right surface for telegram-notifier deadman alerts ("DA LMP hasn't reported success in 25 hours") or Grafana freshness panels with per-feed cadence expectations (DA LMP daily, NSPL annually, etc.). Wiring those alerts is a separate followup PR.
+**Per-feed health surface:** every feed attempt writes one row to `pjm.feed_status` tagged `feed` and `success`, with `points_written`, `error_type`, and (truncated) `error_msg` fields. The [`telegram-notifier`](#telegram-notifier) `check_pjm_feed_freshness` consumes this measurement with per-feed SLAs and fires "DA LMP hasn't reported success in 25 h" style alerts. Grafana freshness panels can use the same data.
 
 **Failure modes:**
 - Single-feed failure logged + skipped; cycle continues with other feeds (no abort). Failure recorded in `pjm.feed_status` with `success=false` and the exception type. Container marker still ticks.
@@ -393,7 +393,12 @@ Build: `./telegram-notifier` · Two cycles: daily summary at `SUMMARY_HOUR` + al
 Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram bots Chris uses). Sends:
 
 - **Daily summary** at 8 AM local (HTML-formatted): yesterday's cost, kWh, peak demand, fridge anomaly check, HVAC schedule fired, weather forecast for today.
-- **Alerts**, checked every 5 min (deduplicated 30 min): poller silent (no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min), price spike (current 5min > $TELEGRAM_PRICE_SPIKE_C ¢/kWh), fridge anomaly (recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline).
+- **Alerts**, checked every 5 min (deduplicated 30 min):
+  - **Poller silent**: no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min.
+  - **Price spike**: current 5-min ComEd price > `$TELEGRAM_PRICE_SPIKE_C` ¢/kWh.
+  - **Fridge anomaly**: recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline.
+  - **HVAC scheduler errors**: latest `hvac.actions` row in the last hour with a non-skip error.
+  - **PJM feed freshness**: per-feed deadman on `pjm.feed_status` with per-feed SLAs (DA LMP 25 h, load forecast 14 h, weekly metered 192 h, RTO peak 14 h cooling-season-only, NSPL 168 h within Dec/Jan window). Surface for catching expired API keys / persistent 4xx that the container healthcheck deliberately doesn't catch (loop liveness only, see [`pjm-dm2-poller`](#pjm-dm2-poller)).
 - **Backup notifications** (separate path — not by this service, but by `pi-backup.sh` reading the same `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `.env`).
 
 **Env:**

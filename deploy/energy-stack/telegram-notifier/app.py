@@ -5,9 +5,12 @@ Two background tasks:
      a formatted summary message: yesterday's usage, today's stats so far,
      HVAC scheduler activity, tomorrow's forecast.
   2. Alert checker -- runs every ALERT_CHECK_INTERVAL_S (default 300s), checks:
-     - Any poller silent > POLLER_SILENT_MIN minutes
+     - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map)
      - ComEd 5-min price spike > PRICE_SPIKE_THRESHOLD_C cents
+     - Fridge/freezer power anomaly vs 14-day baseline
      - Latest hvac.actions has applied=false with a non-skip error
+     - PJM `pjm.feed_status` per-feed freshness against per-feed SLAs
+       (DA LMP daily, NSPL annually, peak forecast cooling-season-only, etc.)
      Dedupe: same alert won't re-fire within ALERT_DEDUPE_MIN.
 
 Reuses the Life Engine Telegram bot (same token + chat_id), so messages land in
@@ -539,6 +542,162 @@ union(tables: [baseline, recent])
     return alerts
 
 
+# ---- PJM feed-freshness deadman --------------------------------------------
+#
+# `pjm-dm2-poller` writes one `pjm.feed_status` row per feed attempt (success
+# or failure). The container healthcheck is loop-liveness only — it does NOT
+# track whether the data flowed. Per-feed freshness is alerted here, with
+# per-feed tolerances tuned to each feed's natural cadence.
+
+
+@dataclass(frozen=True)
+class FeedSLA:
+    """Per-feed freshness contract used by check_pjm_feed_freshness."""
+    feed: str
+    tolerance_hours: float
+    in_season: Any  # callable: datetime (tz-aware local) -> bool
+    description: str
+
+
+def _always(_dt: datetime) -> bool:
+    return True
+
+
+def _cooling_season(dt: datetime) -> bool:
+    """Jun–Sep local. Matches FEED_SCHEDULE['ops_sum_frcst_peak_rto']."""
+    return dt.month in (6, 7, 8, 9)
+
+
+def _annual_check_window(dt: datetime) -> bool:
+    """Dec 1 through Jan 31 local. Annual NSPL fires Dec 1 03:00 CT;
+    we check during that window so a missed fire alerts within days,
+    not 13 months later. Outside this window the most-recent-success
+    can legitimately be ~12 months old, so we suppress."""
+    return dt.month == 12 or dt.month == 1
+
+
+# Tolerances are roughly 2× the natural inter-fire gap during the active
+# season, so a single missed cycle is tolerated and two consecutive
+# misses fire. Tuned per feed against FEED_SCHEDULE in pjm-dm2-poller/app.py.
+PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
+    FeedSLA(
+        feed="da_hrl_lmps",
+        tolerance_hours=25,                      # fires daily at 17:00 CT
+        in_season=_always,
+        description="Day-ahead LMP (daily 17:00 CT)",
+    ),
+    FeedSLA(
+        feed="load_frcstd_7_day",
+        tolerance_hours=14,                      # fires 06:00 + 13:00 CT
+        in_season=_always,
+        description="7-day load forecast (06:00 + 13:00 CT)",
+    ),
+    FeedSLA(
+        feed="hrl_load_metered",
+        tolerance_hours=192,                     # fires Sundays 02:00 CT (8-day budget)
+        in_season=_always,
+        description="Weekly metered load (Sundays 02:00 CT)",
+    ),
+    FeedSLA(
+        feed="ops_sum_frcst_peak_rto",
+        tolerance_hours=14,                      # cooling season only
+        in_season=_cooling_season,
+        description="RTO peak forecast (cooling season, 06:00 + 13:00 CT)",
+    ),
+    FeedSLA(
+        feed="annual_zonal_nspl",
+        tolerance_hours=168,                     # 7 days within Dec/Jan window
+        in_season=_annual_check_window,
+        description="Annual NSPL (Dec 1 03:00 CT)",
+    ),
+)
+
+
+def latest_pjm_feed_successes(query_api, bucket: str) -> dict[str, datetime]:
+    """{feed: latest_success_timestamp_utc}. Missing keys = no successful
+    row in the last 400 days (covers the annual NSPL feed).
+
+    Raises on query failure — callers (see check_pjm_feed_freshness)
+    should catch and decline to alert on transient Influx errors."""
+    flux = f'''
+from(bucket: "{bucket}")
+  |> range(start: -400d)
+  |> filter(fn: (r) => r._measurement == "pjm.feed_status"
+                    and r.success == "true"
+                    and r._field == "points_written")
+  |> group(columns: ["feed"])
+  |> last()
+  |> keep(columns: ["feed", "_time"])
+'''
+    rows = fetch_one(query_api, flux)
+    out: dict[str, datetime] = {}
+    for r in rows:
+        feed = r.get("feed")
+        ts = r.get("_time")
+        if not feed or ts is None:
+            continue
+        if isinstance(ts, datetime):
+            out[feed] = ts
+        else:
+            try:
+                out[feed] = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+    return out
+
+
+def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert]:
+    """Per-feed deadman alerts on `pjm.feed_status`. Each PJM feed has
+    its own expected cadence — the existing global POLLER_SILENT_MIN
+    tolerance does not fit. This function emits one alert per feed
+    that's gone stale within its season.
+
+    On Influx query failure: logs warn and returns no alerts. A blip
+    in the query layer should not look like "every feed lost its
+    history" — that would fire a flood of false alerts on a transient
+    blip and then dedup-suppress the real alerts when they recur."""
+    try:
+        last_success = latest_pjm_feed_successes(query_api, bucket)
+    except Exception as exc:
+        log("warn", "pjm_freshness_check_skipped",
+            error=str(exc), error_type=type(exc).__name__)
+        return []
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(tz)
+    alerts: list[Alert] = []
+
+    for sla in PJM_FEED_SLAS:
+        if not sla.in_season(now_local):
+            continue
+        last_ts = last_success.get(sla.feed)
+        if last_ts is None:
+            alerts.append(Alert(
+                key=f"pjm_feed_stale:{sla.feed}",
+                text=(
+                    f"📊 <b>PJM feed never reported success</b>\n"
+                    f"  • Feed: <code>{sla.feed}</code>\n"
+                    f"  • {sla.description}\n"
+                    f"  • No <code>pjm.feed_status</code> success row in the last 400 days.\n"
+                    f"  • Check <code>pjm-dm2-poller</code> logs for auth or schema errors."
+                ),
+            ))
+            continue
+        age_hours = (now_utc - last_ts).total_seconds() / 3600
+        if age_hours > sla.tolerance_hours:
+            alerts.append(Alert(
+                key=f"pjm_feed_stale:{sla.feed}",
+                text=(
+                    f"📊 <b>PJM feed stale</b>\n"
+                    f"  • Feed: <code>{sla.feed}</code>\n"
+                    f"  • {sla.description}\n"
+                    f"  • Last success: {age_hours:.1f} h ago "
+                    f"(tolerance {sla.tolerance_hours:.0f} h)\n"
+                    f"  • Check <code>pjm-dm2-poller</code> logs for auth or schema errors."
+                ),
+            ))
+    return alerts
+
+
 def check_hvac_action_errors(query_api, bucket: str) -> list[Alert]:
     flux = f'''
 from(bucket: "{bucket}")
@@ -588,6 +747,7 @@ async def daily_summary_loop(cfg: Config, query_api, tz: ZoneInfo, stop: asyncio
 async def alert_loop(cfg: Config, query_api, stop: asyncio.Event):
     from pathlib import Path
     health_marker = Path("/tmp/last_tick_ok")
+    tz = ZoneInfo(cfg.tz_name)
     log("info", "alert_loop_starting", interval_s=cfg.alert_check_interval_s)
     last_sent: dict[str, datetime] = {}
     while not stop.is_set():
@@ -597,6 +757,7 @@ async def alert_loop(cfg: Config, query_api, stop: asyncio.Event):
             alerts.extend(check_price_spike(query_api, cfg.influx_bucket, cfg.price_spike_threshold_c))
             alerts.extend(check_hvac_action_errors(query_api, cfg.influx_bucket))
             alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
+            alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
             now = datetime.now(timezone.utc)
             for a in alerts:
                 if a.key in last_sent and (now - last_sent[a.key]).total_seconds() < cfg.alert_dedupe_min * 60:
