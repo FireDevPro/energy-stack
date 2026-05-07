@@ -645,6 +645,73 @@ async def test_feed_status_failure_to_write_does_not_break_cycle(monkeypatch, tm
 
 
 # =========================================================================
+# Liveness heartbeat (consumed by telegram-notifier check_poller_silence)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_written_on_idle_cycle(monkeypatch, tmp_path):
+    """An idle cycle (no feed due) must still write a `pjm.poller_heartbeat`
+    row. This is the signal telegram-notifier's check_poller_silence
+    consumes — without it, long quiet stretches between scheduled feeds
+    (e.g., 6 days between weekly metered fires) would look like the
+    poller died."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT
+    _stub_health_marker(monkeypatch, tmp_path)
+
+    client = MagicMock()
+    write_api = MagicMock()
+    await poll_once(client, write_api, cfg)
+
+    measurements = _measurements_written(write_api)
+    assert "pjm.poller_heartbeat" in measurements
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_written_when_all_feeds_fail(monkeypatch, tmp_path):
+    """A cycle where every due feed fails still writes a heartbeat — the
+    POLLER is alive even when PJM is returning errors. Otherwise a sustained
+    PJM outage would silence the heartbeat and false-fire the silence
+    deadman."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))  # cooling 13:00
+    _stub_health_marker(monkeypatch, tmp_path)
+
+    async def always_fail(feed, params):
+        raise RuntimeError("PJM HTTP 500")
+    client = MagicMock()
+    client.fetch = always_fail
+    write_api = MagicMock()
+
+    await poll_once(client, write_api, cfg)
+    assert "pjm.poller_heartbeat" in _measurements_written(write_api)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_write_failure_does_not_break_cycle(monkeypatch, tmp_path):
+    """A failed heartbeat write (Influx blip) must not raise — the cycle
+    must complete cleanly so the next cycle's heartbeat can land. Same
+    swallow-and-log contract as `_write_feed_status`."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # idle cycle
+    marker = _stub_health_marker(monkeypatch, tmp_path)
+
+    write_api = MagicMock()
+
+    def selective_write(*, bucket, record):
+        for pt in record:
+            if "pjm.poller_heartbeat" in pt.to_line_protocol():
+                raise RuntimeError("Influx transient error")
+        return None
+    write_api.write = MagicMock(side_effect=selective_write)
+
+    client = MagicMock()
+    # Must not raise
+    await poll_once(client, write_api, cfg)
+    # And the marker still gets touched (heartbeat failure is observability,
+    # not control — same posture as feed_status write failures)
+    assert marker.exists()
+
+
+# =========================================================================
 # helpers
 # =========================================================================
 

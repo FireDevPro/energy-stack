@@ -22,6 +22,7 @@ import app
 from app import (
     Alert,
     PJM_FEED_SLAS,
+    check_pjm_feed_failures,
     check_pjm_feed_freshness,
     check_poller_silence,
     check_price_spike,
@@ -54,7 +55,8 @@ def test_check_poller_silence_no_alerts_when_all_fresh(monkeypatch):
                         lambda q, b: _last_writes(
                             fresh_pollers=["comed-poller", "eagle-poller",
                                            "refoss-poller", "nws-poller",
-                                           "thermostat-poller", "comfortnet-publisher"],
+                                           "thermostat-poller", "comfortnet-publisher",
+                                           "pjm-dm2-poller"],
                         ))
     alerts = check_poller_silence(MagicMock(), "energy", threshold_min=10)
     assert alerts == []
@@ -105,6 +107,27 @@ def test_check_poller_silence_per_poller_tolerances(monkeypatch):
                         ))
     alerts = check_poller_silence(MagicMock(), "energy", threshold_min=10)
     assert alerts == [], f"unexpected alerts: {[a.key for a in alerts]}"
+
+
+def test_check_poller_silence_pjm_dm2_poller_tolerance(monkeypatch):
+    """pjm-dm2-poller writes a heartbeat every loop cycle (hourly).
+    Tolerance is 130 min — one missed cycle is fine, two consecutive
+    misses fire. 131 min stale → alert; 129 min stale → silent."""
+    monkeypatch.setattr(app, "poller_last_writes",
+                        lambda q, b: _last_writes(
+                            stale_minutes_ago={"pjm-dm2-poller": 131},
+                        ))
+    fired = check_poller_silence(MagicMock(), "energy", threshold_min=10)
+    assert len(fired) == 1
+    assert fired[0].key == "silent:pjm-dm2-poller"
+    assert "131" in fired[0].text and "130" in fired[0].text
+
+    monkeypatch.setattr(app, "poller_last_writes",
+                        lambda q, b: _last_writes(
+                            stale_minutes_ago={"pjm-dm2-poller": 129},
+                        ))
+    silent = check_poller_silence(MagicMock(), "energy", threshold_min=10)
+    assert silent == []
 
 
 def test_check_poller_silence_comfortnet_fires_at_31_min(monkeypatch):
@@ -270,22 +293,30 @@ def test_pjm_freshness_da_lmp_stale_fires(monkeypatch):
     assert "26.0" in alerts[0].text and "25" in alerts[0].text
 
 
-def test_pjm_freshness_never_seen_success_fires(monkeypatch):
-    """A feed with no `pjm.feed_status` rows ever (e.g., new deployment
-    where the API key was never accepted) fires within its season."""
+def test_pjm_freshness_never_seen_success_does_not_fire(monkeypatch):
+    """A feed with no success rows is silent in the freshness check.
+
+    This branch used to fire 'never reported success', but that conflated
+    two distinct states the system actually distinguishes:
+    (1) feed never attempted (cold-start: no rows of any kind), and
+    (2) feed attempted, only failures (rows with success=false exist).
+    State (2) is now covered by check_pjm_feed_failures, which fires
+    immediately on the actual failure row with the real error context.
+    State (1) is correctly silent — there is nothing to alert on.
+
+    Pinning this absence keeps a future change from re-introducing the
+    deploy-day flood that this commit was the response to."""
     _setup_pjm_clock(
         monkeypatch,
         datetime(2026, 7, 15, 18, tzinfo=CHICAGO),
-        # da_hrl_lmps intentionally absent
+        # da_hrl_lmps intentionally absent (no success row)
         load_frcstd_7_day=4,
         hrl_load_metered=72,
         ops_sum_frcst_peak_rto=4,
     )
     alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
     keys = [a.key for a in alerts]
-    assert "pjm_feed_stale:da_hrl_lmps" in keys
-    da_alert = [a for a in alerts if a.key == "pjm_feed_stale:da_hrl_lmps"][0]
-    assert "never reported success" in da_alert.text
+    assert "pjm_feed_stale:da_hrl_lmps" not in keys
 
 
 def test_pjm_freshness_cooling_season_feed_suppressed_off_season(monkeypatch):
@@ -382,3 +413,95 @@ def test_pjm_freshness_query_failure_returns_no_alerts(monkeypatch):
 
     alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
     assert alerts == []
+
+
+# ---- check_pjm_feed_failures ----------------------------------------------
+#
+# Direct alert on `pjm.feed_status` rows with success=false. Replaces the
+# old "never reported success" branch of check_pjm_feed_freshness with a
+# real-time signal that includes the actual exception type and message
+# the poller wrote, instead of a generic "check the logs" message.
+
+
+def test_pjm_failures_no_rows_no_alerts(monkeypatch):
+    """No failure rows in the lookback window → no alerts. This is the
+    common-case path that prevents cold-start spam: a freshly-deployed
+    poller that hasn't yet attempted any feed has zero failure rows and
+    so produces zero alerts here."""
+    monkeypatch.setattr(app, "latest_pjm_feed_failures", lambda q, b, m: [])
+    alerts = check_pjm_feed_failures(MagicMock(), "energy")
+    assert alerts == []
+
+
+def test_pjm_failures_single_failure_fires_with_error_context(monkeypatch):
+    """A single failure row produces one alert that includes the feed
+    name, the exception type, and (truncated) error message — the
+    actionable context lives in the alert itself, not in 'check the logs'."""
+    monkeypatch.setattr(app, "latest_pjm_feed_failures",
+                        lambda q, b, m: [{
+                            "feed": "da_hrl_lmps",
+                            "error_type": "RuntimeError",
+                            "error_msg": "PJM HTTP 401: unauthorized",
+                            "_time": datetime(2026, 5, 7, 22, tzinfo=timezone.utc),
+                        }])
+    alerts = check_pjm_feed_failures(MagicMock(), "energy")
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a.key == "pjm_feed_failed:da_hrl_lmps"
+    assert "da_hrl_lmps" in a.text
+    assert "RuntimeError" in a.text
+    assert "PJM HTTP 401" in a.text
+
+
+def test_pjm_failures_multiple_feeds_produce_independent_alerts(monkeypatch):
+    """Two feeds failing in the same lookback window produce two alerts
+    with distinct dedup keys — a recurring failure on one feed does not
+    suppress a new failure on another."""
+    monkeypatch.setattr(app, "latest_pjm_feed_failures",
+                        lambda q, b, m: [
+                            {"feed": "da_hrl_lmps", "error_type": "RuntimeError",
+                             "error_msg": "401", "_time": None},
+                            {"feed": "load_frcstd_7_day", "error_type": "TimeoutError",
+                             "error_msg": "deadline exceeded", "_time": None},
+                        ])
+    alerts = check_pjm_feed_failures(MagicMock(), "energy")
+    keys = sorted(a.key for a in alerts)
+    assert keys == ["pjm_feed_failed:da_hrl_lmps", "pjm_feed_failed:load_frcstd_7_day"]
+
+
+def test_pjm_failures_query_failure_returns_no_alerts(monkeypatch):
+    """Transient Influx query errors must not fire phantom failure alerts
+    for every feed. Same defensive contract as check_pjm_feed_freshness:
+    log warn, return [], let the next cycle retry."""
+    def _fail(_q, _b, _m):
+        raise RuntimeError("InfluxDB connection refused")
+    monkeypatch.setattr(app, "latest_pjm_feed_failures", _fail)
+    alerts = check_pjm_feed_failures(MagicMock(), "energy")
+    assert alerts == []
+
+
+def test_pjm_failures_truncates_long_error_messages(monkeypatch):
+    """A pathologically long error_msg (e.g., a full HTML error page from
+    PJM) gets capped at 200 chars in the alert text. The poller already
+    truncates at 200 when writing, but the alerter belt-and-suspenders
+    truncates again so a misconfigured upstream can't bloat Telegram
+    messages past their 4096-char limit."""
+    long_msg = "X" * 500
+    monkeypatch.setattr(app, "latest_pjm_feed_failures",
+                        lambda q, b, m: [{
+                            "feed": "da_hrl_lmps",
+                            "error_type": "RuntimeError",
+                            "error_msg": long_msg,
+                            "_time": None,
+                        }])
+    alerts = check_pjm_feed_failures(MagicMock(), "energy")
+    assert len(alerts) == 1
+    assert "X" * 200 in alerts[0].text
+    assert "X" * 201 not in alerts[0].text
+
+
+def test_pjm_failures_alert_key_prefix():
+    """Pinning the dedup-key shape so future refactors don't accidentally
+    collide with check_pjm_feed_freshness's `pjm_feed_stale:` keys."""
+    a = Alert(key="pjm_feed_failed:da_hrl_lmps", text="...")
+    assert a.key.startswith("pjm_feed_failed:")

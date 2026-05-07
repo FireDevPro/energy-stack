@@ -11,6 +11,8 @@ Two background tasks:
      - Latest hvac.actions has applied=false with a non-skip error
      - PJM `pjm.feed_status` per-feed freshness against per-feed SLAs
        (DA LMP daily, NSPL annually, peak forecast cooling-season-only, etc.)
+     - PJM `pjm.feed_status` direct failure rows (one alert per feed with
+       the actual error_type/error_msg from the poller).
      Dedupe: same alert won't re-fire within ALERT_DEDUPE_MIN.
 
 Reuses the Life Engine Telegram bot (same token + chat_id), so messages land in
@@ -354,12 +356,18 @@ def poller_last_writes(query_api, bucket: str) -> dict:
         # set to 30 min in check_poller_silence to comfortably cover quiet
         # stretches without missing genuine silence.
         ("hvac.comfortnet", "comfortnet-publisher"),
+        # pjm-dm2-poller: hourly main loop writes a heartbeat row regardless
+        # of whether any feed fired. Tolerance is 130 min in check_poller_silence
+        # — one missed cycle is fine, two consecutive misses fire. The query
+        # range below is widened to -3h to keep two consecutive missed
+        # heartbeats inside the lookback window.
+        ("pjm.poller_heartbeat", "pjm-dm2-poller"),
     ]
     out = {}
     for meas, name in measurements:
         flux = f'''
 from(bucket: "{bucket}")
-  |> range(start: -2h)
+  |> range(start: -3h)
   |> filter(fn: (r) => r._measurement == "{meas}")
   |> last()
   |> keep(columns: ["_time"])
@@ -448,6 +456,7 @@ def check_poller_silence(query_api, bucket: str, threshold_min: int) -> list[Ale
             "nws-poller": 70,          # 30 min × 2 + buffer; one miss is fine, two = real
             "thermostat-poller": 30,   # 10 min × 3; tolerates two missed polls
             "comfortnet-publisher": 30,  # variable rate; ~5 min idle, faster when active
+            "pjm-dm2-poller": 130,     # hourly heartbeat × 2 + 10 min slack
         }.get(poller, threshold_min)
         if age_min > tol:
             out.append(Alert(
@@ -647,15 +656,23 @@ from(bucket: "{bucket}")
 
 
 def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert]:
-    """Per-feed deadman alerts on `pjm.feed_status`. Each PJM feed has
-    its own expected cadence — the existing global POLLER_SILENT_MIN
-    tolerance does not fit. This function emits one alert per feed
-    that's gone stale within its season.
+    """Per-feed staleness deadman on `pjm.feed_status`. Fires when a feed
+    that has fired successfully before goes longer than its tolerance
+    without another success — caught by comparing the most recent success
+    timestamp against the feed's per-feed tolerance.
 
-    On Influx query failure: logs warn and returns no alerts. A blip
-    in the query layer should not look like "every feed lost its
-    history" — that would fire a flood of false alerts on a transient
-    blip and then dedup-suppress the real alerts when they recur."""
+    The previous "never reported success" branch (no success row in 400d
+    → loud alert) was removed: it could not distinguish a feed that is
+    genuinely broken from a feed that just hasn't had its first scheduled
+    fire window yet since deploy. Genuine failures are now covered by
+    `check_pjm_feed_failures`, which fires on actual `success=false` rows
+    written by the poller. A feed with no `pjm.feed_status` rows of any
+    kind has not been attempted yet, so this function stays silent on it.
+
+    On Influx query failure: logs warn and returns no alerts. A blip in
+    the query layer should not look like "every feed lost its history" —
+    that would fire a flood of false alerts on a transient blip and then
+    dedup-suppress the real alerts when they recur."""
     try:
         last_success = latest_pjm_feed_successes(query_api, bucket)
     except Exception as exc:
@@ -671,16 +688,11 @@ def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert
             continue
         last_ts = last_success.get(sla.feed)
         if last_ts is None:
-            alerts.append(Alert(
-                key=f"pjm_feed_stale:{sla.feed}",
-                text=(
-                    f"📊 <b>PJM feed never reported success</b>\n"
-                    f"  • Feed: <code>{sla.feed}</code>\n"
-                    f"  • {sla.description}\n"
-                    f"  • No <code>pjm.feed_status</code> success row in the last 400 days.\n"
-                    f"  • Check <code>pjm-dm2-poller</code> logs for auth or schema errors."
-                ),
-            ))
+            # No success row found. Could be: (a) feed never attempted
+            # (cold-start, no row of any kind) or (b) feed attempted but
+            # only failures. Both are handled by check_pjm_feed_failures
+            # for failure rows, or by silence for cold-start. This
+            # function only owns the "had history, went stale" case.
             continue
         age_hours = (now_utc - last_ts).total_seconds() / 3600
         if age_hours > sla.tolerance_hours:
@@ -695,6 +707,79 @@ def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert
                     f"  • Check <code>pjm-dm2-poller</code> logs for auth or schema errors."
                 ),
             ))
+    return alerts
+
+
+def latest_pjm_feed_failures(query_api, bucket: str, lookback_min: int) -> list[dict]:
+    """Return one dict per feed with the most recent `success=false` row
+    within the last `lookback_min` minutes. Each dict carries the fields
+    `feed`, `error_type`, `error_msg`, and `_time`.
+
+    Pivot collapses the per-field rows the poller writes (points_written,
+    error_type, error_msg) into one row per (_time, feed) so the alert
+    can include the actual error context. Without pivot we'd get three
+    rows per failure with one field each.
+
+    Raises on query failure — callers should catch and decline to alert
+    on transient Influx errors, same contract as latest_pjm_feed_successes."""
+    flux = f'''
+from(bucket: "{bucket}")
+  |> range(start: -{lookback_min}m)
+  |> filter(fn: (r) => r._measurement == "pjm.feed_status"
+                    and r.success == "false")
+  |> pivot(rowKey: ["_time", "feed"], columnKey: ["_field"], valueColumn: "_value")
+  |> group(columns: ["feed"])
+  |> last(column: "_time")
+'''
+    rows = fetch_one(query_api, flux)
+    out: list[dict] = []
+    for r in rows:
+        if not r.get("feed"):
+            continue
+        out.append({
+            "feed": r.get("feed"),
+            "error_type": r.get("error_type") or "",
+            "error_msg": r.get("error_msg") or "",
+            "_time": r.get("_time"),
+        })
+    return out
+
+
+def check_pjm_feed_failures(query_api, bucket: str,
+                            lookback_min: int = 10) -> list[Alert]:
+    """Direct failure alert: any `pjm.feed_status` row written with
+    `success=false` in the last `lookback_min` minutes fires an alert
+    naming the feed, the exception type, and a truncated error message.
+
+    Real-time signal — fires the first time the alert loop runs after
+    a feed_status row lands. No SLA tolerance, no in-season gate: a
+    failure is a failure regardless of season.
+
+    Dedup key `pjm_feed_failed:{feed}` so each feed deduplicates
+    independently and a recurring failure on one feed doesn't suppress
+    a new failure on another."""
+    try:
+        failures = latest_pjm_feed_failures(query_api, bucket, lookback_min)
+    except Exception as exc:
+        log("warn", "pjm_failure_check_skipped",
+            error=str(exc), error_type=type(exc).__name__)
+        return []
+    alerts: list[Alert] = []
+    for f in failures:
+        feed = f["feed"]
+        err_type = f["error_type"] or "Exception"
+        err_msg = (f["error_msg"] or "").strip()
+        msg_line = f"  • Error: <code>{err_type}</code>"
+        if err_msg:
+            msg_line += f": {err_msg[:200]}"
+        alerts.append(Alert(
+            key=f"pjm_feed_failed:{feed}",
+            text=(
+                f"📊 <b>PJM feed fetch failed</b>\n"
+                f"  • Feed: <code>{feed}</code>\n"
+                f"{msg_line}"
+            ),
+        ))
     return alerts
 
 
@@ -758,6 +843,7 @@ async def alert_loop(cfg: Config, query_api, stop: asyncio.Event):
             alerts.extend(check_hvac_action_errors(query_api, cfg.influx_bucket))
             alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
             alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
+            alerts.extend(check_pjm_feed_failures(query_api, cfg.influx_bucket))
             now = datetime.now(timezone.utc)
             for a in alerts:
                 if a.key in last_sent and (now - last_sent[a.key]).total_seconds() < cfg.alert_dedupe_min * 60:
