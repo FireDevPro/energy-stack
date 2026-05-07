@@ -42,7 +42,7 @@ The scheduler runs three cycles:
 2. **Intra-day revisit @ each `SCHEDULER_REVISIT_HOURS` (default 06:00, 11:00 local)** — re-poll today's forecast and re-classify. If the day-type shifted (e.g. yesterday's NORMAL forecast became today's HOT after a morning forecast update), overwrite the stored decision. The schedule check picks up the new value on its next tick. **Already-fired actions stay fired**; future actions in the new schedule fire at their scheduled times. Catches the ~1-in-3 marginal-day forecast bust documented in NWS verification literature ([NSSL/Brooks public-forecast verification](https://www.nssl.noaa.gov/users/brooks/public_html/media/okcmed.html); [UW Atmos MOS verification](https://atmos.uw.edu/~jbaars/mvn_paper/mvn_extended.htm)).
 3. **Schedule check every minute** — at HH:MM matching any `ScheduleAction` in today's schedule, fire that action: read thermostat state snapshot, push setpoints + fan, log to `hvac.actions`.
 
-**Why intra-day revisit but not multi-source/multi-model**: NWS api.weather.gov is already NBM-blended (HRRR + GFS + ECMWF + RAP + GEFS, MOS-corrected, URMA-bias-corrected per the [NOAA NBM docs](https://vlab.noaa.gov/web/mdl/nbm)). The dominant residual error for a single home is local site bias, not forecast-model choice — so the highest-leverage upgrade is bias correction with a personal weather station against NWS, not switching forecast sources. Bias correction lands when the Ecowitt has 14+ days of paired observation history.
+**Why intra-day revisit but not multi-source/multi-model**: `api.weather.gov` returns the official WFO grid forecast (per the [NWS API docs](https://www.weather.gov/documentation/services-web-api), forecasts are "created at each NWS Weather Forecast Office (WFO) on their own grid definition, at a resolution of about 2.5km x 2.5km"). NBM (National Blend of Models) is a major input forecasters use, but the API doesn't guarantee that a given gridpoint's response is raw NBM output — WFOs apply local edits and may incorporate additional guidance. For our use the operational point is that NWS gives us a single calibrated, official, free, low-friction source. The dominant residual error for a single home is local site bias, not forecast-source choice — so the highest-leverage upgrade is paired-observation bias correction against an on-site Ecowitt station, not switching forecast sources. Bias correction lands when the Ecowitt has 14+ days of paired observation history.
 
 ```
 21:00 ─► Read forecast(tomorrow), forecast(day2), comed_price
@@ -89,7 +89,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 
 | Day type | Trigger | Schedule | Behavior |
 |---|---|---|---|
-| `MILD` | High < 82°F | (empty) | Thermostat baseline runs. No active scheduling. |
+| `MILD` | High < 82°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the VisionPRO baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 82-94°F | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
 | `HOT_5CP_RISK` | ≥ 95°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool, hard 5CP shutoff window |
 | `HOT_STREAK_DAY1` | HOT + day-after also HOT | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool to bank thermal mass for the multi-day event. Day 2 of the streak runs the regular `HOT_SCHEDULE` (the mass is already there). |
@@ -99,6 +99,12 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 ## Schedules
 
 All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65, fan_mode=None, cool_setpoint_humid_f=None)`. Heat is always paired so Auto mode works.
+
+### MILD — high < 82°F
+
+| Time | Label | Action | Notes |
+|---|---|---|---|
+| 00:05 | `MILD_RELEASE_HOLD` | `release_hold=True` | Clear any permanent hold left over from yesterday so the VisionPRO baseline schedule resumes for the day. No setpoints pushed. |
 
 ### NORMAL — typical 82-94°F day
 

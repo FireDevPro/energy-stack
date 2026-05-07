@@ -96,20 +96,35 @@ A second sanity check: **physical plausibility gates**. `τ_hours ∈ [2, 48]` a
 
 All sources already write to InfluxDB except Ecowitt, which arrives in May 2026 and gets its own poller in a parallel PR.
 
-| Source | Measurement | Fields used | Cadence | Notes |
+| Source | Measurement | Fields used | Cadence today | Cadence assumed by Step 1 fit |
 |---|---|---|---|---|
-| `thermostat-poller` | `hvac.thermostat` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` | 600 s (TCC rate floor) | Primary indoor signal. |
-| `comfortnet` (CT-485 sniffer → MQTT → Telegraf) | `hvac.comfortnet` | `cl_act` (cool stage actual %), `hd_act`, `fan_act` | sub-minute | Authoritative equipment state. Resolves stage 1 vs stage 2 cleanly; `hvac.thermostat.hvac_state` only says "cool" without the stage detail. |
-| `refoss-poller` | `refoss.channel` | `power_w` on the HVAC circuit channels | 30 s | Independent kW witness for the regression. Confirms `hvac.comfortnet` stage tags by checking the stage-2 power step. |
-| `nws-poller` | `nws.forecast` | `high_f`, `low_f`, `max_dewpoint_f` | hourly | Pre-Ecowitt outdoor proxy. Coarse, but available historically. |
-| Ecowitt (planned) | `weather.ecowitt` | `outdoor_temp_f`, `solar_radiation_w_m2`, `outdoor_humidity_pct` | 30 s | **Required** for Step 1 fit to qualify under the acceptance threshold. NWS-only fits are flagged "preliminary" and don't ratify into the scheduler. |
-| `hvac-scheduler` | `hvac.actions` | `cool_setpoint_f`, `applied`, `dry_run` | event-driven | Used to identify setpoint-step mask windows. |
+| `thermostat-poller` | `hvac.thermostat` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` | **600 s** (TCC rate floor) | 5 min — gap, see "Cadence reality check" below |
+| `comfortnet` (CT-485 sniffer → MQTT → Telegraf) | `hvac.comfortnet` | `cl_act` (cool stage actual %), `hd_act`, `fan_act` | not yet flowing (publisher pending) | sub-minute |
+| `refoss-poller` | `refoss.channel` | `power_w` on the HVAC circuit channels | 30 s | 30 s (independent kW witness, no gap) |
+| `nws-poller` | `nws.forecast` | `high_f`, `low_f`, `max_dewpoint_f` | **daily rollup only** (today/tomorrow/day2) | hourly outdoor temp series — gap |
+| Ecowitt (planned) | `weather.ecowitt` | `outdoor_temp_f`, `solar_radiation_w_m2`, `outdoor_humidity_pct` | not yet installed | 30 s |
+| `hvac-scheduler` | `hvac.actions` | `cool_setpoint_f`, `applied`, `dry_run` | event-driven | event-driven (no gap) |
+
+### Cadence reality check (CodeX 2026-05-07)
+
+The fit methodology in the §Methodology section was specified at 5-minute cadence. The currently-shipped data sources can't supply that:
+
+- **`hvac.thermostat` is 10-minute, not 5-minute** (Honeywell TCC rate-limit floor; not negotiable until ComfortNet provides sub-minute indoor signal).
+- **`nws-poller` writes daily rollups only** (`for_period` ∈ {today, tomorrow, day2}). The hourly forecast endpoint is fetched internally but not retained as hourly points. Step 1's forward integration against hourly `T_out(t)` cannot run on the existing NWS measurement.
+- **`hvac.comfortnet`** is the authoritative stage signal but is not yet flowing (the broker is up under compose profile `mqtt`, but the Pi-3B publisher hasn't shipped).
+
+**Two paths to unblock Step 1**, in order of preference:
+
+1. **Wait for Ecowitt + ComfortNet** (current plan). When both are live, indoor cadence comes from ComfortNet at sub-minute and outdoor from Ecowitt at 30 s. Fit is as designed.
+2. **Resample-and-bound fallback**: rewrite the fit at **15-minute cadence** (LCM of 5 / 10 / 30 min), using `hvac.thermostat` directly and adding a new `for_period=hourly` write path to `nws-poller` (or pulling `forecastGridData` instead of `forecastHourly`). This loosens the Bacher–Madsen skill-score expectation (their `S ∈ [0.7, 0.85]` was at 2-minute cadence; at 15-minute we expect roughly `S ∈ [0.4, 0.65]`). Acceptance threshold drops to `S ≥ 0.35` for the fallback fit.
+
+**Step 1 is therefore blocked on at least one of**: (a) ComfortNet publisher landing, (b) Ecowitt installation + ≥ 14 days of paired observations, OR (c) NWS-poller writing hourly forecast points + acceptance of the looser fallback skill threshold. The implementation PR can still land behind a `THERMAL_MODEL_ENABLED=false` flag, but the fit job won't ratify a model until one of those gates clears.
 
 ### Why Ecowitt is on the critical path
 
 NWS gridpoint forecasts smooth across a 2.5 km grid cell and lag actual conditions at the house by 30–90 minutes during hot ramp-up. Fitting `1/τ` against a smoothed, lagged outdoor signal biases the time constant. The Ecowitt sensor co-located on the house gives the actual `T_out` driving the envelope, plus solar irradiance, plus humidity (which lets us do a saturation-enthalpy correction in Step 2 if needed). Per ASHRAE Handbook of Fundamentals (2021) Ch. 18, envelope identification with non-co-located weather is widely understood to inflate residuals; the gain from a $200 PWS is well-documented across the residential RC literature.
 
-We do not block other thermal-model work on Ecowitt — Step 1 implementation can land before the station is online and run in "preliminary" mode against `nws.forecast`, with results stored to InfluxDB but explicitly marked unratified.
+We do not block other thermal-model work on Ecowitt — Step 1 implementation can land before the station is online and run in "preliminary" mode against the fallback path above, with results stored to InfluxDB but explicitly marked unratified.
 
 ## Outputs
 
@@ -189,7 +204,7 @@ The implementation PR can land before Ecowitt has 30 days of data; the gate is "
 - **Cooling-season-only.** This design is the cooling-mode fit. The heating-mode fit (modulating gas furnace, distinct nonlinearity from the modulation curve) needs a separate variant with a per-modulation-bin coefficient. Scoped for fall 2026.
 - **`hvac.comfortnet` stage signal authoritativeness.** We assume `cl_act` percentage cleanly maps to {off / stage 1 / stage 2}. The decoder docs in `comfortnet` repo say it does, but we should cross-validate against `refoss.channel` kW step the first week of paired data — if the kW signature disagrees with the CT-485 stage tag, the fit falls back to using `refoss.channel` thresholds for stage detection.
 - **Ecowitt outage.** If the station drops out mid-fit-window, the fit job degrades to NWS for the gap and emits an unratified fit. The scheduler keeps running on the last ratified fit until the next ratifiable window. This is the same fallback model the existing pollers use; no new runtime tolerance is being introduced.
-- **Forecast bias coupling.** The scheduler uses NWS forecast `T_out` for the *forward* integration (predicting indoor at HOT-window start), even after the model is fit on Ecowitt observations. Forecast bias will leak into setpoint decisions. The forecast-bias correction PR (queued ~14 days after Ecowitt has paired observation history) closes this loop. Step 1's quality bound assumes forecast bias is < 2°F at horizons ≤ 12 hours, which is consistent with NOAA NBM verification stats for our region.
+- **Forecast bias coupling.** The scheduler uses NWS forecast `T_out` for the *forward* integration (predicting indoor at HOT-window start), even after the model is fit on Ecowitt observations. Forecast bias will leak into setpoint decisions. The forecast-bias correction PR (queued ~14 days after Ecowitt has paired observation history) closes this loop. Step 1's quality bound assumes forecast bias is < 2°F at horizons ≤ 12 hours, which is consistent with public-forecast verification at this region; we'll re-check against on-site Ecowitt observations once paired data exists rather than assuming a specific upstream model's verification stats.
 
 ## References
 
@@ -202,4 +217,4 @@ The implementation PR can land before Ecowitt has 30 days of data; the gate is "
 - Christensen, D. et al. (NREL, 2017–2024). ResStock + Alfa parameter-identification stack. [resstock.nrel.gov](https://resstock.nrel.gov/). Reference implementation of nightly RC fits at scale.
 - ASHRAE Handbook of Fundamentals (2021), Ch. 18 *Nonresidential Cooling and Heating Load Calculations* and Ch. 19 *Energy Estimating and Modeling Methods*. Background on lumped-capacitance modeling assumptions and the role of co-located weather observations.
 - DOE (2021). *A National Roadmap for Grid-Interactive Efficient Buildings*. [www.energy.gov/eere/buildings/grid-interactive-efficient-buildings](https://www.energy.gov/eere/buildings/grid-interactive-efficient-buildings). Framing for why house-specific identification matters at the grid-services level (5CP-style avoided-cost mechanisms).
-- NOAA / NSSL. National Blend of Models (NBM) verification statistics for the Chicago/Romeoville WFO domain. Used for the forecast-bias bound cited under Risks.
+- NOAA / NSSL. Public-forecast verification statistics for the Chicago/Romeoville WFO domain ([NSSL](https://www.nssl.noaa.gov/users/brooks/public_html/media/okcmed.html); [UW Atmos MOS verification](https://atmos.uw.edu/~jbaars/mvn_paper/mvn_extended.htm) for methodology). Cited under Risks for the forecast-bias bound; on-site Ecowitt verification will replace this proxy once paired observations accumulate.

@@ -51,7 +51,6 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `refoss.channel` | refoss-poller | per `em:N` channel, power/voltage/current/PF/energy buckets |
 | `refoss.system` | refoss-poller | uptime, RSSI, cfg_rev |
 | `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; high_f, max_dewpoint_f, is_heat_advisory, alert_summary |
-| `nws.observation` | nws-poller | nearest-station observation when available |
 | `pjm.lmp_da_hourly` | pjm-dm2-poller | day-ahead LMP for ComEd zonal pnode (`33092371`) — tagged `pnode_id`, `pnode_name`, `zone` |
 | `pjm.load_forecast` | pjm-dm2-poller | 7-day load forecast for `forecast_area=COMED` — tagged `evaluated_at_iso` so revisions stay distinct |
 | `pjm.metered_load` | pjm-dm2-poller | weekly hrl_load_metered for `zone=CE` — tagged `is_verified` |
@@ -234,7 +233,8 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 | Tag | Field | Notes |
 |---|---|---|
 | `for_period=today`, `tomorrow`, `day2` | `high_f`, `low_f`, `max_dewpoint_f`, `precip_prob`, `is_heat_advisory` (0/1), `alert_summary` (string) | One point per period per poll; idempotent on the period's date |
-| `for_period=hourly` | `temp_f`, `dewpoint_f`, `precip_prob`, `cloud_cover_pct` | Hourly granularity, 7-day horizon |
+
+> **No hourly forecast points are written today.** The poller calls the `forecastHourly` endpoint internally but rolls those periods up into the three daily aggregates above. If the thermal-model fit (or any other consumer) needs hourly outdoor temperature, that's a future poller change — see [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) data-cadence section.
 
 **Important:** the gridpoint resolution call can be slow on first cycle — poller uses 30 s aiohttp timeout (was 15 s earlier, increased after observed timeouts).
 
