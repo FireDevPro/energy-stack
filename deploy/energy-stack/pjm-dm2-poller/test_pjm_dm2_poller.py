@@ -495,9 +495,9 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_health_marker_touched_on_idle_cycle(monkeypatch, tmp_path):
-    """A cycle where no feed was due (e.g., 03:00 Tuesday in May) should
-    still touch the marker — the loop is alive and there's nothing to
-    fail. Loss of liveness in this case = the loop wedged."""
+    """An idle cycle (no feed due) touches the marker. Loop liveness
+    semantics: as long as the cycle ran to completion, the loop is
+    healthy."""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT
     marker = _stub_health_marker(monkeypatch, tmp_path)
 
@@ -512,10 +512,9 @@ async def test_health_marker_touched_on_idle_cycle(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_health_marker_touched_when_at_least_one_feed_succeeds(monkeypatch, tmp_path):
-    """Mixed-outcome cycle: one due feed succeeds, one fails. CodeX's
-    recommendation is to keep the marker fresh as long as ANY due feed
-    worked — per-feed alerting handles the partial-failure case via
-    pjm.feed_status."""
+    """Mixed-outcome cycle: one due feed succeeds, one fails. Marker is
+    touched because the loop completed normally — feed-level health is
+    tracked via pjm.feed_status, not the container marker."""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))  # cooling season 13:00
     marker = _stub_health_marker(monkeypatch, tmp_path)
 
@@ -532,11 +531,12 @@ async def test_health_marker_touched_when_at_least_one_feed_succeeds(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_health_marker_NOT_touched_when_all_due_feeds_fail(monkeypatch, tmp_path):
-    """The bug CodeX caught: previously the marker was touched
-    unconditionally, hiding persistent auth/schema/4xx behind a healthy
-    container. With every due feed failing the marker must stay stale so
-    the Dockerfile HEALTHCHECK can flip the container unhealthy."""
+async def test_health_marker_touched_even_when_all_due_feeds_fail(monkeypatch, tmp_path):
+    """Loop-liveness semantics (CodeX pass 2 walked back the earlier
+    feed-success-gating attempt): the marker is touched even when every
+    due feed fails. The loop ran cleanly; restarting the container would
+    not fix an API outage. Per-feed failures are observable through
+    `pjm.feed_status` rows, which downstream alerting can deadman-check."""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 15, 13))  # 13:00 in cooling season
     marker = _stub_health_marker(monkeypatch, tmp_path)
 
@@ -547,8 +547,13 @@ async def test_health_marker_NOT_touched_when_all_due_feeds_fail(monkeypatch, tm
     write_api = MagicMock()
 
     await poll_once(client, write_api, cfg)
-    assert not marker.exists(), \
-        "marker must stay stale when every due feed fails"
+    assert marker.exists(), \
+        "marker must be touched on every clean loop pass; per-feed failure surface is pjm.feed_status"
+
+    # Sanity-check that the failure DID get recorded in the proper place
+    status_lines = _status_rows(write_api)
+    assert len(status_lines) >= 1
+    assert all("success=false" in line for line in status_lines)
 
 
 @pytest.mark.asyncio
