@@ -57,7 +57,8 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `pjm.peak_forecast_rto` | pjm-dm2-poller | RTO peak-day forecast (cooling season only) |
 | `pjm.nspl_zonal` | pjm-dm2-poller | annual NSPL for `zone=COMED` |
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
-| `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. **The data-freshness signal** — the container healthcheck is loop liveness only |
+| `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. **The per-feed health signal** — telegram-notifier's `check_pjm_feed_failures` and `check_pjm_feed_freshness` both consume it |
+| `pjm.poller_heartbeat` | pjm-dm2-poller | one row per loop cycle (hourly), single field `alive=1`. Liveness signal for telegram-notifier's `check_poller_silence` so the long quiet stretches between scheduled feeds don't look like a dead poller |
 | `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; high_f, dewpoint, reason, comed_price_at_decision |
 | `hvac.actions` | hvac-scheduler | tag `action_label`, `day_type`, `dry_run`, `supervisor_decision`; cool_setpoint_f, heat_setpoint_f, fan_mode, applied, error, supervisor_reason, cool_setpoint_proposed_f, thermostat snapshot before |
 | `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
@@ -274,7 +275,9 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 
 **Healthcheck:** `/tmp/last_poll_ok` is **loop liveness only** — touched on every clean cycle (CodeX pass 2, 2026-05-07 walked back an earlier feed-success-gating attempt). 90-min staleness budget catches a wedged or crashed loop, which is what container restart can fix. Persistent feed failures (expired API key, schema drift, PJM 4xx/5xx) are NOT a container-restart-fixable problem and are deliberately not surfaced via this marker.
 
-**Per-feed health surface:** every feed attempt writes one row to `pjm.feed_status` tagged `feed` and `success`, with `points_written`, `error_type`, and (truncated) `error_msg` fields. The [`telegram-notifier`](#telegram-notifier) `check_pjm_feed_freshness` consumes this measurement with per-feed SLAs and fires "DA LMP hasn't reported success in 25 h" style alerts. Grafana freshness panels can use the same data.
+**Per-feed health surface:** every feed attempt writes one row to `pjm.feed_status` tagged `feed` and `success`, with `points_written`, `error_type`, and (truncated) `error_msg` fields. The [`telegram-notifier`](#telegram-notifier) consumes this measurement two ways: `check_pjm_feed_failures` fires immediately on any `success=false` row with the actual error context, and `check_pjm_feed_freshness` fires on feeds that *had* succeeded before but went longer than their per-feed tolerance without another success (the "had history, went stale" case — backstops e.g. a fetcher that silently returns 0 points). Grafana freshness panels can use the same data.
+
+**Liveness heartbeat:** every loop cycle the poller writes one `pjm.poller_heartbeat` row regardless of whether any feed fired, so `telegram-notifier` `check_poller_silence` can deadman-check the poller process itself (130-min tolerance — one missed cycle is fine, two consecutive misses fire). Without this, the long quiet stretches between scheduled feeds (e.g., 6 days between weekly metered fires) would look like a dead poller.
 
 **Failure modes:**
 - Single-feed failure logged + skipped; cycle continues with other feeds (no abort). Failure recorded in `pjm.feed_status` with `success=false` and the exception type. Container marker still ticks.
@@ -394,11 +397,12 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 
 - **Daily summary** at 8 AM local (HTML-formatted): yesterday's cost, kWh, peak demand, fridge anomaly check, HVAC schedule fired, weather forecast for today.
 - **Alerts**, checked every 5 min (deduplicated 30 min):
-  - **Poller silent**: no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min.
+  - **Poller silent**: no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min, pjm-dm2-poller 130 min (hourly heartbeat, two missed cycles fire).
   - **Price spike**: current 5-min ComEd price > `$TELEGRAM_PRICE_SPIKE_C` ¢/kWh.
   - **Fridge anomaly**: recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline.
   - **HVAC scheduler errors**: latest `hvac.actions` row in the last hour with a non-skip error.
-  - **PJM feed freshness**: per-feed deadman on `pjm.feed_status` with per-feed SLAs (DA LMP 25 h, load forecast 14 h, weekly metered 192 h, RTO peak 14 h cooling-season-only, NSPL 168 h within Dec/Jan window). Surface for catching expired API keys / persistent 4xx that the container healthcheck deliberately doesn't catch (loop liveness only, see [`pjm-dm2-poller`](#pjm-dm2-poller)).
+  - **PJM feed failure**: any `pjm.feed_status` row with `success=false` written in the last 10 min fires immediately with the actual `error_type` / `error_msg` from the poller. Real-time signal for fetch failures (auth, schema drift, 4xx/5xx) — no SLA tolerance, no in-season gate.
+  - **PJM feed staleness**: per-feed deadman on `pjm.feed_status` for feeds that *had* succeeded before but went longer than their tolerance without another success — DA LMP 25 h, load forecast 14 h, weekly metered 192 h, RTO peak 14 h cooling-season-only, NSPL 168 h within Dec/Jan window. Backstop for the case where the poller is alive (heartbeat fires) and the feed isn't reporting failures (no failure-row alert) but data has nonetheless gone stale — e.g., a fetcher that silently returns 0 points or a PJM publishing-schedule shift. Cold-start (no rows of any kind) stays silent here; the failure-row alert above handles broken-since-deploy cases as soon as the feed actually attempts.
 - **Backup notifications** (separate path — not by this service, but by `pi-backup.sh` reading the same `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `.env`).
 
 **Env:**

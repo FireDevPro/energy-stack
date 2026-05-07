@@ -490,6 +490,25 @@ async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
     # lives in pjm.feed_status, queried by downstream alerting.
     HEALTH_MARKER.touch()
 
+    # Liveness heartbeat for telegram-notifier's check_poller_silence.
+    # Written every cycle regardless of whether any feed fired, so the
+    # downstream silence check doesn't false-fire during the long quiet
+    # stretches between scheduled feeds (e.g., the 6 days between
+    # weekly metered-load fires). Failures here are swallowed: a
+    # heartbeat write blip should not look like the poller is dead.
+    try:
+        write_api.write(
+            bucket=cfg.influx_bucket,
+            record=[
+                Point("pjm.poller_heartbeat")
+                .field("alive", 1)
+                .time(datetime.now(timezone.utc))
+            ],
+        )
+    except Exception as exc:
+        log("warn", "heartbeat_write_failed",
+            error=str(exc), error_type=type(exc).__name__)
+
     log("info", "poll_cycle_done",
         local_hour=now_local.hour, weekday=now_local.weekday(),
         month=now_local.month,
