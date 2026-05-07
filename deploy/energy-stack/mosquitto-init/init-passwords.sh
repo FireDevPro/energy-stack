@@ -1,7 +1,7 @@
 #!/bin/sh
 # Generate the Mosquitto password file from env vars.
 # Idempotent; runs on every `compose up -d` and regenerates the file fresh.
-# Design: docs/COMFORTNET_PIPELINE.md
+# Live publisher: github.com/Promithius-DR/comfortnet · Historical design: docs/archive/COMFORTNET_PIPELINE.md
 
 set -eu
 

@@ -169,7 +169,7 @@ was deleted in Phase 5 cleanup. The `sense-poller` itself was retired in
 Phase 5 when the Sense hardware was removed.
 
 ### Phase 3.3 — EAGLE-3 Poller ✅ (April 2026)
-Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Design notes in [`docs/phase-3.3-eagle-poller-design.md`](docs/phase-3.3-eagle-poller-design.md); operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller).
+Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller); historical design in [`docs/archive/phase-3.3-eagle-poller-design.md`](docs/archive/phase-3.3-eagle-poller-design.md).
 
 ### Phase 3.4 — Grafana Dashboards ✅ (May 2026)
 Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
@@ -225,7 +225,7 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 - **Arm B controller (Step 1 model-informed)**: critical path for the June 1 experiment start. Three integration points from [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md): pre-cool depth from envelope-ODE integration, COAST shutoff lead time in closed form, Stage-2-during-5CP advisory log. Prereq: per-house thermal model fit (`τ`, cooling capacities, solar proxy) against existing telemetry.
 - **Arm-switch wiring in `hvac-scheduler`**: read [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) at week boundary, branch to Arm A or Arm B logic, tag every `hvac.actions` row with `arm`. CSV and randomization script committed; scheduler integration not yet wired.
 - **OSF pre-registration filing**: [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md) is currently a draft. Both arms must be pinned at one frozen commit hash before week 1 of alternation.
-- **ComfortNet HVAC publisher (Pi 3B side)**: broker (Mosquitto on `pi-lab`, port 8883 TLS) and `telegraf` MQTT consumer are deployed in compose under profile `mqtt` (see [`docs/COMFORTNET_PIPELINE.md`](docs/COMFORTNET_PIPELINE.md)). Pending: `comfortnet-publisher` systemd unit on the Pi 3B that reads decoder output and publishes to `home/utility-room/hvac/comfortnet/<field>`. New `hvac.comfortnet` measurement will land once frames flow.
+- **ComfortNet HVAC publisher (Pi 3B side)**: broker (Mosquitto on `pi-lab`, port 8883 TLS) and `telegraf` MQTT consumer are deployed in compose under profile `mqtt` (historical design at [`docs/archive/COMFORTNET_PIPELINE.md`](docs/archive/COMFORTNET_PIPELINE.md); live publisher implementation at [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet)). Pending: `comfortnet-publisher` systemd unit on the Pi 3B that reads decoder output and publishes to `home/utility-room/hvac/comfortnet/<field>`. New `hvac.comfortnet` measurement will land once frames flow.
 - **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel input to the day-type classifier.
 - **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Needs paired observation history; Ecowitt GW1200 + WN32 hardware en route May 2026.
 - **Phase 8 forward-projection panel**: bill-vs-projected stub exists in `comed-bill-reconciliation.json`; full formula (supply-so-far + delivery + capacity + taxes + extrapolation) lands after a few cycles of bill data accumulate.
@@ -256,12 +256,8 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 | `docs/PJM_DM2_INTEGRATION.md` | Design + status for the PJM Data Miner 2 poller |
 | `docs/PJM_DM2_FEEDS.md` | Feed catalog with filterable columns and ComEd-specific constants |
 | `docs/INFLUXDB_RETENTION.md` | Retention/downsampling design (`energy` raw + `energy-longterm` aggregates) |
-| `docs/COMFORTNET_PIPELINE.md` | MQTT pipeline for ComfortNet HVAC bus telemetry |
-| `docs/COMFORTNET_USE_CASES.md` | What we'll do with ComfortNet data once it flows |
-| `docs/phase-8-comed-bill-ingest-design.md` | Design for the manual ComEd bill ingest script |
-| `docs/phase-8-comed-bill-ingest-plan.md` | Implementation plan for the same |
-| `docs/phase-3.3-eagle-poller-design.md` | Design notes for the EAGLE-3 poller (historical) |
-| `docs/sessions/session-3.1-influxdb-grafana.md` | Phase 3.1 planning prompt (historical snapshot) |
+| `docs/COMFORTNET_USE_CASES.md` | What we do with ComfortNet bus data (active reference). Pipeline implementation lives in [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) |
+| `docs/archive/` | Historical design and planning docs for shipped features (see [`docs/archive/README.md`](docs/archive/README.md) for index) |
 
 ---
 
@@ -468,5 +464,5 @@ stub forward-projection panel. The projection panel's full formula
 extrapolation) is sketched but lands as a follow-on after a few cycles
 of data accumulate.
 
-Spec: `docs/phase-8-comed-bill-ingest-design.md`
-Plan: `docs/phase-8-comed-bill-ingest-plan.md`
+Historical design: `docs/archive/phase-8-comed-bill-ingest-design.md`
+Historical plan: `docs/archive/phase-8-comed-bill-ingest-plan.md`

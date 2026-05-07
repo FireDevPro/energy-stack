@@ -1,6 +1,6 @@
 # Mosquitto ACL file. Format per `mosquitto.conf(5)`.
 # Three identities; least privilege per role.
-# Design: docs/COMFORTNET_PIPELINE.md
+# Live publisher: github.com/Promithius-DR/comfortnet · Historical design: docs/archive/COMFORTNET_PIPELINE.md
 
 # comfortnet-publisher: writes telemetry from the Pi 3B sniffer.
 # May publish to its topic tree, no read access.

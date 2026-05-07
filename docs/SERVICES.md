@@ -161,7 +161,7 @@ Tags: `hw_address`, `source=eagle3`.
 - EAGLE-3 read failure → logged + retried next cycle (no crash)
 - InfluxDB write failure → container exits, `restart: unless-stopped` brings it back (we want the signal)
 
-**Design notes:** [`docs/phase-3.3-eagle-poller-design.md`](phase-3.3-eagle-poller-design.md)
+**Historical design notes:** [`docs/archive/phase-3.3-eagle-poller-design.md`](archive/phase-3.3-eagle-poller-design.md)
 
 ---
 
@@ -449,7 +449,7 @@ Available in Grafana → Explore → Loki datasource.
 
 Three services gated behind compose profile `mqtt`. The standard `docker compose up -d` ignores them; bring them up with `docker compose --profile mqtt up -d` (or set `COMPOSE_PROFILES=mqtt`).
 
-**Status:** broker side deployed and healthy on Pi-lab. The Pi-3B-side `comfortnet-publisher` systemd unit (which reads decoder output and publishes frames) is not yet implemented — so no `hvac.comfortnet` data is flowing yet. See [`COMFORTNET_PIPELINE.md`](COMFORTNET_PIPELINE.md).
+**Status:** broker side deployed and healthy on Pi-lab. The Pi-3B-side `comfortnet-publisher` systemd unit (which reads decoder output and publishes frames) is not yet implemented — so no `hvac.comfortnet` data is flowing yet. Historical design at [`archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md); live publisher implementation at [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet).
 
 | Service | Image / Build | Purpose |
 |---|---|---|
