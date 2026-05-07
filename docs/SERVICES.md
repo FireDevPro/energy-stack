@@ -296,7 +296,7 @@ Decides tomorrow's day-type at 21:00 local, then fires schedule actions througho
 
 Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in [`HVAC_LOGIC.md#safety-supervisor-every-setpoint-push`](HVAC_LOGIC.md#safety-supervisor-every-setpoint-push).
 
-**Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Honeywell VisionPRO via Cinegration C4 driver → TCC cloud → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
+**Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Amana CTK04AE via Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
 
 **Env:**
 - `CONTROL4_EMAIL`, `CONTROL4_PASSWORD` — Control4 cloud login
@@ -326,7 +326,7 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 
 Build: `./thermostat-poller` · Cycle: `THERMOSTAT_POLL_INTERVAL` (default 600 s = 10 min, the TCC rate-limit floor) · Volume: `thermostat_poller_data` (`/data`)
 
-Continuous reads of VisionPRO state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
+Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
 
 **Two outputs:**
 

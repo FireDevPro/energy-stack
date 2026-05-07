@@ -65,7 +65,7 @@ Both arms run the same intra-day forecast revisit, same MILD-release logic, same
 
 **Type**: Randomized alternating-treatments single-case experimental design (SCED), week-level alternation.
 **Duration**: One full cooling season minimum (target: June 1 to September 30, 2026). Continuation criteria in §8.
-**Subject**: One single-family owner-occupied residence in IECC climate zone 5A. Single-zone HVAC (one Honeywell VisionPRO 8000 thermostat). Equipment: Amana AMVM971005CN modulating gas furnace + Amana ASXC160481BE 2-stage AC.
+**Subject**: One single-family owner-occupied residence in IECC climate zone 5A. Single-zone HVAC (one Amana CTK04AE thermostat — Honeywell-OEM whitelabel with native RedLINK Wi-Fi + CT-485 communicating bus). Equipment: Amana AMVM971005CN modulating gas furnace + Amana ASXC160481BE 2-stage AC.
 **Investigator**: Owner; no recruited subjects.
 **Blinding**: Investigator is necessarily unblinded (controls the system). Mitigated by pre-registered analysis plan and frozen analysis code (§7).
 
@@ -156,7 +156,7 @@ Stopping criteria for the broader study: minimum one cooling season of valid dat
 
 - **Geographic identifiers**: redacted to IECC climate zone 5A and ComEd service territory. ZIP-3 acceptable as secondary tag if requested by reviewers.
 - **Account/utility identifiers**: ComEd account number, EAGLE cloud-id, EAGLE install code, Control4 IP and credentials redacted before publication. The `secrets/` SOPS-encrypted layer never leaves the local repo.
-- **Equipment**: make/model retained (Amana AMVM971005CN, Amana ASXC160481BE, Honeywell VisionPRO 8000, Rainforest EAGLE-3, Refoss EM16P). These are useful to other researchers and don't identify the household.
+- **Equipment**: make/model retained (Amana AMVM971005CN, Amana ASXC160481BE, Amana CTK04AE, Rainforest EAGLE-3, Refoss EM16P). These are useful to other researchers and don't identify the household.
 - **Address, name, occupant household composition**: redacted. Investigator name and ORCID retained as standard scholarly authorship.
 
 ## 10. Open-data plan

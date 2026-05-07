@@ -76,7 +76,7 @@ Refoss EM16P (local HTTP, 30s) ─────┤   Pi-lab (192.168.20.10)
 NWS forecast (public, 30min) ───────┼──► energy-stack compose ──► InfluxDB ──► Grafana
 PJM Data Miner 2 (public, hourly) ──┤   (eagle / comed / refoss /     (storage)    (dashboards)
 HAVEN IAQ API (cloud, 5min) ────────┤    nws / pjm-dm2 / haven /
-Control4 → VisionPRO (10min) ───────┘    thermostat / hvac pollers)
+Control4 → CTK04AE (10min) ─────────┘    thermostat / hvac pollers)
 ```
 
 All pollers run as containers in the `energy-stack` Docker compose project on
@@ -286,7 +286,7 @@ A second wave of work that took the project from "monitoring + dashboards" to "a
 ### What was built
 
 - **`nws-poller`** — pulls hourly + daily NWS forecasts (today/tomorrow/day2) and active alerts (heat advisories, etc.) every 30 min. Core input to the day-type decision.
-- **`hvac-scheduler`** — the centerpiece. Daily 21:00 decision classifies tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picks a schedule, fires `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. Pushes to Honeywell VisionPRO 8000 via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → physical thermostat. Token persistence + reauth-on-401. Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
+- **`hvac-scheduler`** — the centerpiece. Daily 21:00 decision classifies tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picks a schedule, fires `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. Pushes to the Amana CTK04AE via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persistence + reauth-on-401. Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
 - **`telegram-notifier`** — daily summary at 8 AM (yesterday's cost / kWh / peak demand / fridge anomaly / scheduler activity / today's forecast) + alert checker every 5 min (poller silence, price spikes, fridge anomalies). Bot: `@EnergyStackBot` (separate from any other Telegram bots used elsewhere).
 - **`loki` + `promtail`** — log aggregation with Docker service-discovery filtered to the energy-stack project. JSON log lines have `level` and `msg` lifted to Loki labels for easy LogQL filtering in Grafana Explore.
 - **Nightly restic backup** to Backblaze B2 (root cron 02:00). Includes InfluxDB backup staged per-run, energy-stack/, chris-brain/, dns-stack/, Network_Management/, .ssh, .config/restic, and the backup script itself. Telegram notifications on success and failure (failure includes last 20 log lines).
@@ -387,7 +387,7 @@ Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are flow-dependent and
 Two new services shipped:
 
 - **`haven-ingest`** — polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
-- **`thermostat-poller`** — continuous 10-min Control4 reads of VisionPRO state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
+- **`thermostat-poller`** — continuous 10-min Control4 reads of CTK04AE state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
 
 Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.
 
@@ -415,7 +415,7 @@ Full research output: agent reports retained in session transcripts; key finding
 |---|---|---|---|
 | Rainforest EAGLE-3 | Smart meter gateway (billing-grade) | Ethernet, homelab VLAN, 192.168.20.192:443 | Connected & polling |
 | Refoss EM16P | Per-circuit energy monitoring (2 mains + 16 branch) | Wi-Fi, homelab VLAN, 192.168.20.140 (HTTP, no auth) | Connected & polling |
-| Honeywell VisionPRO 8000 thermostat | HVAC control | Via Control4 EA-5 (192.168.1.30) → Cinegration → TCC cloud | Active scheduling (May 2026) |
+| Amana CTK04AE thermostat (Honeywell-OEM whitelabel) | HVAC control | Native RedLINK Wi-Fi + CT-485 bus. RedLINK reached via Control4 EA-5 (192.168.1.30) → Cinegration → TCC cloud; CT-485 sniffed read-only by Promithius-DR/comfortnet | Active scheduling (May 2026) |
 | Amana ASXC160481BE | Outdoor AC condenser, 16 SEER 2-stage 4-ton | (HVAC) | Active; 2-stage capability is what makes pre-cool strategy viable |
 | Amana AMVM971005CN | Modulating gas furnace + variable-speed ECM blower | (HVAC) | Active; ECM blower enables Circulate-fan during coast at low W |
 | Control4 EA-5 controller | HA-style automation hub bridging to TCC | LAN, 192.168.1.30 | Active; pyControl4 token persisted in `hvac_scheduler_data` volume |

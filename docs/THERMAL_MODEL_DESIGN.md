@@ -51,7 +51,7 @@ C * dT_in/dt = (T_out - T_in) / R + Q_solar(t) + Q_hvac(t) + ε
 
 where `C` is effective thermal mass, `R` is effective envelope resistance, `Q_solar` is solar gain, `Q_hvac` is equipment heat injection (negative when cooling), and `ε` is unmodeled internal gains. We don't separate `R` and `C` in Step 1; we fit the time constant `τ = R*C` directly.
 
-Discretized at a fixed Δt (5 minutes is the design cadence — coarser than the 600 s VisionPRO poll interval would mean fewer samples; finer would mean fitting noise):
+Discretized at a fixed Δt (5 minutes is the design cadence — coarser than the 600 s CTK04AE poll interval would mean fewer samples; finer would mean fitting noise):
 
 ```
 ΔT_in / Δt  =  (1/τ) * (T_out - T_in)                     [envelope]

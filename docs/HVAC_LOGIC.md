@@ -13,7 +13,7 @@ Companion to [`SERVICES.md#hvac-scheduler`](SERVICES.md#hvac-scheduler) (which c
 - [Safety supervisor (every setpoint push)](#safety-supervisor-every-setpoint-push)
 - [Overrides](#overrides)
 - [Thermostat fallback (when Pi is offline)](#thermostat-fallback-when-pi-is-offline)
-- [Honeywell ISU settings (the "set once" stuff)](#honeywell-isu-settings-the-set-once-stuff)
+- [Equipment settings (CTK04AE installer menu)](#equipment-settings-ctk04ae-installer-menu)
 - [Capacity peak context (PJM 5CP + ComEd 5CP)](#capacity-peak-context-pjm-5cp--comed-5cp)
 - [What this scheduler does NOT do](#what-this-scheduler-does-not-do)
 
@@ -28,7 +28,7 @@ Installed 2/27/2019 by Comfort Services Heating & A/C; 10-year parts & labor war
 | Outdoor AC | Amana ASXC160481BE | 16 SEER, **2-stage** compressor, 4 ton (48,000 BTU/hr); low stage ≈ 32k BTU |
 | Indoor evap coil | Amana CAPF4961C6 | 4-ton cased A-coil, 21" cabinet |
 | Furnace | Amana AMVM971005CN | 97% AFUE modulating gas, **variable-speed ECM blower**, 100,000 BTU/hr input |
-| Thermostat | Honeywell VisionPRO 8000 (RedLINK Wi-Fi) | TCC-cloud-only (no local API); reached via Control4 EA-5 + Cinegration driver |
+| Thermostat | Amana CTK04AE (Honeywell-OEM whitelabel; native RedLINK Wi-Fi + CT-485 communicating bus) | TCC-cloud reached via Control4 EA-5 + Cinegration driver; CT-485 bus traffic decoded read-only by [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for `hvac.comfortnet` measurement |
 
 The 2-stage compressor is what makes the pre-cool strategy viable — stage 1 (~32k BTU) can run for 2-4 hours at low output during pre-cool windows without short-cycling the compressor. Stage 2 (full 48k BTU) is reserved for fast recovery from coast.
 
@@ -89,7 +89,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 
 | Day type | Trigger | Schedule | Behavior |
 |---|---|---|---|
-| `MILD` | High < 82°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the VisionPRO baseline schedule resumes for the day. No active scheduling beyond that. |
+| `MILD` | High < 82°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 82-94°F | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
 | `HOT_5CP_RISK` | ≥ 95°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool, hard 5CP shutoff window |
 | `HOT_STREAK_DAY1` | HOT + day-after also HOT | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool to bank thermal mass for the multi-day event. Day 2 of the streak runs the regular `HOT_SCHEDULE` (the mass is already there). |
@@ -104,7 +104,7 @@ All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65
 
 | Time | Label | Action | Notes |
 |---|---|---|---|
-| 00:05 | `MILD_RELEASE_HOLD` | `release_hold=True` | Clear any permanent hold left over from yesterday so the VisionPRO baseline schedule resumes for the day. No setpoints pushed. |
+| 00:05 | `MILD_RELEASE_HOLD` | `release_hold=True` | Clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No setpoints pushed. |
 
 ### NORMAL — typical 82-94°F day
 
@@ -159,7 +159,7 @@ Constant: `HEAT_SETPOINT_FLOOR_F = 65`
 
 Every cool setpoint push is paired with `set_heat_setpoint_f(65)` — even on a 95°F day where heat will obviously not run. Two reasons:
 
-1. **Honeywell ISU 300 deadband enforcement:** the VisionPRO 8000 enforces a minimum deadband (typically 3-5°F) between heat and cool setpoints in Auto mode. If you push cool=68 without re-asserting heat=65, the thermostat may auto-widen the heat setpoint (to e.g. 63) — that's not a bug, that's the thermostat protecting itself, but it's unpredictable. Pinning heat=65 every time keeps the deadband stable and the behavior predictable.
+1. **Deadband enforcement:** the CTK04AE enforces a minimum deadband of 3-5°F between heat and cool setpoints in Auto mode (Honeywell-whitelabel firmware behavior; verified via the thermostat installer menu). If you push cool=68 without re-asserting heat=65, the thermostat may auto-widen the heat setpoint (to e.g. 63) — that's not a bug, that's the thermostat protecting itself, but it's unpredictable. Pinning heat=65 every time keeps the deadband stable and the behavior predictable.
 
 2. **Winter freeze protection** as a backstop. 65°F is well above pipe-freeze territory and gives a comfortable 15°F+ deadband against typical cool setpoints (70-80°F).
 
@@ -245,7 +245,7 @@ docker compose restart hvac-scheduler  # (override is re-read each schedule_chec
 
 ## Thermostat fallback (when Pi is offline)
 
-The schedule programmed directly into the VisionPRO 8000 (via TCC web UI, applies same 7 days). Used when the Pi-based scheduler is unavailable (Pi down, network outage, scheduler bug, dry-run disabled).
+The schedule programmed directly into the CTK04AE (via TCC web UI, applies same 7 days). Used when the Pi-based scheduler is unavailable (Pi down, network outage, scheduler bug, dry-run disabled).
 
 | Period | Time | Heat °F | Cool °F | Fan | Reasoning |
 |---|---|---|---|---|---|
@@ -268,25 +268,28 @@ That's fine — fallback only activates when the Pi is offline (rare).
 
 ---
 
-## Honeywell ISU settings (the "set once" stuff)
+## Equipment settings (CTK04AE installer menu)
 
-Settings programmed directly into the VisionPRO 8000 via the installer setup menu (ISU). These shape how the thermostat interprets every setpoint push.
+The CTK04AE has full settings control via its installer menu — every dealer-tunable parameter on the IFC (integrated furnace control) and AC outdoor control board is reachable from the thermostat. Some settings are stored on the equipment boards and the CTK04AE writes through to them via the CT-485 communicating bus; from the operator's perspective there's a single point of configuration.
 
-| ISU | Setting | Value | Why |
-|---|---|---|---|
-| 300 | Deadband (heat ↔ cool gap, Auto mode) | 5°F (Honeywell minimum) | All schedule deadbands satisfy this |
-| 305 | Number of cool stages | 2 | Matches ASXC16 2-stage compressor |
-| 308 | Number of heat stages | 2 | Modulating furnace presents as 2-stage to the thermostat (W1/W2) |
-| 314 | Cool stage 2 differential | 2°F | Stage 1 handles loads; stage 2 only on >2°F overshoot — maximizes runtime on low stage = better dehumidification + efficiency |
-| 315 | Cool inter-stage time delay | 20 min | Default; prevents stage 2 from firing for short bursts |
-| 408 | Compressor minimum off time | 5 min | Compressor protection |
-| 409 | **Adaptive (Intelligent) Recovery — OFF** | **OFF** | **Critical for this scheduler.** With AR on, the thermostat starts cooling 30-60 min BEFORE the scheduled setpoint change, which (a) pulls AC runtime into peak pricing and (b) makes setpoint changes from the Pi unpredictable. With AR off, "schedule says 78°F at 13:00" means exactly that. |
-| (UI) | Fan mode | "Schedule" (not "On" or "Auto") | Lets per-period Auto/Circulate setting take effect |
-| (UI) | Finish-with-high-cool-stage | OFF (finish on LOW) | Better dehumidification + efficiency at end of cycle |
-| (UI) | Fan type | ECM / Variable Speed | Important for Circulate mode to run at low W instead of full blast |
-| (UI) | Continuous fan circulate % | 33% (default) | ~20 min/hour — quiet, cheap, mixes air |
+**Current state is not duplicated here.** The authoritative readout for what's currently on the IFC and AC board is `docs/SETTING_REVIEW.md` in [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet), which decodes user-menu traffic on the CT-485 bus and explains each setting against OEM defaults. To capture a fresh readout, navigate the CTK04AE installer menu while `comfortnet-capture` is running on the Pi 3B; the user-menu decoder then publishes the values.
 
-These ISU values are not in code anywhere — they're physical thermostat configuration. **If you ever factory-reset the thermostat, re-apply this list.**
+The settings most relevant to this scheduler:
+
+| Setting | Current | Why it matters for the scheduler |
+|---|---|---|
+| Deadband (heat ↔ cool, Auto mode) | 3-5°F (CTK04AE menu, verified) | All schedule deadbands satisfy this; pinning heat=65 every push keeps it stable (see "Auto-mode safety" above). |
+| Cool stages | 2 | Matches ASXC16 2-stage compressor; pre-cool strategy depends on stage 1 holding long runtimes at low output. |
+| Cool stage 2 differential | 2°F | Stage 1 handles loads; stage 2 only on >2°F overshoot — maximizes runtime on low stage = better dehumidification + efficiency. |
+| Adaptive Recovery / Smart Response | **OFF** | **Critical for this scheduler.** With it on, the thermostat starts cooling 30-60 min before the scheduled setpoint change, which (a) pulls AC runtime into peak pricing and (b) makes setpoint changes from the Pi unpredictable. With it off, "schedule says 78°F at 13:00" means exactly that. |
+| Fan mode | "Schedule" (not "On" or "Auto") | Lets the scheduler's per-period Auto/Circulate setting take effect on each push. |
+| Finish-with-high-cool-stage | OFF (finish on LOW) | Better dehumidification + efficiency at end of cycle. |
+| Fan type | ECM / Variable Speed | Required for Circulate mode to run at low W instead of full blast. |
+| Continuous fan circulate % | 33% (default) | ~20 min/hour — quiet, cheap, mixes air during COAST. |
+| DEHUM | ON (paired with humidity setpoint on the CTK04AE) | IFC drops blower speed during combined cool+DH calls, lengthening runtime and improving latent removal. Off-by-default OEM value; toggled ON because Chicago summers are humid enough that latent-load handling matters. |
+| CL OFF | 60s (OEM default) | Blower runs 60s after compressor cutoff, pulling residual latent cooling off the still-wet coil. |
+
+These settings are physical thermostat configuration, not code. **If you ever factory-reset the CTK04AE, re-apply this list and verify against the comfortnet `SETTING_REVIEW.md` capture protocol.**
 
 ---
 
