@@ -16,10 +16,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import app
 from app import (
     Alert,
+    PJM_FEED_SLAS,
+    check_pjm_feed_freshness,
     check_poller_silence,
     check_price_spike,
 )
@@ -182,3 +185,200 @@ def test_check_price_spike_null_value_no_alert(monkeypatch):
     monkeypatch.setattr(app, "fetch_one",
                         lambda q, f: [{"_value": None}])
     assert check_price_spike(MagicMock(), "energy", threshold_c=20) == []
+
+
+# ---- check_pjm_feed_freshness ---------------------------------------------
+#
+# Per-feed deadman on pjm.feed_status. Each PJM feed has its own cadence:
+# DA LMP daily, NSPL annually, RTO peak forecast cooling-season-only.
+# Tests pin both the per-feed tolerance numbers and the in-season gating
+# semantics so a refactor doesn't silently weaken the alerting.
+
+
+CHICAGO = ZoneInfo("America/Chicago")
+
+
+def _setup_pjm_clock(monkeypatch, when_local: datetime, **feeds_to_age_hours):
+    """Pin app.datetime.now() to `when_local` AND stub
+    latest_pjm_feed_successes() to return success timestamps that are
+    `hours_ago` behind that same pinned now. Combining both stubs in one
+    helper guarantees the function-under-test and the fixture data agree
+    on what 'now' means — easy to get wrong if these are stubbed in
+    separate calls.
+
+    Use feed_name absent (or None) to model "no success row ever seen"."""
+    when_utc = when_local.astimezone(timezone.utc)
+
+    class _StubDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return when_utc.astimezone(tz)
+            return when_utc.replace(tzinfo=None)
+    monkeypatch.setattr(app, "datetime", _StubDatetime)
+
+    out = {feed: when_utc - timedelta(hours=hrs)
+           for feed, hrs in feeds_to_age_hours.items() if hrs is not None}
+    monkeypatch.setattr(app, "latest_pjm_feed_successes",
+                        lambda q, b: out)
+
+
+def test_pjm_feed_slas_cover_every_scheduled_feed():
+    """Pin: every PJM feed in the poller's FEED_SCHEDULE should have a
+    matching SLA here. Drops or adds in the poller without an SLA update
+    should fail this test."""
+    sla_feeds = {sla.feed for sla in PJM_FEED_SLAS}
+    expected = {
+        "da_hrl_lmps",
+        "load_frcstd_7_day",
+        "hrl_load_metered",
+        "ops_sum_frcst_peak_rto",
+        "annual_zonal_nspl",
+    }
+    assert sla_feeds == expected
+
+
+def test_pjm_freshness_no_alerts_when_all_feeds_fresh(monkeypatch):
+    """In-season for all feeds, every feed reported success well within
+    its tolerance. No alerts."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 7, 15, 10, tzinfo=CHICAGO),  # cooling season
+        da_hrl_lmps=18,           # 18h < 25h tolerance
+        load_frcstd_7_day=4,      # 4h < 14h
+        hrl_load_metered=72,      # 72h < 192h (8 days)
+        ops_sum_frcst_peak_rto=4, # cooling season, 4h < 14h
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    assert alerts == [], f"unexpected: {[a.key for a in alerts]}"
+
+
+def test_pjm_freshness_da_lmp_stale_fires(monkeypatch):
+    """DA LMP fires daily; 26h since last success exceeds 25h tolerance."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 7, 15, 18, tzinfo=CHICAGO),
+        da_hrl_lmps=26,
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        ops_sum_frcst_peak_rto=4,
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert keys == ["pjm_feed_stale:da_hrl_lmps"]
+    assert "Day-ahead LMP" in alerts[0].text
+    assert "26.0" in alerts[0].text and "25" in alerts[0].text
+
+
+def test_pjm_freshness_never_seen_success_fires(monkeypatch):
+    """A feed with no `pjm.feed_status` rows ever (e.g., new deployment
+    where the API key was never accepted) fires within its season."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 7, 15, 18, tzinfo=CHICAGO),
+        # da_hrl_lmps intentionally absent
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        ops_sum_frcst_peak_rto=4,
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert "pjm_feed_stale:da_hrl_lmps" in keys
+    da_alert = [a for a in alerts if a.key == "pjm_feed_stale:da_hrl_lmps"][0]
+    assert "never reported success" in da_alert.text
+
+
+def test_pjm_freshness_cooling_season_feed_suppressed_off_season(monkeypatch):
+    """ops_sum_frcst_peak_rto fires Jun-Sep only. In May the feed will
+    have a ~9-month-old success row (or none), but we don't alert
+    because the feed is legitimately not running."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 5, 15, 18, tzinfo=CHICAGO),
+        da_hrl_lmps=18,
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        # ops_sum_frcst_peak_rto: no row at all (truly off-season silence)
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert "pjm_feed_stale:ops_sum_frcst_peak_rto" not in keys
+
+
+def test_pjm_freshness_cooling_season_feed_fires_in_season(monkeypatch):
+    """Same feed in July with a stale success → alert."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 7, 15, 18, tzinfo=CHICAGO),
+        da_hrl_lmps=18,
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        ops_sum_frcst_peak_rto=20,  # 20h > 14h tolerance
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert "pjm_feed_stale:ops_sum_frcst_peak_rto" in keys
+
+
+def test_pjm_freshness_annual_nspl_suppressed_outside_dec_jan(monkeypatch):
+    """Annual NSPL is checked only Dec 1 – Jan 31. In June a 12-month-old
+    last-success is the normal state; alerting on it would be noise."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 6, 15, 18, tzinfo=CHICAGO),
+        da_hrl_lmps=18,
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        ops_sum_frcst_peak_rto=4,
+        annual_zonal_nspl=24 * 200,  # 200 days old, normal mid-year state
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert "pjm_feed_stale:annual_zonal_nspl" not in keys
+
+
+def test_pjm_freshness_annual_nspl_fires_in_december_window(monkeypatch):
+    """In December if NSPL didn't successfully fire (last success is
+    11 months old, well above the 168h = 7d tolerance), alert."""
+    _setup_pjm_clock(
+        monkeypatch,
+        datetime(2026, 12, 5, 10, tzinfo=CHICAGO),
+        da_hrl_lmps=18,
+        load_frcstd_7_day=4,
+        hrl_load_metered=72,
+        annual_zonal_nspl=24 * 330,  # 11 months ago
+    )
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    keys = [a.key for a in alerts]
+    assert "pjm_feed_stale:annual_zonal_nspl" in keys
+
+
+def test_pjm_freshness_alert_keys_use_pjm_feed_stale_prefix():
+    """All PJM-freshness alert keys share a common prefix so the dedup
+    layer (last_sent dict in alert_loop) handles them per-feed cleanly."""
+    a = Alert(key="pjm_feed_stale:da_hrl_lmps", text="...")
+    assert a.key.startswith("pjm_feed_stale:")
+
+
+def test_pjm_freshness_query_failure_returns_no_alerts(monkeypatch):
+    """Transient Influx query errors must NOT fire 'never reported success'
+    alerts for every feed at once — that would flood the channel and the
+    dedup layer would suppress real alerts when they recur shortly after.
+    A query failure logs warn and returns []."""
+    when_local = datetime(2026, 7, 15, 18, tzinfo=CHICAGO)
+    when_utc = when_local.astimezone(timezone.utc)
+
+    class _StubDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return when_utc.astimezone(tz)
+            return when_utc.replace(tzinfo=None)
+    monkeypatch.setattr(app, "datetime", _StubDatetime)
+
+    def _fail(_q, _b):
+        raise RuntimeError("InfluxDB connection refused")
+    monkeypatch.setattr(app, "latest_pjm_feed_successes", _fail)
+
+    alerts = check_pjm_feed_freshness(MagicMock(), "energy", CHICAGO)
+    assert alerts == []
