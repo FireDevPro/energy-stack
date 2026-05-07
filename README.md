@@ -19,7 +19,7 @@ Refoss EM16P   (local HTTP,    30s) ─┤                    │  (sole visuali
 NWS forecast   (public,      30min) ─┼───► InfluxDB 2.7 ──► Telegram notifier            │
 PJM DataMiner2 (public, per-feed)   ─┤    (energy + ────► │  (daily summary + alerts)    │
 HAVEN cloud    (public,    5 min)   ─┤    energy-longterm)│                              │
-Control4 → VisionPRO (10 min reads) ─┘                    │ HVAC scheduler ──► Control4 ─┼─► Honeywell
+Control4 → CTK04AE (10 min reads)   ─┘                    │ HVAC scheduler ──► Control4 ─┼─► Amana CTK04AE
                                                           │  (day-type @ 21:00,          │   thermostat
                                                           │   safety supervisor on each  │
                                                           │   setpoint push)             │
@@ -38,14 +38,14 @@ Control4 → VisionPRO (10 min reads) ─┘                    │ HVAC schedul
 | `refoss-poller` (30 s, 18 channels + system) | Active |
 | `nws-poller` (30 min, forecast today/tomorrow/day2 + active alerts) | Active |
 | `pjm-dm2-poller` (per-feed schedule: DA LMP, load forecast, metered, peak, NSPL) | Active (May 2026) |
-| `hvac-scheduler` (Control4 → Honeywell VisionPRO 8000, with safety supervisor) | Active |
+| `hvac-scheduler` (Control4 → Amana CTK04AE, with safety supervisor) | Active |
 | `thermostat-poller` (continuous 10-min Control4 reads + override detection) | Active (May 2026) |
 | `haven-ingest` (HAVEN cloud API → `haven.indoor` + `haven.outdoor`) | Active (May 2026) |
 | `telegram-notifier` (daily 8 AM + 5 min alert checker) | Active |
 | `loki` + `promtail` (log aggregation) | Active |
 | ~~`webdashboard` + `webdashboard-api`~~ | Retired May 2026 — consolidated on Grafana |
 | `influx-init` (one-shot: `energy-longterm` bucket + 1-min downsample task) | Active (May 2026) |
-| ComfortNet pipeline (`mosquitto` + `telegraf`, profile `mqtt`) | Broker deployed; Pi-3B publisher pending |
+| ComfortNet pipeline (`mosquitto` + `telegraf`, profile `mqtt`) + Pi-3B publisher | Active (May 2026) — `hvac.comfortnet` flowing |
 | Grafana dashboards (overview, full, hvac-scheduler, comed-bill-reconciliation, iaq-comparison) | Active |
 | Restic → Backblaze B2 nightly (root cron @ 02:00, Telegram alerts) | Active |
 | `sense-poller` | Retired (Phase 5 — replaced by Refoss) |
@@ -62,7 +62,7 @@ Public API at `hourlypricing.comed.com/api`. 5-minute price intervals (¢/kWh) p
 Public API at `api.pjm.com/api/v1`, Non-Member tier (6 calls/min, free). Per-feed schedule: day-ahead LMP at 17:00 CT, 7-day load forecast at 06:00 + 13:00 CT, weekly metered load Sundays 02:00 CT, RTO peak forecast in cooling season, annual NSPL Dec 1. Influx measurements: `pjm.lmp_da_hourly`, `pjm.load_forecast`, `pjm.metered_load`, `pjm.peak_forecast_rto`, `pjm.nspl_zonal`. Plus `pjm.coincident_peak` written by an annual scrape of the official PJM 5CP PDF. See [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md) and [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
 
 ### HAVEN IAQ
-Cloud API behind Auth0 (rotating refresh token from mobile app). Polls indoor sensor (return-air mix: temp/RH/tVOC continuous; PM2.5 + airflow CFM flow-dependent) and paired outdoor station every 5 min. Influx measurements: `haven.indoor`, `haven.outdoor`. Official `havenapi.tzoa.io` API arrives summer 2026; we'll switch when it lands.
+Cloud API behind Auth0 (rotating refresh token from mobile app). Polls indoor sensor (return-air mix: temp/RH/tVOC continuous; PM2.5 + airflow CFM flow-dependent) and paired outdoor station every 5 min. Influx measurements: `haven.indoor`, `haven.outdoor`. Official `havenapi.tzoa.io` API is live as of May 2026; migrating from the Auth0-sniffed path to the official endpoints is an open follow-on.
 
 ### Refoss EM16P (per-circuit local)
 Local HTTP JSON-RPC at `192.168.20.140/rpc`. Single `Refoss.Status.Get` call returns all 18 `em:N` channels (2 split-phase mains + 16 branches) with power, voltage, current, power factor, and day/week/month energy buckets. Channel labels pulled from device's own `Refoss.Config.Get` and refreshed on `cfg_rev` change. Influx measurements: `refoss.channel`, `refoss.system`.
@@ -70,8 +70,8 @@ Local HTTP JSON-RPC at `192.168.20.140/rpc`. Single `Refoss.Status.Get` call ret
 ### National Weather Service (NWS)
 Public API at `api.weather.gov` (no key). Pulls hourly forecast, daily high/low/dewpoint summaries for today/tomorrow/day2, and active heat/cold advisories. Influx measurement: `nws.forecast` (tagged by `for_period`).
 
-### Honeywell VisionPRO 8000 thermostat
-Read-write via **Control4 EA-5** controller (`192.168.1.30`) using **pyControl4 v2.0.2**. Indoor temp, humidity, setpoints, HVAC state, fan/hold mode. RedLINK has no local API — Control4's Cinegration driver bridges TCC cloud to the local Director, which the scheduler talks to over the LAN with token persistence + reauth-on-401.
+### Amana CTK04AE thermostat
+Read-write via **Control4 EA-5** controller (`192.168.1.30`) using **pyControl4 v2.0.2**. Indoor temp, humidity, setpoints, HVAC state, fan/hold mode. The CTK04AE is a Honeywell-OEM whitelabel that natively speaks RedLINK Wi-Fi (Control4's Cinegration driver bridges via the same RedLINK gateway that connects to TCC) and the CT-485 communicating bus (read-only sniffed by [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for `hvac.comfortnet`).
 
 ## HVAC Optimization
 
@@ -84,7 +84,7 @@ Key constraints encoded in the schedules:
 - **Auto-mode safe**: heat setpoint floor 65°F always paired with cool setpoint to satisfy Honeywell ISU 300 deadband
 - **Humid override**: dewpoint > 65°F drops the coast cool setpoint to keep low-stage AC running for latent removal
 
-Detailed schedules + thermostat fallback (programmed into VisionPRO directly): **[docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)**.
+Detailed schedules + thermostat fallback (programmed into the CTK04AE directly): **[docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)**.
 
 ## Quick Start
 
@@ -149,7 +149,7 @@ See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path item
 
 Other open items, parked behind the experiment:
 
-- **ComfortNet publisher (Pi 3B side)** — broker + telegraf already shipped; need the systemd publisher reading decoder output and publishing to `home/utility-room/hvac/comfortnet/<field>`
+- **ComfortNet decoder extension for write-side opcodes** — the live publisher decodes the read side of the user-menu protocol; capturing a setting change to extract the SetUserMenu opcode is a follow-on (see `Promithius-DR/comfortnet` `docs/SETTING_REVIEW.md`)
 - **Open-Meteo (ECMWF) as second weather source** — Free; better than NWS for 1-3 day temp since their Oct 2025 IFS upgrade
 - **Forecast bias correction** — pair NWS observations against local Ecowitt sensor (en route May 2026), fit per-station affine bias by lead time
 - **Pre-cool depth retune** — research suggests `HOT_PRE_COOL` could shift 68°F → 71-72°F starting 3am instead of 4am @ 68°F. Will fall out of the SCED study if run as an Arm B variant.

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, pypdf, influxdb-client. No container, no service loop. Tests run against pre-extracted text fixtures so PDFs aren't needed at test time.
 
-**Spec:** `docs/phase-8-comed-bill-ingest-design.md`
+**Spec:** `docs/archive/phase-8-comed-bill-ingest-design.md`
 
 ---
 
@@ -1821,8 +1821,8 @@ stub forward-projection panel. The projection panel's full formula
 extrapolation) is sketched but lands as a follow-on after a few cycles
 of data accumulate.
 
-Spec: `docs/phase-8-comed-bill-ingest-design.md`
-Plan: `docs/phase-8-comed-bill-ingest-plan.md`
+Spec: `docs/archive/phase-8-comed-bill-ingest-design.md`
+Plan: `docs/archive/phase-8-comed-bill-ingest-plan.md`
 ```
 
 - [ ] **Step 2: Append script entry to `docs/SERVICES.md`**

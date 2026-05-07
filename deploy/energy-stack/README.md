@@ -24,9 +24,9 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `promtail` | Container log shipper → Loki | — | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
-| `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
-| `mosquitto-init` | Generates broker password file from env vars (one-shot) | — | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
-| `telegraf` | MQTT consumer → InfluxDB (continuous → energy, events → energy-longterm) | — | [COMFORTNET_PIPELINE.md](../../docs/COMFORTNET_PIPELINE.md) |
+| `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |
+| `mosquitto-init` | Generates broker password file from env vars (one-shot) | — | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |
+| `telegraf` | MQTT consumer → InfluxDB (continuous → energy, events → energy-longterm) | — | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |
 
 ## Authoring & deployment
 
@@ -194,7 +194,7 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 
 ## ComfortNet pipeline deployment (profile=mqtt)
 
-The Mosquitto broker, password-init container, and Telegraf consumer are profile-gated so the standard `compose up -d` ignores them. They run only when `--profile mqtt` is set or `COMPOSE_PROFILES=mqtt` is in the environment. Design: [`../../docs/COMFORTNET_PIPELINE.md`](../../docs/COMFORTNET_PIPELINE.md).
+The Mosquitto broker, password-init container, and Telegraf consumer are profile-gated so the standard `compose up -d` ignores them. They run only when `--profile mqtt` is set or `COMPOSE_PROFILES=mqtt` is in the environment. Live publisher: [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet). Historical design: [`../../docs/archive/COMFORTNET_PIPELINE.md`](../../docs/archive/COMFORTNET_PIPELINE.md).
 
 **One-time setup on Pi-lab:**
 
@@ -208,7 +208,7 @@ sudo chown -R 1883:1883 /opt/mosquitto-certs
 # ca.key stays on Pi-lab (back it up offline if you want easy renewal).
 
 # 2. Distribute ca.crt to clients.
-# Pi 3B publisher (when implemented):
+# Pi 3B publisher (live as of May 2026):
 scp /opt/mosquitto-certs/ca.crt comfortnet:/etc/comfortnet/ca.crt
 
 # 3. Set the three MQTT passwords in .env (see .env.example for the keys).
@@ -224,7 +224,7 @@ echo 'COMPOSE_PROFILES=mqtt' >> .env
 docker compose up -d
 ```
 
-**Smoke test from Pi-lab** (broker only, before publisher exists):
+**Smoke test from Pi-lab** (broker manual publish, useful for verifying broker config independent of the live publisher):
 
 ```bash
 # Subscribe in one terminal

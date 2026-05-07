@@ -76,7 +76,7 @@ Refoss EM16P (local HTTP, 30s) ─────┤   Pi-lab (192.168.20.10)
 NWS forecast (public, 30min) ───────┼──► energy-stack compose ──► InfluxDB ──► Grafana
 PJM Data Miner 2 (public, hourly) ──┤   (eagle / comed / refoss /     (storage)    (dashboards)
 HAVEN IAQ API (cloud, 5min) ────────┤    nws / pjm-dm2 / haven /
-Control4 → VisionPRO (10min) ───────┘    thermostat / hvac pollers)
+Control4 → CTK04AE (10min) ─────────┘    thermostat / hvac pollers)
 ```
 
 All pollers run as containers in the `energy-stack` Docker compose project on
@@ -122,28 +122,32 @@ downsampled history.
 
 **Implementation note**: Auth is disabled on the device (open on the homelab VLAN, consistent with the project threat model: local-only, single-user). The `refoss-poller` container caches user-assigned channel labels via `Refoss.Config.Get` and refreshes the cache automatically when the device's `sys.cfg_rev` increments — renaming a circuit in the Refoss app propagates within one poll cycle. Per-channel and system metrics land in `refoss.channel` and `refoss.system` measurements; mains aggregates are computed in Grafana from the two split-phase main channels (`em:1` + `em:7`) since the device's `emmerge:N` rollups return empty objects on this firmware.
 
-### Thermostat Data: Honeywell TCC Cloud API
+### Thermostat Data: Honeywell TCC Cloud API (originally planned, superseded by Phase 4)
 
-**Decision**: Poll the Honeywell Total Connect Comfort API every 10 minutes for context data.
+> **Status**: superseded. The plan in this section was not what shipped. Phase 4 (May 2026) implemented thermostat integration via Control4 EA-5 → Cinegration C4 driver → TCC cloud → RedLINK gateway, not direct TCC polling. See Phase 4 entry in the Development Roadmap below for the actual architecture; this section is retained for historical context on why direct-TCC was originally considered.
 
-**Rationale**:
-- The home uses a Honeywell RedLINK thermostat system with the TCC app
+**Decision (originally)**: Poll the Honeywell Total Connect Comfort API every 10 minutes for context data.
+
+**Rationale (originally)**:
+- The home uses an Amana CTK04AE (Honeywell-OEM whitelabel with native RedLINK) on the TCC app
 - RedLINK has no local API — the gateway is encrypted cloud-only (HTTPS to alarmnet.com, no local endpoints, proprietary 900MHz RF)
 - The TCC cloud API (via `pyhtcc` or `aiosomecomfort` libraries) provides indoor temp, outdoor temp, humidity, setpoints, equipment status, and system mode
 - 10-minute polling interval is the community-tested safe minimum to avoid Honeywell rate limiting (403/500 errors with no graceful backoff)
 - This data is context, not metering — it answers "why is the HVAC running" not "how much is it using"
 - The Resideo Developer API (api.honeywellhome.com/v2, OAuth2) is also available as a cleaner alternative; requires developer registration
 
-**Three API paths identified**:
+**Three API paths originally identified**:
 1. Legacy SOAP: `rs.alarmnet.com/TotalConnectComfort/ws/MobileV2.asmx` (AppID from iOS app, may be retired)
 2. Web portal scraping: `mytotalconnectcomfort.com/portal` via `pyhtcc`/`aiosomecomfort` (battle-tested by Home Assistant community, ~3,200 active installations)
 3. Official REST: `api.honeywellhome.com/v2` (OAuth2, documented, requires developer registration)
+
+**Why this got superseded**: a Control4 EA-5 controller already ran in the house with the Cinegration TCC bridge driver installed. Routing through Control4 was simpler (no separate TCC creds for the stack to manage), more reliable (local Director access without internet round-trip per setpoint push), and let `hvac-scheduler` reuse the same automation infrastructure already maintained for other home automation. Direct TCC remains a fallback option if Control4 ever loses access.
 
 ---
 
 ## Target Architecture
 
-The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, Phase 9 PJM DM2 poller, and Phase 10 safety supervisor all landed by May 2026 (see Development Roadmap below). Active follow-on work: ComfortNet HVAC-sniffer publisher (broker + telegraf already shipped under compose profile `mqtt`; Pi-3B publisher side still pending — see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md) and [`docs/COMFORTNET_PIPELINE.md`](docs/COMFORTNET_PIPELINE.md)) and Arm B (model-informed scheduler) ahead of June 1 experiment start.
+The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, Phase 9 PJM DM2 poller, and Phase 10 safety supervisor all landed by May 2026 (see Development Roadmap below). Active follow-on work: Arm B (model-informed scheduler) ahead of June 1 experiment start. ComfortNet pipeline (broker + telegraf + Pi-3B publisher) is live as of May 6 2026 and `hvac.comfortnet` is flowing — see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md) for downstream consumption and [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for the live implementation.
 
 **Grafana dashboards will provide:**
 - Real-time "right now" view (10-30s auto-refresh): current demand, current rate, current cost/hour, top circuits by power
@@ -169,7 +173,7 @@ was deleted in Phase 5 cleanup. The `sense-poller` itself was retired in
 Phase 5 when the Sense hardware was removed.
 
 ### Phase 3.3 — EAGLE-3 Poller ✅ (April 2026)
-Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Design notes in [`docs/phase-3.3-eagle-poller-design.md`](docs/phase-3.3-eagle-poller-design.md); operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller).
+Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller); historical design in [`docs/archive/phase-3.3-eagle-poller-design.md`](docs/archive/phase-3.3-eagle-poller-design.md).
 
 ### Phase 3.4 — Grafana Dashboards ✅ (May 2026)
 Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
@@ -225,7 +229,7 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 - **Arm B controller (Step 1 model-informed)**: critical path for the June 1 experiment start. Three integration points from [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md): pre-cool depth from envelope-ODE integration, COAST shutoff lead time in closed form, Stage-2-during-5CP advisory log. Prereq: per-house thermal model fit (`τ`, cooling capacities, solar proxy) against existing telemetry.
 - **Arm-switch wiring in `hvac-scheduler`**: read [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) at week boundary, branch to Arm A or Arm B logic, tag every `hvac.actions` row with `arm`. CSV and randomization script committed; scheduler integration not yet wired.
 - **OSF pre-registration filing**: [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md) is currently a draft. Both arms must be pinned at one frozen commit hash before week 1 of alternation.
-- **ComfortNet HVAC publisher (Pi 3B side)**: broker (Mosquitto on `pi-lab`, port 8883 TLS) and `telegraf` MQTT consumer are deployed in compose under profile `mqtt` (see [`docs/COMFORTNET_PIPELINE.md`](docs/COMFORTNET_PIPELINE.md)). Pending: `comfortnet-publisher` systemd unit on the Pi 3B that reads decoder output and publishes to `home/utility-room/hvac/comfortnet/<field>`. New `hvac.comfortnet` measurement will land once frames flow.
+- **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](docs/archive/COMFORTNET_PIPELINE.md).
 - **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel input to the day-type classifier.
 - **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Needs paired observation history; Ecowitt GW1200 + WN32 hardware en route May 2026.
 - **Phase 8 forward-projection panel**: bill-vs-projected stub exists in `comed-bill-reconciliation.json`; full formula (supply-so-far + delivery + capacity + taxes + extrapolation) lands after a few cycles of bill data accumulate.
@@ -256,12 +260,8 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 | `docs/PJM_DM2_INTEGRATION.md` | Design + status for the PJM Data Miner 2 poller |
 | `docs/PJM_DM2_FEEDS.md` | Feed catalog with filterable columns and ComEd-specific constants |
 | `docs/INFLUXDB_RETENTION.md` | Retention/downsampling design (`energy` raw + `energy-longterm` aggregates) |
-| `docs/COMFORTNET_PIPELINE.md` | MQTT pipeline for ComfortNet HVAC bus telemetry |
-| `docs/COMFORTNET_USE_CASES.md` | What we'll do with ComfortNet data once it flows |
-| `docs/phase-8-comed-bill-ingest-design.md` | Design for the manual ComEd bill ingest script |
-| `docs/phase-8-comed-bill-ingest-plan.md` | Implementation plan for the same |
-| `docs/phase-3.3-eagle-poller-design.md` | Design notes for the EAGLE-3 poller (historical) |
-| `docs/sessions/session-3.1-influxdb-grafana.md` | Phase 3.1 planning prompt (historical snapshot) |
+| `docs/COMFORTNET_USE_CASES.md` | What we do with ComfortNet bus data (active reference). Pipeline implementation lives in [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) |
+| `docs/archive/` | Historical design and planning docs for shipped features (see [`docs/archive/README.md`](docs/archive/README.md) for index) |
 
 ---
 
@@ -290,7 +290,7 @@ A second wave of work that took the project from "monitoring + dashboards" to "a
 ### What was built
 
 - **`nws-poller`** — pulls hourly + daily NWS forecasts (today/tomorrow/day2) and active alerts (heat advisories, etc.) every 30 min. Core input to the day-type decision.
-- **`hvac-scheduler`** — the centerpiece. Daily 21:00 decision classifies tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picks a schedule, fires `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. Pushes to Honeywell VisionPRO 8000 via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → physical thermostat. Token persistence + reauth-on-401. Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
+- **`hvac-scheduler`** — the centerpiece. Daily 21:00 decision classifies tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picks a schedule, fires `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. Pushes to the Amana CTK04AE via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persistence + reauth-on-401. Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
 - **`telegram-notifier`** — daily summary at 8 AM (yesterday's cost / kWh / peak demand / fridge anomaly / scheduler activity / today's forecast) + alert checker every 5 min (poller silence, price spikes, fridge anomalies). Bot: `@EnergyStackBot` (separate from any other Telegram bots used elsewhere).
 - **`loki` + `promtail`** — log aggregation with Docker service-discovery filtered to the energy-stack project. JSON log lines have `level` and `msg` lifted to Loki labels for easy LogQL filtering in Grafana Explore.
 - **Nightly restic backup** to Backblaze B2 (root cron 02:00). Includes InfluxDB backup staged per-run, energy-stack/, chris-brain/, dns-stack/, Network_Management/, .ssh, .config/restic, and the backup script itself. Telegram notifications on success and failure (failure includes last 20 log lines).
@@ -384,14 +384,14 @@ Open work: A/B test against a few HOT days in summer 2026, log results, decide w
 The "Haven data is unreachable" conclusion was wrong twice:
 
 1. **First pivot (May 3, 2026)** — discovered the homeowner portal at `my.haveniaq.com` has a CSV export per device. Initial `haven-ingest` shipped as a CSV watcher (drop file in inbox → service parses).
-2. **Second pivot (mid-May 2026)** — replaced the CSV watcher with a direct HAVEN API poller (commit `3cccd63`, "Replace haven-ingest CSV watcher with HAVEN API poller"). The cloud app traffic uses Auth0 + a rotating refresh token; sniffing the mobile app's traffic yields a working credential set (`HAVEN_AUTH0_DOMAIN`, `HAVEN_CLIENT_ID`, `HAVEN_REFRESH_TOKEN`). The poller persists the rotating refresh token to its `/data` volume across restarts. Per-poll backfill bounded by `HAVEN_BACKFILL_DAYS` (default 7). HAVEN is shipping an official API at `havenapi.tzoa.io` in summer 2026; we'll switch to that when it's available.
+2. **Second pivot (mid-May 2026)** — replaced the CSV watcher with a direct HAVEN API poller (commit `3cccd63`, "Replace haven-ingest CSV watcher with HAVEN API poller"). The cloud app traffic uses Auth0 + a rotating refresh token; sniffing the mobile app's traffic yields a working credential set (`HAVEN_AUTH0_DOMAIN`, `HAVEN_CLIENT_ID`, `HAVEN_REFRESH_TOKEN`). The poller persists the rotating refresh token to its `/data` volume across restarts. Per-poll backfill bounded by `HAVEN_BACKFILL_DAYS` (default 7). HAVEN's official Pro API at `havenapi.tzoa.io` is live as of May 2026; migrating from the Auth0-sniffed path to the official endpoints is an open follow-on.
 
 Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are flow-dependent and only populate when the blower is moving air past the return-duct sensor. That flow-dependence is a feature, not a defect: non-null airflow CFM rows give blower-runtime ground truth (cross-validates against Refoss `em:9` furnace blower power), and the measured CFM at that moment becomes useful for delivered-BTU calc when paired with future supply-air temp instrumentation.
 
 Two new services shipped:
 
 - **`haven-ingest`** — polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
-- **`thermostat-poller`** — continuous 10-min Control4 reads of VisionPRO state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
+- **`thermostat-poller`** — continuous 10-min Control4 reads of CTK04AE state (TCC rate-limit floor). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
 
 Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.
 
@@ -419,7 +419,7 @@ Full research output: agent reports retained in session transcripts; key finding
 |---|---|---|---|
 | Rainforest EAGLE-3 | Smart meter gateway (billing-grade) | Ethernet, homelab VLAN, 192.168.20.192:443 | Connected & polling |
 | Refoss EM16P | Per-circuit energy monitoring (2 mains + 16 branch) | Wi-Fi, homelab VLAN, 192.168.20.140 (HTTP, no auth) | Connected & polling |
-| Honeywell VisionPRO 8000 thermostat | HVAC control | Via Control4 EA-5 (192.168.1.30) → Cinegration → TCC cloud | Active scheduling (May 2026) |
+| Amana CTK04AE thermostat (Honeywell-OEM whitelabel) | HVAC control | Native RedLINK Wi-Fi + CT-485 bus. RedLINK reached via Control4 EA-5 (192.168.1.30) → Cinegration → TCC cloud; CT-485 sniffed read-only by Promithius-DR/comfortnet | Active scheduling (May 2026) |
 | Amana ASXC160481BE | Outdoor AC condenser, 16 SEER 2-stage 4-ton | (HVAC) | Active; 2-stage capability is what makes pre-cool strategy viable |
 | Amana AMVM971005CN | Modulating gas furnace + variable-speed ECM blower | (HVAC) | Active; ECM blower enables Circulate-fan during coast at low W |
 | Control4 EA-5 controller | HA-style automation hub bridging to TCC | LAN, 192.168.1.30 | Active; pyControl4 token persisted in `hvac_scheduler_data` volume |
@@ -468,5 +468,5 @@ stub forward-projection panel. The projection panel's full formula
 extrapolation) is sketched but lands as a follow-on after a few cycles
 of data accumulate.
 
-Spec: `docs/phase-8-comed-bill-ingest-design.md`
-Plan: `docs/phase-8-comed-bill-ingest-plan.md`
+Historical design: `docs/archive/phase-8-comed-bill-ingest-design.md`
+Historical plan: `docs/archive/phase-8-comed-bill-ingest-plan.md`

@@ -273,7 +273,7 @@ services:
     command: -config.file=/etc/promtail/config.yml
 
   # ---- ComfortNet HVAC pipeline (profile: mqtt) ----
-  # Design: docs/COMFORTNET_PIPELINE.md
+  # Live publisher: github.com/Promithius-DR/comfortnet · Historical design: docs/archive/COMFORTNET_PIPELINE.md
   #
   # Profile-gated so the standard `compose up -d` ignores them. The TLS
   # material at /opt/mosquitto-certs/ on Pi-lab must exist before bringing

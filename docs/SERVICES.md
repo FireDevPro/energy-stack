@@ -67,7 +67,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
 | `comed.bill` | `parse_comed_bill.py` (manual) | one point per bill |
 | `comed.bill_lineitems` | `parse_comed_bill.py` (manual) | full GL breakdown |
-| `hvac.comfortnet` | telegraf MQTT consumer (planned) | not yet flowing — depends on Pi-3B publisher |
+| `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
 **Operations:**
@@ -161,7 +161,7 @@ Tags: `hw_address`, `source=eagle3`.
 - EAGLE-3 read failure → logged + retried next cycle (no crash)
 - InfluxDB write failure → container exits, `restart: unless-stopped` brings it back (we want the signal)
 
-**Design notes:** [`docs/phase-3.3-eagle-poller-design.md`](phase-3.3-eagle-poller-design.md)
+**Historical design notes:** [`docs/archive/phase-3.3-eagle-poller-design.md`](archive/phase-3.3-eagle-poller-design.md)
 
 ---
 
@@ -296,7 +296,7 @@ Decides tomorrow's day-type at 21:00 local, then fires schedule actions througho
 
 Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in [`HVAC_LOGIC.md#safety-supervisor-every-setpoint-push`](HVAC_LOGIC.md#safety-supervisor-every-setpoint-push).
 
-**Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Honeywell VisionPRO via Cinegration C4 driver → TCC cloud → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
+**Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Amana CTK04AE via Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
 
 **Env:**
 - `CONTROL4_EMAIL`, `CONTROL4_PASSWORD` — Control4 cloud login
@@ -326,7 +326,7 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 
 Build: `./thermostat-poller` · Cycle: `THERMOSTAT_POLL_INTERVAL` (default 600 s = 10 min, the TCC rate-limit floor) · Volume: `thermostat_poller_data` (`/data`)
 
-Continuous reads of VisionPRO state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
+Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
 
 **Two outputs:**
 
@@ -360,7 +360,7 @@ Build: `./haven-ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) 
 
 Polls the HAVEN cloud API every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) before entering steady-state polling.
 
-**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN is shipping an official Pro API at `havenapi.tzoa.io` in summer 2026; we'll switch when that lands.
+**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN's official Pro API at `havenapi.tzoa.io` is live as of May 2026; migrating from the Auth0-sniffed path to the official endpoints is an open follow-on.
 
 **Env:**
 - `HAVEN_AUTH0_DOMAIN` — Auth0 tenant (default `haven-production.auth0.com`)
@@ -449,7 +449,7 @@ Available in Grafana → Explore → Loki datasource.
 
 Three services gated behind compose profile `mqtt`. The standard `docker compose up -d` ignores them; bring them up with `docker compose --profile mqtt up -d` (or set `COMPOSE_PROFILES=mqtt`).
 
-**Status:** broker side deployed and healthy on Pi-lab. The Pi-3B-side `comfortnet-publisher` systemd unit (which reads decoder output and publishes frames) is not yet implemented — so no `hvac.comfortnet` data is flowing yet. See [`COMFORTNET_PIPELINE.md`](COMFORTNET_PIPELINE.md).
+**Status:** live as of May 2026. Broker, telegraf consumer, and the Pi-3B-side `comfortnet-publisher` systemd unit are all deployed and healthy; `hvac.comfortnet` is flowing fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` plus their `*_demand_pct` counterparts. Live publisher implementation at [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet); historical design at [`archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md). Open follow-on: extend the decoder to handle the write side of the user-menu protocol (currently only `0xC1` GetUserMenuResponse is decoded).
 
 | Service | Image / Build | Purpose |
 |---|---|---|
