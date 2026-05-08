@@ -113,6 +113,20 @@ For all metrics that reference "HVAC-circuit", the set of `refoss.channel` chann
 
 Whole-home electricity is tracked separately on the split-phase mains `em:1 + em:7`. The HVAC channel set is part of the pre-registration record and frozen at the `randomize_arms.py` commit hash.
 
+### Tariff structure (pre-committed)
+
+Per Saloux 2025 Appendix D's "energy context" reporting line. The dollar quantities in `weekly_hvac_cost_per_cdd` and `weekly_cost_per_cdd` are computed against ComEd's residential **Hourly Pricing** rate plan with **Time-of-Day Delivery** (HP+TOD) — the actual rate plan on the household account during the trial:
+
+- **Supply (variable, hourly)**: ComEd's wholesale-passthrough hourly price published at `hourlypricing.comed.com/api`, ingested by `comed-poller` every 60 s. Stored in `comed.prices` (`period_type=hourly_avg`). Per the metric definition above, the hourly-avg series is the canonical price input; a 5-min sensitivity is registered under §7.
+- **Delivery (volumetric, time-of-day)**: ComEd's TOD delivery rate, structured as off-peak (overnight + weekends) vs peak (12:00–18:00 weekdays summer). Volumetric component only; fixed monthly delivery charges and customer-charge are excluded from the per-CDD numerator since they don't scale with consumption.
+- **Capacity (annual, coincident-peak)**: ComEd capacity charge for residential HP customers is billed monthly off the prior summer's PJM 5CP coincident-peak demand, locked annually. **Excluded from the supply+delivery primary** because capacity is a monthly $/kW × peak-kW product that cannot be allocated cleanly to a single circuit hour-by-hour. **Addressed separately in H4** as a YoY descriptive comparison.
+
+The actual rates are hand-redacted from the published version per §9 anonymization (account-identifying); the pre-registration commits to the *structure* (hourly-passthrough supply + TOD volumetric delivery + annual coincident-peak capacity) rather than the specific cents-per-kWh numbers, since ComEd revises the TOD delivery rate annually and the wholesale supply price is dynamic by definition.
+
+### MPC application category (per Saloux 2025 §2.2 taxonomy)
+
+Per Saloux's six-category application taxonomy (setpoint tracking, building conditioning, HVAC system optimization, multi-system sequencing, optimal use of thermal energy storage, optimal use of PV/battery): **this study is "building conditioning" with an emphasis on cost-aware setpoint optimization within a 5CP-avoidance framing.** Arm B's three model-derived substitutions adjust the existing day-type schedule's pre-cool depth, COAST shutoff timing, and stage-2 advisory; they do not introduce new system layers (no thermal energy storage, no PV/battery, no multi-system sequencing) so the higher-tier categories don't apply. A future Step 2/3 expansion to rolling-horizon MPC with explicit setpoint optimization would graduate the application category accordingly.
+
 ### Primary
 
 **`weekly_hvac_cost_per_cdd_$/CDD`** (revised 2026-05-07, promoted from secondary): sum across all hours in the calendar week of (`hvac_circuit_hourly_kWh × hourly_supply_price`) + (`hvac_circuit_hourly_kWh × delivery_rate`), divided by sum of `cooling_degree_days_base65F` for the week from NWS reanalysis. `hvac_circuit_hourly_kWh` is the hourly integral of `refoss.channel.power_w` summed across the HVAC channel set. CDD computed as `max(0, daily_mean_F - 65)`. Capacity-charge components are explicitly excluded — capacity is billed monthly off coincident-peak monthly kW and cannot be allocated cleanly to a single circuit hour-by-hour. Capacity-side effects are addressed in H4.
