@@ -277,6 +277,35 @@ The following are binding once this document is filed to OSF and the pre-registr
 
 Changes after pre-registration require an amendment posted to OSF with explicit justification, and will be reported as deviations in any published methods section.
 
+### Standardized reporting (Saloux 2025 Appendix D coverage)
+
+This pre-registration follows Saloux et al. (2025) §5.2.1's recommendation to *"standardize information reporting in publications and to clearly explain how MPC was effective in the case studies for the targeted objective"*, mapping each of Saloux's Appendix D "cheat sheet" reporting items to its section in this document and the companion docs:
+
+| Saloux Appendix D theme | Item | Coverage in this design |
+|---|---|---|
+| Case study | Building type, size, location, construction year | §4 (subject paragraph) + §9 anonymization redacts location to climate zone + ComEd territory |
+| Case study | Systems installed; systems controlled by MPC | §4 (subject paragraph) lists all installed equipment; §3 specifies the AC + furnace blower as controlled |
+| Energy context | Climate zone, energy costs, GHG factors | §4 (climate zone), §6 tariff-structure sub-section (rate plan structure: hourly-passthrough supply, TOD volumetric delivery, annual coincident-peak capacity), §9 redacts cents-per-kWh values |
+| Modelling | MPC application categorization | §6 MPC-application sub-section locates this study as "building conditioning with cost-aware setpoint optimization within a 5CP-avoidance framing" per Saloux §2.2 taxonomy |
+| Modelling | Duration (implementation; benchmarking) | §4 duration paragraph; §5 randomization specifies 9 paired blocks |
+| Modelling | Outdoor air conditions, occupancy status | §4 (occupancy paragraph: single occupant + dogs, occupancy treated as constant for design purposes); outdoor conditions captured per cycle via `nws.forecast` and `weather.ecowitt` (per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md)) |
+| Optimization | Current controls, current control flaws | §3 Arm A description + the "Known flaws in Arm A" paragraph naming the four documented weaknesses Arm B addresses |
+| Optimization | Communication infrastructure, protocols | [`SERVICES.md`](SERVICES.md) per-service detail; [`HVAC_LOGIC.md`](HVAC_LOGIC.md) covers thermostat path |
+| Optimization | Available data: source, variables, history; excitation period | [`SERVICES.md`](SERVICES.md) per-poller cadences + sources; [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) details fit-data requirements |
+| Performance evaluation | Building control-oriented model; gray-box estimator | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) covers the Step 1 affine-fit model |
+| Performance evaluation | Models for equipment, weather, occupancy, plug loads, indoor environment | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md); occupancy explicitly modeled as constant per §4 |
+| Performance evaluation | Thermal comfort model | §6 (`weekly_comfort_exceedance_F_hr` primary), §7 (PMV/PPD per ASHRAE 55-2020 sensitivity) |
+| Performance evaluation | Control variables; disturbances; data used for calibration | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) |
+| Performance evaluation | Model time-step, control horizon, prediction horizon | §3 Arm B "Architecture clarification" paragraph: not horizon-based; envelope-ODE uses 8-hour forward-integration window; COAST shutoff is closed-form algebraic |
+| Performance evaluation | Software used | §7 ("scripts/analyze_experiment.py" frozen at commit hash); telegram-notifier / hvac-scheduler / thermostat-poller per [`SERVICES.md`](SERVICES.md); R `homeR` package for fitted-balance-point sensitivity per Lindelöf 2016 |
+| Performance evaluation | Objective function | §2 H1 specifies the single primary objective (minimize `weekly_hvac_cost_per_cdd`); secondary outcomes specify additional dimensions |
+| Performance evaluation | Constraints | §3 Arm B substitutions are bounded by [`HVAC_LOGIC.md`](HVAC_LOGIC.md) safety-supervisor constraints (deadband, comfort ceiling, equipment-stage limits); enumerated in [`HVAC_LOGIC.md`](HVAC_LOGIC.md) "Auto-mode safety" and "Safety supervisor" sections |
+| Performance evaluation | Optimization type | §3 Arm B "Architecture clarification": closed-form algebraic substitution, not numerical optimization |
+| Perspectives | Summary of results | Post-implementation; reported per §8 decision rules at the GitHub release tagged `experiment-summer-2026-results` |
+| Perspectives | Performance evaluation methods | §7 (paired randomization test as primary; weather-normalized regression as companion; PMV/PPD as comfort sensitivity; balance-point regression as CDD sensitivity) |
+| Perspectives | Challenges, roadblocks, mistakes | Reported in the post-trial publication; pre-registration requires reporting any deviations from the OSF-filed plan |
+| Perspectives | Future work | §8 decision rules specify the Step 2 (2R2C grey-box) trigger conditions and §13 broader study-stopping criteria |
+
 ## 14. References
 
 ### Methodological framing and field-study meta-reviews
