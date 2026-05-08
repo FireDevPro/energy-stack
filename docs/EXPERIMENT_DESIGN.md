@@ -199,7 +199,7 @@ Holm-Bonferroni (rather than plain Bonferroni at α/2 for both) is more powerful
 
 **Pre-committed analyses NOT in primary plan**: time-of-day decomposition, heat-wave-only subset, day-type-stratified comparison. Any of these, if reported, are flagged as exploratory.
 
-**Frozen analysis code**: `scripts/analyze_experiment.py` committed to repo and tagged at the commit hash referenced in the OSF pre-registration. Re-run on locked data after summer closes; output files (CSV results + plots) committed to repo as a release tagged `experiment-summer-2026-results`.
+**Frozen analysis code**: `scripts/analyze_experiment.py` committed to repo and tagged at the commit hash referenced in the OSF pre-registration. Re-run on locked data after summer closes; output files (CSV results + plots) committed to repo as a release tagged `experiment-summer-2026-results`. This pre-commitment of the analysis pipeline directly addresses Saloux et al. (2025) §5.2.2's recommendation that the field standardize savings-assessment methodology to enable cross-study comparison: *"reported savings do not have the same significance... it is challenging to compare control strategies against each other fairly. We recommend the development of a methodology that would standardize the savings assessment following MPC implementation."*
 
 ## 8. Decision rules and stopping criteria
 
@@ -209,7 +209,7 @@ Pre-committed decisions based on summer-2026 outcomes:
 |---|---|
 | H1 confirmed (CI lower bound > 0% AND median ≥ 5%) | Step 1 declared effective. Proceed with Step 1 as default for summer 2027. Plan Step 2 (2R2C grey-box) only if specific residuals motivate it (per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md)). |
 | Inconclusive (CI spans 0%, \|median\| < 5%) | Continue alternation through summer 2027 with same controllers and seed (`20260602`). Re-analyze with combined two-summer dataset. |
-| H1 disconfirmed (CI upper bound < 0%) | Step 1 is **worse** than baseline. Halt Step 1 deployment. Investigate (model-fit quality, integration-point bugs, comfort-loss-driven aggressive cooling). Submit findings as a negative result — these are valuable to the field per Khabbazi's call for honest reporting. |
+| H1 disconfirmed (CI upper bound < 0%) | Step 1 is **worse** than baseline. Halt Step 1 deployment. Investigate (model-fit quality, integration-point bugs, comfort-loss-driven aggressive cooling). Submit findings as a negative result — these are valuable to the field per Khabbazi et al. (2025)'s call for honest reporting and Saloux et al. (2025) §5.1.1's survival-bias flag (*"only success stories are generally published in academic journals... and there might have been initiatives over the years when MPC was eventually ineffective"*). |
 | Stop-loss triggered (§2) | Halt alternation immediately, return to Arm A. Document and submit as a "controller failure mode" report. |
 
 **Minimum analyzable sample for confirmatory interpretation** (revised 2026-05-07):
@@ -260,6 +260,7 @@ This study is conducted as **unaffiliated owner self-experimentation** with no r
 - **Investigator-as-occupant unblinding**. Documented, mitigated by frozen analysis code and pre-committed metrics, but not fully eliminable.
 - **Tariff structure dependence**. ComEd hourly pricing + PJM 5CP capacity charges are specific to this utility/RTO. Transferability to flat-rate, non-coincident-peak, or wholesale-pass-through markets is partial.
 - **Step 1 controller scope**. Step 1 does not include true rolling-horizon MPC (see [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) §rationale). Comparisons to MPC require Step 2/3 or a future arm.
+- **Reporting completeness**. Saloux et al. (2025) §5.1.3 catalogues the missing-information patterns common across MPC field-implementation papers: time required to create a model; period used for model training and calibration; sampling rates and prediction horizons; communication protocols and software used; access to forecasts. This pre-registration covers each of those across §3 (controller architecture), §6 (metric definitions and tariff structure), §7 (analysis plan, software pinned at commit hash), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (model fit methodology and training period), and [`SERVICES.md`](SERVICES.md) (per-poller cadences, sources, and storage formats). Any remaining gaps will be addressed in the post-trial publication's reporting per Saloux's Appendix D cheat sheet.
 
 ## 13. Pre-registration commitment
 
