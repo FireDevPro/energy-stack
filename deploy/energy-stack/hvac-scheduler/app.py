@@ -75,17 +75,12 @@ from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
 from pjm_5cp import (
-    COMED_PRE_SEASON_FALLBACK_5TH_MW,
     COMED_SCOPE,
     RTO_SCOPE,
-    DetectorScope,
     FiveCPState,
-    ScopeEvaluation,
-    evaluate_5cp_risk,
     evaluate_for_scope,
     fetch_forecast_peak_for_date,
     fetch_forecast_peak_today,
-    fetch_zone_live,
     update_season_5th_highest,
 )
 from precool import (
@@ -982,8 +977,10 @@ def write_5cp_state(
     """Write one ``hvac.5cp_state`` row per scheduler tick per scope so
     the detector's decisions are auditable. Tagged by ``scope``
     (``comed_zone`` | ``rto``), ``zone`` (``CE`` | ``RTO``), and
-    ``is_active``. Two rows per audit interval (one per scope) so a
-    dashboard can plot the two ratios side-by-side."""
+    ``is_active``. Up to two rows per audit interval (the caller
+    skips a scope whose data_status != "ok", so a transient PJM
+    inst_load gap for one scope still records the other rather than
+    fabricating audit rows from absent inputs)."""
     ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
     p = (Point("hvac.5cp_state")
          .tag("scope", scope)

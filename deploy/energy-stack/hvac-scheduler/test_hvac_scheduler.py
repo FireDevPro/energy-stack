@@ -1050,13 +1050,14 @@ def _stub_layer_eval_io(monkeypatch, *,
     def _update_season_5th_highest_stub(q, b, s, *, zone="CE", fallback_mw=None):
         return fallback_seasons[zone]
 
-    # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also patch
-    # in app for any caller that still imports them directly (e.g.
-    # compute_5cp_inputs_for_date).
+    # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also
+    # patch app.update_season_5th_highest so compute_5cp_inputs_for_date
+    # (the §7 pre-cool deepening night-before caller in app.py) sees the
+    # stub. fetch_zone_live is no longer imported in app.py since the
+    # scope-aware refactor; only patch it in pjm_5cp.
     monkeypatch.setattr(pjm_5cp, "fetch_zone_live", _fetch_zone_live_stub)
     monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
                         _update_season_5th_highest_stub)
-    monkeypatch.setattr(app, "fetch_zone_live", _fetch_zone_live_stub)
     monkeypatch.setattr(app, "update_season_5th_highest",
                         _update_season_5th_highest_stub)
     # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
