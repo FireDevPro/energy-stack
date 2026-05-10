@@ -202,6 +202,33 @@ def test_classify_apparent_alone_can_trigger_hot():
                               "is_heat_advisory": 0}) == DAYTYPE_HOT
 
 
+def test_classify_partial_forecast_no_temps_falls_back_to_normal(capsys):
+    """P2.7 regression: a forecast row that's present but missing both
+    high_f and apparent_max_f (degraded NWS parse / API failure)
+    previously fell through to DAYTYPE_MILD, which clears holds and
+    disables active scheduling. That's dangerous on an actually-hot
+    day. Now falls back to DAYTYPE_NORMAL with a warn log so the
+    standard schedule still runs."""
+    forecast = {
+        "period_date": "2026-07-15",
+        "is_heat_advisory": 0,
+        "alert_summary": "",
+        # No high_f, no apparent_max_f — degraded parse path
+    }
+    assert _classify_one_day(forecast) == DAYTYPE_NORMAL
+    captured = capsys.readouterr().out
+    assert "forecast_no_temperature_fields_falling_back_to_normal" in captured
+
+
+def test_classify_empty_forecast_dict_is_normal_not_mild():
+    """An empty dict (vs None) is treated like None: missing forecast,
+    NORMAL fallback. Tests the dict-empty edge case along with the
+    None case both falling into the safe NORMAL bucket."""
+    # Empty dict is falsy in Python so the `if not forecast` short-circuit
+    # handles it the same as None.
+    assert _classify_one_day({}) == DAYTYPE_NORMAL
+
+
 def test_decide_day_type_carries_apparent_in_reasons():
     """Per §1 the reasons dict surfaces apparent_max_f for audit so the
     hvac.decisions InfluxDB row records which threshold fired."""

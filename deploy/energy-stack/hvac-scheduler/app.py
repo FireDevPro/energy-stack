@@ -444,6 +444,16 @@ def _classify_one_day(forecast: dict | None) -> str:
         return DAYTYPE_HOT
     if high_f is not None and high_f >= NORMAL_TEMP_THRESHOLD_F:
         return DAYTYPE_NORMAL
+    if high_f is None and apparent_max_f is None:
+        # P2.7: forecast row present but both temperature fields missing
+        # (degraded NWS parse / API issue). Treat as missing data, not
+        # as a MILD day -- MILD clears holds and disables active
+        # scheduling, which on an actually-hot day would be unsafe.
+        # Fall back to NORMAL (standard schedule still runs) and log
+        # the degraded path so the operator can investigate.
+        log("warn", "forecast_no_temperature_fields_falling_back_to_normal",
+            forecast_keys=sorted(forecast.keys()) if hasattr(forecast, "keys") else [])
+        return DAYTYPE_NORMAL
     return DAYTYPE_MILD
 
 
