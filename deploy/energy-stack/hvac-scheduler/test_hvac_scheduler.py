@@ -38,6 +38,7 @@ from app import (
     ScheduleAction,
     _classify_one_day,
     _evaluate_layer_inputs,
+    _push_layer_change_mid_period,
     decide_day_type,
     execute_action,
     fetch_day_ahead_prices_for_date,
@@ -1068,3 +1069,78 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
         if "hvac.price_overlay" in c.kwargs.get("record").to_line_protocol()
     )
     assert transition_count == 1
+
+
+# ---- §P1.2 dry-run mid-period repush spam regression ----------------------
+
+
+async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged(monkeypatch):
+    """P1.2 regression: in dry-run mode the mid-period re-push guard
+    must update last_pushed_effective_cool_f even though execute_action
+    skipped the real Control4 call. Otherwise the guard compares the
+    new effective_cool_f to None forever and writes a phantom
+    MID_PERIOD_REPUSH row every scheduler tick.
+
+    Reproducer: two consecutive _push_layer_change_mid_period calls in
+    dry-run with the same layer inputs. First call writes one
+    hvac.actions row (effective changed from None). Second call must
+    skip (effective unchanged) — pre-fix it wrote another row."""
+    from app import LayerInputs
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    cfg.dry_run = True
+
+    c4, climate = _mock_c4_client()
+    write_api = MagicMock()
+    firing = FiringState(
+        last_schedule_cool_f=79,           # COAST action fired earlier
+        last_action_label="COAST",
+        last_pushed_effective_cool_f=None,  # post-firing state in dry-run pre-fix
+    )
+    layer_inputs = LayerInputs(
+        price_tier_name="normal",
+        price_offset_f=0,
+        price_override_f=None,
+        price_prev_tier="normal",
+        current_price_cents=5.0,
+        fivecp_active=False,
+        fivecp_load_mw=0.0,
+        fivecp_derivative=0.0,
+        fivecp_forecast_peak=0.0,
+        fivecp_season_5th_mw=130000.0,
+        fivecp_data_available=False,
+    )
+    now_local = datetime(2026, 7, 15, 13, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    # First call: effective_cool_f=79 != last_pushed=None -> writes one
+    # hvac.actions audit row.
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local,
+    )
+    first_rows = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert first_rows == 1
+    # After the first call, the guard variable should be updated.
+    assert firing.last_pushed_effective_cool_f == 79
+
+    # Second call, identical inputs, 1 minute later: must skip silently.
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local + timedelta(minutes=1),
+    )
+    second_rows = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+    )
+    # Pre-fix: this asserted 2 (the spam bug). Post-fix: still 1.
+    assert second_rows == 1, (
+        "P1.2 regression: dry-run mid-period push wrote a phantom row "
+        "on a tick where the effective cool setpoint did not change"
+    )

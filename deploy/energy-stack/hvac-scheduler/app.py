@@ -1502,8 +1502,13 @@ async def _push_layer_change_mid_period(
         override_note=override_note,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
-    if not cfg.dry_run:
-        firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
+    # Update the mid-period tracking variable regardless of dry_run.
+    # This is the GUARD value the next tick uses to decide whether to
+    # re-push; gating it on `not cfg.dry_run` left it None forever in
+    # Arm A weeks and caused phantom MID_PERIOD_REPUSH audit rows on
+    # every subsequent tick (effective != None evaluates True even
+    # when nothing actually changed).
+    firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
 
 
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
@@ -1650,7 +1655,15 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             indoor_humidity_before_pct=snapshot.get("humidity"),
             cool_setpoint_before_f=snapshot.get("cool_setpoint_f"),
             heat_setpoint_before_f=snapshot.get("heat_setpoint_f"))
-        if not action.release_hold and not cfg.dry_run:
+        if not action.release_hold:
+            # Track the "would-have-pushed" effective cool setpoint
+            # regardless of dry_run state. last_pushed_effective_cool_f
+            # is the GUARD value used by the mid-period re-push path
+            # to detect a real change in effective cool. Gating it on
+            # `not cfg.dry_run` left it None across dry-run weeks (Arm A),
+            # which made the mid-period guard ``effective == None`` always
+            # False — every minute wrote a phantom MID_PERIOD_REPUSH audit
+            # row even though nothing changed.
             firing.last_pushed_effective_cool_f = sup_cool
         fired_anything = True
 
