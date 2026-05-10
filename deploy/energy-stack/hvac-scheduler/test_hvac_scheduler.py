@@ -387,6 +387,50 @@ async def test_execute_setpoint_action_skipped_when_in_heat_mode():
     climate.set_hold_mode.assert_not_awaited()
 
 
+# ---- §6 dry-run validation ------------------------------------------------
+
+
+async def test_execute_setpoint_action_dry_run_pushes_nothing():
+    """Dry-run mode (Arm A weeks) must NOT push any setpoints to the
+    thermostat even on a fully-valid setpoint action with hvac_mode=Cool.
+    The Pi only logs intended actions; CTK04AE's programmed schedule
+    runs unobstructed. This is the binding contract validated by the
+    24-hour pre-flight test before randomization begins."""
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79,
+                             fan_mode="Circulate")
+
+    applied, error = await execute_action(
+        c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
+        state={"hvac_mode": "Cool"}, dry_run=True,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_fan_mode.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_changes_setpoint():
+    """If the layer-priority resolver computed a different effective
+    setpoint (e.g., scarcity tier override of 85F), dry-run still pushes
+    nothing. The 'don't push when dry_run' check sits above all upstream
+    layer logic so no controller bug can leak through."""
+    c4, climate = _mock_c4_client()
+    # An action that would normally pre-cool to 68F; layer resolver bumped
+    # it to 85F via scarcity-tier override. Even with that aggressive
+    # resolution, dry-run pushes nothing.
+    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint_f=68)
+    applied, error = await execute_action(
+        c4, action, cool_setpoint_to_apply=85, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=True,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+
 # ---- fetch_today_decision: lazy recompute on missing/stale decision -------
 
 
