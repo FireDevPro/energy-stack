@@ -12,8 +12,13 @@ scheduling is per-feed because they have different cadences:
     Writes to `pjm.load_forecast` with `evaluated_at_iso` tag distinguishing
     forecast revisions of the same target hour.
   * `hrl_load_metered` for zone=CE (ComEd's PJM zone code is "CE", not
-    "COMED" -- empirically verified) on Sundays at 02:00 CT. Pulls last 7
-    days of metered load. Writes to `pjm.metered_load`.
+    "COMED" -- empirically verified) every hour with a 3-hour rolling
+    lookback window. Cadence migrated from weekly Sunday-02:00 in May
+    2026 to give the Arm B 5CP-eligibility detector fresh hourly load
+    against which to compare the season-to-date 5th-highest. The 3-hour
+    lookback covers PJM's ~1-hour metered-data lag with margin; Influx
+    deduplicates on identical timestamps so overlapping pulls are safe.
+    Writes to `pjm.metered_load`.
   * `ops_sum_frcst_peak_rto` (PJM RTO peak forecast) at 06:00 + 13:00 CT
     during the cooling season (Jun-Sep). PJM's own daily projected peak
     load + projected peak hour. Writes to `pjm.peak_forecast_rto`.
@@ -100,7 +105,7 @@ class Schedule:
 FEED_SCHEDULE: dict[str, Schedule] = {
     "da_hrl_lmps":            Schedule(hours=(17,)),
     "load_frcstd_7_day":      Schedule(hours=(6, 13)),
-    "hrl_load_metered":       Schedule(hours=(2,), weekdays=(6,)),                  # Sundays 02:00 CT
+    "hrl_load_metered":       Schedule(hours=tuple(range(0, 24))),                  # Hourly, 3h lookback
     "ops_sum_frcst_peak_rto": Schedule(hours=(6, 13), months=(6, 7, 8, 9)),         # Cooling season only
     "annual_zonal_nspl":      Schedule(hours=(3,), months=(12,), days=(1,)),         # Dec 1, 03:00 CT
 }
@@ -330,11 +335,13 @@ async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetim
     return build_load_forecast_points(items, cfg.tz)
 
 
-async def fetch_metered_load_last_week(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
-    """Pull the last 7 days of ComEd metered load. Range filter uses
-    PJM's `<start>to<end>` syntax. ~168 rows per call."""
-    end = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=7)
+async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """Pull the last 3 hours of ComEd metered load. Range filter uses
+    PJM's `<start>to<end>` syntax. PJM's metered feed has ~1 hour data
+    lag so the trailing edge may be unpopulated; Influx dedups identical
+    timestamps so overlapping hourly pulls are safe."""
+    end = now_local
+    start = end - timedelta(hours=3)
     items = await client.fetch(
         "hrl_load_metered",
         {
@@ -343,7 +350,7 @@ async def fetch_metered_load_last_week(client: PJMClient, cfg: Config, now_local
                 f"{start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
                 f"{end.strftime('%Y-%m-%dT%H:%M:%S')}.0"
             ),
-            "rowCount": 500,
+            "rowCount": 50,
             "startRow": 1,
         },
     )
@@ -390,7 +397,7 @@ FEED_DISPATCHERS: dict[
 ] = {
     "da_hrl_lmps": fetch_da_lmp_for_tomorrow,
     "load_frcstd_7_day": fetch_load_forecast,
-    "hrl_load_metered": fetch_metered_load_last_week,
+    "hrl_load_metered": fetch_metered_load_recent,
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,
     "annual_zonal_nspl": fetch_annual_nspl,
 }

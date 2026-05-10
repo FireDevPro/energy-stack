@@ -29,6 +29,7 @@ from app import (
     build_nspl_points,
     build_peak_forecast_points,
     fetch_da_lmp_for_tomorrow,
+    fetch_metered_load_recent,
     poll_once,
 )
 
@@ -141,10 +142,42 @@ def test_load_forecast_fires_twice_daily():
     assert FEED_SCHEDULE["load_frcstd_7_day"] == Schedule(hours=(6, 13))
 
 
-def test_metered_load_fires_sunday_02_only():
+def test_metered_load_fires_every_hour():
+    """Hourly cadence with 3-hour rolling lookback (per ARM_B_IMPLEMENTATION
+    §0b). Cadence migrated from Sunday-02:00 weekly in May 2026 so the
+    Arm B 5CP-eligibility detector has fresh zone-load observations."""
     s = FEED_SCHEDULE["hrl_load_metered"]
-    assert s.hours == (2,)
-    assert s.weekdays == (6,)
+    assert s.hours == tuple(range(0, 24))
+    assert s.weekdays is None
+    assert s.months is None
+    assert s.days is None
+
+
+def test_fetch_metered_load_recent_uses_3h_window():
+    """Per ARM_B_IMPLEMENTATION §0b: each hourly tick requests the trailing
+    3 hours, not 7 days. Window endpoints carry second-level precision so
+    overlapping pulls dedup cleanly on identical PJM hourly timestamps."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
+
+    import asyncio
+    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "hrl_load_metered"
+    assert captured["params"]["zone"] == COMED_METERED_ZONE
+    assert (
+        captured["params"]["datetime_beginning_ept"]
+        == "2026-07-15T11:17:30.0to2026-07-15T14:17:30.0"
+    )
 
 
 def test_peak_forecast_cooling_season_only():
@@ -378,9 +411,12 @@ def test_every_scheduled_feed_has_a_dispatcher():
 
 
 @pytest.mark.asyncio
-async def test_poll_once_skips_all_outside_their_windows(monkeypatch):
-    """At 03:00 on a Tuesday in May, no feed should fire (NSPL only fires
-    on Dec 1, metered_load only Sunday 02:00, etc.)."""
+async def test_poll_once_skips_restricted_feeds_outside_their_windows(monkeypatch):
+    """At 03:00 on a Tuesday in May, every restricted-schedule feed stays
+    quiet (NSPL is Dec 1 only, peak_forecast is cooling-season only, DA
+    LMP is 17:00 only, load_frcstd_7_day is 06/13 only). hrl_load_metered
+    fires hourly per §0b, so it's excluded from this restriction check
+    and verified separately in test_poll_once_fires_metered_load_at_arbitrary_hour."""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 2026-05-12 03:00 CT
 
     client = MagicMock()
@@ -393,12 +429,18 @@ async def test_poll_once_skips_all_outside_their_windows(monkeypatch):
     write_api = MagicMock()
 
     await poll_once(client, write_api, cfg)
-    assert fetched == []
+    assert "da_hrl_lmps" not in fetched
+    assert "load_frcstd_7_day" not in fetched
+    assert "ops_sum_frcst_peak_rto" not in fetched
+    assert "annual_zonal_nspl" not in fetched
 
 
 @pytest.mark.asyncio
-async def test_poll_once_fires_metered_load_on_sunday_02(monkeypatch):
-    cfg = _stub_config_at(monkeypatch, datetime(2026, 7, 12, 2))  # Sunday 02:00 CT
+async def test_poll_once_fires_metered_load_at_arbitrary_hour(monkeypatch):
+    """Hourly metered_load cadence (per ARM_B_IMPLEMENTATION §0b) fires
+    at 04:00 CT on a Tuesday in May the same way it fires at any other
+    hour. Other feeds whose schedules don't cover this hour stay quiet."""
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 4))  # Tue 04:00 CT
 
     client = MagicMock()
     fetched: list[str] = []
@@ -411,9 +453,10 @@ async def test_poll_once_fires_metered_load_on_sunday_02(monkeypatch):
 
     await poll_once(client, write_api, cfg)
     assert "hrl_load_metered" in fetched
-    # No other feeds should fire at Sunday 02:00 CT
+    # 04:00 falls outside the other feeds' scheduled hours
     assert "da_hrl_lmps" not in fetched
     assert "load_frcstd_7_day" not in fetched
+    assert "ops_sum_frcst_peak_rto" not in fetched
 
 
 @pytest.mark.asyncio
@@ -472,20 +515,24 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
         calls.append(feed)
         if feed == "load_frcstd_7_day":
             raise RuntimeError("PJM HTTP 500")
+        if feed == "hrl_load_metered":
+            return [_metered_item(13, 14000.0)]
         return [_peak_item()]  # peak forecast succeeds
     client.fetch = maybe_fail
     write_api = MagicMock()
 
     await poll_once(client, write_api, cfg)
-    # Both feeds were attempted; the failure of one didn't abort the cycle
+    # All due feeds were attempted; the failure of one didn't abort the cycle
     assert "load_frcstd_7_day" in calls
+    assert "hrl_load_metered" in calls
     assert "ops_sum_frcst_peak_rto" in calls
 
-    # Three writes expected: 1 success-data (peak_forecast points)
-    # plus one pjm.feed_status row per attempted feed.
+    # 13:00 in summer fires three feeds; each writes a pjm.feed_status row.
+    # Plus one peak_forecast and one metered_load row from successful feeds.
     measurements = _measurements_written(write_api)
     assert measurements.count("pjm.peak_forecast_rto") == 1
-    assert measurements.count("pjm.feed_status") == 2
+    assert measurements.count("pjm.metered_load") == 1
+    assert measurements.count("pjm.feed_status") == 3
 
 
 # =========================================================================
@@ -494,20 +541,25 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_health_marker_touched_on_idle_cycle(monkeypatch, tmp_path):
-    """An idle cycle (no feed due) touches the marker. Loop liveness
-    semantics: as long as the cycle ran to completion, the loop is
-    healthy."""
+async def test_health_marker_touched_when_due_feeds_return_empty(monkeypatch, tmp_path):
+    """A cycle where every due feed returns no data still touches the
+    marker. Loop liveness semantics: as long as the cycle ran to
+    completion, the loop is healthy. (Pre-§0b this was an "idle cycle"
+    test, but hourly metered_load means there's always at least one
+    due feed; the same semantic is preserved by having that feed
+    return empty.)"""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT
     marker = _stub_health_marker(monkeypatch, tmp_path)
 
+    async def empty_fetch(feed, params):
+        return []
     client = MagicMock()
-    client.fetch = MagicMock()  # Should never be called on an idle cycle
+    client.fetch = empty_fetch
     write_api = MagicMock()
 
     await poll_once(client, write_api, cfg)
 
-    assert marker.exists(), "marker must be touched on idle cycles"
+    assert marker.exists(), "marker must be touched on every clean loop pass"
 
 
 @pytest.mark.asyncio
@@ -577,7 +629,7 @@ async def test_feed_status_row_written_on_success(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    assert len(status_lines) == 2  # one per due feed
+    assert len(status_lines) == 3  # load_frcstd_7_day, hrl_load_metered, ops_sum_frcst_peak_rto
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=true" in line
@@ -601,7 +653,7 @@ async def test_feed_status_row_written_on_failure(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    assert len(status_lines) == 2  # one per due feed at 13:00 in summer
+    assert len(status_lines) == 3  # load_frcstd_7_day, hrl_load_metered, ops_sum_frcst_peak_rto
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=false" in line
@@ -650,16 +702,19 @@ async def test_feed_status_failure_to_write_does_not_break_cycle(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_written_on_idle_cycle(monkeypatch, tmp_path):
-    """An idle cycle (no feed due) must still write a `pjm.poller_heartbeat`
-    row. This is the signal telegram-notifier's check_poller_silence
-    consumes — without it, long quiet stretches between scheduled feeds
-    (e.g., 6 days between weekly metered fires) would look like the
-    poller died."""
+async def test_heartbeat_written_when_due_feeds_return_empty(monkeypatch, tmp_path):
+    """A cycle where every due feed returns no data still writes a
+    `pjm.poller_heartbeat` row. This is the signal telegram-notifier's
+    check_poller_silence consumes — without it, sustained empty cycles
+    (e.g., off-season hours when metered_load returns nothing) would
+    look like the poller died."""
     cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT
     _stub_health_marker(monkeypatch, tmp_path)
 
+    async def empty_fetch(feed, params):
+        return []
     client = MagicMock()
+    client.fetch = empty_fetch
     write_api = MagicMock()
     await poll_once(client, write_api, cfg)
 
@@ -691,7 +746,7 @@ async def test_heartbeat_write_failure_does_not_break_cycle(monkeypatch, tmp_pat
     """A failed heartbeat write (Influx blip) must not raise — the cycle
     must complete cleanly so the next cycle's heartbeat can land. Same
     swallow-and-log contract as `_write_feed_status`."""
-    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # idle cycle
+    cfg = _stub_config_at(monkeypatch, datetime(2026, 5, 12, 3))  # Tue 03:00 CT (empty fetch)
     marker = _stub_health_marker(monkeypatch, tmp_path)
 
     write_api = MagicMock()
@@ -703,7 +758,10 @@ async def test_heartbeat_write_failure_does_not_break_cycle(monkeypatch, tmp_pat
         return None
     write_api.write = MagicMock(side_effect=selective_write)
 
+    async def empty_fetch(feed, params):
+        return []
     client = MagicMock()
+    client.fetch = empty_fetch
     # Must not raise
     await poll_once(client, write_api, cfg)
     # And the marker still gets touched (heartbeat failure is observability,
