@@ -12,7 +12,11 @@ Two layers on top of the day-type schedule's baseline pre-cool:
      pre-cool window when tomorrow's day-ahead price forecast shows a
      cheap morning window followed by an evening spike. Captures
      shoulder-season days where the temperature-driven base decision
-     would have skipped pre-cool entirely.
+     would have skipped pre-cool entirely. On ComEd Delivery TOD the
+     decision also incorporates per-hour delivery charges (P2.6
+     adversarial-review fix) so supply-cheap-but-delivery-expensive
+     windows aren't preferred over a slightly-more-supply but
+     delivery-cheap alternative.
 
 Both functions are pure transforms; callers fetch inputs from InfluxDB
 (NWS forecast for tomorrow's high, PJM load forecast for tomorrow's
@@ -32,7 +36,7 @@ DEEPEN_PEAK_RATIO = 1.05
 DEEPEN_TEMP_THRESHOLD_F = 90
 
 # Price-aware pre-cool
-CHEAP_PRICE_THRESHOLD_C = 3.0       # below this counts as "cheap"
+CHEAP_PRICE_THRESHOLD_C = 3.0       # below this counts as "cheap" (supply only)
 CHEAP_WINDOW_HOURS = 2              # need at least N consecutive cheap hours
 SPIKE_PRICE_THRESHOLD_C = 10.0      # locked elevated-tier trigger from §2
 SPIKE_WINDOW_HOURS = 1              # need at least N consecutive spike hours
@@ -43,6 +47,50 @@ CHEAP_WINDOW_SEARCH_END_HOUR_CT = 15  # exclusive
 # Pre-cool depth
 DEFAULT_PRECOOL_DEPTH_F = 68
 DEEPEST_PRECOOL_DEPTH_F = 66
+
+
+# ---- ComEd Delivery TOD rate schedule (P2.6) ------------------------------
+#
+# Source: ComEd Delivery Time-of-Day Fact Sheet (CitizensUtilityBoard.org,
+# March 2026). Single-Family Non-Electric Heat rate class (3500 sqft
+# single-family residence with gas furnace per EXPERIMENT_DESIGN §3
+# boundary conditions). Standard non-TOD rate for this class: 6.228 ¢/kWh.
+#
+# Rates effective March 2026. If ComEd revises the schedule, update the
+# constants here and capture the revision date in the docstring. The
+# per-period boundaries (which hours map to which period) are part of the
+# program design and don't vary by rate class.
+DTOD_RATE_SCHEDULE_SOURCE = "ComEd CUB Fact Sheet March 2026, Single-Family Non-Electric Heat"
+
+# (start_hour_inclusive, end_hour_exclusive, cents_per_kwh)
+# Hours are CT-local; the schedule is fixed (365 days/year per the
+# program design). Mid-Day Peak is the only period above the standard
+# non-TOD rate; the other three (18 hours of the day) are lower.
+DTOD_PERIODS_CT: tuple[tuple[int, int, float], ...] = (
+    ( 6, 13,  4.009),  # Morning (6am-1pm)
+    (13, 19, 10.712),  # Mid-Day Peak (1pm-7pm)  -- THE expensive period
+    (19, 21,  3.747),  # Evening (7pm-9pm)
+    (21, 24,  2.984),  # Overnight (9pm-midnight) [split across day boundary]
+    ( 0,  6,  2.984),  # Overnight (midnight-6am) [other half]
+)
+
+
+def dtod_delivery_rate_for_hour(hour_ct: int) -> float:
+    """Return the ComEd DTOD delivery rate in ¢/kWh for the given
+    Chicago-local hour (0-23). The schedule is fixed year-round per the
+    DTOD program design."""
+    if not 0 <= hour_ct <= 23:
+        raise ValueError(f"hour_ct must be in [0, 23], got {hour_ct}")
+    for start, end, rate in DTOD_PERIODS_CT:
+        if start <= hour_ct < end:
+            return rate
+    raise RuntimeError(f"DTOD schedule does not cover hour_ct={hour_ct}")
+
+
+def dtod_delivery_rates_24h() -> list[float]:
+    """Build a 24-element vector of DTOD delivery rates for every hour
+    of the day, indexed by hour_ct."""
+    return [dtod_delivery_rate_for_hour(h) for h in range(24)]
 
 
 def should_deepen_precool(
@@ -70,18 +118,28 @@ def should_deepen_precool(
 def _find_consecutive_window_below(
     prices: list[float], threshold: float, min_hours: int,
     *, start_hour: int = 0, end_hour: Optional[int] = None,
+    rank_by: Optional[list[float]] = None,
 ) -> Optional[tuple[int, int]]:
     """Return ``(start_hour, end_hour_exclusive)`` of the cheapest
     consecutive window of length >= ``min_hours`` whose every hour is
     below ``threshold``, searched within the half-open hour range
     ``[start_hour, end_hour)``.
 
+    Qualifying-window threshold is checked against ``prices``. When
+    ``rank_by`` is provided (the total-cost vector for DTOD), the
+    cheapest window is selected by ``rank_by`` sum rather than
+    ``prices`` sum. This lets P2.6 keep the locked CHEAP_PRICE_THRESHOLD_C
+    on supply alone (Appendix A calibration) while ranking by
+    supply+delivery to avoid the supply-cheap-but-delivery-expensive
+    pre-cool window the reviewer flagged.
+
     Returns None if no qualifying window exists. When multiple qualifying
-    windows exist, the cheapest by sum is returned (tiebreak: earliest
-    start hour)."""
+    windows exist, the cheapest by (rank_by or prices) sum is returned
+    (tiebreak: earliest start hour)."""
     if end_hour is None:
         end_hour = len(prices)
     end_hour = min(end_hour, len(prices))
+    rank_vector = rank_by if rank_by is not None else prices
 
     best: Optional[tuple[int, int]] = None
     best_sum = float("inf")
@@ -94,7 +152,8 @@ def _find_consecutive_window_below(
         # window, not necessarily the longest).
         window = prices[h:h + min_hours]
         if all(p < threshold for p in window):
-            window_sum = sum(window)
+            rank_window = rank_vector[h:h + min_hours]
+            window_sum = sum(rank_window)
             if window_sum < best_sum:
                 best_sum = window_sum
                 best = (h, h + min_hours)
@@ -126,17 +185,18 @@ def should_add_price_aware_precool(
     day_ahead_prices: list[float],
     forecast_tomorrow: dict,  # accepted but not currently consumed; reserved
                               # for future depth-scaling against forecast high.
+    delivery_rates_cents: Optional[list[float]] = None,
 ) -> Optional[dict]:
     """Identify a price-aware pre-cool window for tomorrow.
 
     Returns ``{"hour_ct": int, "depth_f": int}`` when both:
 
       * At least ``CHEAP_WINDOW_HOURS`` consecutive cheap hours
-        (< ``CHEAP_PRICE_THRESHOLD_C``) exist within the
+        (supply price < ``CHEAP_PRICE_THRESHOLD_C``) exist within the
         06:00-15:00 CT search range, AND
       * At least ``SPIKE_WINDOW_HOURS`` consecutive spike hours
-        (>= ``SPIKE_PRICE_THRESHOLD_C``) exist starting at least
-        ``MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS`` after the cheap
+        (supply price >= ``SPIKE_PRICE_THRESHOLD_C``) exist starting at
+        least ``MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS`` after the cheap
         window's start.
 
     The cheap window is scored by sum (cheapest wins); the spike window
@@ -144,11 +204,31 @@ def should_add_price_aware_precool(
     scales with spike magnitude: 68F base, dropping toward 66F as the
     spike's max price rises (capped at ``DEEPEST_PRECOOL_DEPTH_F``).
 
+    When ``delivery_rates_cents`` is provided (24-element ¢/kWh vector
+    aligned to ``day_ahead_prices`` by hour_ct), the qualifying-window
+    threshold stays on supply alone (preserves the Appendix A locked
+    calibration of CHEAP_PRICE_THRESHOLD_C / SPIKE_PRICE_THRESHOLD_C)
+    but cheap-window *ranking* uses supply+delivery total cost. This
+    fixes the P2.6 adversarial-review case where a 1pm cheap window
+    (supply 2.5¢, delivery 10.712¢ Mid-Day Peak) was preferred over a
+    10am window (supply 2.8¢, delivery 4.009¢ Morning) -- total cost
+    13.2¢ vs 6.8¢. Without delivery awareness Arm B picks the
+    delivery-spike hour and pays more, not less.
+
     Returns None when either window is missing or the gap is too short.
     """
     if len(day_ahead_prices) < 24:
         return None  # need a full 24-hour day for the search
+    if delivery_rates_cents is not None and len(delivery_rates_cents) != len(day_ahead_prices):
+        raise ValueError(
+            f"delivery_rates_cents length ({len(delivery_rates_cents)}) "
+            f"must match day_ahead_prices ({len(day_ahead_prices)})"
+        )
     _ = forecast_tomorrow  # reserved for future depth modulation
+
+    total_costs: Optional[list[float]] = None
+    if delivery_rates_cents is not None:
+        total_costs = [s + d for s, d in zip(day_ahead_prices, delivery_rates_cents)]
 
     cheap_window = _find_consecutive_window_below(
         day_ahead_prices,
@@ -156,6 +236,7 @@ def should_add_price_aware_precool(
         CHEAP_WINDOW_HOURS,
         start_hour=CHEAP_WINDOW_SEARCH_START_HOUR_CT,
         end_hour=CHEAP_WINDOW_SEARCH_END_HOUR_CT,
+        rank_by=total_costs,
     )
     if cheap_window is None:
         return None

@@ -82,7 +82,11 @@ from pjm_5cp import (
     fetch_zone_live,
     update_season_5th_highest,
 )
-from precool import should_add_price_aware_precool, should_deepen_precool
+from precool import (
+    dtod_delivery_rates_24h,
+    should_add_price_aware_precool,
+    should_deepen_precool,
+)
 from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -798,6 +802,12 @@ def compute_price_aware_precool_window(
     reads ("tomorrow" at 21:00 the night before; "today" for runtime
     re-evaluation in run_schedule_check). Returns None when either
     input is unavailable or the decision rule says no window applies.
+
+    The ComEd Delivery TOD rate schedule (P2.6) is always layered on
+    top of the supply prices for cheap-window *ranking*. Chris is
+    enrolled in DTOD; the schedule is fixed year-round and identical
+    every day, so we build the delivery vector from the static table
+    rather than from InfluxDB.
     """
     prices = fetch_day_ahead_prices_for_date(query_api, bucket, target_date_iso, tz)
     if prices is None:
@@ -805,7 +815,9 @@ def compute_price_aware_precool_window(
     forecast = fetch_latest_forecast(query_api, bucket, forecast_period)
     if forecast is None:
         return None
-    return should_add_price_aware_precool(prices, forecast)
+    return should_add_price_aware_precool(
+        prices, forecast, delivery_rates_cents=dtod_delivery_rates_24h(),
+    )
 
 
 def write_precool_window(
