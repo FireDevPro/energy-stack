@@ -358,14 +358,14 @@ Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-schedu
 
 Build: `./haven-ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) · Volume: `haven_ingest_data` (`/data`)
 
-Polls the HAVEN cloud API every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) before entering steady-state polling.
+Polls the official HAVEN Pro API at `https://havenapi.tzoa.io` every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. The bootstrap `HAVEN_REFRESH_TOKEN` is captured once from a browser login session at `my.haveniaq.com`; if the refresh token expires (typically 30-90 days of disuse), a new bootstrap token is obtained via fresh browser login. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) via the API range endpoints before entering steady-state polling.
 
-**Originally shipped as a CSV watcher (May 3, 2026)** that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) once the mobile-app traffic was sniffed and the Auth0 credentials extracted. HAVEN's official Pro API at `havenapi.tzoa.io` is live as of May 2026; migrating from the Auth0-sniffed path to the official endpoints is an open follow-on.
+**History:** Originally shipped as a CSV watcher (May 3, 2026) that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) using the official `havenapi.tzoa.io` Pro API endpoints. Code references: API base URL at [`deploy/energy-stack/haven-ingest/app.py:62`](../deploy/energy-stack/haven-ingest/app.py#L62), endpoint paths at lines 189, 195, 205.
 
 **Env:**
 - `HAVEN_AUTH0_DOMAIN` — Auth0 tenant (default `haven-production.auth0.com`)
-- `HAVEN_CLIENT_ID` — Auth0 client ID (extracted from mobile app traffic)
-- `HAVEN_REFRESH_TOKEN` — initial refresh token; rotates per-call after first use, persisted to `/data/haven_token.json`
+- `HAVEN_CLIENT_ID` — Auth0 client ID for the HAVEN tenant
+- `HAVEN_REFRESH_TOKEN` — bootstrap refresh token captured from a browser login session; rotates per-call after first use, persisted to `/data/haven_token.json`. Re-bootstrap from a fresh browser login if the persisted token expires (typically 30-90 days of disuse).
 - `HAVEN_DEVICE_ID` — indoor sensor device ID (default `3645`)
 - `HAVEN_OUTDOOR_ID` — paired outdoor station ID (default `60585`)
 - `HAVEN_POLL_INTERVAL` — seconds between polls (default 300)
@@ -377,7 +377,9 @@ Polls the HAVEN cloud API every 5 minutes for one indoor device + paired outdoor
 | Measurement | Tags | Fields | Coverage |
 |---|---|---|---|
 | `haven.indoor` | `device_id` | `temp_f`, `temp_c`, `humidity_pct`, `tvoc_ppb`, status enums | 100% on temp/RH/tVOC; `pm25_ugm3` and `airflow_cfm` are flow-dependent (~3%) |
-| `haven.outdoor` | `station_id` | outdoor temp/RH/etc. from the paired station | 100% |
+| `haven.outdoor` | `station_id` | `temperature_c` (Celsius only), `humidity`, `dew_point`, AQI/pollutants, pollen | 100% |
+
+**Note on `haven.outdoor` units:** unlike `haven.indoor` which writes both `temp_f` and `temp_c`, `haven.outdoor` writes outdoor temperature in Celsius only (field name `temperature_c`). Downstream queries that need Fahrenheit must convert: `temp_f = temp_c * 9/5 + 32`. Consumers (Grafana panels, scheduler queries, etc.) should account for this asymmetry. If we need outdoor Fahrenheit as a first-class field for Arm B controller queries, the haven-ingest service should be extended to write `temp_f` alongside `temp_c` for symmetry with `haven.indoor`.
 
 **Idempotent on timestamp.** Backfill on startup re-writes the same `(measurement, device_id, ts)` tuples that the prior run wrote — Influx upserts and the data doesn't double.
 
