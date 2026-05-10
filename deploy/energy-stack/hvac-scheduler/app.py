@@ -74,6 +74,13 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
+from pjm_5cp import (
+    FiveCPState,
+    evaluate_5cp_risk,
+    fetch_forecast_peak_today,
+    fetch_zone_live,
+    update_season_5th_highest,
+)
 from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -678,6 +685,44 @@ class FiringState:
     # not container restarts; cold-start re-evaluates from current price
     # within the 30-min minimum-hold window so behaviour stabilizes fast.
     price_overlay_state: PriceOverlayState = field(default_factory=PriceOverlayState)
+    # 5CP-detector state machine (§3). Same persistence semantics as the
+    # price overlay; cold-start defaults to inactive.
+    fivecp_state: FiveCPState = field(default_factory=FiveCPState)
+
+
+def cooling_season_start_utc(now_local: datetime) -> datetime:
+    """Compute the start of the PJM cooling season (June 1 00:00 CT) in
+    UTC for the year ``now_local`` falls in. Months Jan-May fall back to
+    the previous year so off-season ticks still get a coherent reference.
+    The 5CP detector only fires inside the 13-20 CT window, so off-season
+    queries are safe-but-irrelevant lookups."""
+    year = now_local.year if now_local.month >= 6 else now_local.year - 1
+    season_start_local = datetime(year, 6, 1, 0, 0, 0, tzinfo=now_local.tzinfo)
+    return season_start_local.astimezone(timezone.utc)
+
+
+def write_5cp_state(
+    write_api, bucket: str,
+    *, is_active: bool,
+    current_load_mw: float,
+    season_5th_highest_mw: float,
+    load_derivative_mw_per_hour: float,
+    forecast_peak_today_mw: float,
+    zone: str = "CE",
+) -> None:
+    """Write one ``hvac.5cp_state`` row per scheduler tick so the detector's
+    decisions are auditable. Tagged by zone + is_active for dashboards."""
+    ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
+    p = (Point("hvac.5cp_state")
+         .tag("zone", zone)
+         .tag("is_active", "true" if is_active else "false")
+         .field("current_load_mw", float(current_load_mw))
+         .field("season_5th_highest_mw", float(season_5th_highest_mw))
+         .field("load_ratio", float(ratio))
+         .field("load_derivative_mw_per_hour", float(load_derivative_mw_per_hour))
+         .field("forecast_peak_today_mw", float(forecast_peak_today_mw))
+         )
+    write_api.write(bucket=bucket, record=p)
 
 
 def write_price_overlay_transition(
@@ -1061,13 +1106,56 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
                     price_override_f = active_tier.cool_setpoint_override_f
                     price_tier_name = active_tier.name
 
+            # 5CP detection (§3): query the latest ComEd zone load + the
+            # season-to-date 5th highest, evaluate the trigger conditions,
+            # and pass the result into the layer resolver.
+            zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
+            forecast_peak = fetch_forecast_peak_today(query_api, cfg.influx_bucket)
+            season_start_utc = cooling_season_start_utc(now_local)
+            season_5th_mw = update_season_5th_highest(
+                query_api, cfg.influx_bucket, season_start_utc,
+            )
+            if zone_snapshot is None or forecast_peak is None:
+                # Insufficient PJM data: skip 5CP layer this tick rather
+                # than treat absence as zero load (which would be a false
+                # negative on every tick).
+                fivecp_active = False
+                fivecp_load_mw = 0.0
+                fivecp_derivative = 0.0
+                fivecp_forecast_peak = 0.0
+            else:
+                fivecp_active, firing.fivecp_state = evaluate_5cp_risk(
+                    current_load_mw=zone_snapshot.current_mw,
+                    season_5th_highest_mw=season_5th_mw,
+                    load_derivative_mw_per_hour=zone_snapshot.derivative_mw_per_hour,
+                    forecast_peak_today_mw=forecast_peak,
+                    now_utc=datetime.now(timezone.utc),
+                    state=firing.fivecp_state,
+                )
+                fivecp_load_mw = zone_snapshot.current_mw
+                fivecp_derivative = zone_snapshot.derivative_mw_per_hour
+                fivecp_forecast_peak = forecast_peak
+
             layer_resolution = resolve_layer_priority(
                 schedule_cool,
                 price_overlay_tier=price_tier_name,
                 price_offset_f=price_offset_f,
                 price_override_f=price_override_f,
+                fivecp_active=fivecp_active,
             )
             cool_to_apply = layer_resolution.effective_cool_f
+
+            # 5CP audit row every tick so dashboards can plot the detector's
+            # ratio + derivative trace against real PJM 5CPs after the season.
+            if zone_snapshot is not None and forecast_peak is not None:
+                write_5cp_state(
+                    write_api, cfg.influx_bucket,
+                    is_active=fivecp_active,
+                    current_load_mw=fivecp_load_mw,
+                    season_5th_highest_mw=season_5th_mw,
+                    load_derivative_mw_per_hour=fivecp_derivative,
+                    forecast_peak_today_mw=fivecp_forecast_peak,
+                )
 
             # Log tier transitions to hvac.price_overlay (§2 audit). Skip
             # when the tier didn't change to keep the measurement focused
