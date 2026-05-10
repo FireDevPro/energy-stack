@@ -100,7 +100,7 @@ This represents what a Chicago Hourly Pricing customer running a Nest, Ecobee, H
     | Elevated | ≥ 10¢/kWh | < 8¢/kWh | +3°F to active cool setpoint |
     | Scarcity | ≥ 20¢/kWh | < 18¢/kWh | Cool setpoint = 85°F (effective shutoff) |
 
-    Once a tier triggers, hold for 30 minutes minimum before considering downgrade. Trigger thresholds correspond to roughly P95 (10¢) and P99 (20¢) of the 2025 ComEd hourly price distribution. Layer is additive over the schedule's setpoint with "warmer wins" semantics; never makes the house cooler than the schedule intended. New logic implemented before OSF filing.
+    Once a tier triggers, hold for 30 minutes minimum before considering downgrade. **Threshold derivation vs application:** the 10¢ and 20¢ values are anchored on P95 (9.53¢) and P99 (20.47¢) of the 2025 ComEd **hourly**-price distribution as economically interpretable signal levels for "elevated" and "scarcity" regimes. They are **applied to the latest 5-minute ComEd RTP print**, not the hourly average, so the controller reacts inside the hour rather than waiting for the hourly average to settle. Applying hourly-derived thresholds to 5-minute prints means the overlay will trigger on a wider set of 5-minute intervals than the P95 fraction implies for hourly intervals — by design, the goal is to catch hourly spike regimes before they fully resolve. The 30-minute minimum hold and 2¢ hysteresis prevent oscillation from single-tick spikes. Layer is additive over the schedule's setpoint with "warmer wins" semantics; never makes the house cooler than the schedule intended. New logic implemented before OSF filing.
 
 6. **PJM 5CP-eligibility detection.** Live PJM ComEd-area load + season-to-date 5th-highest hourly peak comparison + load derivative monitoring to identify likely 5CP-eligible hours, triggering aggressive shutoff (cool setpoint = 85°F) during those windows. Decision rule: `is_5cp_risk` triggers when current_zone_load_mw / season_to_date_5th_highest_mw > 0.95 AND load_derivative > 0 AND hour_of_day is in 13:00-20:00 CT (broadened from the historical 14:00-18:00 to capture 2025-style late-peak behavior, where the actual peak hour was 18:00 CT) AND forecast_peak_today_mw > season_to_date_5th_highest_mw. Hold for end-of-hour + 30 min after trigger; release only when load drops below 90% of season's 5th-highest AND derivative goes negative. Approach modeled on the joe248 AppDaemon 5CP-prediction implementation ([HA forum thread](https://community.home-assistant.io/t/hacking-your-comed-electricity-bill/111494)). **Two-feed data lineage** (per PJM DM2 OpenAPI spec): `current_zone_load_mw` and `load_derivative` come from PJM's `inst_load` feed (area=COMED, ~5-minute cadence, described in the spec as "approximate, NOT official PJM Loads" but "frequently updated throughout the operating day" — the right tradeoff for a real-time directional signal); the `season_to_date_5th_highest_mw` baseline comes from PJM's `hrl_load_metered` feed (zone=CE, daily publish with up to 90-day correction window per spec, official metered values that determine the actual 5CP rank). Both feeds are required — the locked rule isn't computable with either alone. New logic implemented before OSF filing.
 
@@ -424,13 +424,15 @@ Recalibration captures 52% of historical price-spike days and 65% of scarcity da
 
 ### Real-time RTP price-spike reactivity
 
+**Threshold derivation vs application.** The 10¢ and 20¢ trigger values are anchored on the P95 and P99 of the 2025 ComEd **hourly**-price distribution (9.53¢ and 20.47¢ respectively) as economically interpretable signal levels for "elevated" and "scarcity" regimes. They are **applied to the latest 5-minute ComEd RTP print**, not the hourly average, so the controller reacts inside the hour rather than waiting for the hourly average to settle. Applying hourly-derived thresholds to 5-minute prints means the controller fires on a wider fraction of 5-minute intervals than the P95-of-hourly framing implies — by design. The goal is to catch hourly spike regimes early, before they fully resolve into the hourly average. The 30-minute minimum hold and 2¢ hysteresis prevent oscillation from single-tick spikes. The thresholds are **frozen early-action signals, not pure percentiles of any one series**.
+
 | Parameter | Value | Basis |
 |---|---|---|
-| Elevated trigger | 10¢/kWh | P95 of 2025 hourly distribution; 4.3% of hours |
+| Elevated trigger | 10¢/kWh | Early-action threshold; ≈ P95 of 2025 hourly distribution (9.53¢/kWh). Applied to latest 5-min ComEd RTP print (see derivation-vs-application paragraph above). |
 | Elevated release | 8¢/kWh | 2¢ hysteresis |
-| Scarcity trigger | 20¢/kWh | P99 of 2025 hourly distribution; 1.0% of hours |
+| Scarcity trigger | 20¢/kWh | Early-action threshold; ≈ P99 of 2025 hourly distribution (20.47¢/kWh). Same 5-min application semantics. |
 | Scarcity release | 18¢/kWh | 2¢ hysteresis |
-| Minimum hold | 30 min | Prevent thrashing on borderline prices |
+| Minimum hold | 30 min | Prevent thrashing on borderline prices / single-tick spikes |
 | Elevated offset | +3°F to active cool setpoint | Meaningful pull-back without abandoning comfort |
 | Scarcity setpoint | 85°F (effective shutoff) | Matches existing HOT_5CP_SHUTOFF setpoint |
 
