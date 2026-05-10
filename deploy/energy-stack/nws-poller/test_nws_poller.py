@@ -122,6 +122,19 @@ def test_expand_grid_values_skips_subhour_intervals():
     assert out == {}
 
 
+def test_expand_grid_values_subhour_drop_emits_warn_log(capsys):
+    """A future NWS schema change to sub-hour granularity must not
+    silently lose data; emit a warn-level log line per dropped entry so
+    the issue surfaces in observability before showing up as missing
+    fields downstream."""
+    expand_grid_values([
+        {"validTime": "2026-05-10T00:00:00+00:00/PT30M", "value": 99.0},
+    ])
+    captured = capsys.readouterr().out
+    assert "subhour_grid_entry_dropped" in captured
+    assert "2026-05-10T00:00:00+00:00/PT30M" in captured
+
+
 def test_expand_grid_values_skips_unparseable_validtime():
     out = expand_grid_values([
         {"validTime": "garbage", "value": 1.0},

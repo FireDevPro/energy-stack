@@ -70,9 +70,8 @@ For at least the first three Monday transitions of summer 2026:
   ```bash
   ssh chris@192.168.20.10 'docker exec influxdb influx query \
     "from(bucket:\"energy\") |> range(start: -7d) |> \
-     filter(fn:(r) => r._measurement == \"hrl_load_metered\")"'
+     filter(fn:(r) => r._measurement == \"hvac.arm_transitions\")"'
   ```
-  ...replacing the measurement filter with `hvac.arm_transitions`.
 
 ---
 

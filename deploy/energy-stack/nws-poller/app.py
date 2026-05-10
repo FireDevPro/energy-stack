@@ -144,7 +144,9 @@ def expand_grid_values(values: list[dict]) -> dict[datetime, float]:
     same value (NWS publishes one value per interval, not interpolated).
 
     Entries with sub-hour durations or missing values are dropped; entries
-    outside ISO-8601 syntax are skipped.
+    outside ISO-8601 syntax are skipped. Sub-hour drops emit a ``warn`` log
+    so a future NWS schema change to finer granularity doesn't silently
+    discard data — easier to debug a log line than a missing-data bug.
     """
     out: dict[datetime, float] = {}
     for entry in values or []:
@@ -157,7 +159,11 @@ def expand_grid_values(values: list[dict]) -> dict[datetime, float]:
         except (ValueError, TypeError):
             continue
         hours = parse_iso_duration_hours(dur)
-        if hours < 1 or entry.get("value") is None:
+        if entry.get("value") is None:
+            continue
+        if hours < 1:
+            log("warn", "subhour_grid_entry_dropped",
+                valid_time=vt, hours=hours)
             continue
         n_hours = int(hours)
         value = float(entry["value"])

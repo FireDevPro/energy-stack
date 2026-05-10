@@ -46,12 +46,20 @@ class PriceTier:
       * offset only (override=None): effective = schedule + offset
       * override set: effective = override (offset is ignored)
 
+    ``priority`` is used by the state machine to compare tiers for
+    upgrade decisions. Higher number = higher priority. Setting it once
+    on the tier object keeps the priority ordering as a single source of
+    truth (vs. duplicating it in a name->priority lookup); future
+    amendments adding a tier between elevated and scarcity only need to
+    update the tuple entry.
+
     Locked at the OSF commit hash."""
     name: str
     trigger_price_cents_per_kwh: float
     release_price_cents_per_kwh: float
     cool_setpoint_offset_f: int
     cool_setpoint_override_f: Optional[int]
+    priority: int
 
 
 # Order matters for the state machine: highest-priority tier first.
@@ -62,6 +70,7 @@ PRICE_TIERS: tuple[PriceTier, ...] = (
         release_price_cents_per_kwh=18.0,
         cool_setpoint_offset_f=0,
         cool_setpoint_override_f=85,
+        priority=2,
     ),
     PriceTier(
         name="elevated",
@@ -69,11 +78,15 @@ PRICE_TIERS: tuple[PriceTier, ...] = (
         release_price_cents_per_kwh=8.0,
         cool_setpoint_offset_f=3,
         cool_setpoint_override_f=None,
+        priority=1,
     ),
 )
 
 NORMAL_TIER_NAME = "normal"
+NORMAL_TIER_PRIORITY = 0
 DEFAULT_MINIMUM_HOLD_MINUTES = 30
+_PRIORITY_BY_NAME = {NORMAL_TIER_NAME: NORMAL_TIER_PRIORITY,
+                     **{t.name: t.priority for t in PRICE_TIERS}}
 
 
 # ---- State machine ---------------------------------------------------------
@@ -198,12 +211,10 @@ def evaluate_price_overlay(
 
 
 def _tier_priority(name: str) -> int:
-    """Higher number = higher priority. Used for upgrade comparisons."""
-    if name == "scarcity":
-        return 2
-    if name == "elevated":
-        return 1
-    return 0
+    """Higher number = higher priority. Used for upgrade comparisons.
+    Falls back to NORMAL_TIER_PRIORITY for unknown names so a future
+    state-corruption bug can't cause silent priority inversion."""
+    return _PRIORITY_BY_NAME.get(name, NORMAL_TIER_PRIORITY)
 
 
 # ---- Convenience: lookup the offset/override for a tier name --------------
