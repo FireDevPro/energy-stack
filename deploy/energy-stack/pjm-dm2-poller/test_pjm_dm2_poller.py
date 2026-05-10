@@ -7,6 +7,7 @@ are mocked.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
@@ -21,8 +22,11 @@ from app import (
     COMED_PNODE_ID,
     FEED_DISPATCHERS,
     FEED_SCHEDULE,
+    RTO_INST_AREA,
+    RTO_METERED_ZONE,
     Config,
     Schedule,
+    _check_rto_metered_load_rows_per_hour,
     _parse_ept,
     build_da_lmp_points,
     build_inst_load_points,
@@ -32,7 +36,9 @@ from app import (
     build_peak_forecast_points,
     fetch_da_lmp_for_tomorrow,
     fetch_inst_load_recent,
+    fetch_inst_load_recent_rto,
     fetch_metered_load_recent,
+    fetch_metered_load_recent_rto,
     poll_once,
     seconds_to_next_aligned_tick,
 )
@@ -630,10 +636,10 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
     _stub_health_marker(monkeypatch, tmp_path)
 
     client = MagicMock()
-    calls: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
     async def maybe_fail(feed, params):
-        calls.append(feed)
+        calls.append((feed, params))
         if feed == "load_frcstd_7_day":
             raise RuntimeError("PJM HTTP 500")
         if feed == "hrl_load_metered":
@@ -645,20 +651,26 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
     write_api = MagicMock()
 
     await poll_once(client, write_api, cfg)
-    # All due feeds were attempted; the failure of one didn't abort the cycle
-    assert "load_frcstd_7_day" in calls
-    assert "hrl_load_metered" in calls
-    assert "inst_load" in calls
-    assert "ops_sum_frcst_peak_rto" in calls
+    # All due feeds were attempted; the failure of one didn't abort the cycle.
+    # P1.1: hrl_load_metered and inst_load each call the API twice -- once
+    # per scope (ComEd zone + RTO aggregate) -- distinguished by the
+    # zone / area filter param.
+    feed_names = [c[0] for c in calls]
+    assert "load_frcstd_7_day" in feed_names
+    assert "ops_sum_frcst_peak_rto" in feed_names
+    metered_calls = [params for f, params in calls if f == "hrl_load_metered"]
+    inst_calls = [params for f, params in calls if f == "inst_load"]
+    assert {p["zone"] for p in metered_calls} == {"CE", "RTO"}  # P1.1
+    assert {p["area"] for p in inst_calls} == {"COMED", "PJM RTO"}  # P1.1
 
-    # 13:00 (minute 0) in summer fires four feeds; each writes a
-    # pjm.feed_status row. Plus one row each from peak_forecast,
-    # metered_load, inst_load successful pulls.
+    # 13:00 (minute 0) in summer fires six FEED_SCHEDULE entries; each
+    # writes a pjm.feed_status row. The two zonal pairs (metered_load
+    # and inst_load) each write 2 measurement rows (CE+RTO / COMED+PJM RTO).
     measurements = _measurements_written(write_api)
     assert measurements.count("pjm.peak_forecast_rto") == 1
-    assert measurements.count("pjm.metered_load") == 1
-    assert measurements.count("pjm.inst_load") == 1
-    assert measurements.count("pjm.feed_status") == 4
+    assert measurements.count("pjm.metered_load") == 2   # CE + RTO
+    assert measurements.count("pjm.inst_load") == 2      # COMED + PJM RTO
+    assert measurements.count("pjm.feed_status") == 6
 
 
 # =========================================================================
@@ -755,9 +767,11 @@ async def test_feed_status_row_written_on_success(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    # 13:00 (minute 0) in summer fires four feeds: load_frcstd_7_day,
-    # hrl_load_metered, inst_load, ops_sum_frcst_peak_rto.
-    assert len(status_lines) == 4
+    # 13:00 (minute 0) in summer fires six feeds: load_frcstd_7_day,
+    # hrl_load_metered (zone=CE) + hrl_load_metered_rto (zone=RTO),
+    # inst_load (area=COMED) + inst_load_rto (area=PJM RTO),
+    # ops_sum_frcst_peak_rto.
+    assert len(status_lines) == 6
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=true" in line
@@ -781,9 +795,11 @@ async def test_feed_status_row_written_on_failure(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    # 13:00 (minute 0) in summer fires four feeds: load_frcstd_7_day,
-    # hrl_load_metered, inst_load, ops_sum_frcst_peak_rto.
-    assert len(status_lines) == 4
+    # 13:00 (minute 0) in summer fires six feeds: load_frcstd_7_day,
+    # hrl_load_metered (zone=CE) + hrl_load_metered_rto (zone=RTO),
+    # inst_load (area=COMED) + inst_load_rto (area=PJM RTO),
+    # ops_sum_frcst_peak_rto.
+    assert len(status_lines) == 6
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=false" in line
@@ -956,3 +972,162 @@ def _stub_config_at(monkeypatch, when: datetime) -> Config:
 
     monkeypatch.setattr("app.datetime", _StubDatetime)
     return cfg
+
+
+# =========================================================================
+# P1.1: RTO 5CP detection ingestion
+# =========================================================================
+
+
+def test_rto_constants_match_pjm_dm2_spec():
+    """PJM DM2 OpenAPI spec values for RTO-wide aggregation. These string
+    constants flow to the API as filter values; getting them wrong
+    silently returns 0 rows instead of the RTO aggregate."""
+    assert RTO_INST_AREA == "PJM RTO"
+    assert RTO_METERED_ZONE == "RTO"
+
+
+def test_rto_feed_schedule_entries_registered():
+    """FEED_SCHEDULE must list both RTO variants so the per-feed
+    dispatch loop fires them. Without the schedule entry, the fetcher
+    is dead code regardless of being defined."""
+    assert "hrl_load_metered_rto" in FEED_SCHEDULE
+    assert "inst_load_rto" in FEED_SCHEDULE
+    # Both should run on the same cadence as their ComEd counterparts
+    # (hourly for metered, every 5 min for inst).
+    assert FEED_SCHEDULE["hrl_load_metered_rto"].hours == FEED_SCHEDULE["hrl_load_metered"].hours
+    assert FEED_SCHEDULE["inst_load_rto"].minutes == FEED_SCHEDULE["inst_load"].minutes
+
+
+def test_rto_feed_dispatchers_registered():
+    """FEED_DISPATCHERS must contain entries for both RTO schedule keys
+    so poll_once can find a fetcher when the schedule fires."""
+    assert FEED_DISPATCHERS["hrl_load_metered_rto"] is fetch_metered_load_recent_rto
+    assert FEED_DISPATCHERS["inst_load_rto"] is fetch_inst_load_recent_rto
+
+
+def test_fetch_inst_load_recent_rto_uses_pjm_rto_area():
+    """The RTO inst_load fetcher hits the same endpoint as ComEd's but
+    with area=PJM RTO. HTTP-client-side URL encoding turns the space
+    into %20 -- verify the raw param string here, not the encoded form."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
+
+    asyncio.run(fetch_inst_load_recent_rto(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "inst_load"
+    assert captured["params"]["area"] == "PJM RTO"
+    assert captured["params"]["area"] != COMED_INST_AREA  # not the ComEd code
+
+
+def test_fetch_metered_load_recent_rto_uses_rto_zone():
+    """RTO metered uses zone=RTO. Same endpoint as ComEd's, different filter."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
+
+    asyncio.run(fetch_metered_load_recent_rto(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "hrl_load_metered"
+    assert captured["params"]["zone"] == "RTO"
+    assert captured["params"]["zone"] != COMED_METERED_ZONE  # not "CE"
+
+
+def test_rto_metered_rows_per_hour_tripwire_silent_on_one_row_per_hour(capsys):
+    """The happy path: PJM returns 1 aggregate row per hour for
+    zone=RTO. The tripwire emits nothing."""
+    items = [
+        {"datetime_beginning_ept": "2026-07-15T13:00:00", "mw": 145000.0},
+        {"datetime_beginning_ept": "2026-07-15T14:00:00", "mw": 152000.0},
+        {"datetime_beginning_ept": "2026-07-15T15:00:00", "mw": 158000.0},
+    ]
+    _check_rto_metered_load_rows_per_hour(items)
+    captured = capsys.readouterr()
+    assert "rto_metered_load_unexpected_rows_per_hour" not in captured.out
+
+
+def test_rto_metered_rows_per_hour_tripwire_fires_on_duplicate_hour(capsys):
+    """The degenerate case the tripwire is built for: PJM returns N
+    rows per hour (e.g., one per zone, all labeled zone=RTO). The warn
+    log surfaces the issue immediately so downstream queries summing
+    `mw` don't silently over-count."""
+    items = [
+        {"datetime_beginning_ept": "2026-07-15T13:00:00", "mw": 25000.0},
+        {"datetime_beginning_ept": "2026-07-15T13:00:00", "mw": 18000.0},  # duplicate hour
+        {"datetime_beginning_ept": "2026-07-15T13:00:00", "mw": 22000.0},  # duplicate hour
+        {"datetime_beginning_ept": "2026-07-15T14:00:00", "mw": 28000.0},
+    ]
+    _check_rto_metered_load_rows_per_hour(items)
+    captured = capsys.readouterr()
+    assert "rto_metered_load_unexpected_rows_per_hour" in captured.out
+    assert "warn" in captured.out
+
+
+def test_rto_tripwire_runs_inside_rto_fetcher(capsys):
+    """End-to-end: fetch_metered_load_recent_rto runs the tripwire on
+    the raw response, before items are turned into Points. Ensures the
+    invariant is checked on every RTO call, not just when explicitly
+    invoked by a test."""
+    duplicate_response = [
+        {"datetime_beginning_ept": "2026-07-15T13:00:00",
+         "mw": 25000.0, "zone": "RTO"},
+        {"datetime_beginning_ept": "2026-07-15T13:00:00",
+         "mw": 18000.0, "zone": "RTO"},
+    ]
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            return duplicate_response
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
+
+    asyncio.run(fetch_metered_load_recent_rto(FakeClient(), cfg, now_local))
+    captured = capsys.readouterr()
+    assert "rto_metered_load_unexpected_rows_per_hour" in captured.out
+
+
+def test_comed_metered_does_not_run_rto_tripwire(capsys):
+    """Symmetric guard: the ComEd metered fetcher must NOT emit the
+    RTO tripwire warn even when its response would also be "duplicate"
+    by RTO standards. ComEd zone metered legitimately returns one row
+    per hour per zone tag value, but `zone=CE` always returns one
+    aggregate row per hour. The check only applies to RTO."""
+    duplicate_response = [
+        {"datetime_beginning_ept": "2026-07-15T13:00:00",
+         "mw": 14000.0, "zone": "CE"},
+        # Hypothetical duplicate (won't happen in real PJM data) -- still
+        # the ComEd fetcher should not emit the RTO-specific warn.
+        {"datetime_beginning_ept": "2026-07-15T13:00:00",
+         "mw": 14100.0, "zone": "CE"},
+    ]
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            return duplicate_response
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
+
+    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+    captured = capsys.readouterr()
+    assert "rto_metered_load_unexpected_rows_per_hour" not in captured.out

@@ -1011,27 +1011,57 @@ def _stub_layer_eval_io(monkeypatch, *,
                          zone_load: float | None = 14000.0,
                          derivative: float = 0.0,
                          forecast_peak: float | None = 17000.0,
-                         season_5th: float = 130000.0):
+                         season_5th: float = 20375.0,
+                         rto_zone_load: float | None = None,
+                         rto_derivative: float = 0.0,
+                         rto_season_5th: float = 151525.0):
     """Stub the InfluxDB IO that _evaluate_layer_inputs makes. Lets tests
-    drive the price/load/forecast inputs without spinning up Flux."""
+    drive the price/load/forecast inputs without spinning up Flux.
+
+    Dual-scope after P1.1: the §3 detector runs once per scope
+    (comed_zone + rto). The stubs respect the area/zone tag passed by
+    ``evaluate_for_scope`` so the COMED snapshot doesn't pretend to be
+    RTO load and vice versa. Pass ``rto_zone_load=None`` (default) to
+    simulate no RTO data (poller hasn't backfilled yet); pass a value
+    to drive RTO detector inputs explicitly.
+    """
     monkeypatch.setattr(app, "fetch_latest_comed",
                         lambda q, b: price_cents)
 
-    if zone_load is not None:
-        from pjm_5cp import ZoneLoadSnapshot
-        snapshot = ZoneLoadSnapshot(
-            current_mw=zone_load,
-            derivative_mw_per_hour=derivative,
+    from pjm_5cp import ZoneLoadSnapshot
+    import pjm_5cp
+
+    def _snap(mw, deriv):
+        return ZoneLoadSnapshot(
+            current_mw=mw,
+            derivative_mw_per_hour=deriv,
             observed_at_utc=datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc),
         )
-    else:
-        snapshot = None
-    monkeypatch.setattr(app, "fetch_zone_live", lambda q, b: snapshot)
+
+    snapshots = {
+        "COMED":   _snap(zone_load, derivative) if zone_load is not None else None,
+        "PJM RTO": _snap(rto_zone_load, rto_derivative) if rto_zone_load is not None else None,
+    }
+    fallback_seasons = {"CE": season_5th, "RTO": rto_season_5th}
+
+    def _fetch_zone_live_stub(q, b, *, area="COMED"):
+        return snapshots[area]
+
+    def _update_season_5th_highest_stub(q, b, s, *, zone="CE", fallback_mw=None):
+        return fallback_seasons[zone]
+
+    # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also patch
+    # in app for any caller that still imports them directly (e.g.
+    # compute_5cp_inputs_for_date).
+    monkeypatch.setattr(pjm_5cp, "fetch_zone_live", _fetch_zone_live_stub)
+    monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
+                        _update_season_5th_highest_stub)
+    monkeypatch.setattr(app, "fetch_zone_live", _fetch_zone_live_stub)
+    monkeypatch.setattr(app, "update_season_5th_highest",
+                        _update_season_5th_highest_stub)
     # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
     monkeypatch.setattr(app, "fetch_forecast_peak_today",
                         lambda q, b, *, tz=None: forecast_peak)
-    monkeypatch.setattr(app, "update_season_5th_highest",
-                        lambda q, b, s: season_5th)
 
 
 def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
@@ -1112,6 +1142,108 @@ def test_5cp_audit_throttled_to_5min_intervals(monkeypatch):
     assert third_count == 2
 
 
+# ---- P1.1: dual-scope 5CP (ComEd OR RTO) ---------------------------------
+
+
+def test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data(monkeypatch):
+    """With both detector scopes' inst_load feeds populated, each audit
+    cycle writes TWO hvac.5cp_state rows -- one per scope -- so the
+    dashboard can plot both ratios side-by-side. Tag-disambiguation is
+    via the `scope` tag (`comed_zone` | `rto`) carried on the row."""
+    _stub_layer_eval_io(monkeypatch,
+                         zone_load=14000.0, rto_zone_load=140000.0,
+                         season_5th=20375.0, rto_season_5th=151525.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+
+    audit_lines = [
+        c.kwargs.get("record").to_line_protocol()
+        for c in write_api.write.call_args_list
+        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
+    ]
+    assert len(audit_lines) == 2
+    # Tag presence: each row must carry both scope and zone tags.
+    assert any("scope=comed_zone" in line and "zone=CE" in line for line in audit_lines)
+    assert any("scope=rto" in line and "zone=RTO" in line for line in audit_lines)
+
+
+def test_dual_scope_or_fires_when_rto_alone_qualifies(monkeypatch):
+    """The OR semantics: even if ComEd-zone load is well below trigger,
+    an RTO-scale ramp-up alone is enough to enter HOT_5CP_SHUTOFF. This
+    is the coverage P1.1 adds -- the prior single-scope ComEd detector
+    would miss PJM 5CP hours that don't also coincide with ComEd zone
+    peaks (per HVAC_LOGIC.md, ComEd zone tends to peak earlier than
+    RTO; a late-afternoon RTO ramp without ComEd-zone elevation is
+    exactly the case the new detector catches)."""
+    _stub_layer_eval_io(monkeypatch,
+                         # ComEd well below trigger: 13k / 20.375k = 0.638
+                         zone_load=13000.0, derivative=0.0,
+                         season_5th=20375.0,
+                         # RTO above trigger: 145k / 151.525k = 0.957 > 0.95
+                         rto_zone_load=145000.0, rto_derivative=400.0,
+                         rto_season_5th=151525.0,
+                         forecast_peak=160000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    # 14:30 CT == 19:30 UTC -- inside the 13:00-20:00 CT detector window.
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.fivecp_active is True
+    assert "rto" in inputs.fivecp_scopes_fired
+    assert "comed_zone" not in inputs.fivecp_scopes_fired
+
+
+def test_dual_scope_or_fires_when_comed_alone_qualifies(monkeypatch):
+    """Symmetric case: ComEd-zone scope qualifies, RTO doesn't. The OR
+    still trips the active state. Confirms neither scope is being
+    given precedence."""
+    _stub_layer_eval_io(monkeypatch,
+                         # ComEd above trigger: 19.6k / 20.375k = 0.962
+                         zone_load=19600.0, derivative=300.0,
+                         season_5th=20375.0,
+                         # RTO well below trigger: 140k / 151.525k = 0.924
+                         rto_zone_load=140000.0, rto_derivative=0.0,
+                         rto_season_5th=151525.0,
+                         forecast_peak=22000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.fivecp_active is True
+    assert "comed_zone" in inputs.fivecp_scopes_fired
+
+
+def test_dual_scope_per_scope_state_is_independent(monkeypatch):
+    """The two scopes carry independent FiveCPState. A ComEd-only
+    trigger does NOT flip the RTO state machine (and vice versa) --
+    important so a ComEd release doesn't prematurely exit an RTO hold."""
+    _stub_layer_eval_io(monkeypatch,
+                         zone_load=19600.0, derivative=300.0,
+                         season_5th=20375.0,
+                         rto_zone_load=140000.0, rto_derivative=0.0,
+                         rto_season_5th=151525.0,
+                         forecast_peak=22000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert firing.fivecp_state_comed.is_active is True   # ComEd triggered
+    assert firing.fivecp_state_rto.is_active is False    # RTO did not
+
+
 def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypatch):
     """A price-tier transition writes a hvac.price_overlay row. Same-tier
     ticks don't (the measurement is event-driven)."""
@@ -1173,10 +1305,11 @@ async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_uncha
         price_prev_tier="normal",
         current_price_cents=5.0,
         fivecp_active=False,
+        fivecp_scopes_fired=(),
         fivecp_load_mw=0.0,
         fivecp_derivative=0.0,
         fivecp_forecast_peak=0.0,
-        fivecp_season_5th_mw=130000.0,
+        fivecp_season_5th_mw=20375.0,
         fivecp_data_available=False,
     )
     now_local = datetime(2026, 7, 15, 13, 30,

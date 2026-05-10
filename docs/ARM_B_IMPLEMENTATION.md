@@ -276,16 +276,21 @@ Run scheduler in dry-run against May 2025 logged ComEd hourly prices. Verify the
 
 **Integration point:** Called from `execute_action()` after price overlay, before safety supervisor.
 
-### Required PJM data
+### Required PJM data (dual-scope, P1.1)
 
-The 5CP detector consumes:
+The 5CP detector consumes inputs at TWO scales because residential capacity charges depend on both peak sets (per [`HVAC_LOGIC.md`](HVAC_LOGIC.md) "Capacity peak context"):
 
-- **`pjm.metered_load`** with `zone="CE"` tag — hourly metered load. Poller cadence migrated from weekly to hourly per §0b. ~1 hour data lag from PJM (acceptable per the §0b caveat).
-- **`pjm.load_forecast`** — already polled twice-daily, provides forecast peak for today and 7-day-ahead.
+- **ComEd-zone scope** — catches ComEd 5CPs:
+  - `pjm.metered_load{zone="CE"}` — hourly metered ComEd-zone load.
+  - `pjm.inst_load{area="COMED"}` — ~5-min instantaneous ComEd-zone load.
+- **PJM RTO scope** — catches PJM 5CPs:
+  - `pjm.metered_load{zone="RTO"}` — hourly metered RTO-wide aggregate.
+  - `pjm.inst_load{area="PJM RTO"}` — ~5-min instantaneous RTO-wide load.
+- **`pjm.load_forecast`** — twice-daily peak forecast (shared input; gates both scopes).
 
-The existing weekly Sunday backfill is preserved as a backstop in case the hourly cadence misses any windows. No new feed is added; the existing `hrl_load_metered` feed becomes hourly.
+Each scope reads its own (`inst_load`, `metered_load`) pair from InfluxDB. The detector runs the same state-machine logic per scope and the scheduler ORs the two `is_active` outputs.
 
-The detector queries `pjm.metered_load` for season-to-date hourly observations, computes the running 5th-highest, compares against current-hour load and the day's forecast peak.
+The existing weekly Sunday backfill is preserved as a backstop in case the hourly cadence misses any windows.
 
 ### Module structure
 
@@ -333,16 +338,41 @@ def evaluate_5cp_risk(
     """
     ...
 
-def update_season_5th_highest(
-    query_api, bucket: str, current_season_start: datetime
-) -> float:
-    """Compute season-to-date 5th-highest hourly average load.
-
-    Query InfluxDB for hourly averages of pjm.metered_load (zone="CE")
-    since season_start. Sort descending, return value at index 4 (0-indexed).
-    Falls back to a hardcoded 130,000 MW (rough ComEd zone summer-peak threshold)
-    if fewer than 5 hourly observations exist.
+@dataclass(frozen=True)
+class DetectorScope:
+    """Per-detector scope. Two are wired in production:
+      COMED_SCOPE = DetectorScope("comed_zone", "COMED", "CE", 20375.0)
+      RTO_SCOPE   = DetectorScope("rto", "PJM RTO", "RTO", 151525.0)
     """
+    name: str
+    inst_load_area: str
+    metered_load_zone: str
+    pre_season_fallback_5th_mw: float
+
+def update_season_5th_highest(
+    query_api, bucket: str, current_season_start: datetime,
+    *, zone: str, fallback_mw: float,
+) -> float:
+    """Compute season-to-date 5th-highest hourly average load for the
+    specified zone. Falls back to ``fallback_mw`` (caller-supplied,
+    scope-scoped) when fewer than 5 hourly observations exist.
+
+    Fallbacks per scope (Appendix A):
+      - ComEd-zone: 20,375 MW (2025 actual 5th-highest, zone=CE)
+      - PJM RTO:    151,525 MW (2025 actual 5th-highest, zone=RTO)
+    """
+    ...
+
+def evaluate_for_scope(
+    scope: DetectorScope, query_api, bucket: str,
+    season_start_utc: datetime, forecast_peak_today_mw: float,
+    state: FiveCPState, now_utc: datetime,
+) -> ScopeEvaluation:
+    """Top-level per-scope evaluation: fetches scope's inst_load and
+    metered_load from InfluxDB, runs the state machine, returns
+    (is_active, new_state, log_fields). log_fields always carries
+    scope+area+zone+fallback_5th_mw so a scale-mismatch regression
+    surfaces in logs the tick it happens."""
     ...
 ```
 
@@ -351,19 +381,24 @@ def update_season_5th_highest(
 Continuing from price-overlay output:
 
 ```python
-# After price overlay, evaluate 5CP risk
-season_5th = update_season_5th_highest(query_api, cfg.influxdb_bucket, season_start_utc)
-load_data = fetch_pjm_zone_live(query_api, cfg.influxdb_bucket)
-forecast_peak = fetch_pjm_forecast_peak_today(query_api, cfg.influxdb_bucket)
+# After price overlay, evaluate 5CP risk per scope (P1.1) and OR.
+forecast_peak = fetch_forecast_peak_today(query_api, bucket, tz=tz)
 
-is_5cp_active, new_5cp_state = evaluate_5cp_risk(
-    load_data.current_mw,
-    season_5th,
-    load_data.derivative_mw_per_15min,
-    forecast_peak,
-    now_utc,
-    fivecp_state,
+comed_eval = evaluate_for_scope(
+    COMED_SCOPE, query_api, bucket, season_start_utc,
+    forecast_peak, fivecp_state_comed, now_utc,
 )
+rto_eval = evaluate_for_scope(
+    RTO_SCOPE, query_api, bucket, season_start_utc,
+    forecast_peak, fivecp_state_rto, now_utc,
+)
+fivecp_state_comed = comed_eval.new_state
+fivecp_state_rto = rto_eval.new_state
+
+is_5cp_active = comed_eval.is_active or rto_eval.is_active
+log("info", "fivecp_eval",
+    comed=comed_eval.log_fields, rto=rto_eval.log_fields,
+    is_active=is_5cp_active)
 
 if is_5cp_active:
     fivecp_setpoint = COOL_SHUTOFF_F
@@ -378,26 +413,36 @@ Same trade-off as price overlay. Recommendation: in-memory v1.
 
 ```
 measurement: hvac.5cp_state
-tags: arm (A or B), zone (ComEd)
+tags:
+  scope:     "comed_zone" | "rto"  -- which detector emitted the row
+  zone:      "CE" | "RTO"          -- backward-compat with pre-P1.1 dashboards
+  is_active: "true" | "false"
 fields:
-  is_active: bool (0 or 1)
   current_load_mw: float
   season_5th_highest_mw: float
   load_ratio: float
-  load_derivative_mw: float
+  load_derivative_mw_per_hour: float
   forecast_peak_today_mw: float
 ```
 
-Written every scheduler tick (every 5 min) so state is auditable.
+TWO rows per audit interval (one per scope), throttled to once every 5 min per scope so dashboards see ~576 rows/day total (288 per scope).
 
 ```
-measurement: pjm.metered_load (zone="CE")
-tags: zone (ComEd)
+measurement: pjm.metered_load
+tags:
+  zone:        "CE" | "RTO"  -- ComEd zone or RTO-wide aggregate
+  is_verified: "true" | "false"
+fields:
+  mw: float
+
+measurement: pjm.inst_load
+tags:
+  area: "COMED" | "PJM RTO"  -- ComEd area or RTO-wide
 fields:
   mw: float
 ```
 
-Written by extended `pjm-dm2-poller` if not already covered.
+Both measurements gain a second tag value via P1.1's added poller entries (`hrl_load_metered_rto` and `inst_load_rto`). All control-path readers MUST filter by `area`/`zone`; aggregating across tag values silently mixes ComEd-zone and RTO-scale into one number (meaningless).
 
 ### Testing
 

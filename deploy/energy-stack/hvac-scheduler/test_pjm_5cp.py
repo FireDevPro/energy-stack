@@ -7,12 +7,19 @@ from zoneinfo import ZoneInfo
 
 from pjm_5cp import (
     COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    COMED_SCOPE,
+    RTO_PRE_SEASON_FALLBACK_5TH_MW,
+    RTO_SCOPE,
     COOL_SHUTOFF_F,
     LOAD_RATIO_RELEASE,
     LOAD_RATIO_TRIGGER,
     MIN_OBSERVATIONS_FOR_5TH,
+    DetectorScope,
     FiveCPState,
+    ScopeEvaluation,
+    ZoneLoadSnapshot,
     evaluate_5cp_risk,
+    evaluate_for_scope,
     fetch_forecast_peak_for_date,
     fetch_zone_live,
     hold_end_time,
@@ -506,3 +513,160 @@ def test_replay_ramp_up_into_late_afternoon_peak():
     # hasn't satisfied BOTH release conditions simultaneously by then
     # (derivative is negative but ratio at 16:00 is still > 0.90).
     assert state.is_active is True
+
+
+# ---- DetectorScope (P1.1) --------------------------------------------------
+
+
+def test_comed_scope_constants_are_zone_scaled():
+    """COMED_SCOPE must point at ComEd-zone tag values + ComEd-scale
+    fallback. This is the invariant that prevents the 2026-05 RTO/ComEd
+    scale-confusion bug from sneaking back in."""
+    assert COMED_SCOPE.name == "comed_zone"
+    assert COMED_SCOPE.inst_load_area == "COMED"
+    assert COMED_SCOPE.metered_load_zone == "CE"
+    assert COMED_SCOPE.pre_season_fallback_5th_mw == COMED_PRE_SEASON_FALLBACK_5TH_MW
+    assert 15000 <= COMED_SCOPE.pre_season_fallback_5th_mw <= 25000
+
+
+def test_rto_scope_constants_are_rto_scaled():
+    """RTO_SCOPE must point at RTO tag values + RTO-scale fallback."""
+    assert RTO_SCOPE.name == "rto"
+    assert RTO_SCOPE.inst_load_area == "PJM RTO"
+    assert RTO_SCOPE.metered_load_zone == "RTO"
+    assert RTO_SCOPE.pre_season_fallback_5th_mw == RTO_PRE_SEASON_FALLBACK_5TH_MW
+    # RTO summer peak is ~145-165 GW; the fallback should sit inside
+    # that band, not at ComEd scale (~20 GW).
+    assert 140000 <= RTO_SCOPE.pre_season_fallback_5th_mw <= 170000
+
+
+def test_rto_pre_season_fallback_value_matches_published_5cp():
+    """Locked value: 151,524.7 MW (PJM Summer 2025 5CPs, 5th-highest
+    RTO-wide hourly demand). Rounded to 151,525 for one-decimal
+    cleanliness."""
+    assert RTO_PRE_SEASON_FALLBACK_5TH_MW == 151525.0
+
+
+def test_scope_dataclass_is_frozen():
+    """Scope objects flow through the scheduler; an accidental in-place
+    mutation could quietly change detector behavior mid-tick. Frozen
+    dataclass makes that a type error at the boundary."""
+    import dataclasses
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        COMED_SCOPE.name = "tampered"  # type: ignore[misc]
+
+
+# ---- evaluate_for_scope (P1.1) --------------------------------------------
+
+
+def _scope_evaluation_fixture(*,
+                               snapshot: ZoneLoadSnapshot | None,
+                               season_5th_mw: float,
+                               forecast_peak: float | None,
+                               state: FiveCPState = FiveCPState(),
+                               now_utc: datetime = T_AT_1430_CT,
+                               scope: DetectorScope = COMED_SCOPE,
+                               monkeypatch=None) -> ScopeEvaluation:
+    """Common harness for evaluate_for_scope tests. Stubs the two IO
+    helpers inside pjm_5cp so the scope-aware code path is exercised
+    end-to-end without spinning up Flux."""
+    import pjm_5cp
+    monkeypatch.setattr(pjm_5cp, "fetch_zone_live",
+                        lambda q, b, *, area: snapshot)
+    monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
+                        lambda q, b, s, *, zone, fallback_mw: season_5th_mw)
+    return evaluate_for_scope(
+        scope, MagicMock(), "energy",
+        datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
+        forecast_peak, state, now_utc,
+    )
+
+
+def test_evaluate_for_scope_log_fields_always_include_scope_metadata(monkeypatch):
+    """Every evaluation logs scope+area+zone+fallback so a regression on
+    scale mixing (RTO fallback misapplied to ComEd path or vice versa)
+    shows up immediately in logs, not silently in behavior. This is the
+    structured-log tripwire Chris asked for in the P1.1 sign-off."""
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(15000.0, 100.0, T_AT_1430_CT),
+        season_5th_mw=20375.0, forecast_peak=22000.0,
+        scope=COMED_SCOPE, monkeypatch=monkeypatch,
+    )
+    assert ev.log_fields["scope"] == "comed_zone"
+    assert ev.log_fields["area"] == "COMED"
+    assert ev.log_fields["zone"] == "CE"
+    assert ev.log_fields["fallback_5th_mw"] == COMED_PRE_SEASON_FALLBACK_5TH_MW
+    assert ev.log_fields["season_5th_mw"] == 20375.0
+    assert ev.log_fields["data_status"] == "ok"
+
+
+def test_evaluate_for_scope_rto_log_fields_carry_rto_metadata(monkeypatch):
+    """Same test for RTO_SCOPE -- confirms the scope is genuinely the
+    thing driving log emission, not a hardcoded ComEd shape."""
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(145000.0, 500.0, T_AT_1430_CT),
+        season_5th_mw=151525.0, forecast_peak=155000.0,
+        scope=RTO_SCOPE, monkeypatch=monkeypatch,
+    )
+    assert ev.log_fields["scope"] == "rto"
+    assert ev.log_fields["area"] == "PJM RTO"
+    assert ev.log_fields["zone"] == "RTO"
+    assert ev.log_fields["fallback_5th_mw"] == RTO_PRE_SEASON_FALLBACK_5TH_MW
+
+
+def test_evaluate_for_scope_carries_state_on_missing_snapshot(monkeypatch):
+    """When pjm.inst_load returns no rows (cold-start container or feed
+    outage), the evaluator carries the prior state.is_active rather than
+    treating missing data as zero load (which would falsely release a
+    triggered scope mid-event)."""
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=T_AT_1430_CT - timedelta(minutes=10),
+        triggered_hour_ct=14,
+    )
+    ev = _scope_evaluation_fixture(
+        snapshot=None,
+        season_5th_mw=20375.0, forecast_peak=22000.0,
+        state=prior_state, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is True
+    assert ev.new_state == prior_state
+    assert ev.log_fields["data_status"] == "no_snapshot"
+
+
+def test_evaluate_for_scope_carries_state_on_missing_forecast_peak(monkeypatch):
+    """Same carry-state behavior when the forecast peak is None (PJM's
+    forecast revision for today hasn't published yet)."""
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=T_AT_1430_CT - timedelta(minutes=10),
+        triggered_hour_ct=14,
+    )
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(15000.0, 100.0, T_AT_1430_CT),
+        season_5th_mw=20375.0, forecast_peak=None,
+        state=prior_state, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is True
+    assert ev.log_fields["data_status"] == "no_forecast_peak"
+
+
+def test_evaluate_for_scope_triggers_when_all_inputs_say_go(monkeypatch):
+    """Happy path: hot afternoon, current load 96% of season-5th,
+    derivative positive, forecast > season-5th, inside 13-20 CT window.
+    Detector enters active state."""
+    ev = _scope_evaluation_fixture(
+        # 96% of 20375 = 19560; pick 19600 to clear the trigger band
+        snapshot=ZoneLoadSnapshot(19600.0, 200.0, T_AT_1430_CT),
+        season_5th_mw=20375.0, forecast_peak=21000.0,
+        scope=COMED_SCOPE, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is True
+    assert ev.new_state.is_active is True
+    assert ev.log_fields["load_ratio"] > LOAD_RATIO_TRIGGER
+
+
+# ---- Import test for pytest -----------------------------------------------
+
+
+import pytest  # noqa: E402 -- imported here so test fixtures above can use it

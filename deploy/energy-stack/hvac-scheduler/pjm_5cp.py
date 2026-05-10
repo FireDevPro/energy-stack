@@ -95,9 +95,62 @@ HOLD_TAIL_MINUTES = 30
 # annual peak (20.7 GW) couldn't reach 95% of a 130 GW baseline. Fixed
 # 2026-05 ahead of randomization start.
 COMED_PRE_SEASON_FALLBACK_5TH_MW = 20375.0
+
+# Pre-season cold-start fallback for the RTO 5CP detector. Source: latest
+# published actual PJM RTO 5CP 5th-peak (2025) per PJM's annual 5CP
+# publication: 151,524.7 MW. Rounded up to 151,525 to be slightly
+# conservative (a real RTO hot day with current load >= 143,949 MW = 95%
+# of 151,525 trips the detector pre-data; the 2025 actual peak was
+# >161 GW so this is reachable on a hot weekday afternoon).
+RTO_PRE_SEASON_FALLBACK_5TH_MW = 151525.0
+
 MIN_OBSERVATIONS_FOR_5TH = 5
 
 CHICAGO = ZoneInfo("America/Chicago")
+
+
+# ---- Detector scope (P1.1) -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DetectorScope:
+    """Per-detector configuration. The §3 5CP detector runs once per
+    scope. Two scopes are wired in production:
+
+      * ``COMED_SCOPE`` -- catches ComEd 5CPs (ComEd-zone hours that
+        contribute to ComEd's capacity-allocation step).
+      * ``RTO_SCOPE``   -- catches PJM 5CPs (RTO-wide hours that
+        determine ComEd's PLC, which then flows to the residential
+        capacity-charge rate).
+
+    Both scopes contribute dollars to the household's next-year
+    residential capacity charge (per HVAC_LOGIC.md "Capacity peak
+    context"), so the scheduler ORs their triggers.
+
+    Carrying the scope explicitly through fetch / state-update /
+    decision is what prevents a regression like the 2026-05 ComEd
+    fallback bug (130 GW RTO-scale value misapplied to the ComEd-zone
+    path). A function that takes a scope cannot silently mix scales.
+    """
+    name: str                          # log identifier: "comed_zone" | "rto"
+    inst_load_area: str                # pjm.inst_load tag value: "COMED" | "PJM RTO"
+    metered_load_zone: str             # pjm.metered_load tag value: "CE" | "RTO"
+    pre_season_fallback_5th_mw: float  # 20375.0 | 151525.0
+
+
+COMED_SCOPE = DetectorScope(
+    name="comed_zone",
+    inst_load_area="COMED",
+    metered_load_zone="CE",
+    pre_season_fallback_5th_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+)
+
+RTO_SCOPE = DetectorScope(
+    name="rto",
+    inst_load_area="PJM RTO",
+    metered_load_zone="RTO",
+    pre_season_fallback_5th_mw=RTO_PRE_SEASON_FALLBACK_5TH_MW,
+)
 
 
 # ---- State machine ---------------------------------------------------------
@@ -304,6 +357,103 @@ def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[
         current_mw=latest_mw,
         derivative_mw_per_hour=derivative,
         observed_at_utc=latest_t,
+    )
+
+
+# ---- Scope-aware top-level evaluation (P1.1) ------------------------------
+
+
+@dataclass(frozen=True)
+class ScopeEvaluation:
+    """Per-tick result of ``evaluate_for_scope``. Bundles the binding
+    decision (``is_active``) with the structured-log payload so callers
+    can emit one log line covering all the inputs the detector saw.
+
+    ``log_fields`` always includes ``scope``, ``area``, ``zone``, and
+    ``fallback_5th_mw`` so a scale-mismatch regression (RTO fallback
+    misapplied to ComEd path, or vice versa) shows up in logs the same
+    tick it happens, not silently in behavior.
+    """
+    is_active: bool
+    new_state: FiveCPState
+    season_5th_mw: float
+    snapshot: Optional[ZoneLoadSnapshot]
+    log_fields: dict
+
+
+def evaluate_for_scope(
+    scope: DetectorScope,
+    query_api,
+    bucket: str,
+    season_start_utc: datetime,
+    forecast_peak_today_mw: Optional[float],
+    state: FiveCPState,
+    now_utc: datetime,
+) -> ScopeEvaluation:
+    """Top-level per-scope 5CP detector evaluation.
+
+    Fetches inputs from InfluxDB (current load via ``pjm.inst_load``
+    tagged with ``scope.inst_load_area``, season-to-date 5th-highest
+    via ``pjm.metered_load`` tagged with ``scope.metered_load_zone``),
+    runs the state machine, and returns the binding decision plus the
+    log payload describing every input.
+
+    When the snapshot or forecast peak is unavailable, returns the
+    prior ``state.is_active`` (carry decision rather than treating
+    missing data as zero load) and records the data gap in
+    ``log_fields["data_status"]``.
+    """
+    season_5th_mw = update_season_5th_highest(
+        query_api, bucket, season_start_utc,
+        zone=scope.metered_load_zone,
+        fallback_mw=scope.pre_season_fallback_5th_mw,
+    )
+    snapshot = fetch_zone_live(query_api, bucket, area=scope.inst_load_area)
+
+    log_fields: dict = {
+        "scope": scope.name,
+        "area": scope.inst_load_area,
+        "zone": scope.metered_load_zone,
+        "season_5th_mw": season_5th_mw,
+        "fallback_5th_mw": scope.pre_season_fallback_5th_mw,
+    }
+
+    if snapshot is None or forecast_peak_today_mw is None:
+        log_fields["data_status"] = (
+            "no_snapshot" if snapshot is None else "no_forecast_peak"
+        )
+        # Carry prior state rather than treat missing data as zero load.
+        return ScopeEvaluation(
+            is_active=state.is_active,
+            new_state=state,
+            season_5th_mw=season_5th_mw,
+            snapshot=snapshot,
+            log_fields=log_fields,
+        )
+
+    ratio = (snapshot.current_mw / season_5th_mw) if season_5th_mw > 0 else 0.0
+    log_fields.update({
+        "current_mw": snapshot.current_mw,
+        "derivative_mw_per_hour": snapshot.derivative_mw_per_hour,
+        "load_ratio": ratio,
+        "forecast_peak_today_mw": forecast_peak_today_mw,
+        "data_status": "ok",
+    })
+
+    is_active, new_state = evaluate_5cp_risk(
+        current_load_mw=snapshot.current_mw,
+        season_5th_highest_mw=season_5th_mw,
+        load_derivative_mw_per_hour=snapshot.derivative_mw_per_hour,
+        forecast_peak_today_mw=forecast_peak_today_mw,
+        now_utc=now_utc,
+        state=state,
+    )
+    return ScopeEvaluation(
+        is_active=is_active,
+        new_state=new_state,
+        season_5th_mw=season_5th_mw,
+        snapshot=snapshot,
+        log_fields=log_fields,
     )
 
 

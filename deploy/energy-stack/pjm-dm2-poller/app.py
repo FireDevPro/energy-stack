@@ -30,7 +30,17 @@ scheduling is per-feed because cadences differ widely:
     throughout the operating day" — exactly what the §3 5CP-detector's
     `current_load_mw` side needs (a real-time directional signal of
     "are we climbing toward season-5th right now?"). Writes to
-    `pjm.inst_load`.
+    `pjm.inst_load` tagged `area="COMED"`.
+  * `inst_load_rto` (P1.1) — same feed, area=PJM RTO, every 5 minutes.
+    Feeds the parallel RTO 5CP detector. Writes to `pjm.inst_load`
+    tagged `area="PJM RTO"`.
+  * `hrl_load_metered_rto` (P1.1) — same feed, zone=RTO (PJM's
+    aggregate-level zone code, NOT the sum of zonal rows), hourly with
+    5-day lookback. Feeds the RTO 5CP detector's season-to-date
+    5th-highest baseline. Writes to `pjm.metered_load` tagged
+    `zone="RTO"`. First-call tripwire logs `warn` if any hour comes
+    back with >1 row (would indicate PJM started returning per-zone
+    rows instead of an aggregate).
   * `ops_sum_frcst_peak_rto` (PJM RTO peak forecast) at 06:00 + 13:00 CT
     during the cooling season (Jun-Sep). PJM's own daily projected peak
     load + projected peak hour. Writes to `pjm.peak_forecast_rto`.
@@ -87,6 +97,23 @@ COMED_FORECAST_AREA = "COMED"
 COMED_METERED_ZONE = "CE"
 COMED_INST_AREA = "COMED"
 COMED_NSPL_ZONE = "COMED"
+
+# PJM RTO-wide codes (P1.1). PJM 5CPs are RTO-wide, not zonal -- the
+# residential capacity charge depends on the household's metered demand
+# during the 5 highest hourly demand hours of the *entire* PJM
+# footprint (per HVAC_LOGIC.md "Capacity peak context"). The hvac-
+# scheduler's §3 detector runs a parallel state machine on RTO data
+# alongside the existing ComEd-zone path; this poller feeds it.
+#
+# Codes per PJM DM2 OpenAPI spec:
+#   inst_load:        area="PJM RTO"  (URL-encoded as "PJM%20RTO" by the
+#                                       HTTP client's urlencode pass)
+#   hrl_load_metered: zone="RTO"      (RTO is a documented aggregation
+#                                       level alongside the 20 zonal
+#                                       codes; returns 1 aggregate row
+#                                       per hour, NOT N rows per zone)
+RTO_INST_AREA = "PJM RTO"
+RTO_METERED_ZONE = "RTO"
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +188,10 @@ _EVERY_5_MIN = tuple(range(0, 60, 5))
 FEED_SCHEDULE: dict[str, Schedule] = {
     "da_hrl_lmps":            Schedule(hours=(17,)),
     "load_frcstd_7_day":      Schedule(hours=(6, 13)),
-    "hrl_load_metered":       Schedule(hours=tuple(range(0, 24))),                            # Hourly, 5d lookback
-    "inst_load":              Schedule(hours=tuple(range(0, 24)), minutes=_EVERY_5_MIN),      # Every 5 min
+    "hrl_load_metered":       Schedule(hours=tuple(range(0, 24))),                            # Hourly, 5d lookback, zone=CE
+    "hrl_load_metered_rto":   Schedule(hours=tuple(range(0, 24))),                            # Hourly, 5d lookback, zone=RTO (P1.1)
+    "inst_load":              Schedule(hours=tuple(range(0, 24)), minutes=_EVERY_5_MIN),      # Every 5 min, area=COMED
+    "inst_load_rto":          Schedule(hours=tuple(range(0, 24)), minutes=_EVERY_5_MIN),      # Every 5 min, area=PJM RTO (P1.1)
     "ops_sum_frcst_peak_rto": Schedule(hours=(6, 13), months=(6, 7, 8, 9)),                   # Cooling season only
     "annual_zonal_nspl":      Schedule(hours=(3,), months=(12,), days=(1,)),                  # Dec 1, 03:00 CT
 }
@@ -411,27 +440,54 @@ async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetim
     return build_load_forecast_points(items, cfg.tz)
 
 
-async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
-    """Pull the last 5 days of ComEd metered load. Range filter uses
-    PJM's `<start>to<end>` syntax.
+def _check_rto_metered_load_rows_per_hour(items: list[dict]) -> None:
+    """P1.1 first-call invariant: PJM's ``hrl_load_metered`` feed
+    treats ``RTO`` as an aggregation level that should return *one*
+    aggregate row per hour (per ``datetime_beginning_ept``), not N
+    rows per zone summing to RTO.
+
+    If any hour has more than one row, the schema assumption is wrong
+    and downstream Flux queries that read ``pjm.metered_load{zone=RTO}``
+    would sum N rows into a meaninglessly-inflated season-5th-highest
+    value. Log a warn so the regression surfaces immediately instead
+    of silently corrupting the RTO detector's baseline.
+    """
+    hour_counts: dict[str, int] = {}
+    for it in items:
+        key = str(it.get("datetime_beginning_ept", "") or "")
+        hour_counts[key] = hour_counts.get(key, 0) + 1
+    duplicate_hours = {ts: n for ts, n in hour_counts.items() if n > 1}
+    if duplicate_hours:
+        log("warn", "rto_metered_load_unexpected_rows_per_hour",
+            duplicate_hours=duplicate_hours,
+            note="zone=RTO should return one aggregate row per hour",
+        )
+
+
+async def _fetch_metered_load_recent_for_zone(
+    client: PJMClient, cfg: Config, now_local: datetime, *, zone: str,
+) -> list[Point]:
+    """Internal: pull the last 5 days of hrl_load_metered for a given
+    PJM zone (ComEd ``CE`` or aggregate ``RTO``). Range filter uses
+    PJM's ``<start>to<end>`` syntax.
 
     The 5-day window comes from the official PJM DM2 spec for
     ``hrl_load_metered``: "There will be a lag in updated data
     availability due to wait time for possible corrections. Data
-    adjustments can occur up to 90 days after the actual date." The
-    earlier 3-hour window (May 2026) was wrong; PJM publishes this feed
-    daily with a 2-3 day typical lag, not the 1-hour lag the §0b spec
-    assumed. The 5-day lookback absorbs PJM's typical multi-day publish
-    delay plus weekend gaps and still keeps payloads under 200 rows.
-    Influx dedups identical timestamps so the hourly polling cadence
-    layered on top of this 5-day window writes nothing extra unless PJM
-    posted new data."""
+    adjustments can occur up to 90 days after the actual date." PJM
+    publishes this feed daily with a 2-3 day typical lag. The 5-day
+    lookback absorbs PJM's typical multi-day publish delay plus
+    weekend gaps and still keeps payloads under 200 rows. Influx
+    dedups identical timestamps so the hourly polling cadence layered
+    on top of this 5-day window writes nothing extra unless PJM posted
+    new data.
+    """
     end = now_local
     start = end - timedelta(days=5)
     items = await client.fetch(
         "hrl_load_metered",
         {
-            "zone": COMED_METERED_ZONE,
+            "zone": zone,
             "datetime_beginning_ept": (
                 f"{start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
                 f"{end.strftime('%Y-%m-%dT%H:%M:%S')}.0"
@@ -440,27 +496,48 @@ async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: d
             "startRow": 1,
         },
     )
+    if zone == RTO_METERED_ZONE:
+        _check_rto_metered_load_rows_per_hour(items)
     return build_metered_load_points(items, cfg.tz)
 
 
-async def fetch_inst_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
-    """Pull the last 30 minutes of ComEd instantaneous load. PJM publishes
-    inst_load "frequently throughout the operating day" — the documented
-    cadence is sub-5-minute. The 30-minute lookback catches stragglers
-    if the poller missed a tick (container restart, transient Influx
-    write failure) without bloating payloads. Influx dedups overlapping
-    pulls so the 5-min poll cadence layered on top is safe.
+async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """ComEd-zone metered load (zone=CE). See _fetch_metered_load_recent_for_zone."""
+    return await _fetch_metered_load_recent_for_zone(
+        client, cfg, now_local, zone=COMED_METERED_ZONE,
+    )
+
+
+async def fetch_metered_load_recent_rto(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """RTO-aggregate metered load (zone=RTO) for the §3 RTO 5CP detector."""
+    return await _fetch_metered_load_recent_for_zone(
+        client, cfg, now_local, zone=RTO_METERED_ZONE,
+    )
+
+
+async def _fetch_inst_load_recent_for_area(
+    client: PJMClient, cfg: Config, now_local: datetime, *, area: str,
+) -> list[Point]:
+    """Internal: pull the last 30 minutes of inst_load for a given PJM
+    area (``COMED`` or ``PJM RTO``). PJM publishes inst_load
+    "frequently throughout the operating day" -- the documented cadence
+    is sub-5-minute. The 30-minute lookback catches stragglers if the
+    poller missed a tick (container restart, transient Influx write
+    failure) without bloating payloads. Influx dedups overlapping pulls
+    so the 5-min poll cadence layered on top is safe.
 
     Note: ``inst_load`` filters by ``area`` (not ``zone`` like
     ``hrl_load_metered``). The PJM DM2 spec lists this asymmetry as
-    intentional; ``area="COMED"`` is the right code for the ComEd
-    transmission area in this feed."""
+    intentional; ``area="COMED"`` is the right code for ComEd in this
+    feed, and ``area="PJM RTO"`` is the RTO-wide aggregate (URL-encoded
+    as ``PJM%20RTO`` by the HTTP client).
+    """
     end = now_local
     start = end - timedelta(minutes=30)
     items = await client.fetch(
         "inst_load",
         {
-            "area": COMED_INST_AREA,
+            "area": area,
             "datetime_beginning_ept": (
                 f"{start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
                 f"{end.strftime('%Y-%m-%dT%H:%M:%S')}.0"
@@ -470,6 +547,22 @@ async def fetch_inst_load_recent(client: PJMClient, cfg: Config, now_local: date
         },
     )
     return build_inst_load_points(items, cfg.tz)
+
+
+async def fetch_inst_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """ComEd-area instantaneous load (area=COMED). See _fetch_inst_load_recent_for_area."""
+    return await _fetch_inst_load_recent_for_area(
+        client, cfg, now_local, area=COMED_INST_AREA,
+    )
+
+
+async def fetch_inst_load_recent_rto(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """RTO-area instantaneous load (area="PJM RTO") for the §3 RTO 5CP
+    detector. Independent feed from the ComEd inst_load; both run on
+    the same 5-minute schedule."""
+    return await _fetch_inst_load_recent_for_area(
+        client, cfg, now_local, area=RTO_INST_AREA,
+    )
 
 
 async def fetch_peak_forecast_rto(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -513,7 +606,9 @@ FEED_DISPATCHERS: dict[
     "da_hrl_lmps": fetch_da_lmp_for_tomorrow,
     "load_frcstd_7_day": fetch_load_forecast,
     "hrl_load_metered": fetch_metered_load_recent,
+    "hrl_load_metered_rto": fetch_metered_load_recent_rto,  # P1.1
     "inst_load": fetch_inst_load_recent,
+    "inst_load_rto": fetch_inst_load_recent_rto,  # P1.1
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,
     "annual_zonal_nspl": fetch_annual_nspl,
 }
