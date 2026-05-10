@@ -12,9 +12,11 @@ import pytest
 
 import app
 from app import (
+    COOL_SHUTOFF_F,
     DAYTYPE_HOT,
     DAYTYPE_MILD,
     DAYTYPE_NORMAL,
+    LayerResolution,
     MILD_SCHEDULE,
     NORMAL_SCHEDULE,
     HOT_SCHEDULE,
@@ -24,8 +26,102 @@ from app import (
     execute_action,
     fetch_today_decision,
     resolve_cool_setpoint,
+    resolve_layer_priority,
     run_decision_revisit,
 )
+
+
+# ---- Layer priority resolution (§4) ---------------------------------------
+
+
+def test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged():
+    """The default passthrough: nothing fires, schedule baseline wins.
+    Same shape that runs while §2 (price overlay) and §3 (5CP) modules
+    haven't wired in yet."""
+    r = resolve_layer_priority(schedule_cool_f=79)
+    assert r.effective_cool_f == 79
+    assert r.schedule_cool_f == 79
+    assert r.price_cool_f == 79
+    assert r.fivecp_cool_f == 79
+    assert r.price_overlay_tier == "normal"
+    assert r.fivecp_active is False
+
+
+def test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer():
+    """Spec §4 case 2: schedule 79°F, elevated price (+3°F offset)
+    -> effective 82°F."""
+    r = resolve_layer_priority(
+        schedule_cool_f=79,
+        price_overlay_tier="elevated",
+        price_offset_f=3,
+    )
+    assert r.effective_cool_f == 82
+    assert r.price_cool_f == 82
+
+
+def test_resolve_layer_priority_scarcity_override_replaces_schedule():
+    """Spec §4 case 3: schedule 73°F (sleep), scarcity tier (override
+    to 85°F) -> effective 85°F (override wins, far warmer than 73°F+offset)."""
+    r = resolve_layer_priority(
+        schedule_cool_f=73,
+        price_overlay_tier="scarcity",
+        price_override_f=85,
+    )
+    assert r.effective_cool_f == 85
+    assert r.price_cool_f == 85
+
+
+def test_resolve_layer_priority_5cp_active_uses_shutoff_setpoint():
+    """Spec §4 case 4: schedule 80°F, 5CP active -> effective 85°F."""
+    r = resolve_layer_priority(
+        schedule_cool_f=80,
+        fivecp_active=True,
+    )
+    assert r.effective_cool_f == COOL_SHUTOFF_F
+    assert r.fivecp_cool_f == COOL_SHUTOFF_F
+
+
+def test_resolve_layer_priority_5cp_and_scarcity_overlap_no_double_up():
+    """Spec §4 case 5: schedule 80°F, scarcity AND 5CP both active --
+    both want 85°F; effective is still 85°F, not 90°F or any double-up."""
+    r = resolve_layer_priority(
+        schedule_cool_f=80,
+        price_overlay_tier="scarcity",
+        price_override_f=85,
+        fivecp_active=True,
+    )
+    assert r.effective_cool_f == 85
+
+
+def test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85():
+    """Spec §4 case 6: schedule 68°F (HOT pre-cool), elevated price at 4am
+    (+3°F offset) -> effective 71°F. Importantly, elevated tier does NOT
+    blow pre-cool to 85°F; that requires the scarcity override or 5CP."""
+    r = resolve_layer_priority(
+        schedule_cool_f=68,
+        price_overlay_tier="elevated",
+        price_offset_f=3,
+    )
+    assert r.effective_cool_f == 71
+
+
+def test_resolve_layer_priority_warmer_wins_when_offset_below_baseline():
+    """Defensive: a buggy negative offset must not make the house cooler
+    than the schedule intended. ``effective = max(schedule, price, ...)``
+    enforces 'warmer wins' even if the price layer mis-computes."""
+    r = resolve_layer_priority(
+        schedule_cool_f=79,
+        price_overlay_tier="elevated",
+        price_offset_f=-5,
+    )
+    assert r.effective_cool_f == 79  # schedule baseline still wins
+
+
+def test_resolve_layer_priority_returns_layer_resolution_dataclass():
+    """Caller-facing contract: the return value is a LayerResolution with
+    fields that map 1:1 onto the new hvac.actions audit fields."""
+    r = resolve_layer_priority(schedule_cool_f=78)
+    assert isinstance(r, LayerResolution)
 
 
 # ---- Day-type classifier (recalibrated thresholds, EXPERIMENT_DESIGN App. A)

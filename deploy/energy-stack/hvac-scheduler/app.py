@@ -489,6 +489,77 @@ def schedule_for(day_type: str) -> list[ScheduleAction]:
     }.get(day_type, NORMAL_SCHEDULE)
 
 
+# Locked per EXPERIMENT_DESIGN.md Appendix A. Effective cool setpoint applied
+# during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
+# enough to functionally shut the AC off while staying inside the safety
+# supervisor's [65, 86]F clamp.
+COOL_SHUTOFF_F = 85
+
+
+@dataclass(frozen=True)
+class LayerResolution:
+    """Audit-grade record of the layer-priority resolution applied to one
+    scheduler tick. Fields populate hvac.actions so the operator can replay
+    why the effective setpoint differs from the schedule baseline.
+
+    The resolution rule is "warmer wins": the schedule baseline, the
+    price-overlay layer, and the 5CP-shutoff layer each propose a cool
+    setpoint, and the effective setpoint is the max of those proposals
+    (capped later by the safety supervisor's 86F upper bound).
+    """
+    schedule_cool_f: int
+    price_overlay_tier: str           # "normal" | "elevated" | "scarcity"
+    price_cool_f: int                 # Schedule baseline if no tier active
+    fivecp_active: bool
+    fivecp_cool_f: int                # COOL_SHUTOFF_F if active else price_cool_f
+    effective_cool_f: int             # max(schedule, price, fivecp)
+
+
+def resolve_layer_priority(
+    schedule_cool_f: int,
+    *,
+    price_overlay_tier: str = "normal",
+    price_offset_f: int = 0,
+    price_override_f: int | None = None,
+    fivecp_active: bool = False,
+    fivecp_shutoff_f: int = COOL_SHUTOFF_F,
+) -> LayerResolution:
+    """Resolve the effective cool setpoint across schedule / price / 5CP layers.
+
+    Layers (warmer-wins; safety supervisor enforces the 65-86F floor/ceiling
+    after this function returns):
+
+      1. **Schedule baseline** -- the day-type schedule's cool_setpoint_f
+         after `resolve_cool_setpoint` applies humid-override logic.
+      2. **Price overlay** (§2) -- elevated tier adds ``price_offset_f`` to
+         the schedule baseline; scarcity tier replaces it with
+         ``price_override_f``. ``price_overlay_tier="normal"`` means no
+         overlay is active.
+      3. **5CP shutoff** (§3) -- when ``fivecp_active`` the 5CP layer
+         proposes ``fivecp_shutoff_f`` (default 85F).
+
+    The function is a pure transform; it doesn't read any global state. §2
+    and §3 evaluate their respective conditions and pass the resulting
+    arguments in.
+    """
+    if price_override_f is not None:
+        price_cool_f = price_override_f
+    else:
+        price_cool_f = schedule_cool_f + price_offset_f
+
+    fivecp_cool_f = fivecp_shutoff_f if fivecp_active else price_cool_f
+    effective_cool_f = max(schedule_cool_f, price_cool_f, fivecp_cool_f)
+
+    return LayerResolution(
+        schedule_cool_f=schedule_cool_f,
+        price_overlay_tier=price_overlay_tier,
+        price_cool_f=price_cool_f,
+        fivecp_active=fivecp_active,
+        fivecp_cool_f=fivecp_cool_f,
+        effective_cool_f=effective_cool_f,
+    )
+
+
 def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None) -> tuple[int, str]:
     """Return (setpoint_to_apply, reason) — picks the humid override if dewpoint
     is high enough and an override is defined for this action.
@@ -619,7 +690,8 @@ def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
                  setpoint_reason: str, dry_run: bool, applied: bool,
                  thermostat_state_before: dict, error: str | None = None,
                  supervisor_decision: str = "approved",
-                 supervisor_reason: str | None = None) -> None:
+                 supervisor_reason: str | None = None,
+                 layer_resolution: LayerResolution | None = None) -> None:
     p = (Point("hvac.actions")
          .tag("day_type", day_type)
          .tag("action_label", action.label)
@@ -640,6 +712,18 @@ def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
          .field("heat_setpoint_before_f", float(thermostat_state_before.get("heat_setpoint_f") or 0))
          .field("indoor_humidity_before_pct", float(thermostat_state_before.get("humidity") or 0))
          )
+    if layer_resolution is not None:
+        # Layer-priority audit fields (§4). Always emitted when the
+        # resolution is computed so dashboards can answer "why was the
+        # effective setpoint different from the schedule baseline?"
+        p = (p
+             .tag("price_overlay_tier", layer_resolution.price_overlay_tier)
+             .tag("fivecp_active", "true" if layer_resolution.fivecp_active else "false")
+             .field("schedule_cool_f", float(layer_resolution.schedule_cool_f))
+             .field("price_cool_f", float(layer_resolution.price_cool_f))
+             .field("fivecp_cool_f", float(layer_resolution.fivecp_cool_f))
+             .field("effective_cool_f", float(layer_resolution.effective_cool_f))
+             )
     write_api.write(bucket=bucket, record=p)
 
 
@@ -900,21 +984,32 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             continue
         firing.fired_actions.add(key)
 
-        cool_to_apply, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
+        schedule_cool, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
         snapshot = await read_thermostat_snapshot(c4)
 
-        # Safety supervisor: gate the proposed setpoints against hard
-        # bounds and an emergency-indoor-temp override before they reach
-        # the thermostat. Any future controller (Step 1, Step 2, full MPC)
-        # also flows through this; it lives outside the controller layer
-        # on purpose.
+        # Layer priority resolution (§4). Combines schedule baseline with
+        # the price-overlay (§2) and 5CP-shutoff (§3) layers. Until those
+        # modules wire in, the resolution is a passthrough on the schedule
+        # baseline; the audit fields still emit so dashboards have the
+        # schema in place.
         if action.release_hold:
-            # Release-hold actions don't carry setpoints; nothing to validate.
-            sup_cool = cool_to_apply
+            # Release-hold actions don't carry setpoints; skip layer
+            # resolution and supervisor entirely.
+            cool_to_apply = schedule_cool
+            layer_resolution = None
+            sup_cool = schedule_cool
             sup_heat = action.heat_setpoint_f
             sup_decision = "approved"
             sup_reason = None
         else:
+            layer_resolution = resolve_layer_priority(schedule_cool)
+            cool_to_apply = layer_resolution.effective_cool_f
+
+            # Safety supervisor: gate the post-layer cool setpoint against
+            # hard bounds and an emergency-indoor-temp override before it
+            # reaches the thermostat. Any future controller (Step 1, Step
+            # 2, full MPC) also flows through this; it lives outside the
+            # controller layer on purpose.
             decision = validate_setpoints(cool_to_apply, action.heat_setpoint_f, snapshot)
             sup_cool = decision.cool_setpoint_f
             sup_heat = decision.heat_setpoint_f
@@ -939,7 +1034,8 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
                       sup_cool, sup_heat, action.fan_mode, setpoint_reason,
                       cfg.dry_run, applied, snapshot, error,
                       supervisor_decision=sup_decision,
-                      supervisor_reason=sup_reason)
+                      supervisor_reason=sup_reason,
+                      layer_resolution=layer_resolution)
         log("info", "action_fired",
             day_type=day_type,
             label=action.label,
