@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import signal
 import sys
@@ -130,6 +131,28 @@ class Schedule:
 # 3600 (hourly); the change is forward-compatible since every existing
 # Schedule has minutes=(0,) so they still fire only at the top of the hour.
 DEFAULT_POLL_INTERVAL_S = 300
+
+
+def seconds_to_next_aligned_tick(now_local: datetime, interval_s: float) -> float:
+    """Compute seconds until the next ``interval_s``-aligned wall-clock
+    boundary. For ``interval_s=300`` this returns the time to the next
+    :00, :05, :10, ..., :55 minute mark.
+
+    The wake loop must align to clock boundaries because ``Schedule``
+    gates on ``now_local.minute in self.minutes`` and the existing
+    minute tuples are ``(0,)`` (hourly feeds) and
+    ``(0, 5, 10, ..., 55)`` (inst_load). A fixed-interval loop anchored
+    to startup time would tick at offsets like :49, :54, :59, :04, :09
+    if the container started at :49 — none of those land on the
+    schedule's allowed minutes, so inst_load would never fire.
+
+    Always returns a strictly positive value so the loop guarantees
+    forward progress (returns ``interval_s`` rather than 0 when called
+    exactly on a boundary).
+    """
+    epoch = now_local.timestamp()
+    next_tick = math.ceil((epoch + 1e-6) / interval_s) * interval_s
+    return next_tick - epoch
 
 # Sub-hourly inst_load tick set: every 5 minutes within the hour.
 _EVERY_5_MIN = tuple(range(0, 60, 5))
@@ -639,14 +662,31 @@ def main() -> int:
 
     async def run():
         async with PJMClient(cfg) as client:
+            # Initial alignment: sleep to the next clock-aligned tick so
+            # the loop's wake times land on the minute marks the schedule
+            # tuples expect (e.g., :00, :05, :10, ... for poll_interval=300).
+            sleep_s = seconds_to_next_aligned_tick(datetime.now(cfg.tz),
+                                                    cfg.poll_interval_s)
+            log("info", "initial_alignment_sleep", seconds=round(sleep_s, 2))
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=sleep_s)
+            except asyncio.TimeoutError:
+                pass
+
             while not stop.is_set():
                 try:
                     await poll_once(client, write_api, cfg)
                 except Exception as exc:
                     log("error", "poll_unhandled_error",
                         error=str(exc), error_type=type(exc).__name__)
+                # Sleep to the NEXT aligned boundary, not a fixed interval
+                # from now. If poll_once took 1.3s the next tick is in
+                # interval_s - 1.3 seconds, keeping the loop on the clock
+                # grid even if poll_once durations vary.
+                sleep_s = seconds_to_next_aligned_tick(datetime.now(cfg.tz),
+                                                        cfg.poll_interval_s)
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=cfg.poll_interval_s)
+                    await asyncio.wait_for(stop.wait(), timeout=sleep_s)
                 except asyncio.TimeoutError:
                     pass
 
