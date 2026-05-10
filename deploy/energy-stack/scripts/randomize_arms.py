@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Generate the pre-committed Arm A / Arm B week-level assignment for the
-residential HVAC controls field study (EXPERIMENT_DESIGN.md).
+residential HVAC controls field study (EXPERIMENT_DESIGN.md §5).
 
-Block-of-2 randomization: every consecutive pair of weeks contains one Arm A
-week and one Arm B week, with the order within the block determined by the
-seed. Guarantees within-month balance and prevents long single-arm runs.
-A trailing odd week (if the date range yields an odd week count) is assigned
-independently from the same RNG stream.
+Block-of-4 randomization: every consecutive 4-week block contains 2
+consecutive Arm A weeks and 2 consecutive Arm B weeks, with the order
+within the block (AABB or BBAA) determined by the seed. The 2-week-arm
+unit gives 12 analyzable days per arm-period after the 48h post-switch
+washout (vs 5 days under 1-week arms), and 4-week blocks guarantee
+balanced exposure within each calendar month while preserving the SCED
+randomization-test reference distribution as a secondary inference.
+
+Trailing weeks (1-3 weeks past the last complete 4-week block) are
+randomized independently from the same RNG stream so the date range can
+be any length without changing the algorithm.
 
 This script is the binding artifact behind the OSF pre-registration. The
 seed and the algorithm are pre-committed; running with the same seed and
@@ -19,13 +25,15 @@ EXPERIMENT_DESIGN.md §13.
 
 Usage:
     python randomize_arms.py
-    python randomize_arms.py --seed 20260602 --start 2027-06-01 --end 2027-09-30
+    python randomize_arms.py --seed 20260602 --start 2027-06-01 --end 2027-05-31
     python randomize_arms.py --output /tmp/assignments.csv
 
 Output (CSV, header included):
     iso_week,monday_date,arm
     2026-W23,2026-06-01,A
-    2026-W24,2026-06-08,B
+    2026-W24,2026-06-08,A
+    2026-W25,2026-06-15,B
+    2026-W26,2026-06-22,B
     ...
 """
 from __future__ import annotations
@@ -66,29 +74,37 @@ def _format_iso_week(d: date) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
+_BLOCK_PATTERNS = (("A", "A", "B", "B"), ("B", "B", "A", "A"))
+
+
 def generate_assignments(
     seed: int,
     start: date,
     end: date,
 ) -> list[WeekAssignment]:
-    """Block-of-2 randomized A/B assignment for each Monday-anchored week
-    intersecting [start, end]. Deterministic given the seed."""
+    """Block-of-4 randomized A/B assignment for each Monday-anchored week
+    intersecting [start, end]. Deterministic given the seed.
+
+    Each complete 4-week block runs either AABB or BBAA, chosen by the
+    RNG. Trailing weeks (1-3 past the last complete block) are
+    randomized independently.
+    """
     rng = random.Random(seed)
     mondays = _iter_mondays(start, end)
     assignments: list[WeekAssignment] = []
 
     i = 0
-    while i + 1 < len(mondays):
-        block = ["A", "B"]
-        rng.shuffle(block)
-        for monday, arm in zip(mondays[i : i + 2], block):
+    while i + 3 < len(mondays):
+        pattern = rng.choice(_BLOCK_PATTERNS)
+        for monday, arm in zip(mondays[i : i + 4], pattern):
             assignments.append(WeekAssignment(_format_iso_week(monday), monday, arm))
-        i += 2
+        i += 4
 
-    if i < len(mondays):
+    while i < len(mondays):
         monday = mondays[i]
         arm = rng.choice(["A", "B"])
         assignments.append(WeekAssignment(_format_iso_week(monday), monday, arm))
+        i += 1
 
     return assignments
 
@@ -108,8 +124,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Random seed (default: 20260601, pre-committed in EXPERIMENT_DESIGN.md §13)")
     ap.add_argument("--start", type=date.fromisoformat, default=date(2026, 6, 1),
                     help="Start date inclusive, ISO YYYY-MM-DD (default: 2026-06-01)")
-    ap.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 30),
-                    help="End date inclusive, ISO YYYY-MM-DD (default: 2026-09-30)")
+    ap.add_argument("--end", type=date.fromisoformat, default=date(2027, 5, 31),
+                    help="End date inclusive, ISO YYYY-MM-DD (default: 2027-05-31; "
+                         "year-round 2026 weeks per EXPERIMENT_DESIGN §5)")
     ap.add_argument("--output", type=Path, default=Path("docs/experiment-assignments-summer-2026.csv"),
                     help="CSV output path (default: docs/experiment-assignments-summer-2026.csv)")
     ap.add_argument("--dry-run", action="store_true",
