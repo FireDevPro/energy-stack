@@ -1,10 +1,19 @@
 """PJM 5CP-eligibility detector (Arm B layer 3).
 
-The five highest hourly ComEd-zone loads of the cooling season set the
-following year's residential capacity charge. The detector predicts when
-the current hour is likely a 5CP-eligible hour and triggers an aggressive
-shutoff (cool setpoint = 85F) for the duration of the elevated-load
-window plus a 30-minute trailing hold.
+The residential capacity-charge dollar exposure depends on TWO separate
+sets of 5 coincident peak hours per cooling season (see HVAC_LOGIC.md
+"Capacity peak context"):
+
+  * **PJM 5CP**   -- 5 highest RTO-wide hourly loads.
+  * **ComEd 5CP** -- 5 highest ComEd-zone hourly loads.
+
+ComEd's zone peaks can land earlier in the afternoon than the RTO peaks
+because metro-Chicago load shape differs from the broader RTO. Each kW
+shaved during *any* 5CP hour saves roughly the same dollar amount, so
+the detector triggers aggressive shutoff (cool setpoint = 85F) on
+likely-eligible hours from EITHER set. The scheduler runs the detector
+twice (once per scope) and ORs the triggers; this module is the
+per-scope state machine.
 
 Triggers (all must be true to enter the active state):
 
@@ -40,16 +49,16 @@ Modeled on the joe248 AppDaemon 5CP-prediction implementation
 Two-feed data lineage (refined post-deploy when PJM's official OpenAPI
 spec confirmed the metered feed has multi-day publish lag):
 
-  * ``pjm.inst_load`` (area=COMED, ~5-min cadence, "approximate, NOT
-    official PJM Loads") feeds ``current_load_mw`` and the load
-    derivative — the real-time directional signal.
-  * ``pjm.metered_load`` (zone=CE, daily publish with up to 90-day
-    correction window, official metered values) feeds the
-    season-to-date 5th-highest baseline — the values that ultimately
+  * ``pjm.inst_load`` (area depends on scope, ~5-min cadence,
+    "approximate, NOT official PJM Loads") feeds ``current_load_mw``
+    and the load derivative -- the real-time directional signal.
+  * ``pjm.metered_load`` (zone depends on scope, daily publish with up
+    to 90-day correction window, official metered values) feeds the
+    season-to-date 5th-highest baseline -- the values that ultimately
     determine 5CP rank.
 
-Both feeds are needed; one without the other doesn't deliver the
-detector's locked rule (current/baseline > 0.95).
+Both feeds are needed per scope; one without the other doesn't deliver
+the detector's locked rule (current/baseline > 0.95).
 """
 from __future__ import annotations
 
@@ -68,13 +77,80 @@ WINDOW_START_CT = dtime(13, 0)
 WINDOW_END_CT = dtime(20, 0)
 COOL_SHUTOFF_F = 85
 HOLD_TAIL_MINUTES = 30
-# Used when fewer than 5 hourly observations have accumulated in the season
-# (pre-season cold start). 130,000 MW is the rough ComEd zone summer-peak
-# threshold below which 5CP-eligibility is essentially impossible.
-PRE_SEASON_FALLBACK_5TH_MW = 130000.0
+
+# Pre-season cold-start fallback for the season-to-date 5th-highest hourly
+# load. Used only when fewer than ``MIN_OBSERVATIONS_FOR_5TH`` hourly
+# observations exist in InfluxDB for the current cooling season. Once the
+# metered feed publishes enough hours (typically 3-5 days into June given
+# the 1-2 day publish lag), this value is unused.
+#
+# Value source: 2025 ComEd-zone 5th-highest hourly metered load.
+# Empirically pulled 2026-05-10 from ``pjm.metered_load{zone=CE}`` over the
+# 2025 cooling season (Jun-Sep): 5th-highest = 20,375.4 MW (2025-07-23
+# 18:00 CT). Rounded down to 20,375 so a real ComEd-zone hot day with
+# current load >= 19,357 MW (95% of 20,375) trips the detector pre-data.
+#
+# Prior value of 130,000 MW was RTO-scale (130 GW) misapplied to the
+# ComEd-zone path, leaving the detector inert pre-season because ComEd's
+# annual peak (20.7 GW) couldn't reach 95% of a 130 GW baseline. Fixed
+# 2026-05 ahead of randomization start.
+COMED_PRE_SEASON_FALLBACK_5TH_MW = 20375.0
+
+# Pre-season cold-start fallback for the RTO 5CP detector. Source: latest
+# published actual PJM RTO 5CP 5th-peak (2025) per PJM's annual 5CP
+# publication: 151,524.7 MW. Rounded up to 151,525 to be slightly
+# conservative (a real RTO hot day with current load >= 143,949 MW = 95%
+# of 151,525 trips the detector pre-data; the 2025 actual peak was
+# >161 GW so this is reachable on a hot weekday afternoon).
+RTO_PRE_SEASON_FALLBACK_5TH_MW = 151525.0
+
 MIN_OBSERVATIONS_FOR_5TH = 5
 
 CHICAGO = ZoneInfo("America/Chicago")
+
+
+# ---- Detector scope (P1.1) -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DetectorScope:
+    """Per-detector configuration. The §3 5CP detector runs once per
+    scope. Two scopes are wired in production:
+
+      * ``COMED_SCOPE`` -- catches ComEd 5CPs (ComEd-zone hours that
+        contribute to ComEd's capacity-allocation step).
+      * ``RTO_SCOPE``   -- catches PJM 5CPs (RTO-wide hours that
+        determine ComEd's PLC, which then flows to the residential
+        capacity-charge rate).
+
+    Both scopes contribute dollars to the household's next-year
+    residential capacity charge (per HVAC_LOGIC.md "Capacity peak
+    context"), so the scheduler ORs their triggers.
+
+    Carrying the scope explicitly through fetch / state-update /
+    decision is what prevents a regression like the 2026-05 ComEd
+    fallback bug (130 GW RTO-scale value misapplied to the ComEd-zone
+    path). A function that takes a scope cannot silently mix scales.
+    """
+    name: str                          # log identifier: "comed_zone" | "rto"
+    inst_load_area: str                # pjm.inst_load tag value: "COMED" | "PJM RTO"
+    metered_load_zone: str             # pjm.metered_load tag value: "CE" | "RTO"
+    pre_season_fallback_5th_mw: float  # 20375.0 | 151525.0
+
+
+COMED_SCOPE = DetectorScope(
+    name="comed_zone",
+    inst_load_area="COMED",
+    metered_load_zone="CE",
+    pre_season_fallback_5th_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+)
+
+RTO_SCOPE = DetectorScope(
+    name="rto",
+    inst_load_area="PJM RTO",
+    metered_load_zone="RTO",
+    pre_season_fallback_5th_mw=RTO_PRE_SEASON_FALLBACK_5TH_MW,
+)
 
 
 # ---- State machine ---------------------------------------------------------
@@ -174,23 +250,32 @@ def evaluate_5cp_risk(
 # ---- Season 5th-highest computation ---------------------------------------
 
 
-def season_5th_highest_from_loads(loads_mw: list[float]) -> float:
+def season_5th_highest_from_loads(loads_mw: list[float], *,
+                                   fallback_mw: float) -> float:
     """Pure function: given a list of hourly average loads (any order),
-    return the 5th-highest value. Falls back to PRE_SEASON_FALLBACK_5TH_MW
-    when fewer than MIN_OBSERVATIONS_FOR_5TH observations are supplied."""
+    return the 5th-highest value. Falls back to ``fallback_mw`` when
+    fewer than ``MIN_OBSERVATIONS_FOR_5TH`` observations are supplied.
+
+    ``fallback_mw`` must be scoped to the detector (ComEd-zone vs
+    PJM RTO) -- mixing scales here is the bug that left the ComEd
+    detector inert pre-season before 2026-05.
+    """
     if len(loads_mw) < MIN_OBSERVATIONS_FOR_5TH:
-        return PRE_SEASON_FALLBACK_5TH_MW
+        return fallback_mw
     sorted_desc = sorted(loads_mw, reverse=True)
     return float(sorted_desc[MIN_OBSERVATIONS_FOR_5TH - 1])
 
 
 def update_season_5th_highest(query_api, bucket: str,
                               season_start_utc: datetime,
-                              *, zone: str = "CE") -> float:
+                              *, zone: str = "CE",
+                              fallback_mw: float = COMED_PRE_SEASON_FALLBACK_5TH_MW
+                              ) -> float:
     """Query InfluxDB for hourly-average ``pjm.metered_load`` values since
     ``season_start_utc`` and return the 5th-highest. Falls back to
-    PRE_SEASON_FALLBACK_5TH_MW when fewer than 5 hourly observations
-    exist (pre-season cold start)."""
+    ``fallback_mw`` (scoped to the requested ``zone``) when fewer than
+    ``MIN_OBSERVATIONS_FOR_5TH`` hourly observations exist (pre-season
+    cold start)."""
     flux = f"""
         from(bucket: "{bucket}")
           |> range(start: {season_start_utc.isoformat()})
@@ -207,7 +292,7 @@ def update_season_5th_highest(query_api, bucket: str,
             v = record.get_value()
             if v is not None:
                 loads.append(float(v))
-    return season_5th_highest_from_loads(loads)
+    return season_5th_highest_from_loads(loads, fallback_mw=fallback_mw)
 
 
 # ---- Live load + derivative ------------------------------------------------
@@ -272,6 +357,103 @@ def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[
         current_mw=latest_mw,
         derivative_mw_per_hour=derivative,
         observed_at_utc=latest_t,
+    )
+
+
+# ---- Scope-aware top-level evaluation (P1.1) ------------------------------
+
+
+@dataclass(frozen=True)
+class ScopeEvaluation:
+    """Per-tick result of ``evaluate_for_scope``. Bundles the binding
+    decision (``is_active``) with the structured-log payload so callers
+    can emit one log line covering all the inputs the detector saw.
+
+    ``log_fields`` always includes ``scope``, ``area``, ``zone``, and
+    ``fallback_5th_mw`` so a scale-mismatch regression (RTO fallback
+    misapplied to ComEd path, or vice versa) shows up in logs the same
+    tick it happens, not silently in behavior.
+    """
+    is_active: bool
+    new_state: FiveCPState
+    season_5th_mw: float
+    snapshot: Optional[ZoneLoadSnapshot]
+    log_fields: dict
+
+
+def evaluate_for_scope(
+    scope: DetectorScope,
+    query_api,
+    bucket: str,
+    season_start_utc: datetime,
+    forecast_peak_today_mw: Optional[float],
+    state: FiveCPState,
+    now_utc: datetime,
+) -> ScopeEvaluation:
+    """Top-level per-scope 5CP detector evaluation.
+
+    Fetches inputs from InfluxDB (current load via ``pjm.inst_load``
+    tagged with ``scope.inst_load_area``, season-to-date 5th-highest
+    via ``pjm.metered_load`` tagged with ``scope.metered_load_zone``),
+    runs the state machine, and returns the binding decision plus the
+    log payload describing every input.
+
+    When the snapshot or forecast peak is unavailable, returns the
+    prior ``state.is_active`` (carry decision rather than treating
+    missing data as zero load) and records the data gap in
+    ``log_fields["data_status"]``.
+    """
+    season_5th_mw = update_season_5th_highest(
+        query_api, bucket, season_start_utc,
+        zone=scope.metered_load_zone,
+        fallback_mw=scope.pre_season_fallback_5th_mw,
+    )
+    snapshot = fetch_zone_live(query_api, bucket, area=scope.inst_load_area)
+
+    log_fields: dict = {
+        "scope": scope.name,
+        "area": scope.inst_load_area,
+        "zone": scope.metered_load_zone,
+        "season_5th_mw": season_5th_mw,
+        "fallback_5th_mw": scope.pre_season_fallback_5th_mw,
+    }
+
+    if snapshot is None or forecast_peak_today_mw is None:
+        log_fields["data_status"] = (
+            "no_snapshot" if snapshot is None else "no_forecast_peak"
+        )
+        # Carry prior state rather than treat missing data as zero load.
+        return ScopeEvaluation(
+            is_active=state.is_active,
+            new_state=state,
+            season_5th_mw=season_5th_mw,
+            snapshot=snapshot,
+            log_fields=log_fields,
+        )
+
+    ratio = (snapshot.current_mw / season_5th_mw) if season_5th_mw > 0 else 0.0
+    log_fields.update({
+        "current_mw": snapshot.current_mw,
+        "derivative_mw_per_hour": snapshot.derivative_mw_per_hour,
+        "load_ratio": ratio,
+        "forecast_peak_today_mw": forecast_peak_today_mw,
+        "data_status": "ok",
+    })
+
+    is_active, new_state = evaluate_5cp_risk(
+        current_load_mw=snapshot.current_mw,
+        season_5th_highest_mw=season_5th_mw,
+        load_derivative_mw_per_hour=snapshot.derivative_mw_per_hour,
+        forecast_peak_today_mw=forecast_peak_today_mw,
+        now_utc=now_utc,
+        state=state,
+    )
+    return ScopeEvaluation(
+        is_active=is_active,
+        new_state=new_state,
+        season_5th_mw=season_5th_mw,
+        snapshot=snapshot,
+        log_fields=log_fields,
     )
 
 

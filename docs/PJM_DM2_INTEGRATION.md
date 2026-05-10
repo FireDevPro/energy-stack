@@ -29,7 +29,7 @@ All three are supporting work for the [field study](EXPERIMENT_DESIGN.md). None 
 - **Member-tier API access.** Non-Member tier covers everything we need. No subscription cost.
 - **Ancillary services / reserves market data.** Not relevant for residential cooling-cost control.
 - **Real-time 5-minute LMP polling.** The data exists (`rt_fivemin_hrl_lmps`) but the scheduler doesn't operate on a 5-minute cadence; daily DA LMP + hourly RT LMP are sufficient.
-- **Multi-zone coverage.** ComEd zone only. RTO totals captured for context.
+- **Multi-zone coverage.** ComEd zone for household-relevant feeds (DA LMP, ComEd-zone metered/inst load, ComEd-zone forecast). RTO totals also captured for the §3 dual-scope 5CP detector via `pjm.metered_load{zone=RTO}` and `pjm.inst_load{area="PJM RTO"}` because PJM 5CPs are RTO-wide hours, not zonal. No other PJM zones polled.
 
 ## Architecture
 

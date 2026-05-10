@@ -75,11 +75,12 @@ from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
 from pjm_5cp import (
+    COMED_SCOPE,
+    RTO_SCOPE,
     FiveCPState,
-    evaluate_5cp_risk,
+    evaluate_for_scope,
     fetch_forecast_peak_for_date,
     fetch_forecast_peak_today,
-    fetch_zone_live,
     update_season_5th_highest,
 )
 from precool import (
@@ -728,9 +729,13 @@ class FiringState:
     # not container restarts; cold-start re-evaluates from current price
     # within the 30-min minimum-hold window so behaviour stabilizes fast.
     price_overlay_state: PriceOverlayState = field(default_factory=PriceOverlayState)
-    # 5CP-detector state machine (§3). Same persistence semantics as the
-    # price overlay; cold-start defaults to inactive.
-    fivecp_state: FiveCPState = field(default_factory=FiveCPState)
+    # 5CP-detector state machines (§3). Two scopes, one state each:
+    # ComEd zone (catches ComEd 5CPs) and PJM RTO (catches PJM 5CPs).
+    # Both contribute to next-year residential capacity charges; the
+    # scheduler ORs their triggers. Same persistence semantics as the
+    # price overlay; cold-start defaults to inactive for each.
+    fivecp_state_comed: FiveCPState = field(default_factory=FiveCPState)
+    fivecp_state_rto: FiveCPState = field(default_factory=FiveCPState)
     # Mid-period re-push tracking (§4 / Critical #2). The most recently
     # fired non-release-hold action's schedule-baseline setpoint and the
     # last effective cool setpoint pushed to the thermostat. When a per-
@@ -929,9 +934,19 @@ def _fetch_pjm_inputs_for_target_date(
     being non-None, so a None peak silently falls back to the multi-day
     HOT_STREAK_DAY1 path.
     """
+    # §7 pre-cool deepening uses ComEd-zone forecast peak vs ComEd-zone
+    # season-5th; consistent scale. The dual-scope OR (§3) lives in the
+    # live detector at the peak hour, not the night-before pre-cool
+    # decision. Explicit scope arg keeps it impossible to silently mix
+    # RTO/ComEd scales here (which was the latent bug fixed in the
+    # prior commit).
     target_dt = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
     season_start_utc = cooling_season_start_utc(target_dt)
-    season_5th_mw = update_season_5th_highest(query_api, bucket, season_start_utc)
+    season_5th_mw = update_season_5th_highest(
+        query_api, bucket, season_start_utc,
+        zone=COMED_SCOPE.metered_load_zone,
+        fallback_mw=COMED_SCOPE.pre_season_fallback_5th_mw,
+    )
     target_peak_mw = fetch_forecast_peak_for_date(
         query_api, bucket, target_date_iso, tz=tz,
     )
@@ -951,17 +966,24 @@ def cooling_season_start_utc(now_local: datetime) -> datetime:
 
 def write_5cp_state(
     write_api, bucket: str,
-    *, is_active: bool,
+    *, scope: str,
+    is_active: bool,
     current_load_mw: float,
     season_5th_highest_mw: float,
     load_derivative_mw_per_hour: float,
     forecast_peak_today_mw: float,
-    zone: str = "CE",
+    zone: str,
 ) -> None:
-    """Write one ``hvac.5cp_state`` row per scheduler tick so the detector's
-    decisions are auditable. Tagged by zone + is_active for dashboards."""
+    """Write one ``hvac.5cp_state`` row per scheduler tick per scope so
+    the detector's decisions are auditable. Tagged by ``scope``
+    (``comed_zone`` | ``rto``), ``zone`` (``CE`` | ``RTO``), and
+    ``is_active``. Up to two rows per audit interval (the caller
+    skips a scope whose data_status != "ok", so a transient PJM
+    inst_load gap for one scope still records the other rather than
+    fabricating audit rows from absent inputs)."""
     ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
     p = (Point("hvac.5cp_state")
+         .tag("scope", scope)
          .tag("zone", zone)
          .tag("is_active", "true" if is_active else "false")
          .field("current_load_mw", float(current_load_mw))
@@ -1322,13 +1344,25 @@ def vacation_schedule(override: Override) -> list[ScheduleAction]:
 class LayerInputs:
     """Per-tick output of `_evaluate_layer_inputs`. Captures everything
     needed to call `resolve_layer_priority` plus the audit context for
-    `hvac.price_overlay` and `hvac.5cp_state` writes."""
+    `hvac.price_overlay` and `hvac.5cp_state` writes.
+
+    ``fivecp_active`` is the OR across both detector scopes (ComEd zone
+    and PJM RTO). ``fivecp_scopes_fired`` lists the scope names that
+    contributed -- ("comed_zone",), ("rto",), or both. Empty tuple
+    means no scope triggered. Downstream logs and audit rows use the
+    detail for attribution.
+
+    ``fivecp_load_mw`` / ``fivecp_derivative`` reflect the COMED scope
+    inputs for backward-compat with existing single-scope dashboards;
+    per-scope detail is in ``hvac.5cp_state`` rows tagged by scope.
+    """
     price_tier_name: str
     price_offset_f: int
     price_override_f: int | None
     price_prev_tier: str
     current_price_cents: float | None
     fivecp_active: bool
+    fivecp_scopes_fired: tuple[str, ...]
     fivecp_load_mw: float
     fivecp_derivative: float
     fivecp_forecast_peak: float
@@ -1345,7 +1379,8 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     independent of whether a scheduled action is firing this minute.
 
     Side effects:
-      * Updates ``firing.price_overlay_state`` and ``firing.fivecp_state``.
+      * Updates ``firing.price_overlay_state`` and both
+        ``firing.fivecp_state_comed`` / ``firing.fivecp_state_rto``.
       * Writes ``hvac.price_overlay`` on tier transitions only.
       * Writes ``hvac.5cp_state`` at most once every 5 min (throttled via
         ``firing.last_5cp_audit_at_utc``) so dashboards see the ~288
@@ -1387,32 +1422,53 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_tier_name = active_tier.name
 
     # ---- 5CP detection (§3) ----
-    zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
+    # Two detectors run in parallel: ComEd-zone (catches ComEd 5CPs)
+    # and PJM RTO (catches PJM 5CPs). Both contribute to the next-year
+    # residential capacity charge per HVAC_LOGIC.md. is_5cp_risk is the
+    # OR; structured-log payload records per-scope inputs so a
+    # scale-mismatch regression (RTO fallback on ComEd path or vice
+    # versa) shows up immediately in logs, not silently in behavior.
+    season_start_utc = cooling_season_start_utc(now_local)
     forecast_peak = fetch_forecast_peak_today(
         query_api, cfg.influx_bucket, tz=ZoneInfo(cfg.tz_name),
     )
-    season_start_utc = cooling_season_start_utc(now_local)
-    season_5th_mw = update_season_5th_highest(
-        query_api, cfg.influx_bucket, season_start_utc,
+    comed_eval = evaluate_for_scope(
+        COMED_SCOPE, query_api, cfg.influx_bucket, season_start_utc,
+        forecast_peak, firing.fivecp_state_comed, now_utc,
     )
-    fivecp_data_available = zone_snapshot is not None and forecast_peak is not None
-    if not fivecp_data_available:
-        fivecp_active = firing.fivecp_state.is_active  # carry prior state
-        fivecp_load_mw = 0.0
-        fivecp_derivative = 0.0
-        fivecp_forecast_peak = 0.0
-    else:
-        fivecp_active, firing.fivecp_state = evaluate_5cp_risk(
-            current_load_mw=zone_snapshot.current_mw,
-            season_5th_highest_mw=season_5th_mw,
-            load_derivative_mw_per_hour=zone_snapshot.derivative_mw_per_hour,
-            forecast_peak_today_mw=forecast_peak,
-            now_utc=now_utc,
-            state=firing.fivecp_state,
-        )
-        fivecp_load_mw = zone_snapshot.current_mw
-        fivecp_derivative = zone_snapshot.derivative_mw_per_hour
-        fivecp_forecast_peak = forecast_peak
+    rto_eval = evaluate_for_scope(
+        RTO_SCOPE, query_api, cfg.influx_bucket, season_start_utc,
+        forecast_peak, firing.fivecp_state_rto, now_utc,
+    )
+    firing.fivecp_state_comed = comed_eval.new_state
+    firing.fivecp_state_rto = rto_eval.new_state
+
+    fivecp_active = comed_eval.is_active or rto_eval.is_active
+    fivecp_scopes_fired = tuple(
+        name for name, ev in (("comed_zone", comed_eval), ("rto", rto_eval))
+        if ev.is_active
+    )
+    fivecp_data_available = (
+        comed_eval.log_fields.get("data_status") == "ok"
+        or rto_eval.log_fields.get("data_status") == "ok"
+    )
+
+    log("info", "fivecp_eval", comed=comed_eval.log_fields,
+        rto=rto_eval.log_fields, is_active=fivecp_active,
+        scopes_fired=list(fivecp_scopes_fired))
+
+    # Backward-compat fields for LayerInputs / existing dashboards: use
+    # the ComEd-scope snapshot when available, else zeros. Per-scope
+    # detail is preserved in hvac.5cp_state rows tagged by scope.
+    fivecp_load_mw = (
+        comed_eval.snapshot.current_mw if comed_eval.snapshot is not None else 0.0
+    )
+    fivecp_derivative = (
+        comed_eval.snapshot.derivative_mw_per_hour
+        if comed_eval.snapshot is not None else 0.0
+    )
+    fivecp_forecast_peak = forecast_peak if forecast_peak is not None else 0.0
+    season_5th_mw = comed_eval.season_5th_mw
 
     # ---- Audit writes ----
     new_tier = firing.price_overlay_state.current_tier
@@ -1434,14 +1490,23 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         firing.last_5cp_audit_at_utc is None
         or now_utc - firing.last_5cp_audit_at_utc >= _FIVECP_AUDIT_INTERVAL
     ):
-        write_5cp_state(
-            write_api, cfg.influx_bucket,
-            is_active=fivecp_active,
-            current_load_mw=fivecp_load_mw,
-            season_5th_highest_mw=season_5th_mw,
-            load_derivative_mw_per_hour=fivecp_derivative,
-            forecast_peak_today_mw=fivecp_forecast_peak,
-        )
+        for scope, ev in (
+            (COMED_SCOPE, comed_eval), (RTO_SCOPE, rto_eval),
+        ):
+            if ev.log_fields.get("data_status") != "ok":
+                continue
+            write_5cp_state(
+                write_api, cfg.influx_bucket,
+                scope=scope.name,
+                zone=scope.metered_load_zone,
+                is_active=ev.is_active,
+                current_load_mw=ev.snapshot.current_mw if ev.snapshot else 0.0,
+                season_5th_highest_mw=ev.season_5th_mw,
+                load_derivative_mw_per_hour=(
+                    ev.snapshot.derivative_mw_per_hour if ev.snapshot else 0.0
+                ),
+                forecast_peak_today_mw=forecast_peak or 0.0,
+            )
         firing.last_5cp_audit_at_utc = now_utc
 
     return LayerInputs(
@@ -1451,6 +1516,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         price_prev_tier=prev_tier,
         current_price_cents=current_price_cents,
         fivecp_active=fivecp_active,
+        fivecp_scopes_fired=fivecp_scopes_fired,
         fivecp_load_mw=fivecp_load_mw,
         fivecp_derivative=fivecp_derivative,
         fivecp_forecast_peak=fivecp_forecast_peak,
