@@ -1356,7 +1356,9 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
 
     # ---- 5CP detection (§3) ----
     zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
-    forecast_peak = fetch_forecast_peak_today(query_api, cfg.influx_bucket)
+    forecast_peak = fetch_forecast_peak_today(
+        query_api, cfg.influx_bucket, tz=ZoneInfo(cfg.tz_name),
+    )
     season_start_utc = cooling_season_start_utc(now_local)
     season_5th_mw = update_season_5th_highest(
         query_api, cfg.influx_bucket, season_start_utc,

@@ -960,8 +960,9 @@ def _stub_layer_eval_io(monkeypatch, *,
     else:
         snapshot = None
     monkeypatch.setattr(app, "fetch_zone_live", lambda q, b: snapshot)
+    # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
     monkeypatch.setattr(app, "fetch_forecast_peak_today",
-                        lambda q, b: forecast_peak)
+                        lambda q, b, *, tz=None: forecast_peak)
     monkeypatch.setattr(app, "update_season_5th_highest",
                         lambda q, b, s: season_5th)
 
