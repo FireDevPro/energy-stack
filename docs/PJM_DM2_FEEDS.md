@@ -66,7 +66,20 @@ Filter columns are how `?param=value` queries are built. Non-filterable columns 
 **Filterable**: `datetime_beginning_ept`, `datetime_beginning_utc`, `is_verified`, `load_area`, `mkt_region`, `nerc_region`, `zone`.
 **Returned only**: `mw`.
 
-**ComEd**: `zone = "COMED"`.
+**ComEd**: `zone = "CE"` (verified against the official PJM DM2 OpenAPI spec — the `zone` allowed-values list is `AE, AEP, AP, ATSI, BC, CE, DAY, DEOK, DOM, DPL, DUQ, EKPC, JC, ME, OTHER, PE, PEP, PL, PN, PS, RECO, RTO, OVEC`. Earlier revisions of this doc said `"COMED"`; that was wrong — empirically `zone="COMED"` returns 0 rows while `zone="CE"` returns the expected data).
+
+**Posting cadence**: per the PJM spec, "There will be a lag in updated data availability due to wait time for possible corrections. Data adjustments can occur up to 90 days after the actual date." Empirically the typical publish lag is 2-3 days. The poller's hourly polling cadence (post-§0b, May 2026) catches newly-posted historical data within ~1h of when PJM ships it; the 5-day fetch lookback absorbs the typical multi-day publish lag plus weekend gaps.
+
+### `inst_load` — Instantaneous Load (real-time, approximate)
+
+**Filterable**: `datetime_beginning_ept`, `datetime_beginning_utc`, `area`.
+**Returned only**: `area`, `instantaneous_load`.
+
+**ComEd**: `area = "COMED"`. Note the asymmetry vs `hrl_load_metered`: same utility, different filter parameter name AND different code value. This is per the PJM spec's per-feed allowed-values lists; the convention varies by feed.
+
+**Per the PJM spec**: "Loads are calculated from raw telemetry data and are approximate. **The displayed values are NOT official PJM Loads.** This feed represents data frequently updated throughout the operating day. In the event of a technical issue that prevents data from being updated, PJM will work to resolve the issue but typically will not update the data to replace the missed intervals."
+
+**Use case**: real-time directional signal for the §3 5CP detector's `current_load_mw` side. The official metered values come from `hrl_load_metered` (with multi-day publish lag) and feed the season-to-date 5th-highest baseline. Both feeds cooperate by purpose — one without the other doesn't deliver the locked detector rule (`current_zone_load_mw / season_to_date_5th_highest_mw > 0.95`).
 
 ### `ops_sum_frcst_peak_rto` — Projected RTO Stats at Peak
 

@@ -1,8 +1,8 @@
 """PJM Data Miner 2 -> InfluxDB poller.
 
-Polls hourly; each feed knows when it should fire (hours + optional weekday
-+ optional month + optional day-of-month) and silently skips otherwise. The
-scheduling is per-feed because they have different cadences:
+Polls every 5 minutes; each feed knows when it should fire (hours + minutes
++ optional weekday/month/day-of-month) and silently skips otherwise. The
+scheduling is per-feed because cadences differ widely:
 
   * `da_hrl_lmps` for ComEd zonal aggregate (pnode_id=33092371) at 17:00 CT.
     Day-ahead market clears ~16:00 CT; 17:00 ensures tomorrow's prices are
@@ -11,14 +11,26 @@ scheduling is per-feed because they have different cadences:
     Twice daily picks up the morning revision and the late-morning update.
     Writes to `pjm.load_forecast` with `evaluated_at_iso` tag distinguishing
     forecast revisions of the same target hour.
-  * `hrl_load_metered` for zone=CE (ComEd's PJM zone code is "CE", not
-    "COMED" -- empirically verified) every hour with a 3-hour rolling
+  * `hrl_load_metered` for zone=CE (ComEd's PJM zone code per the official
+    DM2 OpenAPI spec; the `area` filter on inst_load uses "COMED" instead
+    so the convention differs by feed) every hour with a 5-day rolling
     lookback window. Cadence migrated from weekly Sunday-02:00 in May
-    2026 to give the Arm B 5CP-eligibility detector fresh hourly load
-    against which to compare the season-to-date 5th-highest. The 3-hour
-    lookback covers PJM's ~1-hour metered-data lag with margin; Influx
-    deduplicates on identical timestamps so overlapping pulls are safe.
-    Writes to `pjm.metered_load`.
+    2026, then widened from 3-hour to 5-day lookback when the official
+    PJM spec confirmed: "There will be a lag in updated data
+    availability due to wait time for possible corrections. Data
+    adjustments can occur up to 90 days after the actual date." Hourly
+    polling catches newly-posted historical data within an hour of when
+    PJM ships it; the 5-day lookback is wide enough to absorb PJM's
+    typical multi-day publish lag plus weekend gaps. Influx deduplicates
+    on identical timestamps so overlapping pulls are safe.
+    Writes to `pjm.metered_load`. Feeds the §3 5CP-detector's
+    season-to-date 5th-highest baseline.
+  * `inst_load` for area=COMED every 5 minutes. PJM-described as
+    "approximate, NOT official PJM Loads" but "frequently updated
+    throughout the operating day" — exactly what the §3 5CP-detector's
+    `current_load_mw` side needs (a real-time directional signal of
+    "are we climbing toward season-5th right now?"). Writes to
+    `pjm.inst_load`.
   * `ops_sum_frcst_peak_rto` (PJM RTO peak forecast) at 06:00 + 13:00 CT
     during the cooling season (Jun-Sep). PJM's own daily projected peak
     load + projected peak hour. Writes to `pjm.peak_forecast_rto`.
@@ -37,11 +49,13 @@ Non-Member API tier:
   * 50,000-row max per call. Largest feed payload (load_frcstd_7_day with
     forecast_area=COMED) is ~168 hours x several revisions = under 1k.
 
-ComEd zone-code conventions (this differs by feed -- there is no single
-canonical ComEd zone code in the PJM API):
+ComEd zone-code conventions (this differs by feed per the PJM DM2
+OpenAPI spec -- there is no single canonical ComEd zone code in the
+PJM API):
   * da_hrl_lmps:        pnode_id=33092371 / pnode_name="COMED"
   * load_frcstd_7_day:  forecast_area="COMED"
-  * hrl_load_metered:   zone="CE"     (Commonwealth Edison abbreviation)
+  * hrl_load_metered:   zone="CE"     (PJM transmission-zone code list)
+  * inst_load:          area="COMED"  (PJM area-code list)
   * annual_zonal_nspl:  zone="COMED"  (full name)
 
 Auth: header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`.
@@ -70,6 +84,7 @@ PJM_API_BASE = "https://api.pjm.com/api/v1"
 COMED_PNODE_ID = 33092371
 COMED_FORECAST_AREA = "COMED"
 COMED_METERED_ZONE = "CE"
+COMED_INST_AREA = "COMED"
 COMED_NSPL_ZONE = "COMED"
 
 
@@ -80,18 +95,25 @@ COMED_NSPL_ZONE = "COMED"
 
 @dataclass(frozen=True)
 class Schedule:
-    """When a feed should fire, in cfg.tz local time. Hourly wake loop
-    checks should_fire() each cycle.
+    """When a feed should fire, in cfg.tz local time. The wake loop ticks
+    every cfg.poll_interval_s and checks should_fire() each cycle.
 
-    `weekdays` uses ISO convention (0=Monday, 6=Sunday). All None-valued
-    fields mean 'any'."""
+    ``minutes`` defaults to ``(0,)`` so feeds added before the 5-minute
+    poll-interval migration keep firing at the top of the hour only.
+    Sub-hourly feeds (notably ``inst_load``) override with a wider tuple.
+
+    ``weekdays`` uses ISO convention (0=Monday, 6=Sunday). All
+    None-valued optional fields mean 'any'."""
     hours: tuple[int, ...]
+    minutes: tuple[int, ...] = (0,)
     weekdays: tuple[int, ...] | None = None
     months: tuple[int, ...] | None = None
     days: tuple[int, ...] | None = None
 
     def should_fire(self, now_local: datetime) -> bool:
         if now_local.hour not in self.hours:
+            return False
+        if now_local.minute not in self.minutes:
             return False
         if self.weekdays is not None and now_local.weekday() not in self.weekdays:
             return False
@@ -102,12 +124,24 @@ class Schedule:
         return True
 
 
+# Wake-loop tick cadence. With minute-level Schedule gating, the wake loop
+# ticks every 5 minutes; sub-hourly feeds (inst_load) fire on every tick
+# and hourly feeds fire on the matching :00 tick. Pre-§inst-load this was
+# 3600 (hourly); the change is forward-compatible since every existing
+# Schedule has minutes=(0,) so they still fire only at the top of the hour.
+DEFAULT_POLL_INTERVAL_S = 300
+
+# Sub-hourly inst_load tick set: every 5 minutes within the hour.
+_EVERY_5_MIN = tuple(range(0, 60, 5))
+
+
 FEED_SCHEDULE: dict[str, Schedule] = {
     "da_hrl_lmps":            Schedule(hours=(17,)),
     "load_frcstd_7_day":      Schedule(hours=(6, 13)),
-    "hrl_load_metered":       Schedule(hours=tuple(range(0, 24))),                  # Hourly, 3h lookback
-    "ops_sum_frcst_peak_rto": Schedule(hours=(6, 13), months=(6, 7, 8, 9)),         # Cooling season only
-    "annual_zonal_nspl":      Schedule(hours=(3,), months=(12,), days=(1,)),         # Dec 1, 03:00 CT
+    "hrl_load_metered":       Schedule(hours=tuple(range(0, 24))),                            # Hourly, 5d lookback
+    "inst_load":              Schedule(hours=tuple(range(0, 24)), minutes=_EVERY_5_MIN),      # Every 5 min
+    "ops_sum_frcst_peak_rto": Schedule(hours=(6, 13), months=(6, 7, 8, 9)),                   # Cooling season only
+    "annual_zonal_nspl":      Schedule(hours=(3,), months=(12,), days=(1,)),                  # Dec 1, 03:00 CT
 }
 
 
@@ -134,7 +168,8 @@ class Config:
             raise SystemExit("PJM_DM2_API_KEY not set")
         return Config(
             api_key=api_key,
-            poll_interval_s=float(os.environ.get("PJM_DM2_POLL_INTERVAL", "3600")),
+            poll_interval_s=float(os.environ.get("PJM_DM2_POLL_INTERVAL",
+                                                  str(DEFAULT_POLL_INTERVAL_S))),
             influx_url=os.environ.get("INFLUX_URL", "http://influxdb:8086"),
             influx_token=os.environ["INFLUXDB_INIT_ADMIN_TOKEN"],
             influx_org=os.environ.get("INFLUXDB_INIT_ORG", "depaola-home"),
@@ -227,6 +262,24 @@ def build_load_forecast_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
             .time(target_utc)
         )
         out.append(p)
+    return out
+
+
+def build_inst_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+    """Convert ``inst_load`` items to ``pjm.inst_load`` points. One point
+    per posted observation (PJM publishes throughout the operating day at
+    irregular sub-hour intervals); tagged by ``area``. The ``mw`` field
+    name matches ``pjm.metered_load`` so the §3 5CP detector can switch
+    feeds without renaming downstream queries."""
+    out: list[Point] = []
+    for it in items:
+        ts_utc = _parse_ept(it["datetime_beginning_ept"], tz).astimezone(timezone.utc)
+        out.append(
+            Point("pjm.inst_load")
+            .tag("area", it.get("area", "") or "")
+            .field("mw", float(it.get("instantaneous_load") or 0.0))
+            .time(ts_utc)
+        )
     return out
 
 
@@ -336,12 +389,22 @@ async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetim
 
 
 async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
-    """Pull the last 3 hours of ComEd metered load. Range filter uses
-    PJM's `<start>to<end>` syntax. PJM's metered feed has ~1 hour data
-    lag so the trailing edge may be unpopulated; Influx dedups identical
-    timestamps so overlapping hourly pulls are safe."""
+    """Pull the last 5 days of ComEd metered load. Range filter uses
+    PJM's `<start>to<end>` syntax.
+
+    The 5-day window comes from the official PJM DM2 spec for
+    ``hrl_load_metered``: "There will be a lag in updated data
+    availability due to wait time for possible corrections. Data
+    adjustments can occur up to 90 days after the actual date." The
+    earlier 3-hour window (May 2026) was wrong; PJM publishes this feed
+    daily with a 2-3 day typical lag, not the 1-hour lag the §0b spec
+    assumed. The 5-day lookback absorbs PJM's typical multi-day publish
+    delay plus weekend gaps and still keeps payloads under 200 rows.
+    Influx dedups identical timestamps so the hourly polling cadence
+    layered on top of this 5-day window writes nothing extra unless PJM
+    posted new data."""
     end = now_local
-    start = end - timedelta(hours=3)
+    start = end - timedelta(days=5)
     items = await client.fetch(
         "hrl_load_metered",
         {
@@ -350,11 +413,40 @@ async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: d
                 f"{start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
                 f"{end.strftime('%Y-%m-%dT%H:%M:%S')}.0"
             ),
-            "rowCount": 50,
+            "rowCount": 500,
             "startRow": 1,
         },
     )
     return build_metered_load_points(items, cfg.tz)
+
+
+async def fetch_inst_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
+    """Pull the last 30 minutes of ComEd instantaneous load. PJM publishes
+    inst_load "frequently throughout the operating day" — the documented
+    cadence is sub-5-minute. The 30-minute lookback catches stragglers
+    if the poller missed a tick (container restart, transient Influx
+    write failure) without bloating payloads. Influx dedups overlapping
+    pulls so the 5-min poll cadence layered on top is safe.
+
+    Note: ``inst_load`` filters by ``area`` (not ``zone`` like
+    ``hrl_load_metered``). The PJM DM2 spec lists this asymmetry as
+    intentional; ``area="COMED"`` is the right code for the ComEd
+    transmission area in this feed."""
+    end = now_local
+    start = end - timedelta(minutes=30)
+    items = await client.fetch(
+        "inst_load",
+        {
+            "area": COMED_INST_AREA,
+            "datetime_beginning_ept": (
+                f"{start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
+                f"{end.strftime('%Y-%m-%dT%H:%M:%S')}.0"
+            ),
+            "rowCount": 200,
+            "startRow": 1,
+        },
+    )
+    return build_inst_load_points(items, cfg.tz)
 
 
 async def fetch_peak_forecast_rto(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -398,6 +490,7 @@ FEED_DISPATCHERS: dict[
     "da_hrl_lmps": fetch_da_lmp_for_tomorrow,
     "load_frcstd_7_day": fetch_load_forecast,
     "hrl_load_metered": fetch_metered_load_recent,
+    "inst_load": fetch_inst_load_recent,
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,
     "annual_zonal_nspl": fetch_annual_nspl,
 }
