@@ -218,10 +218,16 @@ def summarize_grid_for_date(grid_props: dict, target_date, tz: ZoneInfo) -> dict
     skies = slice_by_date(grids["skyCover"])
     pops = slice_by_date(grids["probabilityOfPrecipitation"])
 
-    out: dict[str, float] = {
+    # ``hours_covered`` is an int field on nws.forecast in the existing
+    # InfluxDB schema. Writing it as float triggers a 422 type-conflict
+    # error and drops the entire row (verified post-PR-#45 deploy:
+    # every nws-poller write returned `partial write: field type
+    # conflict: input field "hours_covered" ... is type float, already
+    # exists as type integer dropped=3`). Keep as int.
+    out: dict[str, int | float] = {
         "high_f": float(c_to_f(max(temps_c))),
         "low_f": float(c_to_f(min(temps_c))),
-        "hours_covered": float(len(temps_c)),
+        "hours_covered": len(temps_c),
     }
     if dews_c:
         out["max_dewpoint_f"] = float(c_to_f(max(dews_c)))

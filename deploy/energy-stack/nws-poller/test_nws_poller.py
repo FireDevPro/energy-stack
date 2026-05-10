@@ -340,6 +340,23 @@ def _load_fixture():
         return json.load(f)["properties"]
 
 
+def test_hours_covered_is_int_not_float():
+    """nws.forecast measurement has had ``hours_covered`` as an int field
+    since the forecastHourly era. Writing it as float triggers a 422
+    InfluxDB schema-conflict error and drops the entire row. Pin the
+    type so the type-coercion regression that broke nws-poller after
+    PR #45 deploy can't sneak back in."""
+    grid = _grid_props(
+        temperature=[
+            {"validTime": "2026-07-01T12:00:00+00:00/PT3H", "value": 25.0},
+        ],
+    )
+    out = summarize_grid_for_date(grid, date(2026, 7, 1), UTC)
+    assert isinstance(out["hours_covered"], int)
+    assert not isinstance(out["hours_covered"], bool)  # bool is int subclass
+    assert out["hours_covered"] == 3
+
+
 def test_real_fixture_temperature_field_populates():
     """Real LOT/57,60 fixture (captured 2026-05-10): the parser produces
     a non-empty roll-up for the day with the most coverage."""
