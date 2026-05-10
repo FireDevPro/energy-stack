@@ -302,51 +302,137 @@ def test_fetch_zone_live_computes_per_hour_derivative():
 # ---- fetch_forecast_peak_for_date (§7 wire-up) ---------------------------
 
 
-def _fake_query_api(records: list[float]):
-    """Minimal Flux query_api stub: returns one table whose records each
-    yield one of the supplied float values from .get_value()."""
+def _fake_query_api_with_responses(*responses):
+    """Stub query_api that returns ``responses[i]`` from the i-th call to
+    ``.query()``. Each response is a list-of-floats (each float becomes
+    one record's _value)."""
     api = MagicMock()
-    table = MagicMock()
-    table.records = []
-    for v in records:
-        record = MagicMock()
-        record.get_value.return_value = v
-        table.records.append(record)
-    api.query.return_value = [table] if records else []
+    side_effect_tables: list = []
+    for r in responses:
+        if not r:
+            side_effect_tables.append([])
+            continue
+        table = MagicMock()
+        records = []
+        for v in r:
+            rec = MagicMock()
+            rec.get_value.return_value = v
+            records.append(rec)
+        table.records = records
+        side_effect_tables.append([table])
+    api.query.side_effect = side_effect_tables
     return api
 
 
-def test_fetch_forecast_peak_for_date_returns_max_value():
-    """When the Flux query returns rows, pick the max — the Flux query
-    has |> max() so practically there's one row, but the parser tolerates
-    multiple."""
-    api = _fake_query_api([14000.0])
+def test_fetch_forecast_peak_for_date_returns_max_from_latest_revision():
+    """Two-query path (post-P2.5 fix): first query returns the latest
+    evaluated_at_iso tag, second query returns the max forecast value
+    for that revision."""
+    api = _fake_query_api_with_responses(
+        ["2026-07-15T13:00:00+00:00"],  # latest revision tag
+        [14000.0],                       # max forecast for that revision
+    )
     out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
     assert out == 14000.0
 
 
-def test_fetch_forecast_peak_for_date_returns_none_when_empty():
-    """Pre-publication of tomorrow's forecast: query returns nothing."""
-    api = _fake_query_api([])
+def test_fetch_forecast_peak_for_date_returns_none_when_no_revisions_exist():
+    """Pre-publication of any forecast: the revision-tag query returns
+    nothing, so the function short-circuits to None without firing the
+    value query."""
+    api = _fake_query_api_with_responses([])  # empty revision list
+    out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
+    assert out is None
+
+
+def test_fetch_forecast_peak_for_date_returns_none_when_revision_has_no_data():
+    """Latest revision exists but doesn't cover this target date
+    (e.g., target date is beyond the 7-day forecast horizon)."""
+    api = _fake_query_api_with_responses(
+        ["2026-07-15T13:00:00+00:00"],  # revision exists
+        [],                              # but no forecast values for target date
+    )
     out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
     assert out is None
 
 
 def test_fetch_forecast_peak_for_date_window_uses_local_tz_day_boundary():
-    """The Flux query's start/stop bracket the local-tz day. Verify by
-    inspecting the rendered query text — start_utc should be the local
-    midnight in UTC, stop_utc should be 24h later."""
-    api = MagicMock()
-    api.query.return_value = []
+    """The value-query's start/stop bracket the local-tz day, not UTC.
+    Pre-P2.5 the analogous fetch_forecast_peak_today used Flux today()
+    which is UTC and could query an empty window in evening CT.
+    fetch_forecast_peak_for_date always took target_date_iso so it had
+    a different bug shape, but verify the tz-aware bounds anyway."""
+    api = _fake_query_api_with_responses(
+        ["2026-07-15T13:00:00+00:00"],
+        [],
+    )
     fetch_forecast_peak_for_date(api, "energy", "2026-07-15",
                                   tz=ZoneInfo("America/Chicago"))
-    flux = api.query.call_args[0][0]
-    # 2026-07-15 00:00 CDT = 2026-07-15 05:00 UTC
-    assert "2026-07-15T05:00:00+00:00" in flux
-    # 2026-07-16 00:00 CDT = 2026-07-16 05:00 UTC
-    assert "2026-07-16T05:00:00+00:00" in flux
-    assert 'r._measurement == "pjm.load_forecast"' in flux
-    assert 'r.forecast_area == "COMED"' in flux
+    # First call is the revision-tag query, second is the value query.
+    second_flux = api.query.call_args_list[1][0][0]
+    assert "2026-07-15T05:00:00+00:00" in second_flux  # 00:00 CDT
+    assert "2026-07-16T05:00:00+00:00" in second_flux  # 24h later CDT
+    assert 'r.evaluated_at_iso == "2026-07-15T13:00:00+00:00"' in second_flux
+    assert 'r._measurement == "pjm.load_forecast"' in second_flux
+
+
+def test_fetch_forecast_peak_for_date_picks_latest_revision_not_max_across_revisions():
+    """Regression for the P2.5 bug: pre-fix the query took ``|> max()``
+    across all evaluated_at_iso revisions, returning the highest value
+    ever published rather than the value from the latest revision. The
+    latest-revision-tag selection step ensures stale revision peaks
+    don't leak into the §7 trigger decision."""
+    # Three revisions exist in the search window; the latest (most
+    # recent timestamp string) is the 17:00 one. The 09:00 revision
+    # had a higher peak (16000) because PJM later revised down.
+    api = MagicMock()
+    rev_table = MagicMock()
+    rev_records = []
+    rec_latest = MagicMock()
+    rec_latest.get_value.return_value = "2026-07-15T17:00:00+00:00"
+    rev_records.append(rec_latest)
+    rev_table.records = rev_records
+    value_table = MagicMock()
+    rec_value = MagicMock()
+    rec_value.get_value.return_value = 13500.0  # revised-down latest value
+    value_table.records = [rec_value]
+    api.query.side_effect = [[rev_table], [value_table]]
+    out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
+    # Confirms the latest revision's value is returned, not 16000 (which
+    # would have come from the older, since-revised revision).
+    assert out == 13500.0
+    # Sanity: the second query filtered to the latest revision tag.
+    second_flux = api.query.call_args_list[1][0][0]
+    assert 'r.evaluated_at_iso == "2026-07-15T17:00:00+00:00"' in second_flux
+
+
+def test_fetch_forecast_peak_today_uses_local_tz_not_utc_today(monkeypatch):
+    """P2.5 fix #2: the pre-fix version used Flux today() which is UTC
+    midnight start, so evening CT (after 19:00 CDT = 00:00 UTC next day)
+    queried tomorrow-UTC and missed today CT data. Verify the new
+    implementation builds the window from Chicago today."""
+    from pjm_5cp import fetch_forecast_peak_today
+
+    api = _fake_query_api_with_responses(
+        ["2026-07-15T17:00:00+00:00"],
+        [],
+    )
+
+    class _StubDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 23:30 CT on 2026-07-15. In UTC that's 04:30 on 2026-07-16
+            # (CDT is UTC-5). Pre-fix today() would have queried the
+            # wrong day.
+            return datetime(2026, 7, 16, 4, 30, tzinfo=timezone.utc).astimezone(tz) if tz else datetime(2026, 7, 15, 23, 30)
+
+    monkeypatch.setattr("pjm_5cp.datetime", _StubDatetime)
+    fetch_forecast_peak_today(api, "energy", tz=ZoneInfo("America/Chicago"))
+    # Second call is the value query (first is the revision query).
+    second_flux = api.query.call_args_list[1][0][0]
+    # Chicago-today bounds for 2026-07-15 CDT: 05:00 UTC (15th) to 05:00 UTC (16th).
+    assert "2026-07-15T05:00:00+00:00" in second_flux
+    assert "2026-07-16T05:00:00+00:00" in second_flux
 
 
 # ---- Replay: June 24, 2025 ramp-up scenario ------------------------------

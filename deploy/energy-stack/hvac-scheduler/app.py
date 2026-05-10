@@ -82,7 +82,11 @@ from pjm_5cp import (
     fetch_zone_live,
     update_season_5th_highest,
 )
-from precool import should_add_price_aware_precool, should_deepen_precool
+from precool import (
+    dtod_delivery_rates_24h,
+    should_add_price_aware_precool,
+    should_deepen_precool,
+)
 from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -444,6 +448,16 @@ def _classify_one_day(forecast: dict | None) -> str:
         return DAYTYPE_HOT
     if high_f is not None and high_f >= NORMAL_TEMP_THRESHOLD_F:
         return DAYTYPE_NORMAL
+    if high_f is None and apparent_max_f is None:
+        # P2.7: forecast row present but both temperature fields missing
+        # (degraded NWS parse / API issue). Treat as missing data, not
+        # as a MILD day -- MILD clears holds and disables active
+        # scheduling, which on an actually-hot day would be unsafe.
+        # Fall back to NORMAL (standard schedule still runs) and log
+        # the degraded path so the operator can investigate.
+        log("warn", "forecast_no_temperature_fields_falling_back_to_normal",
+            forecast_keys=sorted(forecast.keys()) if hasattr(forecast, "keys") else [])
+        return DAYTYPE_NORMAL
     return DAYTYPE_MILD
 
 
@@ -788,6 +802,12 @@ def compute_price_aware_precool_window(
     reads ("tomorrow" at 21:00 the night before; "today" for runtime
     re-evaluation in run_schedule_check). Returns None when either
     input is unavailable or the decision rule says no window applies.
+
+    The ComEd Delivery TOD rate schedule (P2.6) is always layered on
+    top of the supply prices for cheap-window *ranking*. Chris is
+    enrolled in DTOD; the schedule is fixed year-round and identical
+    every day, so we build the delivery vector from the static table
+    rather than from InfluxDB.
     """
     prices = fetch_day_ahead_prices_for_date(query_api, bucket, target_date_iso, tz)
     if prices is None:
@@ -795,7 +815,9 @@ def compute_price_aware_precool_window(
     forecast = fetch_latest_forecast(query_api, bucket, forecast_period)
     if forecast is None:
         return None
-    return should_add_price_aware_precool(prices, forecast)
+    return should_add_price_aware_precool(
+        prices, forecast, delivery_rates_cents=dtod_delivery_rates_24h(),
+    )
 
 
 def write_precool_window(
@@ -1086,9 +1108,19 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         climate = await c4.get_climate()
         # Always set both heat and cool — protects against narrow-deadband
         # auto-widening when in Auto mode (Honeywell ISU 300 enforces deadband).
-        await c4.call_with_reauth(lambda: climate.set_cool_setpoint_f(cool_setpoint_to_apply))
-        await asyncio.sleep(1)
+        #
+        # **Heat first, then cool** (P1.3 adversarial-review fix). When
+        # transitioning down to a low cool target (e.g., HOT_PRE_COOL=68F
+        # or HOT_STREAK_DAY1=66F) while the existing heat setpoint is
+        # higher than (target_cool - deadband), sending cool first can
+        # be auto-adjusted by the thermostat before heat moves into
+        # range. Setting heat first pins the floor at 65F so the
+        # subsequent cool push lands at any locked value down to 68F
+        # without the deadband fighting it. Symmetric for cool-going-up
+        # transitions (no change in behaviour). Defensive ordering.
         await c4.call_with_reauth(lambda: climate.set_heat_setpoint_f(heat_setpoint_to_apply))
+        await asyncio.sleep(1)
+        await c4.call_with_reauth(lambda: climate.set_cool_setpoint_f(cool_setpoint_to_apply))
         await asyncio.sleep(1)
         # Apply fan mode if specified for this period (e.g., Circulate during coast)
         if action.fan_mode:
@@ -1356,7 +1388,9 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
 
     # ---- 5CP detection (§3) ----
     zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
-    forecast_peak = fetch_forecast_peak_today(query_api, cfg.influx_bucket)
+    forecast_peak = fetch_forecast_peak_today(
+        query_api, cfg.influx_bucket, tz=ZoneInfo(cfg.tz_name),
+    )
     season_start_utc = cooling_season_start_utc(now_local)
     season_5th_mw = update_season_5th_highest(
         query_api, cfg.influx_bucket, season_start_utc,
@@ -1502,8 +1536,13 @@ async def _push_layer_change_mid_period(
         override_note=override_note,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
-    if not cfg.dry_run:
-        firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
+    # Update the mid-period tracking variable regardless of dry_run.
+    # This is the GUARD value the next tick uses to decide whether to
+    # re-push; gating it on `not cfg.dry_run` left it None forever in
+    # Arm A weeks and caused phantom MID_PERIOD_REPUSH audit rows on
+    # every subsequent tick (effective != None evaluates True even
+    # when nothing actually changed).
+    firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
 
 
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
@@ -1650,7 +1689,15 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             indoor_humidity_before_pct=snapshot.get("humidity"),
             cool_setpoint_before_f=snapshot.get("cool_setpoint_f"),
             heat_setpoint_before_f=snapshot.get("heat_setpoint_f"))
-        if not action.release_hold and not cfg.dry_run:
+        if not action.release_hold:
+            # Track the "would-have-pushed" effective cool setpoint
+            # regardless of dry_run state. last_pushed_effective_cool_f
+            # is the GUARD value used by the mid-period re-push path
+            # to detect a real change in effective cool. Gating it on
+            # `not cfg.dry_run` left it None across dry-run weeks (Arm A),
+            # which made the mid-period guard ``effective == None`` always
+            # False — every minute wrote a phantom MID_PERIOD_REPUSH audit
+            # row even though nothing changed.
             firing.last_pushed_effective_cool_f = sup_cool
         fired_anything = True
 

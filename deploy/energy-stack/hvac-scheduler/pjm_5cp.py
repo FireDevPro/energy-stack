@@ -275,50 +275,114 @@ def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[
     )
 
 
-def fetch_forecast_peak_today(query_api, bucket: str,
-                               *, forecast_area: str = "COMED") -> Optional[float]:
-    """Pull the most recently published per-hour forecast for today and
-    return the maximum forecast_load_mw. Returns None when no forecast
-    rows for today exist yet."""
+def _latest_forecast_revision_tag(query_api, bucket: str,
+                                   forecast_area: str,
+                                   *, search_window: str = "-36h") -> Optional[str]:
+    """Return the most recent ``evaluated_at_iso`` tag value for
+    pjm.load_forecast rows in the given forecast area, or None if no
+    forecast has been published in the search window.
+
+    PJM publishes ``load_frcstd_7_day`` two or more times per day. Each
+    publication writes a full 7-day forecast tagged with its
+    ``evaluated_at_iso`` value. Taking ``max()`` across all revisions
+    can return a stale revision's number; we want the latest revision's
+    forecast, which means we have to identify the newest tag value
+    first, then filter to it.
+    """
     flux = f"""
-        from(bucket: "{bucket}")
-          |> range(start: today())
-          |> filter(fn: (r) => r._measurement == "pjm.load_forecast"
-                                and r.forecast_area == "{forecast_area}"
-                                and r._field == "forecast_load_mw")
-          |> max()
+        import "influxdata/influxdb/schema"
+        schema.tagValues(
+            bucket: "{bucket}",
+            tag: "evaluated_at_iso",
+            predicate: (r) => r._measurement == "pjm.load_forecast"
+                                and r.forecast_area == "{forecast_area}",
+            start: {search_window},
+        )
+        |> sort(columns: ["_value"], desc: true)
+        |> limit(n: 1)
     """
     for table in query_api.query(flux):
         for record in table.records:
             v = record.get_value()
             if v is not None:
-                return float(v)
+                return str(v)
     return None
+
+
+def fetch_forecast_peak_today(query_api, bucket: str,
+                               *, forecast_area: str = "COMED",
+                               tz: ZoneInfo = CHICAGO) -> Optional[float]:
+    """Pull the maximum hourly ``forecast_load_mw`` for today (local tz)
+    from the most recently published forecast revision.
+
+    Two bug fixes vs. the May 2026 version:
+
+    1. **Latest revision only.** PJM publishes multiple forecast
+       revisions per day, each tagged with its own ``evaluated_at_iso``
+       value. The earlier query took ``max()`` across all revisions,
+       which could return a stale revision's peak if PJM revised
+       downward. We now identify the latest revision first and filter
+       to it.
+
+    2. **Local-tz day boundary.** The earlier query used Flux ``today()``
+       which is UTC midnight start of today, not Chicago. Evening CT
+       queries (after 19:00 CT in CDT, the boundary crossed into
+       UTC-tomorrow) would query an empty range. Now uses the
+       caller-supplied tz to bound the day window correctly.
+    """
+    latest_rev = _latest_forecast_revision_tag(query_api, bucket, forecast_area)
+    if latest_rev is None:
+        return None
+    now_local = datetime.now(tz)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return _max_forecast_in_window(
+        query_api, bucket, forecast_area, latest_rev,
+        start_local.astimezone(timezone.utc),
+        end_local.astimezone(timezone.utc),
+    )
 
 
 def fetch_forecast_peak_for_date(query_api, bucket: str, target_date_iso: str,
                                   *, forecast_area: str = "COMED",
                                   tz: ZoneInfo = CHICAGO) -> Optional[float]:
     """Pull the maximum hourly ``forecast_load_mw`` for a specific target
-    date (CT-local). Used by the §7 pre-cool deepening trigger which
-    evaluates "tomorrow's peak forecast" at 21:00 the night before.
+    date (CT-local) from the most recently published forecast revision.
 
-    ``pjm.load_forecast`` rows are timestamped at the forecast target
-    hour, so range-filtering on the local-tz date window is the right
-    selector. Returns None when no forecast rows for the target date
-    exist yet (e.g., a 21:00 decision that beat PJM's tomorrow-forecast
-    publication, or the 7-day forecast horizon doesn't cover the date).
+    Used by the §7 pre-cool deepening trigger which evaluates "tomorrow's
+    peak forecast" at 21:00 the night before. Returns None when no
+    forecast rows for the target date exist yet (e.g., a 21:00 decision
+    that beat PJM's tomorrow-forecast publication, or the 7-day forecast
+    horizon doesn't cover the date).
+
+    Latest-revision selection: see ``_latest_forecast_revision_tag``.
+    Pre-fix this function took ``max()`` across all revisions, which
+    could pick a stale revision's number.
     """
+    latest_rev = _latest_forecast_revision_tag(query_api, bucket, forecast_area)
+    if latest_rev is None:
+        return None
     target_date = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
     start_local = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
     end_local = start_local + timedelta(days=1)
-    start_utc = start_local.astimezone(timezone.utc).isoformat()
-    end_utc = end_local.astimezone(timezone.utc).isoformat()
+    return _max_forecast_in_window(
+        query_api, bucket, forecast_area, latest_rev,
+        start_local.astimezone(timezone.utc),
+        end_local.astimezone(timezone.utc),
+    )
+
+
+def _max_forecast_in_window(query_api, bucket: str, forecast_area: str,
+                             revision_tag: str,
+                             start_utc: datetime, end_utc: datetime) -> Optional[float]:
+    """Filter pjm.load_forecast to a single revision and a UTC time
+    window, return the max forecast_load_mw."""
     flux = f"""
         from(bucket: "{bucket}")
-          |> range(start: {start_utc}, stop: {end_utc})
+          |> range(start: {start_utc.isoformat()}, stop: {end_utc.isoformat()})
           |> filter(fn: (r) => r._measurement == "pjm.load_forecast"
                                 and r.forecast_area == "{forecast_area}"
+                                and r.evaluated_at_iso == "{revision_tag}"
                                 and r._field == "forecast_load_mw")
           |> max()
     """

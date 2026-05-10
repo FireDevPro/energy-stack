@@ -198,7 +198,13 @@ def evaluate_price_overlay(
 
 ```python
 # After determining schedule_setpoint and humid_override_setpoint:
-current_price = fetch_latest_comed_hourly_avg(query_api, cfg.influxdb_bucket)
+# Reads the latest ComEd 5-minute RTP print (not hourly average) so the
+# overlay can react inside the hour. The 10¢/20¢ tier thresholds are
+# anchored on the hourly P95/P99 as economically interpretable signal
+# levels; applying them to 5-min prints is intentional early-action
+# behavior. See EXPERIMENT_DESIGN.md Appendix A "Threshold derivation
+# vs application".
+current_price = fetch_latest_comed(query_api, cfg.influxdb_bucket)
 
 active_tier, new_state = evaluate_price_overlay(
     current_price, price_overlay_state, datetime.now(timezone.utc)

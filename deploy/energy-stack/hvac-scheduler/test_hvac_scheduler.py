@@ -38,6 +38,7 @@ from app import (
     ScheduleAction,
     _classify_one_day,
     _evaluate_layer_inputs,
+    _push_layer_change_mid_period,
     decide_day_type,
     execute_action,
     fetch_day_ahead_prices_for_date,
@@ -199,6 +200,33 @@ def test_classify_apparent_alone_can_trigger_hot():
     drops out of the upstream forecast."""
     assert _classify_one_day({"apparent_max_f": 91.0,
                               "is_heat_advisory": 0}) == DAYTYPE_HOT
+
+
+def test_classify_partial_forecast_no_temps_falls_back_to_normal(capsys):
+    """P2.7 regression: a forecast row that's present but missing both
+    high_f and apparent_max_f (degraded NWS parse / API failure)
+    previously fell through to DAYTYPE_MILD, which clears holds and
+    disables active scheduling. That's dangerous on an actually-hot
+    day. Now falls back to DAYTYPE_NORMAL with a warn log so the
+    standard schedule still runs."""
+    forecast = {
+        "period_date": "2026-07-15",
+        "is_heat_advisory": 0,
+        "alert_summary": "",
+        # No high_f, no apparent_max_f — degraded parse path
+    }
+    assert _classify_one_day(forecast) == DAYTYPE_NORMAL
+    captured = capsys.readouterr().out
+    assert "forecast_no_temperature_fields_falling_back_to_normal" in captured
+
+
+def test_classify_empty_forecast_dict_is_normal_not_mild():
+    """An empty dict (vs None) is treated like None: missing forecast,
+    NORMAL fallback. Tests the dict-empty edge case along with the
+    None case both falling into the safe NORMAL bucket."""
+    # Empty dict is falsy in Python so the `if not forecast` short-circuit
+    # handles it the same as None.
+    assert _classify_one_day({}) == DAYTYPE_NORMAL
 
 
 def test_decide_day_type_carries_apparent_in_reasons():
@@ -392,6 +420,46 @@ async def test_execute_setpoint_action_still_pins_permanent_hold():
     climate.set_heat_setpoint_f.assert_awaited_once()
     climate.set_fan_mode.assert_awaited_once_with("Circulate")
     climate.set_hold_mode.assert_awaited_once_with("Permanent")
+
+
+async def test_execute_setpoint_action_sets_heat_before_cool():
+    """P1.3 ordering: when transitioning to a low cool target (e.g.,
+    HOT_PRE_COOL=68F or HOT_STREAK_DAY1=66F) while the existing heat
+    setpoint is high enough that the deadband would be violated, the
+    cool push can be auto-adjusted by the thermostat before heat moves
+    into range. Set heat first to pin the floor at 65F before cool
+    moves. Defensive against asymmetric CTK04AE deadband behaviour."""
+    from unittest.mock import call
+
+    c4, climate = _mock_c4_client()
+    # attach the AsyncMocks to a parent so we can read mock_calls in order
+    parent = MagicMock()
+    parent.attach_mock(climate.set_heat_setpoint_f, "set_heat_setpoint_f")
+    parent.attach_mock(climate.set_cool_setpoint_f, "set_cool_setpoint_f")
+    parent.attach_mock(climate.set_fan_mode, "set_fan_mode")
+    parent.attach_mock(climate.set_hold_mode, "set_hold_mode")
+
+    # HOT_PRE_COOL action: cool=68 from prior schedule state where heat
+    # might have been higher than 65.
+    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint_f=68,
+                             fan_mode="Auto")
+    applied, error = await execute_action(
+        c4, action, cool_setpoint_to_apply=68, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False,
+    )
+    assert applied is True
+    assert error is None
+
+    # Pin the order: heat first, cool second, then fan, then hold.
+    expected = [
+        call.set_heat_setpoint_f(65),
+        call.set_cool_setpoint_f(68),
+        call.set_fan_mode("Auto"),
+        call.set_hold_mode("Permanent"),
+    ]
+    assert parent.mock_calls == expected, (
+        f"Pre-P1.3 order was cool->heat. mock_calls: {parent.mock_calls}"
+    )
 
 
 async def test_execute_setpoint_action_skipped_when_in_heat_mode():
@@ -959,8 +1027,9 @@ def _stub_layer_eval_io(monkeypatch, *,
     else:
         snapshot = None
     monkeypatch.setattr(app, "fetch_zone_live", lambda q, b: snapshot)
+    # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
     monkeypatch.setattr(app, "fetch_forecast_peak_today",
-                        lambda q, b: forecast_peak)
+                        lambda q, b, *, tz=None: forecast_peak)
     monkeypatch.setattr(app, "update_season_5th_highest",
                         lambda q, b, s: season_5th)
 
@@ -1068,3 +1137,78 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
         if "hvac.price_overlay" in c.kwargs.get("record").to_line_protocol()
     )
     assert transition_count == 1
+
+
+# ---- §P1.2 dry-run mid-period repush spam regression ----------------------
+
+
+async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged(monkeypatch):
+    """P1.2 regression: in dry-run mode the mid-period re-push guard
+    must update last_pushed_effective_cool_f even though execute_action
+    skipped the real Control4 call. Otherwise the guard compares the
+    new effective_cool_f to None forever and writes a phantom
+    MID_PERIOD_REPUSH row every scheduler tick.
+
+    Reproducer: two consecutive _push_layer_change_mid_period calls in
+    dry-run with the same layer inputs. First call writes one
+    hvac.actions row (effective changed from None). Second call must
+    skip (effective unchanged) — pre-fix it wrote another row."""
+    from app import LayerInputs
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    cfg.dry_run = True
+
+    c4, climate = _mock_c4_client()
+    write_api = MagicMock()
+    firing = FiringState(
+        last_schedule_cool_f=79,           # COAST action fired earlier
+        last_action_label="COAST",
+        last_pushed_effective_cool_f=None,  # post-firing state in dry-run pre-fix
+    )
+    layer_inputs = LayerInputs(
+        price_tier_name="normal",
+        price_offset_f=0,
+        price_override_f=None,
+        price_prev_tier="normal",
+        current_price_cents=5.0,
+        fivecp_active=False,
+        fivecp_load_mw=0.0,
+        fivecp_derivative=0.0,
+        fivecp_forecast_peak=0.0,
+        fivecp_season_5th_mw=130000.0,
+        fivecp_data_available=False,
+    )
+    now_local = datetime(2026, 7, 15, 13, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    # First call: effective_cool_f=79 != last_pushed=None -> writes one
+    # hvac.actions audit row.
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local,
+    )
+    first_rows = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert first_rows == 1
+    # After the first call, the guard variable should be updated.
+    assert firing.last_pushed_effective_cool_f == 79
+
+    # Second call, identical inputs, 1 minute later: must skip silently.
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local + timedelta(minutes=1),
+    )
+    second_rows = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+    )
+    # Pre-fix: this asserted 2 (the spam bug). Post-fix: still 1.
+    assert second_rows == 1, (
+        "P1.2 regression: dry-run mid-period push wrote a phantom row "
+        "on a tick where the effective cool setpoint did not change"
+    )
