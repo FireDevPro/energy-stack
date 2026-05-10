@@ -13,7 +13,11 @@ The Khabbazi et al. 2025 meta-review of residential HVAC MPC field demonstration
 
 This study fills that gap for a single instrumented home. It compares two controllers (defined in §3) under randomized week-level alternation across one or more cooling seasons starting summer 2026, with full telemetry, ComEd bill ingest, and pre-committed analysis plan.
 
-The study's contribution is **methodological as much as substantive**: no published residential HVAC study cites the single-case experimental design (SCED) literature, despite SCED being the right statistical framework for randomized within-subject comparisons. We adopt SCED randomization-test methodology ([Heyvaert & Onghena 2014, *Journal of Contextual Behavioral Science* 3(1):51–64](https://doi.org/10.1016/j.jcbs.2013.10.002)) explicitly.
+Saloux et al. (2025), reviewing 91 MPC field implementations across 19 years of literature, taxonomize four post-implementation performance-evaluation methods (their §2.4): Option #1 "Twin buildings" (parallel between-building), Option #2 "Before and after" (within-subject sequential or alternating), Option #3 "Model for BAU" (modeled baseline + measured MPC), Option #4 "Models for both arms." Saloux explicitly recognize alternation as a within-Option-#2 variant: *"One can also alternate reference operation and MPC every day or every few days during the implementation period."* This study is an **Option #2 implementation with randomized within-block alternation and pre-committed analysis** — directly addressing a gap Saloux identifies in §5.2.2: *"reported savings do not have the same significance... it is challenging to compare control strategies against each other fairly. We recommend the development of a methodology that would standardize the savings assessment following MPC implementation."* The field's average test duration across Saloux's 91-paper corpus is **41 days**, with 29% of papers under one week; this study's 18-week target is ~3× the average and well beyond Saloux's recommended ≥1-month minimum.
+
+Saloux also flag survival bias in §5.1.1 — *"only success stories are generally published in academic journals... and there might have been initiatives over the years when MPC was eventually ineffective"* — which §8 of this design directly mitigates by pre-committing to publish negative or null results regardless of outcome.
+
+The study's contribution is **methodological as much as substantive**: no published residential HVAC study cites the single-case experimental design (SCED) literature, despite SCED being the right statistical framework for randomized within-subject comparisons. We adopt SCED randomization-test methodology ([Heyvaert & Onghena 2014, *Journal of Contextual Behavioral Science* 3(1):51–64](https://doi.org/10.1016/j.jcbs.2013.10.002)) explicitly. The closest published residential alternation precedent is Lindelöf et al. (2015), which used **deterministic** ≥2-week alternation in 10 Swiss dwellings; this design extends Lindelöf with **block-randomized** allocation, paired randomization-test inference, and pre-committed identical setpoint schedules across arms.
 
 ## 2. Hypotheses (pre-committed, primary and secondary)
 
@@ -51,7 +55,9 @@ This is a safety override, not a hypothesis. Pre-committed so we cannot retroact
 
 ### Arm A — Baseline RBC (control)
 
-The `hvac-scheduler` as it exists at the start of the alternation period: day-type classifier (`MILD` / `NORMAL` / `HOT_5CP_RISK` / `HOT_STREAK_DAY1`) with hand-tuned setpoint schedules per day-type, intra-day forecast revisit at hours `[6, 11]`, MILD release of yesterday's permanent hold, and the existing capacity-peak window definitions. No thermal-model-driven optimization. Frozen at the commit hash committed to OSF pre-registration.
+The `hvac-scheduler` as it exists at the start of the alternation period: day-type classifier (`MILD` / `NORMAL` / `HOT_5CP_RISK` / `HOT_STREAK_DAY1`) with hand-tuned setpoint schedules per day-type, intra-day forecast revisit at hours `[6, 11]`, MILD release of yesterday's permanent hold, and the existing capacity-peak window definitions. No thermal-model-driven optimization. Full schedules and decision logic in [`HVAC_LOGIC.md`](HVAC_LOGIC.md). Frozen at the commit hash committed to OSF pre-registration.
+
+**Known flaws in Arm A** (per Saloux et al. 2025 Appendix D, "current control flaws" reporting): (a) pre-cool depths are set as hand-tuned constants per day-type without per-house thermal model fit, so they're necessarily conservative or aggressive relative to the actual envelope; (b) COAST shutoff timing is fixed at 14:00 CT for HOT days regardless of indoor-temperature trajectory; (c) the dewpoint-65°F humid override threshold is hand-tuned, not derived from a saturation-enthalpy comfort calculation; (d) day-type classification is binary (MILD / NORMAL / HOT / HOT_STREAK) with no continuous interpolation, so a 94°F NORMAL day and a 95°F HOT day produce qualitatively different schedules with a 1°F sensitivity on forecast bust. These are exactly the flaws Arm B's three model-informed substitutions are designed to address.
 
 ### Arm B — RBC + Step 1 model-informed
 
@@ -61,13 +67,16 @@ Arm A's day-type classifier and overall structure, **plus** the three Step 1 int
 2. COAST shutoff lead time computed in closed form from the same model.
 3. Stage-2-during-5CP-hours advisory log entries (read-only in Step 1).
 
-Both arms run the same intra-day forecast revisit, same MILD-release logic, same scheduler safety supervisor (when implemented), same observability. The only difference is the substitution of three model-driven calculations for three hand-tuned constants. Frozen at the same commit hash committed to OSF pre-registration.
+**Architecture clarification** (per Saloux 2025 Appendix D, "MPC application" categorization and "optimization type"): **Arm B is not a horizon-based MPC.** It is rule-based control with three model-derived substitutions for hand-tuned constants. There is no rolling-horizon optimization, no objective function solved at each timestep, no prediction horizon to tune. The envelope-ODE integration that sets pre-cool depth uses a fixed forward-integration window matching the schedule's pre-cool-to-coast transition (8 hours; specified in `THERMAL_MODEL_DESIGN.md`). The closed-form COAST shutoff lead time is a single algebraic expression evaluated once per cycle, not iteratively optimized. Per Saloux's §2.2 application taxonomy, Arm B is most accurately classified as **"setpoint optimization"** (substitute three setpoint-determining constants for model-derived equivalents) rather than full MPC. This scoping is intentional: it's the smallest model-informed change that can be specified, fit, validated, and pre-registered for an N=1 study within one cooling season; full rolling-horizon MPC is the Step 2 / Step 3 plan in [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md), out of scope for the present pre-registration.
+
+Both arms run the same intra-day forecast revisit, same MILD-release logic, same scheduler safety supervisor (when implemented), same observability. **Critically, both arms use the same thermostat setpoint schedule structure** (same time-of-day breakpoints, same humid-override threshold, same comfort ceilings) — Arm B differs only in the three model-derived values that fill in three otherwise-hand-tuned constants. Pre-committed: any operator-initiated mid-trial schedule change to either arm flags the affected week as excluded from primary analysis (§6 week-validity rules). Frozen at the same commit hash committed to OSF pre-registration.
 
 ## 4. Study design
 
 **Type**: Randomized alternating-treatments single-case experimental design (SCED), week-level alternation.
-**Duration**: One full cooling season minimum (target: June 1 to September 30, 2026). Continuation criteria in §8.
-**Subject**: One single-family owner-occupied residence in IECC climate zone 5A. Single-zone HVAC (one Amana CTK04AE thermostat — Honeywell-OEM whitelabel with native RedLINK Wi-Fi + CT-485 communicating bus). Equipment: Amana AMVM971005CN modulating gas furnace + Amana ASXC160481BE 2-stage AC.
+**Duration**: One full cooling season minimum (target: June 1 to September 30, 2026; 17 calendar weeks, 9 paired blocks per the §5 randomization schedule, ~4 weeks above Saloux 2025's ≥1-month minimum recommendation and 3× the 41-day mean of the 91-paper field-implementation corpus). Continuation criteria in §8.
+**Subject**: One single-family owner-occupied detached residence in IECC climate zone 5A (ComEd service territory, suburban Cook County, IL). Single-zone HVAC (one Amana CTK04AE thermostat — Honeywell-OEM whitelabel with native RedLINK Wi-Fi + CT-485 communicating bus). Equipment: Amana AMVM971005CN modulating gas furnace + Amana ASXC160481BE 2-stage AC + Amana CAPF4961C6 evaporator coil; HVAC system installed February 2019 by Comfort Services Heating & A/C; 10-year parts-and-labor warranty conditional on annual maintenance, expiring ~February 2029. House construction predates the HVAC install; specific construction year is not load-bearing for the design and is redacted per §9 anonymization.
+**Occupancy**: One occupant (the investigator) plus companion dogs throughout the trial period. Adolescent daughter is occasionally present but spends summer 2026 traveling and is not modeled as a regular household member. Occupancy is treated as **constant for design purposes**: no per-period occupancy forecasting is performed, and the controllers do not consume occupancy state. Variation in occupancy across the trial (single-day visits, vacations) is captured only as a §6 week-validity exclusion: any week containing a vacation hold or manual day-type force is flagged for the sensitivity subset.
 **Investigator**: Owner; no recruited subjects.
 **Blinding**: Investigator is necessarily unblinded (controls the system). Mitigated by pre-registered analysis plan and frozen analysis code (§7).
 
@@ -103,6 +112,20 @@ For all metrics that reference "HVAC-circuit", the set of `refoss.channel` chann
 - `em:9` — the Amana AMVM971005CN furnace blower (which moves cool air during cooling cycles as well; cooling-season usage of this channel is dominated by AC duty cycle).
 
 Whole-home electricity is tracked separately on the split-phase mains `em:1 + em:7`. The HVAC channel set is part of the pre-registration record and frozen at the `randomize_arms.py` commit hash.
+
+### Tariff structure (pre-committed)
+
+Per Saloux 2025 Appendix D's "energy context" reporting line. The dollar quantities in `weekly_hvac_cost_per_cdd` and `weekly_cost_per_cdd` are computed against ComEd's residential **Hourly Pricing** rate plan with **Time-of-Day Delivery** (HP+TOD) — the actual rate plan on the household account during the trial:
+
+- **Supply (variable, hourly)**: ComEd's wholesale-passthrough hourly price published at `hourlypricing.comed.com/api`, ingested by `comed-poller` every 60 s. Stored in `comed.prices` (`period_type=hourly_avg`). Per the metric definition above, the hourly-avg series is the canonical price input; a 5-min sensitivity is registered under §7.
+- **Delivery (volumetric, time-of-day)**: ComEd's TOD delivery rate, structured as off-peak (overnight + weekends) vs peak (12:00–18:00 weekdays summer). Volumetric component only; fixed monthly delivery charges and customer-charge are excluded from the per-CDD numerator since they don't scale with consumption.
+- **Capacity (annual, coincident-peak)**: ComEd capacity charge for residential HP customers is billed monthly off the prior summer's PJM 5CP coincident-peak demand, locked annually. **Excluded from the supply+delivery primary** because capacity is a monthly $/kW × peak-kW product that cannot be allocated cleanly to a single circuit hour-by-hour. **Addressed separately in H4** as a YoY descriptive comparison.
+
+The actual rates are hand-redacted from the published version per §9 anonymization (account-identifying); the pre-registration commits to the *structure* (hourly-passthrough supply + TOD volumetric delivery + annual coincident-peak capacity) rather than the specific cents-per-kWh numbers, since ComEd revises the TOD delivery rate annually and the wholesale supply price is dynamic by definition.
+
+### MPC application category (per Saloux 2025 §2.2 taxonomy)
+
+Per Saloux's six-category application taxonomy (setpoint tracking, building conditioning, HVAC system optimization, multi-system sequencing, optimal use of thermal energy storage, optimal use of PV/battery): **this study is "building conditioning" with an emphasis on cost-aware setpoint optimization within a 5CP-avoidance framing.** Arm B's three model-derived substitutions adjust the existing day-type schedule's pre-cool depth, COAST shutoff timing, and stage-2 advisory; they do not introduce new system layers (no thermal energy storage, no PV/battery, no multi-system sequencing) so the higher-tier categories don't apply. A future Step 2/3 expansion to rolling-horizon MPC with explicit setpoint optimization would graduate the application category accordingly.
 
 ### Primary
 
@@ -176,7 +199,7 @@ Holm-Bonferroni (rather than plain Bonferroni at α/2 for both) is more powerful
 
 **Pre-committed analyses NOT in primary plan**: time-of-day decomposition, heat-wave-only subset, day-type-stratified comparison. Any of these, if reported, are flagged as exploratory.
 
-**Frozen analysis code**: `scripts/analyze_experiment.py` committed to repo and tagged at the commit hash referenced in the OSF pre-registration. Re-run on locked data after summer closes; output files (CSV results + plots) committed to repo as a release tagged `experiment-summer-2026-results`.
+**Frozen analysis code**: `scripts/analyze_experiment.py` committed to repo and tagged at the commit hash referenced in the OSF pre-registration. Re-run on locked data after summer closes; output files (CSV results + plots) committed to repo as a release tagged `experiment-summer-2026-results`. This pre-commitment of the analysis pipeline directly addresses Saloux et al. (2025) §5.2.2's recommendation that the field standardize savings-assessment methodology to enable cross-study comparison: *"reported savings do not have the same significance... it is challenging to compare control strategies against each other fairly. We recommend the development of a methodology that would standardize the savings assessment following MPC implementation."*
 
 ## 8. Decision rules and stopping criteria
 
@@ -186,7 +209,7 @@ Pre-committed decisions based on summer-2026 outcomes:
 |---|---|
 | H1 confirmed (CI lower bound > 0% AND median ≥ 5%) | Step 1 declared effective. Proceed with Step 1 as default for summer 2027. Plan Step 2 (2R2C grey-box) only if specific residuals motivate it (per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md)). |
 | Inconclusive (CI spans 0%, \|median\| < 5%) | Continue alternation through summer 2027 with same controllers and seed (`20260602`). Re-analyze with combined two-summer dataset. |
-| H1 disconfirmed (CI upper bound < 0%) | Step 1 is **worse** than baseline. Halt Step 1 deployment. Investigate (model-fit quality, integration-point bugs, comfort-loss-driven aggressive cooling). Submit findings as a negative result — these are valuable to the field per Khabbazi's call for honest reporting. |
+| H1 disconfirmed (CI upper bound < 0%) | Step 1 is **worse** than baseline. Halt Step 1 deployment. Investigate (model-fit quality, integration-point bugs, comfort-loss-driven aggressive cooling). Submit findings as a negative result — these are valuable to the field per Khabbazi et al. (2025)'s call for honest reporting and Saloux et al. (2025) §5.1.1's survival-bias flag (*"only success stories are generally published in academic journals... and there might have been initiatives over the years when MPC was eventually ineffective"*). |
 | Stop-loss triggered (§2) | Halt alternation immediately, return to Arm A. Document and submit as a "controller failure mode" report. |
 
 **Minimum analyzable sample for confirmatory interpretation** (revised 2026-05-07):
@@ -237,6 +260,7 @@ This study is conducted as **unaffiliated owner self-experimentation** with no r
 - **Investigator-as-occupant unblinding**. Documented, mitigated by frozen analysis code and pre-committed metrics, but not fully eliminable.
 - **Tariff structure dependence**. ComEd hourly pricing + PJM 5CP capacity charges are specific to this utility/RTO. Transferability to flat-rate, non-coincident-peak, or wholesale-pass-through markets is partial.
 - **Step 1 controller scope**. Step 1 does not include true rolling-horizon MPC (see [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) §rationale). Comparisons to MPC require Step 2/3 or a future arm.
+- **Reporting completeness**. Saloux et al. (2025) §5.1.3 catalogues the missing-information patterns common across MPC field-implementation papers: time required to create a model; period used for model training and calibration; sampling rates and prediction horizons; communication protocols and software used; access to forecasts. This pre-registration covers each of those across §3 (controller architecture), §6 (metric definitions and tariff structure), §7 (analysis plan, software pinned at commit hash), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (model fit methodology and training period), and [`SERVICES.md`](SERVICES.md) (per-poller cadences, sources, and storage formats). Any remaining gaps will be addressed in the post-trial publication's reporting per Saloux's Appendix D cheat sheet.
 
 ## 13. Pre-registration commitment
 
@@ -253,14 +277,81 @@ The following are binding once this document is filed to OSF and the pre-registr
 
 Changes after pre-registration require an amendment posted to OSF with explicit justification, and will be reported as deviations in any published methods section.
 
+### Standardized reporting (Saloux 2025 Appendix D coverage)
+
+This pre-registration follows Saloux et al. (2025) §5.2.1's recommendation to *"standardize information reporting in publications and to clearly explain how MPC was effective in the case studies for the targeted objective"*, mapping each of Saloux's Appendix D "cheat sheet" reporting items to its section in this document and the companion docs:
+
+| Saloux Appendix D theme | Item | Coverage in this design |
+|---|---|---|
+| Case study | Building type, size, location, construction year | §4 (subject paragraph) + §9 anonymization redacts location to climate zone + ComEd territory |
+| Case study | Systems installed; systems controlled by MPC | §4 (subject paragraph) lists all installed equipment; §3 specifies the AC + furnace blower as controlled |
+| Energy context | Climate zone, energy costs, GHG factors | §4 (climate zone), §6 tariff-structure sub-section (rate plan structure: hourly-passthrough supply, TOD volumetric delivery, annual coincident-peak capacity), §9 redacts cents-per-kWh values |
+| Modelling | MPC application categorization | §6 MPC-application sub-section locates this study as "building conditioning with cost-aware setpoint optimization within a 5CP-avoidance framing" per Saloux §2.2 taxonomy |
+| Modelling | Duration (implementation; benchmarking) | §4 duration paragraph; §5 randomization specifies 9 paired blocks |
+| Modelling | Outdoor air conditions, occupancy status | §4 (occupancy paragraph: single occupant + dogs, occupancy treated as constant for design purposes); outdoor conditions captured per cycle via `nws.forecast` and `weather.ecowitt` (per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md)) |
+| Optimization | Current controls, current control flaws | §3 Arm A description + the "Known flaws in Arm A" paragraph naming the four documented weaknesses Arm B addresses |
+| Optimization | Communication infrastructure, protocols | [`SERVICES.md`](SERVICES.md) per-service detail; [`HVAC_LOGIC.md`](HVAC_LOGIC.md) covers thermostat path |
+| Optimization | Available data: source, variables, history; excitation period | [`SERVICES.md`](SERVICES.md) per-poller cadences + sources; [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) details fit-data requirements |
+| Performance evaluation | Building control-oriented model; gray-box estimator | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) covers the Step 1 affine-fit model |
+| Performance evaluation | Models for equipment, weather, occupancy, plug loads, indoor environment | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md); occupancy explicitly modeled as constant per §4 |
+| Performance evaluation | Thermal comfort model | §6 (`weekly_comfort_exceedance_F_hr` primary), §7 (PMV/PPD per ASHRAE 55-2020 sensitivity) |
+| Performance evaluation | Control variables; disturbances; data used for calibration | [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) |
+| Performance evaluation | Model time-step, control horizon, prediction horizon | §3 Arm B "Architecture clarification" paragraph: not horizon-based; envelope-ODE uses 8-hour forward-integration window; COAST shutoff is closed-form algebraic |
+| Performance evaluation | Software used | §7 ("scripts/analyze_experiment.py" frozen at commit hash); telegram-notifier / hvac-scheduler / thermostat-poller per [`SERVICES.md`](SERVICES.md); R `homeR` package for fitted-balance-point sensitivity per Lindelöf 2016 |
+| Performance evaluation | Objective function | §2 H1 specifies the single primary objective (minimize `weekly_hvac_cost_per_cdd`); secondary outcomes specify additional dimensions |
+| Performance evaluation | Constraints | §3 Arm B substitutions are bounded by [`HVAC_LOGIC.md`](HVAC_LOGIC.md) safety-supervisor constraints (deadband, comfort ceiling, equipment-stage limits); enumerated in [`HVAC_LOGIC.md`](HVAC_LOGIC.md) "Auto-mode safety" and "Safety supervisor" sections |
+| Performance evaluation | Optimization type | §3 Arm B "Architecture clarification": closed-form algebraic substitution, not numerical optimization |
+| Perspectives | Summary of results | Post-implementation; reported per §8 decision rules at the GitHub release tagged `experiment-summer-2026-results` |
+| Perspectives | Performance evaluation methods | §7 (paired randomization test as primary; weather-normalized regression as companion; PMV/PPD as comfort sensitivity; balance-point regression as CDD sensitivity) |
+| Perspectives | Challenges, roadblocks, mistakes | Reported in the post-trial publication; pre-registration requires reporting any deviations from the OSF-filed plan |
+| Perspectives | Future work | §8 decision rules specify the Step 2 (2R2C grey-box) trigger conditions and §13 broader study-stopping criteria |
+
 ## 14. References
 
-- Khabbazi, A., et al. (2025). *Lessons learned from MPC field demonstrations for HVAC*. [arXiv:2503.05022](https://arxiv.org/abs/2503.05022) / [Applied Energy 387 (2025) 126459](https://www.sciencedirect.com/science/article/abs/pii/S0306261925011894). Source of the methodological-gap framing.
-- Heyvaert, M., & Onghena, P. (2014). *Randomization tests for single-case experiments: state of the art, state of the science, and state of the application*. Journal of Contextual Behavioral Science, 3(1), 51–64. [doi:10.1016/j.jcbs.2013.10.002](https://doi.org/10.1016/j.jcbs.2013.10.002). Statistical method for the primary test.
+### Methodological framing and field-study meta-reviews
+
+- Khabbazi, A. J., Pergantis, E. N., Reyes Premer, L. D., Papageorgiou, P., Lee, A. H., Braun, J. E., Henze, G. P., & Kircher, K. J. (2025). *Lessons learned from field demonstrations of model predictive control and reinforcement learning for residential and commercial HVAC: A review*. Applied Energy 399, 126459. [doi:10.1016/j.apenergy.2025.126459](https://doi.org/10.1016/j.apenergy.2025.126459) / [arXiv:2503.05022](https://arxiv.org/abs/2503.05022). Source of the methodological-gap framing.
+- Saloux, E., Candanedo, J. A., Vallianos, C., Morovat, N., & Zhang, K. (2025). *From theory to practice: A critical review of model predictive control field implementations in the built environment*. Applied Energy 393, 126091. [doi:10.1016/j.apenergy.2025.126091](https://doi.org/10.1016/j.apenergy.2025.126091). Critical-review companion to Khabbazi: 91 implementations over 19 years, 41-day average test duration, four performance-evaluation methods, Appendix D "cheat sheet" for standardized reporting.
+- Drgoňa, J., Arroyo, J., Cupeiro Figueroa, I., Blum, D., Arendt, K., Kim, D., Ollé, E. P., Oravec, J., Wetter, M., Vrabie, D. L., & Helsen, L. (2020). *All you need to know about model predictive control for buildings*. Annual Reviews in Control 50, 190–232. [doi:10.1016/j.arcontrol.2020.09.001](https://doi.org/10.1016/j.arcontrol.2020.09.001). Comprehensive MPC-for-buildings methodology review.
+- Dhaliwal, G., Gunay, B., & Beausoleil-Morrison, I. (2026). *Parametric analysis of model predictive control for residential HVAC systems*. Energy and Buildings 351, 116662. [doi:10.1016/j.enbuild.2025.116662](https://doi.org/10.1016/j.enbuild.2025.116662). Multi-baseline simulation comparison (MPC vs reactive controllers with varying pre-conditioning); cooling savings range 1.6–11.2% bracketing this study's 5% H1 threshold.
+
+### Statistical method
+
+- Heyvaert, M., & Onghena, P. (2014). *Randomization tests for single-case experiments: state of the art, state of the science, and state of the application*. Journal of Contextual Behavioral Science 3(1), 51–64. [doi:10.1016/j.jcbs.2013.10.002](https://doi.org/10.1016/j.jcbs.2013.10.002). Statistical method for the primary test.
+- Holm, S. (1979). *A Simple Sequentially Rejective Multiple Test Procedure*. Scandinavian Journal of Statistics 6(2), 65–70. Holm-Bonferroni multiple-comparison correction (§7).
+
+### Residential MPC field-study precedents
+
+- Brown, S., & Beausoleil-Morrison, I. (2023). *Investigation of a model predictive controller for use in a highly glazed house with hydronic floor heating and cooling*. Science and Technology for the Built Environment 29(4), 347–365. [doi:10.1080/23744731.2023.2196910](https://doi.org/10.1080/23744731.2023.2196910). PPC vs RC sequential pre/post (26 days unoccupied test house) + MATLAB MPC simulation.
+- Brown, S., & Beausoleil-Morrison, I. (2023). *Long-term implementation of a model predictive controller for a hydronic floor heating and cooling system in a highly glazed house in Canada*. Applied Energy 349, 121677. [doi:10.1016/j.apenergy.2023.121677](https://doi.org/10.1016/j.apenergy.2023.121677). 182-day continuous MPC at the same CHEeR test house, no comparator.
+- Pergantis, E. N., Priyadarshan, Al Theeb, N., Dhillon, P., Ore, J. P., Ziviani, D., Groll, E. A., & Kircher, K. J. (2024). *Field demonstration of predictive heating control for an all-electric house in a cold climate*. Applied Energy 360, 122820. [doi:10.1016/j.apenergy.2024.122820](https://doi.org/10.1016/j.apenergy.2024.122820) / [arXiv:2402.07032](https://arxiv.org/abs/2402.07032). Closest single-house cold-climate field-study precedent (IECC Zone 5A, 33 MPC days, deterministic 5-day stretches, regression-slope inference). 19% (95% CI 13–24%) daily heating-energy savings; 27% (22–32%) annualized cost.
+- Pergantis, E. N., Dhillon, P., Reyes Premer, L. D., Lee, A. H., Ziviani, D., & Kircher, K. J. (2024). *Humidity-aware model predictive control for residential air conditioning: A field study*. Building and Environment 266, 112093. [doi:10.1016/j.buildenv.2024.112093](https://doi.org/10.1016/j.buildenv.2024.112093) / [arXiv:2407.01707](https://arxiv.org/abs/2407.01707). Cooling-season analog at the same Zone 5A house. Sensible vs latent humidity model: equivalent for cost reduction (2.32 vs 2.34 kWh/°C); latent reduces peak-power constraint violations by 80% — central to H2 (peak kW) risk discussion.
+- Lindelöf, D., Afshari, H., Alisafaee, M., Biswas, J., Caban, M., Mocellin, X., & Viaene, J. (2015). *Field tests of an adaptive, model-predictive heating controller for residential buildings*. Energy and Buildings 99, 292–302. [doi:10.1016/j.enbuild.2015.04.029](https://doi.org/10.1016/j.enbuild.2015.04.029). Closest precedent for residential within-subject alternation: 8 SFH + 2 apartments in Switzerland with deterministic ≥2-week alternation between MPC and reference controller, energy-signature regression, 28% ± 4% savings. This study's randomized block-alternation + paired randomization-test inference is the methodological extension.
+- Lindelöf, D. (2016). *Bayesian estimation of a building's base temperature for the calculation of heating degree-days*. Energy and Buildings 134, 154–161. [doi:10.1016/j.enbuild.2016.10.038](https://doi.org/10.1016/j.enbuild.2016.10.038). Bayesian variable-base degree-day methodology referenced for the §7 fitted-balance-point sensitivity.
+- Lindelöf, D., Pomerleau, A., Mounier, A., Schaller, M., Vermeulen, R., Pittet, F., Henrici, J. R., Rumley, A., Faraj, A., & Riederer, P. (2017). *Bayesian evaluation of energy conservation measures: a case study with a model-predictive controller for space heating on a commercial building*. Energy Procedia 122, 235–240. [doi:10.1016/j.egypro.2017.07.351](https://doi.org/10.1016/j.egypro.2017.07.351). Worked-example application of the 2016 method using the `homeR` R package.
+- Wang, D., Chen, Y., Wang, W., Gao, C., & Wang, Z. (2023). *Field test of Model Predictive Control in residential buildings for utility cost savings*. Energy and Buildings 288, 113026. [doi:10.1016/j.enbuild.2023.113026](https://doi.org/10.1016/j.enbuild.2023.113026). Residential MPC field test using utility-cost savings as primary outcome.
+- Knudsen, M. D., Georges, L., Skeie, K. S., & Petersen, S. (2021). *Experimental test of a black-box economic model predictive control for residential space heating*. Applied Energy 298, 117227. [doi:10.1016/j.apenergy.2021.117227](https://doi.org/10.1016/j.apenergy.2021.117227). Norway residential field; minimal-sensing economic MPC.
+- Langner, F., Kovačević, J., Spatafora, L., Dietze, S., Waczowicz, S., Çakmak, H. K., Matthes, J., & Hagenmeyer, V. (2025). *Experimental evaluation of model predictive control and fuzzy logic control for demand response in buildings*. Applied Energy 401, 126666. [doi:10.1016/j.apenergy.2025.126666](https://doi.org/10.1016/j.apenergy.2025.126666). Three-identical-buildings parallel between-building comparison; methodological alternative to within-subject alternation.
+
+### M&V, comfort, methodology references
+
 - ASHRAE (2023). *Guideline 14-2023: Measurement of Energy, Demand, and Water Savings*. [ANSI store](https://webstore.ansi.org/standards/ashrae/ashraeguideline142023). M&V framework.
 - EVO (2022). *International Performance Measurement and Verification Protocol (IPMVP) Core Concepts*. [evo-world.org](https://evo-world.org/en/products-services-mainmenu-en/protocols/ipmvp). Whole-facility energy reconciliation framework.
 - ASHRAE (2020). *Standard 55-2020: Thermal Environmental Conditions for Human Occupancy*. Comfort metric definitions.
+- Carlucci, S., & Pagliano, L. (2012). *A review of indices for the long-term evaluation of the general thermal comfort conditions in buildings*. Energy and Buildings 53, 194–205. [doi:10.1016/j.enbuild.2012.06.015](https://doi.org/10.1016/j.enbuild.2012.06.015). Degree-hours-of-discomfort (DDH) framing for the H3 secondary outcome.
+- Paulus, M. T., Claridge, D. E., & Culp, C. (2015). *Algorithm for automating the selection of a temperature dependent change point model*. Energy and Buildings 87, 95–104. [doi:10.1016/j.enbuild.2014.11.033](https://doi.org/10.1016/j.enbuild.2014.11.033). Change-point regression methodology for the §7 fitted-balance-point sensitivity (alongside Lindelöf 2016 Bayesian variant).
 - Bacher, P., & Madsen, H. (2011). *Identifying suitable models for the heat dynamics of buildings*. Energy and Buildings 43(7), 1511–1522. [doi:10.1016/j.enbuild.2011.02.005](https://doi.org/10.1016/j.enbuild.2011.02.005). Methodological anchor for the Step 1 controller (Arm B).
+- Allcott, H., & Rogers, T. (2014). *The Short-Run and Long-Run Effects of Behavioral Interventions: Experimental Evidence from Energy Conservation*. American Economic Review 104(10), 3003–3037. [doi:10.1257/aer.104.10.3003](https://doi.org/10.1257/aer.104.10.3003). Precedent for pre-registered RCT in residential energy.
+
+### Open-data and metadata precedents
+
 - Brick Consortium. *Brick Schema*. [brickschema.org](https://brickschema.org/). Metadata vocabulary for building telemetry.
+- Balaji, B., Bhattacharya, A., Fierro, G., et al. (2018). *Brick: Metadata schema for portable smart building applications*. Applied Energy 226, 1273–1292. [doi:10.1016/j.apenergy.2018.02.091](https://doi.org/10.1016/j.apenergy.2018.02.091). Brick reference paper for the open-data publication plan.
 - IEA EBC Annex 81 (2024). *Data-Driven Smart Buildings*. [annex81.iea-ebc.org](https://annex81.iea-ebc.org/). Buildings-data-platform reference.
+- Saldanha, N., & Beausoleil-Morrison, I. (2012). *Measured end-use electric load profiles for 12 Canadian houses at high temporal resolution*. Energy and Buildings 49, 519–530. [doi:10.1016/j.enbuild.2012.02.050](https://doi.org/10.1016/j.enbuild.2012.02.050). Closest published precedent for the per-circuit submetering this study uses (Refoss EM16P).
+- Makonin, S., Ellert, B., Bajić, I. V., & Popowich, F. (2016). *Electricity, water, and natural gas consumption of a residential house in Canada from 2012 to 2014*. Scientific Data 3, 160037. [doi:10.1038/sdata.2016.37](https://doi.org/10.1038/sdata.2016.37). AMPds2 dataset; open-data publication-format precedent.
+- Pullinger, M., Kilgour, J., Goddard, N., et al. (2021). *The IDEAL household energy dataset, electricity, gas, contextual sensor data and survey data for 255 UK homes*. Scientific Data 8, 146. [doi:10.1038/s41597-021-00921-y](https://doi.org/10.1038/s41597-021-00921-y). IDEAL dataset; open-data publication-format precedent.
+
+### Standards and regulation
+
 - 45 CFR 46.102 (2018). *Definitions for purposes of this policy*. [HHS](https://www.hhs.gov/ohrp/regulations-and-policy/regulations/45-cfr-46/index.html). NHSR determination basis.
