@@ -34,6 +34,7 @@ from app import (
     fetch_inst_load_recent,
     fetch_metered_load_recent,
     poll_once,
+    seconds_to_next_aligned_tick,
 )
 
 CHICAGO = ZoneInfo("America/Chicago")
@@ -167,6 +168,34 @@ def test_metered_load_fires_every_hour_at_top_of_hour():
     assert s.weekdays is None
     assert s.months is None
     assert s.days is None
+
+
+def test_seconds_to_next_aligned_tick_5min_grid():
+    """Five-minute alignment: from any time, returns the seconds until
+    the next :00, :05, :10, ..., :55 wall-clock minute. This is the
+    Schedule.minutes contract for inst_load — without alignment, a
+    container started at :49:29 would tick at :49, :54, :59, :04, :09,
+    none of which match the schedule."""
+    # Started at 12:49:29 -> next aligned tick is 12:50:00, 31 seconds away.
+    started_at = datetime(2026, 5, 10, 12, 49, 29, tzinfo=CHICAGO)
+    assert round(seconds_to_next_aligned_tick(started_at, 300.0)) == 31
+
+    # Started at 12:50:00 (already aligned) -> returns interval (next
+    # tick at 12:55:00), so the loop guarantees forward progress.
+    on_boundary = datetime(2026, 5, 10, 12, 50, 0, tzinfo=CHICAGO)
+    assert round(seconds_to_next_aligned_tick(on_boundary, 300.0)) == 300
+
+    # Started 0.5s before a boundary -> next boundary is the imminent one.
+    just_before = datetime(2026, 5, 10, 12, 49, 59, 500_000, tzinfo=CHICAGO)
+    sleep_s = seconds_to_next_aligned_tick(just_before, 300.0)
+    assert 0 < sleep_s <= 0.5
+
+
+def test_seconds_to_next_aligned_tick_hourly_grid():
+    """3600s interval still aligns on the top of the hour."""
+    # 12:49:29 -> next :00:00 is 13:00:00, 630 seconds away.
+    t = datetime(2026, 5, 10, 12, 49, 30, tzinfo=CHICAGO)
+    assert round(seconds_to_next_aligned_tick(t, 3600.0)) == 630
 
 
 def test_inst_load_fires_every_5_min():
