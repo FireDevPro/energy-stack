@@ -74,6 +74,11 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
+from price_overlay import (
+    NORMAL_TIER_NAME,
+    PriceOverlayState,
+    evaluate_price_overlay,
+)
 from safety_supervisor import validate_setpoints
 
 
@@ -661,12 +666,40 @@ class C4Client:
 
 @dataclass
 class FiringState:
-    """Track what's already fired today so we don't double-execute."""
+    """Track what's already fired today so we don't double-execute, plus
+    the persistent state for the price-overlay (§2) and 5CP-detection
+    (§3) state machines that span ticks."""
     last_decision_date: str = ""
     fired_actions: set[tuple[str, int, int]] = field(default_factory=set)  # (date, hour, minute)
     # (date, revisit_hour) tuples for the intra-day forecast revisit checks.
     # Separate set so the revisit cadence doesn't interact with action firing.
     fired_revisits: set[tuple[str, int]] = field(default_factory=set)
+    # Price-overlay state machine (§2). Survives across scheduler ticks but
+    # not container restarts; cold-start re-evaluates from current price
+    # within the 30-min minimum-hold window so behaviour stabilizes fast.
+    price_overlay_state: PriceOverlayState = field(default_factory=PriceOverlayState)
+
+
+def write_price_overlay_transition(
+    write_api, bucket: str,
+    *, prev_tier: str, new_tier: str,
+    current_price_cents: float,
+    schedule_cool_f: int, effective_cool_f: int,
+    triggered_at_utc: datetime | None,
+) -> None:
+    """Write one ``hvac.price_overlay`` row when the price-overlay tier
+    changes between scheduler ticks. Skipped when the tier is unchanged
+    so dashboards aren't drowned in no-op rows."""
+    p = (Point("hvac.price_overlay")
+         .tag("prev_tier", prev_tier)
+         .tag("new_tier", new_tier)
+         .field("current_price_cents", float(current_price_cents))
+         .field("schedule_cool_f", float(schedule_cool_f))
+         .field("effective_cool_f", float(effective_cool_f))
+         .field("triggered_at_utc",
+                triggered_at_utc.isoformat() if triggered_at_utc else "")
+         )
+    write_api.write(bucket=bucket, record=p)
 
 
 def write_decision(write_api, bucket: str, decision_for_date: str,
@@ -988,10 +1021,8 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         snapshot = await read_thermostat_snapshot(c4)
 
         # Layer priority resolution (§4). Combines schedule baseline with
-        # the price-overlay (§2) and 5CP-shutoff (§3) layers. Until those
-        # modules wire in, the resolution is a passthrough on the schedule
-        # baseline; the audit fields still emit so dashboards have the
-        # schema in place.
+        # the price-overlay (§2) and 5CP-shutoff (§3) layers. §3 is still
+        # a stub; §2 is wired in below.
         if action.release_hold:
             # Release-hold actions don't carry setpoints; skip layer
             # resolution and supervisor entirely.
@@ -1002,8 +1033,55 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             sup_decision = "approved"
             sup_reason = None
         else:
-            layer_resolution = resolve_layer_priority(schedule_cool)
+            # Price overlay (§2): evaluate ComEd RTP against the locked tier
+            # thresholds. State persists across ticks for the 30-min hold
+            # and 2c hysteresis. Tier transitions are logged to
+            # hvac.price_overlay; same-tier ticks are silent.
+            current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
+            prev_tier = firing.price_overlay_state.current_tier
+            if current_price_cents is None:
+                # Price feed unavailable: leave the overlay state untouched
+                # and fall through with no offset.
+                active_tier = None
+                price_offset_f = 0
+                price_override_f = None
+                price_tier_name = NORMAL_TIER_NAME
+            else:
+                active_tier, firing.price_overlay_state = evaluate_price_overlay(
+                    current_price_cents,
+                    firing.price_overlay_state,
+                    datetime.now(timezone.utc),
+                )
+                if active_tier is None:
+                    price_offset_f = 0
+                    price_override_f = None
+                    price_tier_name = NORMAL_TIER_NAME
+                else:
+                    price_offset_f = active_tier.cool_setpoint_offset_f
+                    price_override_f = active_tier.cool_setpoint_override_f
+                    price_tier_name = active_tier.name
+
+            layer_resolution = resolve_layer_priority(
+                schedule_cool,
+                price_overlay_tier=price_tier_name,
+                price_offset_f=price_offset_f,
+                price_override_f=price_override_f,
+            )
             cool_to_apply = layer_resolution.effective_cool_f
+
+            # Log tier transitions to hvac.price_overlay (§2 audit). Skip
+            # when the tier didn't change to keep the measurement focused
+            # on real events.
+            new_tier = firing.price_overlay_state.current_tier
+            if new_tier != prev_tier and current_price_cents is not None:
+                write_price_overlay_transition(
+                    write_api, cfg.influx_bucket,
+                    prev_tier=prev_tier, new_tier=new_tier,
+                    current_price_cents=current_price_cents,
+                    schedule_cool_f=schedule_cool,
+                    effective_cool_f=layer_resolution.effective_cool_f,
+                    triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
+                )
 
             # Safety supervisor: gate the post-layer cool setpoint against
             # hard bounds and an emergency-indoor-temp override before it
