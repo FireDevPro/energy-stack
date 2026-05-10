@@ -77,6 +77,7 @@ from pyControl4.climate import C4Climate
 from pjm_5cp import (
     FiveCPState,
     evaluate_5cp_risk,
+    fetch_forecast_peak_for_date,
     fetch_forecast_peak_today,
     fetch_zone_live,
     update_season_5th_highest,
@@ -716,6 +717,51 @@ class FiringState:
     # 5CP-detector state machine (§3). Same persistence semantics as the
     # price overlay; cold-start defaults to inactive.
     fivecp_state: FiveCPState = field(default_factory=FiveCPState)
+    # Mid-period re-push tracking (§4 / Critical #2). The most recently
+    # fired non-release-hold action's schedule-baseline setpoint and the
+    # last effective cool setpoint pushed to the thermostat. When a per-
+    # tick layer evaluation produces a different effective cool setpoint,
+    # run_schedule_check re-pushes mid-period without waiting for the
+    # next scheduled action. Reset to None on release_hold actions and on
+    # day boundaries.
+    last_schedule_cool_f: int | None = None
+    last_action_label: str = ""
+    last_pushed_effective_cool_f: int | None = None
+    # Throttle for hvac.5cp_state audit writes. Spec calls for ~every-5-min
+    # cadence (288 rows/day) so dashboards can plot the ratio + derivative
+    # trace without flooding the bucket at the 1-min scheduler tick rate.
+    last_5cp_audit_at_utc: datetime | None = None
+
+
+def _fetch_pjm_inputs_for_target_date(
+    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+) -> tuple[float | None, float]:
+    """Fetch ``(target_date_peak_load_mw, season_5th_highest_mw)`` so the
+    §7 forecast 5CP-risk pre-cool deepening trigger can fire at 21:00 the
+    night before (or at the 06:00/11:00 revisit). The function exists so
+    all three production decide_day_type callers (run_decision,
+    run_decision_revisit, fetch_today_decision) populate the §7 inputs
+    consistently.
+
+    ``target_date_iso`` is the date being classified — for run_decision
+    that's tomorrow; for revisit/lazy-recompute paths that's today. The
+    season-to-date 5th-highest is independent of the target date, but
+    PJM's forecast peak is per-date so it's queried via
+    fetch_forecast_peak_for_date.
+
+    Returns ``(None, season_5th_mw)`` when PJM's forecast for the target
+    date hasn't published yet (e.g., 21:00 fired before tomorrow's load
+    forecast was posted). decide_day_type's §7 path gates on both inputs
+    being non-None, so a None peak silently falls back to the multi-day
+    HOT_STREAK_DAY1 path.
+    """
+    target_dt = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
+    season_start_utc = cooling_season_start_utc(target_dt)
+    season_5th_mw = update_season_5th_highest(query_api, bucket, season_start_utc)
+    target_peak_mw = fetch_forecast_peak_for_date(
+        query_api, bucket, target_date_iso, tz=tz,
+    )
+    return target_peak_mw, season_5th_mw
 
 
 def cooling_season_start_utc(now_local: datetime) -> datetime:
@@ -926,7 +972,15 @@ def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> N
 
     tomorrow_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
     comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
-    new_day_type, reasons = decide_day_type(today_forecast, day2_forecast=tomorrow_forecast)
+    tz = ZoneInfo(cfg.tz_name)
+    target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
+        query_api, cfg.influx_bucket, today_iso, tz,
+    )
+    new_day_type, reasons = decide_day_type(
+        today_forecast, day2_forecast=tomorrow_forecast,
+        tomorrow_peak_load_mw=target_peak_mw,
+        season_5th_highest_mw=season_5th_mw,
+    )
 
     if stored == new_day_type:
         log("info", "revisit_no_change",
@@ -952,8 +1006,15 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
     forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
     day2 = fetch_latest_forecast(query_api, cfg.influx_bucket, "day2")
     comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
-    day_type, reasons = decide_day_type(forecast, day2_forecast=day2)
     decision_date = (datetime.now(tz).date() + timedelta(days=1)).isoformat()
+    target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
+        query_api, cfg.influx_bucket, decision_date, tz,
+    )
+    day_type, reasons = decide_day_type(
+        forecast, day2_forecast=day2,
+        tomorrow_peak_load_mw=target_peak_mw,
+        season_5th_highest_mw=season_5th_mw,
+    )
     write_decision(write_api, cfg.influx_bucket, decision_date, day_type, reasons, comed_price)
     firing.last_decision_date = decision_date
     log("info", "decision_made",
@@ -1021,7 +1082,19 @@ def fetch_today_decision(query_api, write_api, bucket: str, today_iso: str) -> s
     tomorrow_forecast = fetch_latest_forecast(query_api, bucket, "tomorrow")
     comed_price = fetch_latest_comed(query_api, bucket)
 
-    day_type, reasons = decide_day_type(today_forecast, day2_forecast=tomorrow_forecast)
+    # §7 forecast 5CP-risk inputs. fetch_today_decision doesn't carry a tz
+    # in its signature; resolve it from the SCHEDULER_TZ env var the same
+    # way Config.from_env() does so the helper sees the same wall-clock
+    # day boundary.
+    tz = ZoneInfo(os.environ.get("SCHEDULER_TZ", "America/Chicago"))
+    target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
+        query_api, bucket, today_iso, tz,
+    )
+    day_type, reasons = decide_day_type(
+        today_forecast, day2_forecast=tomorrow_forecast,
+        tomorrow_peak_load_mw=target_peak_mw,
+        season_5th_highest_mw=season_5th_mw,
+    )
 
     log("info", "today_decision_recomputed",
         today=today_iso, day_type=day_type,
@@ -1049,6 +1122,226 @@ def vacation_schedule(override: Override) -> list[ScheduleAction]:
     return actions
 
 
+@dataclass(frozen=True)
+class LayerInputs:
+    """Per-tick output of `_evaluate_layer_inputs`. Captures everything
+    needed to call `resolve_layer_priority` plus the audit context for
+    `hvac.price_overlay` and `hvac.5cp_state` writes."""
+    price_tier_name: str
+    price_offset_f: int
+    price_override_f: int | None
+    price_prev_tier: str
+    current_price_cents: float | None
+    fivecp_active: bool
+    fivecp_load_mw: float
+    fivecp_derivative: float
+    fivecp_forecast_peak: float
+    fivecp_season_5th_mw: float
+    fivecp_data_available: bool
+
+
+_FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
+
+
+def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
+                            firing: FiringState, now_local: datetime) -> LayerInputs:
+    """Per-tick evaluation of the §2 price overlay and §3 5CP detector,
+    independent of whether a scheduled action is firing this minute.
+
+    Side effects:
+      * Updates ``firing.price_overlay_state`` and ``firing.fivecp_state``.
+      * Writes ``hvac.price_overlay`` on tier transitions only.
+      * Writes ``hvac.5cp_state`` at most once every 5 min (throttled via
+        ``firing.last_5cp_audit_at_utc``) so dashboards see the ~288
+        rows/day cadence the validation procedure asserts.
+
+    ``now_utc`` is derived from ``now_local`` rather than read from
+    wall-clock so tests can drive the throttle window and so audit
+    timestamps stay consistent with the rest of the scheduler tick.
+
+    Per EXPERIMENT_DESIGN §3 item 5: "Continuous overlay on the active
+    scheduled setpoint, evaluated each scheduler tick" — and §3 item 6
+    similarly for 5CP. Pre-§Critical#2 this code lived inside the action-
+    fire loop body and only ran 4-6 times/day; mid-window price spikes
+    fell through unobserved.
+    """
+    now_utc = now_local.astimezone(timezone.utc)
+
+    # ---- Price overlay (§2) ----
+    current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
+    prev_tier = firing.price_overlay_state.current_tier
+    if current_price_cents is None:
+        # Price feed unavailable: leave overlay state untouched. The
+        # current tier (whichever we last entered) continues to apply.
+        active_tier = None
+        price_offset_f = 0
+        price_override_f = None
+        price_tier_name = prev_tier
+    else:
+        active_tier, firing.price_overlay_state = evaluate_price_overlay(
+            current_price_cents, firing.price_overlay_state, now_utc,
+        )
+        if active_tier is None:
+            price_offset_f = 0
+            price_override_f = None
+            price_tier_name = NORMAL_TIER_NAME
+        else:
+            price_offset_f = active_tier.cool_setpoint_offset_f
+            price_override_f = active_tier.cool_setpoint_override_f
+            price_tier_name = active_tier.name
+
+    # ---- 5CP detection (§3) ----
+    zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
+    forecast_peak = fetch_forecast_peak_today(query_api, cfg.influx_bucket)
+    season_start_utc = cooling_season_start_utc(now_local)
+    season_5th_mw = update_season_5th_highest(
+        query_api, cfg.influx_bucket, season_start_utc,
+    )
+    fivecp_data_available = zone_snapshot is not None and forecast_peak is not None
+    if not fivecp_data_available:
+        fivecp_active = firing.fivecp_state.is_active  # carry prior state
+        fivecp_load_mw = 0.0
+        fivecp_derivative = 0.0
+        fivecp_forecast_peak = 0.0
+    else:
+        fivecp_active, firing.fivecp_state = evaluate_5cp_risk(
+            current_load_mw=zone_snapshot.current_mw,
+            season_5th_highest_mw=season_5th_mw,
+            load_derivative_mw_per_hour=zone_snapshot.derivative_mw_per_hour,
+            forecast_peak_today_mw=forecast_peak,
+            now_utc=now_utc,
+            state=firing.fivecp_state,
+        )
+        fivecp_load_mw = zone_snapshot.current_mw
+        fivecp_derivative = zone_snapshot.derivative_mw_per_hour
+        fivecp_forecast_peak = forecast_peak
+
+    # ---- Audit writes ----
+    new_tier = firing.price_overlay_state.current_tier
+    if new_tier != prev_tier and current_price_cents is not None:
+        # Effective cool isn't fully resolved here (depends on schedule
+        # baseline); supply a sentinel and let the action/mid-period
+        # caller fill in the audit context if needed. The price-overlay
+        # transition row is primarily a tier-history record.
+        write_price_overlay_transition(
+            write_api, cfg.influx_bucket,
+            prev_tier=prev_tier, new_tier=new_tier,
+            current_price_cents=current_price_cents,
+            schedule_cool_f=firing.last_schedule_cool_f or 0,
+            effective_cool_f=0,  # filled in by mid-period push if it runs
+            triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
+        )
+
+    if fivecp_data_available and (
+        firing.last_5cp_audit_at_utc is None
+        or now_utc - firing.last_5cp_audit_at_utc >= _FIVECP_AUDIT_INTERVAL
+    ):
+        write_5cp_state(
+            write_api, cfg.influx_bucket,
+            is_active=fivecp_active,
+            current_load_mw=fivecp_load_mw,
+            season_5th_highest_mw=season_5th_mw,
+            load_derivative_mw_per_hour=fivecp_derivative,
+            forecast_peak_today_mw=fivecp_forecast_peak,
+        )
+        firing.last_5cp_audit_at_utc = now_utc
+
+    return LayerInputs(
+        price_tier_name=price_tier_name,
+        price_offset_f=price_offset_f,
+        price_override_f=price_override_f,
+        price_prev_tier=prev_tier,
+        current_price_cents=current_price_cents,
+        fivecp_active=fivecp_active,
+        fivecp_load_mw=fivecp_load_mw,
+        fivecp_derivative=fivecp_derivative,
+        fivecp_forecast_peak=fivecp_forecast_peak,
+        fivecp_season_5th_mw=season_5th_mw,
+        fivecp_data_available=fivecp_data_available,
+    )
+
+
+async def _push_layer_change_mid_period(
+    cfg: Config, c4: C4Client, write_api,
+    firing: FiringState, day_type: str, layer_inputs: LayerInputs,
+    today_dewpoint_f: float | None, override_note: str,
+    now_local: datetime,
+) -> None:
+    """When the per-tick layer evaluation produces a different effective
+    cool setpoint than the last value pushed, re-push without waiting for
+    the next scheduled action. Triggered when a price tier transitions or
+    5CP active state crosses inside an action period.
+
+    Skipped silently when no schedule baseline has been established yet
+    today (e.g., before the first non-release-hold action fires) since
+    there's no schedule baseline to layer on top of.
+    """
+    if firing.last_schedule_cool_f is None:
+        return  # no baseline to layer on top of
+
+    schedule_cool = firing.last_schedule_cool_f
+    layer_resolution = resolve_layer_priority(
+        schedule_cool,
+        price_overlay_tier=layer_inputs.price_tier_name,
+        price_offset_f=layer_inputs.price_offset_f,
+        price_override_f=layer_inputs.price_override_f,
+        fivecp_active=layer_inputs.fivecp_active,
+    )
+    if layer_resolution.effective_cool_f == firing.last_pushed_effective_cool_f:
+        return  # nothing changed; skip the push
+
+    # Construct a synthetic action for execute_action / write_action / log.
+    synthetic_action = ScheduleAction(
+        hour=now_local.hour, minute=now_local.minute,
+        label=f"MID_PERIOD_REPUSH:{firing.last_action_label}",
+        cool_setpoint_f=schedule_cool,
+        heat_setpoint_f=HEAT_SETPOINT_FLOOR_F,
+        fan_mode=None,  # leave fan mode alone mid-period
+    )
+
+    snapshot = await read_thermostat_snapshot(c4)
+    decision = validate_setpoints(
+        layer_resolution.effective_cool_f, HEAT_SETPOINT_FLOOR_F, snapshot,
+    )
+    sup_cool = decision.cool_setpoint_f
+    sup_heat = decision.heat_setpoint_f
+    sup_decision = decision.decision
+    sup_reason = decision.reason
+    if decision.needs_alert:
+        level = "error" if decision.decision == "emergency" else "warn"
+        log(level, "supervisor_intervention",
+            day_type=day_type, label=synthetic_action.label,
+            decision=decision.decision, reason=decision.reason,
+            cool_proposed=layer_resolution.effective_cool_f,
+            cool_applied=sup_cool,
+            heat_proposed=HEAT_SETPOINT_FLOOR_F,
+            heat_applied=sup_heat,
+            indoor_temp_f=snapshot.get("indoor_temp_f"))
+
+    applied, error = await execute_action(
+        c4, synthetic_action, sup_cool, sup_heat, snapshot, cfg.dry_run,
+    )
+    write_action(
+        write_api, cfg.influx_bucket, day_type, synthetic_action,
+        sup_cool, sup_heat, None, "mid_period_layer_change",
+        cfg.dry_run, applied, snapshot, error,
+        supervisor_decision=sup_decision, supervisor_reason=sup_reason,
+        layer_resolution=layer_resolution,
+    )
+    log("info", "mid_period_repush",
+        day_type=day_type, label=synthetic_action.label,
+        cool_setpoint_f=sup_cool,
+        prior_effective_cool_f=firing.last_pushed_effective_cool_f,
+        new_effective_cool_f=layer_resolution.effective_cool_f,
+        price_overlay_tier=layer_inputs.price_tier_name,
+        fivecp_active=layer_inputs.fivecp_active,
+        override_note=override_note,
+        dry_run=cfg.dry_run, applied=applied, error=error)
+
+    if not cfg.dry_run:
+        firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
+
+
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
                               tz: ZoneInfo, now_local: datetime,
                               firing: FiringState) -> None:
@@ -1058,6 +1351,12 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
       1. Active vacation override (flat setpoint all day) -> synthetic schedule
       2. Active day_type override -> use override's day_type schedule
       3. Forecast-derived day_type from latest hvac.decisions -> normal schedule
+
+    Layer evaluation runs every tick (per Critical #2 fix): the §2 price
+    overlay and §3 5CP detector are evaluated, audit rows are written,
+    and a mid-period re-push fires if the resulting effective cool
+    setpoint differs from the last value pushed. The action-fire path is
+    unchanged; it consumes the per-tick layer inputs.
     """
     today_iso = now_local.date().isoformat()
     overrides = load_overrides(cfg.overrides_file)
@@ -1081,6 +1380,11 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     today_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "today")
     today_dewpoint_f = (today_forecast or {}).get("max_dewpoint_f")
 
+    # ---- Per-tick layer evaluation (Critical #2 fix) ----
+    # Always evaluate price overlay + 5CP, write audit rows, regardless of
+    # whether a scheduled action fires this minute.
+    layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
+
     fired_anything = False
     for action in schedule:
         if now_local.hour != action.hour or now_local.minute != action.minute:
@@ -1093,117 +1397,29 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         schedule_cool, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
         snapshot = await read_thermostat_snapshot(c4)
 
-        # Layer priority resolution (§4). Combines schedule baseline with
-        # the price-overlay (§2) and 5CP-shutoff (§3) layers. §3 is still
-        # a stub; §2 is wired in below.
         if action.release_hold:
             # Release-hold actions don't carry setpoints; skip layer
-            # resolution and supervisor entirely.
+            # resolution and supervisor entirely. Reset the mid-period
+            # baseline so a stale value doesn't trigger a phantom re-push.
             cool_to_apply = schedule_cool
             layer_resolution = None
             sup_cool = schedule_cool
             sup_heat = action.heat_setpoint_f
             sup_decision = "approved"
             sup_reason = None
+            firing.last_schedule_cool_f = None
+            firing.last_action_label = action.label
+            firing.last_pushed_effective_cool_f = None
         else:
-            # Price overlay (§2): evaluate ComEd RTP against the locked tier
-            # thresholds. State persists across ticks for the 30-min hold
-            # and 2c hysteresis. Tier transitions are logged to
-            # hvac.price_overlay; same-tier ticks are silent.
-            current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
-            prev_tier = firing.price_overlay_state.current_tier
-            if current_price_cents is None:
-                # Price feed unavailable: leave the overlay state untouched
-                # and fall through with no offset.
-                active_tier = None
-                price_offset_f = 0
-                price_override_f = None
-                price_tier_name = NORMAL_TIER_NAME
-            else:
-                active_tier, firing.price_overlay_state = evaluate_price_overlay(
-                    current_price_cents,
-                    firing.price_overlay_state,
-                    datetime.now(timezone.utc),
-                )
-                if active_tier is None:
-                    price_offset_f = 0
-                    price_override_f = None
-                    price_tier_name = NORMAL_TIER_NAME
-                else:
-                    price_offset_f = active_tier.cool_setpoint_offset_f
-                    price_override_f = active_tier.cool_setpoint_override_f
-                    price_tier_name = active_tier.name
-
-            # 5CP detection (§3): query the latest ComEd zone load + the
-            # season-to-date 5th highest, evaluate the trigger conditions,
-            # and pass the result into the layer resolver.
-            zone_snapshot = fetch_zone_live(query_api, cfg.influx_bucket)
-            forecast_peak = fetch_forecast_peak_today(query_api, cfg.influx_bucket)
-            season_start_utc = cooling_season_start_utc(now_local)
-            season_5th_mw = update_season_5th_highest(
-                query_api, cfg.influx_bucket, season_start_utc,
-            )
-            if zone_snapshot is None or forecast_peak is None:
-                # Insufficient PJM data: skip 5CP layer this tick rather
-                # than treat absence as zero load (which would be a false
-                # negative on every tick).
-                fivecp_active = False
-                fivecp_load_mw = 0.0
-                fivecp_derivative = 0.0
-                fivecp_forecast_peak = 0.0
-            else:
-                fivecp_active, firing.fivecp_state = evaluate_5cp_risk(
-                    current_load_mw=zone_snapshot.current_mw,
-                    season_5th_highest_mw=season_5th_mw,
-                    load_derivative_mw_per_hour=zone_snapshot.derivative_mw_per_hour,
-                    forecast_peak_today_mw=forecast_peak,
-                    now_utc=datetime.now(timezone.utc),
-                    state=firing.fivecp_state,
-                )
-                fivecp_load_mw = zone_snapshot.current_mw
-                fivecp_derivative = zone_snapshot.derivative_mw_per_hour
-                fivecp_forecast_peak = forecast_peak
-
             layer_resolution = resolve_layer_priority(
                 schedule_cool,
-                price_overlay_tier=price_tier_name,
-                price_offset_f=price_offset_f,
-                price_override_f=price_override_f,
-                fivecp_active=fivecp_active,
+                price_overlay_tier=layer_inputs.price_tier_name,
+                price_offset_f=layer_inputs.price_offset_f,
+                price_override_f=layer_inputs.price_override_f,
+                fivecp_active=layer_inputs.fivecp_active,
             )
             cool_to_apply = layer_resolution.effective_cool_f
 
-            # 5CP audit row every tick so dashboards can plot the detector's
-            # ratio + derivative trace against real PJM 5CPs after the season.
-            if zone_snapshot is not None and forecast_peak is not None:
-                write_5cp_state(
-                    write_api, cfg.influx_bucket,
-                    is_active=fivecp_active,
-                    current_load_mw=fivecp_load_mw,
-                    season_5th_highest_mw=season_5th_mw,
-                    load_derivative_mw_per_hour=fivecp_derivative,
-                    forecast_peak_today_mw=fivecp_forecast_peak,
-                )
-
-            # Log tier transitions to hvac.price_overlay (§2 audit). Skip
-            # when the tier didn't change to keep the measurement focused
-            # on real events.
-            new_tier = firing.price_overlay_state.current_tier
-            if new_tier != prev_tier and current_price_cents is not None:
-                write_price_overlay_transition(
-                    write_api, cfg.influx_bucket,
-                    prev_tier=prev_tier, new_tier=new_tier,
-                    current_price_cents=current_price_cents,
-                    schedule_cool_f=schedule_cool,
-                    effective_cool_f=layer_resolution.effective_cool_f,
-                    triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
-                )
-
-            # Safety supervisor: gate the post-layer cool setpoint against
-            # hard bounds and an emergency-indoor-temp override before it
-            # reaches the thermostat. Any future controller (Step 1, Step
-            # 2, full MPC) also flows through this; it lives outside the
-            # controller layer on purpose.
             decision = validate_setpoints(cool_to_apply, action.heat_setpoint_f, snapshot)
             sup_cool = decision.cool_setpoint_f
             sup_heat = decision.heat_setpoint_f
@@ -1221,6 +1437,9 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
                     heat_proposed=action.heat_setpoint_f,
                     heat_applied=decision.heat_setpoint_f,
                     indoor_temp_f=snapshot.get("indoor_temp_f"))
+
+            firing.last_schedule_cool_f = schedule_cool
+            firing.last_action_label = action.label
 
         applied, error = await execute_action(c4, action, sup_cool, sup_heat,
                                                snapshot, cfg.dry_run)
@@ -1252,7 +1471,20 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             indoor_humidity_before_pct=snapshot.get("humidity"),
             cool_setpoint_before_f=snapshot.get("cool_setpoint_f"),
             heat_setpoint_before_f=snapshot.get("heat_setpoint_f"))
+        if not action.release_hold and not cfg.dry_run:
+            firing.last_pushed_effective_cool_f = sup_cool
         fired_anything = True
+
+    # ---- Mid-period re-push (Critical #2 fix) ----
+    # No new action fired this tick, but the per-tick layer evaluation
+    # may have changed the effective cool setpoint inside an active
+    # period (e.g., price tier crossed mid-COAST). Re-push if the new
+    # effective differs from the last value sent.
+    if not fired_anything:
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, day_type, layer_inputs,
+            today_dewpoint_f, override_note, now_local,
+        )
 
     if fired_anything:
         # Prune fired_actions to today only (keep memory bounded)

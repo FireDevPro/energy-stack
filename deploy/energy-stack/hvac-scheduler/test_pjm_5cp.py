@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from pjm_5cp import (
@@ -12,6 +13,7 @@ from pjm_5cp import (
     PRE_SEASON_FALLBACK_5TH_MW,
     FiveCPState,
     evaluate_5cp_risk,
+    fetch_forecast_peak_for_date,
     hold_end_time,
     season_5th_highest_from_loads,
 )
@@ -237,6 +239,56 @@ def test_no_release_when_derivative_negative_but_ratio_above_release():
         state=state,
     )
     assert is_active is True
+
+
+# ---- fetch_forecast_peak_for_date (§7 wire-up) ---------------------------
+
+
+def _fake_query_api(records: list[float]):
+    """Minimal Flux query_api stub: returns one table whose records each
+    yield one of the supplied float values from .get_value()."""
+    api = MagicMock()
+    table = MagicMock()
+    table.records = []
+    for v in records:
+        record = MagicMock()
+        record.get_value.return_value = v
+        table.records.append(record)
+    api.query.return_value = [table] if records else []
+    return api
+
+
+def test_fetch_forecast_peak_for_date_returns_max_value():
+    """When the Flux query returns rows, pick the max — the Flux query
+    has |> max() so practically there's one row, but the parser tolerates
+    multiple."""
+    api = _fake_query_api([14000.0])
+    out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
+    assert out == 14000.0
+
+
+def test_fetch_forecast_peak_for_date_returns_none_when_empty():
+    """Pre-publication of tomorrow's forecast: query returns nothing."""
+    api = _fake_query_api([])
+    out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
+    assert out is None
+
+
+def test_fetch_forecast_peak_for_date_window_uses_local_tz_day_boundary():
+    """The Flux query's start/stop bracket the local-tz day. Verify by
+    inspecting the rendered query text — start_utc should be the local
+    midnight in UTC, stop_utc should be 24h later."""
+    api = MagicMock()
+    api.query.return_value = []
+    fetch_forecast_peak_for_date(api, "energy", "2026-07-15",
+                                  tz=ZoneInfo("America/Chicago"))
+    flux = api.query.call_args[0][0]
+    # 2026-07-15 00:00 CDT = 2026-07-15 05:00 UTC
+    assert "2026-07-15T05:00:00+00:00" in flux
+    # 2026-07-16 00:00 CDT = 2026-07-16 05:00 UTC
+    assert "2026-07-16T05:00:00+00:00" in flux
+    assert 'r._measurement == "pjm.load_forecast"' in flux
+    assert 'r.forecast_area == "COMED"' in flux
 
 
 # ---- Replay: June 24, 2025 ramp-up scenario ------------------------------

@@ -6,22 +6,38 @@ Run from this directory:
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
 import app
+
+
+@pytest.fixture(autouse=True)
+def _stub_pjm_inputs(monkeypatch):
+    """Default §7 PJM input fetch to (None, 130000.0) so the
+    decide_day_type callers don't try to query a MagicMock InfluxDB
+    every test. Tests that exercise the §7 escalation path override
+    this with explicit values."""
+    monkeypatch.setattr(
+        app, "_fetch_pjm_inputs_for_target_date",
+        lambda query_api, bucket, target_date_iso, tz: (None, 130000.0),
+    )
 from app import (
     COOL_SHUTOFF_F,
     DAYTYPE_HOT,
     DAYTYPE_MILD,
     DAYTYPE_NORMAL,
+    FiringState,
     LayerResolution,
     MILD_SCHEDULE,
     NORMAL_SCHEDULE,
     HOT_SCHEDULE,
     ScheduleAction,
     _classify_one_day,
+    _evaluate_layer_inputs,
     decide_day_type,
     execute_action,
     fetch_today_decision,
@@ -516,13 +532,14 @@ def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypa
 # ---- run_decision_revisit: intra-day forecast re-evaluation ---------------
 
 
-def _make_revisit_cfg(bucket: str = "energy"):
+def _make_revisit_cfg(bucket: str = "energy", tz_name: str = "America/Chicago"):
     """Build a Config-shaped object with just what run_decision_revisit reads.
     Avoids constructing the full Config (which would need every env-var
     field). app's frozen=True keeps mutability honest; using a Mock for the
-    one attribute we need."""
+    attributes we need."""
     cfg = MagicMock()
     cfg.influx_bucket = bucket
+    cfg.tz_name = tz_name
     return cfg
 
 
@@ -634,6 +651,74 @@ def test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot(monkeypatch):
     write_api.write.assert_called_once()
     point = write_api.write.call_args.kwargs.get("record")
     assert dict(point._tags).get("day_type") == DAYTYPE_HOT_STREAK_DAY1
+
+
+def test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk(monkeypatch):
+    """§7 single-day forecast 5CP-risk path through run_decision_revisit:
+    today is HOT (95F), tomorrow is NORMAL (so the multi-day path
+    doesn't fire), and PJM's published forecast peak for today exceeds
+    the season-to-date 5th highest by >5%. Revisit must escalate to
+    HOT_STREAK_DAY1 with reason='forecast_5cp_risk_single_day'.
+
+    This is the wire-up test: it exercises the production caller
+    feeding the §7 inputs into decide_day_type, not just the function's
+    kwargs in isolation."""
+    from app import DAYTYPE_HOT_STREAK_DAY1
+
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_HOT)
+
+    def _forecast(q, b, period):
+        if period == "today":
+            return {"high_f": 95.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
+        if period == "tomorrow":
+            return {"high_f": 80.0, "max_dewpoint_f": 60.0, "is_heat_advisory": 0}
+        return None
+
+    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    # Override the autouse fixture: today's PJM peak forecast 145000 MW,
+    # season-to-date 5th 130000 MW -- ratio 1.115 > 1.05, so §7 fires.
+    monkeypatch.setattr(
+        app, "_fetch_pjm_inputs_for_target_date",
+        lambda q, b, d, tz: (145000.0, 130000.0),
+    )
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_called_once()
+    point = write_api.write.call_args.kwargs.get("record")
+    assert dict(point._tags).get("day_type") == DAYTYPE_HOT_STREAK_DAY1
+    line = point.to_line_protocol()
+    assert "forecast_5cp_risk_single_day" in line
+
+
+def test_revisit_does_not_escalate_when_pjm_inputs_unavailable(monkeypatch):
+    """§7 graceful degradation: when PJM forecast peak is None (e.g.,
+    21:00 ran before tomorrow's load forecast was posted), the revisit
+    falls back to plain HOT, not HOT_STREAK_DAY1."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_NORMAL)
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: {"high_f": 95.0, "max_dewpoint_f": 70.0,
+                                          "is_heat_advisory": 0}
+                        if p == "today" else
+                        {"high_f": 80.0, "max_dewpoint_f": 60.0,
+                         "is_heat_advisory": 0})
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    # PJM forecast unavailable; helper returns (None, season_5th).
+    monkeypatch.setattr(
+        app, "_fetch_pjm_inputs_for_target_date",
+        lambda q, b, d, tz: (None, 130000.0),
+    )
+    write_api = MagicMock()
+
+    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
+
+    write_api.write.assert_called_once()
+    point = write_api.write.call_args.kwargs.get("record")
+    assert dict(point._tags).get("day_type") == DAYTYPE_HOT  # plain HOT, not streak
 
 
 def test_revisit_handles_no_stored_decision_yet(monkeypatch):
@@ -749,3 +834,148 @@ def test_supervisor_decision_is_immutable():
     d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.0})
     with pytest.raises((AttributeError, Exception)):
         d.cool_setpoint_f = 99   # type: ignore[misc]
+
+
+# ---- §Critical #2: per-tick layer evaluation ------------------------------
+
+
+def _make_schedule_check_cfg(bucket: str = "energy",
+                              tz_name: str = "America/Chicago",
+                              dry_run: bool = True):
+    cfg = MagicMock()
+    cfg.influx_bucket = bucket
+    cfg.tz_name = tz_name
+    cfg.dry_run = dry_run
+    return cfg
+
+
+def _stub_layer_eval_io(monkeypatch, *,
+                         price_cents: float | None = 5.0,
+                         zone_load: float | None = 14000.0,
+                         derivative: float = 0.0,
+                         forecast_peak: float | None = 17000.0,
+                         season_5th: float = 130000.0):
+    """Stub the InfluxDB IO that _evaluate_layer_inputs makes. Lets tests
+    drive the price/load/forecast inputs without spinning up Flux."""
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b: price_cents)
+
+    if zone_load is not None:
+        from pjm_5cp import ZoneLoadSnapshot
+        snapshot = ZoneLoadSnapshot(
+            current_mw=zone_load,
+            derivative_mw_per_hour=derivative,
+            observed_at_utc=datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc),
+        )
+    else:
+        snapshot = None
+    monkeypatch.setattr(app, "fetch_zone_live", lambda q, b: snapshot)
+    monkeypatch.setattr(app, "fetch_forecast_peak_today",
+                        lambda q, b: forecast_peak)
+    monkeypatch.setattr(app, "update_season_5th_highest",
+                        lambda q, b, s: season_5th)
+
+
+def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
+    """The Critical #2 fix: layer eval is independent of action firing.
+    A call at any minute populates a LayerInputs return value with the
+    current price tier and 5CP state."""
+    _stub_layer_eval_io(monkeypatch, price_cents=12.0,  # elevated tier
+                        zone_load=15000.0, derivative=200.0,
+                        forecast_peak=17000.0, season_5th=14000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 23,  # arbitrary non-action minute
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.price_tier_name == "elevated"
+    assert inputs.price_offset_f == 3
+    assert inputs.fivecp_data_available is True
+
+
+def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
+    """Two consecutive ticks: first triggers elevated, second stays
+    elevated due to the 30-min hold even with a brief price dip."""
+    _stub_layer_eval_io(monkeypatch, price_cents=12.0,
+                        zone_load=10000.0, derivative=0.0,
+                        forecast_peak=11000.0, season_5th=14000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs1 = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs1.price_tier_name == "elevated"
+
+    # Price drops below 8c release; overlay state machine sees prices but
+    # the 30-min hold keeps us in elevated.
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 7.0)
+    inputs2 = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
+                                       now_local + timedelta(minutes=10))
+    assert inputs2.price_tier_name == "elevated"  # hold still active
+
+
+def test_5cp_audit_throttled_to_5min_intervals(monkeypatch):
+    """hvac.5cp_state writes throttle to once per 5 min so dashboards see
+    ~288 rows/day, not the 1440 rows/day a per-minute write would
+    produce."""
+    _stub_layer_eval_io(monkeypatch)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    # First call writes the audit row.
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    first_count = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert first_count == 1
+
+    # 1 minute later: throttle still in effect, no new audit row.
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
+                            now_local + timedelta(minutes=1))
+    second_count = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert second_count == 1  # unchanged
+
+    # 5 minutes after first call: throttle elapsed, second audit row writes.
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
+                            now_local + timedelta(minutes=5))
+    third_count = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert third_count == 2
+
+
+def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypatch):
+    """A price-tier transition writes a hvac.price_overlay row. Same-tier
+    ticks don't (the measurement is event-driven)."""
+    _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal initially
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    transition_count = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.price_overlay" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert transition_count == 0  # normal-stays-normal: no transition
+
+    # Crossing 10c triggers elevated -> one transition row written.
+    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 12.0)
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
+                            now_local + timedelta(minutes=1))
+    transition_count = sum(
+        1 for c in write_api.write.call_args_list
+        if "hvac.price_overlay" in c.kwargs.get("record").to_line_protocol()
+    )
+    assert transition_count == 1

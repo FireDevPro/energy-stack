@@ -262,3 +262,37 @@ def fetch_forecast_peak_today(query_api, bucket: str,
             if v is not None:
                 return float(v)
     return None
+
+
+def fetch_forecast_peak_for_date(query_api, bucket: str, target_date_iso: str,
+                                  *, forecast_area: str = "COMED",
+                                  tz: ZoneInfo = CHICAGO) -> Optional[float]:
+    """Pull the maximum hourly ``forecast_load_mw`` for a specific target
+    date (CT-local). Used by the §7 pre-cool deepening trigger which
+    evaluates "tomorrow's peak forecast" at 21:00 the night before.
+
+    ``pjm.load_forecast`` rows are timestamped at the forecast target
+    hour, so range-filtering on the local-tz date window is the right
+    selector. Returns None when no forecast rows for the target date
+    exist yet (e.g., a 21:00 decision that beat PJM's tomorrow-forecast
+    publication, or the 7-day forecast horizon doesn't cover the date).
+    """
+    target_date = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
+    start_local = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    start_utc = start_local.astimezone(timezone.utc).isoformat()
+    end_utc = end_local.astimezone(timezone.utc).isoformat()
+    flux = f"""
+        from(bucket: "{bucket}")
+          |> range(start: {start_utc}, stop: {end_utc})
+          |> filter(fn: (r) => r._measurement == "pjm.load_forecast"
+                                and r.forecast_area == "{forecast_area}"
+                                and r._field == "forecast_load_mw")
+          |> max()
+    """
+    for table in query_api.query(flux):
+        for record in table.records:
+            v = record.get_value()
+            if v is not None:
+                return float(v)
+    return None
