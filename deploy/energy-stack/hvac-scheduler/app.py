@@ -1096,9 +1096,19 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         climate = await c4.get_climate()
         # Always set both heat and cool — protects against narrow-deadband
         # auto-widening when in Auto mode (Honeywell ISU 300 enforces deadband).
-        await c4.call_with_reauth(lambda: climate.set_cool_setpoint_f(cool_setpoint_to_apply))
-        await asyncio.sleep(1)
+        #
+        # **Heat first, then cool** (P1.3 adversarial-review fix). When
+        # transitioning down to a low cool target (e.g., HOT_PRE_COOL=68F
+        # or HOT_STREAK_DAY1=66F) while the existing heat setpoint is
+        # higher than (target_cool - deadband), sending cool first can
+        # be auto-adjusted by the thermostat before heat moves into
+        # range. Setting heat first pins the floor at 65F so the
+        # subsequent cool push lands at any locked value down to 68F
+        # without the deadband fighting it. Symmetric for cool-going-up
+        # transitions (no change in behaviour). Defensive ordering.
         await c4.call_with_reauth(lambda: climate.set_heat_setpoint_f(heat_setpoint_to_apply))
+        await asyncio.sleep(1)
+        await c4.call_with_reauth(lambda: climate.set_cool_setpoint_f(cool_setpoint_to_apply))
         await asyncio.sleep(1)
         # Apply fan mode if specified for this period (e.g., Circulate during coast)
         if action.fan_mode:

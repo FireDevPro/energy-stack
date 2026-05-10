@@ -422,6 +422,46 @@ async def test_execute_setpoint_action_still_pins_permanent_hold():
     climate.set_hold_mode.assert_awaited_once_with("Permanent")
 
 
+async def test_execute_setpoint_action_sets_heat_before_cool():
+    """P1.3 ordering: when transitioning to a low cool target (e.g.,
+    HOT_PRE_COOL=68F or HOT_STREAK_DAY1=66F) while the existing heat
+    setpoint is high enough that the deadband would be violated, the
+    cool push can be auto-adjusted by the thermostat before heat moves
+    into range. Set heat first to pin the floor at 65F before cool
+    moves. Defensive against asymmetric CTK04AE deadband behaviour."""
+    from unittest.mock import call
+
+    c4, climate = _mock_c4_client()
+    # attach the AsyncMocks to a parent so we can read mock_calls in order
+    parent = MagicMock()
+    parent.attach_mock(climate.set_heat_setpoint_f, "set_heat_setpoint_f")
+    parent.attach_mock(climate.set_cool_setpoint_f, "set_cool_setpoint_f")
+    parent.attach_mock(climate.set_fan_mode, "set_fan_mode")
+    parent.attach_mock(climate.set_hold_mode, "set_hold_mode")
+
+    # HOT_PRE_COOL action: cool=68 from prior schedule state where heat
+    # might have been higher than 65.
+    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint_f=68,
+                             fan_mode="Auto")
+    applied, error = await execute_action(
+        c4, action, cool_setpoint_to_apply=68, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False,
+    )
+    assert applied is True
+    assert error is None
+
+    # Pin the order: heat first, cool second, then fan, then hold.
+    expected = [
+        call.set_heat_setpoint_f(65),
+        call.set_cool_setpoint_f(68),
+        call.set_fan_mode("Auto"),
+        call.set_hold_mode("Permanent"),
+    ]
+    assert parent.mock_calls == expected, (
+        f"Pre-P1.3 order was cool->heat. mock_calls: {parent.mock_calls}"
+    )
+
+
 async def test_execute_setpoint_action_skipped_when_in_heat_mode():
     """Setpoint actions still no-op in Heat mode (no fighting the furnace)."""
     c4, climate = _mock_c4_client()
