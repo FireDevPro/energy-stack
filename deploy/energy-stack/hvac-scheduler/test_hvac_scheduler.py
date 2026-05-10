@@ -40,7 +40,10 @@ from app import (
     _evaluate_layer_inputs,
     decide_day_type,
     execute_action,
+    fetch_day_ahead_prices_for_date,
     fetch_today_decision,
+    merge_same_hour_actions_deepest_wins,
+    precool_window_action,
     resolve_cool_setpoint,
     resolve_layer_priority,
     run_decision_revisit,
@@ -834,6 +837,92 @@ def test_supervisor_decision_is_immutable():
     d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.0})
     with pytest.raises((AttributeError, Exception)):
         d.cool_setpoint_f = 99   # type: ignore[misc]
+
+
+# ---- §7 price-aware pre-cool wire-up -------------------------------------
+
+
+def test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint():
+    """When the §7 price-aware-precool action lands on the same hour as
+    a base-schedule action, deepest setpoint wins per the spec."""
+    base = ScheduleAction(12, 0, "HOT_COAST", cool_setpoint_f=80,
+                           fan_mode="Circulate")
+    price_aware = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL",
+                                  cool_setpoint_f=66)
+    merged = merge_same_hour_actions_deepest_wins([base, price_aware])
+    assert len(merged) == 1
+    assert merged[0].cool_setpoint_f == 66
+    assert merged[0].label == "PRICE_AWARE_PRECOOL"
+
+
+def test_merge_same_hour_actions_keeps_distinct_hours():
+    """Actions at different hours don't merge — both fire at their
+    scheduled times."""
+    a = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL", cool_setpoint_f=66)
+    b = ScheduleAction(14, 0, "HOT_5CP_SHUTOFF", cool_setpoint_f=85)
+    merged = merge_same_hour_actions_deepest_wins([a, b])
+    assert len(merged) == 2
+    assert sorted(m.hour for m in merged) == [12, 14]
+
+
+def test_merge_same_hour_setpoint_action_wins_over_release_hold():
+    """A release_hold + setpoint conflict at the same hour resolves in
+    favour of the setpoint (running a setpoint is more conservative
+    than clearing the hold). The MILD schedule's 00:05 release_hold
+    plus a hypothetical 00:05 setpoint action gives the setpoint."""
+    rh = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
+    setpoint = ScheduleAction(0, 5, "PRICE_AWARE_PRECOOL", cool_setpoint_f=66)
+    merged = merge_same_hour_actions_deepest_wins([rh, setpoint])
+    assert len(merged) == 1
+    assert merged[0].label == "PRICE_AWARE_PRECOOL"
+
+
+def test_precool_window_action_synthesizes_correct_shape():
+    """The synthetic action injected by run_schedule_check uses the
+    window's hour_ct + depth_f, leaves fan_mode None, and clamps the
+    heat setpoint to the floor."""
+    a = precool_window_action({"hour_ct": 12, "depth_f": 67})
+    assert a.hour == 12
+    assert a.minute == 0
+    assert a.label == "PRICE_AWARE_PRECOOL"
+    assert a.cool_setpoint_f == 67
+    assert a.fan_mode is None
+
+
+def test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh(monkeypatch):
+    """The poller stores total_lmp_da in $/MWh; the §7 decision rule
+    needs cents/kWh (the unit the locked tier thresholds use). $50/MWh
+    must come out as 5c/kWh."""
+    api = MagicMock()
+    table = MagicMock()
+    table.records = []
+    for v in [50.0] * 24:  # flat $50/MWh day
+        record = MagicMock()
+        record.get_value.return_value = v
+        table.records.append(record)
+    api.query.return_value = [table]
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
+                                           tz=ZoneInfo("America/Chicago"))
+    assert out is not None
+    assert len(out) == 24
+    assert all(p == 5.0 for p in out)
+
+
+def test_fetch_day_ahead_prices_returns_none_when_under_24_hours(monkeypatch):
+    """Partial day-ahead vector (e.g., a 21:00 decision that beat the
+    DA-LMP write) -> None so the §7 decision rule short-circuits
+    rather than making a decision on partial data."""
+    api = MagicMock()
+    table = MagicMock()
+    table.records = []
+    for v in [50.0] * 18:  # only 18 hours posted
+        record = MagicMock()
+        record.get_value.return_value = v
+        table.records.append(record)
+    api.query.return_value = [table]
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
+                                           tz=ZoneInfo("America/Chicago"))
+    assert out is None
 
 
 # ---- §Critical #2: per-tick layer evaluation ------------------------------

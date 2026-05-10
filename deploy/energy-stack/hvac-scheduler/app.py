@@ -82,7 +82,7 @@ from pjm_5cp import (
     fetch_zone_live,
     update_season_5th_highest,
 )
-from precool import should_deepen_precool
+from precool import should_add_price_aware_precool, should_deepen_precool
 from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -733,6 +733,158 @@ class FiringState:
     last_5cp_audit_at_utc: datetime | None = None
 
 
+def fetch_day_ahead_prices_for_date(
+    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+) -> list[float] | None:
+    """Pull the 24 hourly day-ahead LMPs for ``target_date_iso`` from
+    ``pjm.lmp_da_hourly`` and convert them to cents/kWh (the unit the
+    §2 price overlay tier thresholds are measured in).
+
+    PJM's day-ahead market clears around 16:00 ET and the poller runs
+    at 17:00 CT, so tomorrow's 24-hour vector is available by 18:00 CT
+    every day. Returns None when fewer than 24 hourly observations
+    exist for the target date (e.g., a 21:00 decision that beat the
+    DA-LMP write, or a market-cancelled day).
+
+    Conversion: ``$/MWh ÷ 10 = ¢/kWh``. PJM publishes ``total_lmp_da``
+    in $/MWh; the price overlay's locked thresholds (10c, 20c) and the
+    §7 cheap/spike thresholds (3c, 10c) are all cents/kWh.
+    """
+    target = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
+    start_local = target.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    start_utc = start_local.astimezone(timezone.utc).isoformat()
+    end_utc = end_local.astimezone(timezone.utc).isoformat()
+    flux = f"""
+        from(bucket: "{bucket}")
+          |> range(start: {start_utc}, stop: {end_utc})
+          |> filter(fn: (r) => r._measurement == "pjm.lmp_da_hourly"
+                                and r.zone == "COMED"
+                                and r._field == "total_lmp_da")
+          |> sort(columns: ["_time"])
+    """
+    prices_per_mwh: list[float] = []
+    for table in query_api.query(flux):
+        for record in table.records:
+            v = record.get_value()
+            if v is not None:
+                prices_per_mwh.append(float(v))
+    if len(prices_per_mwh) < 24:
+        return None
+    # $/MWh -> cents/kWh: ÷ 10. (e.g., $50/MWh = $0.05/kWh = 5c/kWh)
+    return [p / 10.0 for p in prices_per_mwh[:24]]
+
+
+def compute_price_aware_precool_window(
+    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+    *, forecast_period: str = "tomorrow",
+) -> dict | None:
+    """Resolve the §7 day-ahead price-aware pre-cool window for the
+    target date. Composes fetch_day_ahead_prices_for_date,
+    fetch_latest_forecast, and the pure ``should_add_price_aware_precool``
+    decision rule.
+
+    ``forecast_period`` selects which ``nws.forecast`` row the function
+    reads ("tomorrow" at 21:00 the night before; "today" for runtime
+    re-evaluation in run_schedule_check). Returns None when either
+    input is unavailable or the decision rule says no window applies.
+    """
+    prices = fetch_day_ahead_prices_for_date(query_api, bucket, target_date_iso, tz)
+    if prices is None:
+        return None
+    forecast = fetch_latest_forecast(query_api, bucket, forecast_period)
+    if forecast is None:
+        return None
+    return should_add_price_aware_precool(prices, forecast)
+
+
+def write_precool_window(
+    write_api, bucket: str, target_date_iso: str, window: dict,
+) -> None:
+    """Persist a §7 price-aware pre-cool window to InfluxDB so the
+    schedule-check tick can read it back the next day. ``hvac.precool_window``
+    is event-sourced (one row per decision); the schedule check looks up
+    the latest row matching today's target_date tag."""
+    p = (Point("hvac.precool_window")
+         .tag("target_date", target_date_iso)
+         .tag("source", "decision")  # vs "schedule_check_recompute"
+         .field("hour_ct", int(window["hour_ct"]))
+         .field("depth_f", int(window["depth_f"])))
+    write_api.write(bucket=bucket, record=p)
+
+
+def read_precool_window_for_date(
+    query_api, bucket: str, target_date_iso: str,
+) -> dict | None:
+    """Look up the most recent ``hvac.precool_window`` row for
+    ``target_date_iso``. Returns ``{"hour_ct": int, "depth_f": int}`` or
+    None when no row was written (no qualifying day-ahead pattern, or
+    the 21:00 decision didn't run)."""
+    flux = f"""
+        from(bucket: "{bucket}")
+          |> range(start: -36h)
+          |> filter(fn: (r) => r._measurement == "hvac.precool_window"
+                                and r.target_date == "{target_date_iso}")
+          |> last()
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+    """
+    for table in query_api.query(flux):
+        for record in table.records:
+            hour_ct = record.values.get("hour_ct")
+            depth_f = record.values.get("depth_f")
+            if hour_ct is not None and depth_f is not None:
+                return {"hour_ct": int(hour_ct), "depth_f": int(depth_f)}
+    return None
+
+
+def merge_same_hour_actions_deepest_wins(
+    schedule: list[ScheduleAction],
+) -> list[ScheduleAction]:
+    """Per ARM_B_IMPLEMENTATION §7: 'If pre-cool would land on the same
+    hour through multiple decisions, deepest setpoint wins.' Used after
+    a §7 price-aware pre-cool action is layered on top of the base
+    day-type schedule. release_hold actions don't carry a setpoint so
+    they're treated as 'absent setpoint' for the merge — a conflict
+    between release_hold and a setpoint action is resolved in favour of
+    the setpoint (running a setpoint is strictly more conservative than
+    clearing the hold).
+    """
+    by_time: dict[tuple[int, int], ScheduleAction] = {}
+    for action in schedule:
+        key = (action.hour, action.minute)
+        existing = by_time.get(key)
+        if existing is None:
+            by_time[key] = action
+            continue
+        if existing.release_hold and not action.release_hold:
+            by_time[key] = action
+            continue
+        if action.release_hold and not existing.release_hold:
+            continue  # keep existing setpoint action
+        # Both have setpoints (or both release_hold); pick deepest.
+        existing_cool = existing.cool_setpoint_f if existing.cool_setpoint_f is not None else 999
+        new_cool = action.cool_setpoint_f if action.cool_setpoint_f is not None else 999
+        if new_cool < existing_cool:
+            by_time[key] = action
+    return sorted(by_time.values(), key=lambda a: (a.hour, a.minute))
+
+
+def precool_window_action(window: dict) -> ScheduleAction:
+    """Synthesize a ScheduleAction at the §7 cheap-window's start hour
+    with the depth_f the decision rule selected. fan_mode left None so
+    the action doesn't override the base schedule's fan setting (the
+    ECM blower's circulate cycle stays in place during cheap-window
+    pre-cool the same way it does during HOT_PRE_COOL)."""
+    return ScheduleAction(
+        hour=int(window["hour_ct"]),
+        minute=0,
+        label="PRICE_AWARE_PRECOOL",
+        cool_setpoint_f=int(window["depth_f"]),
+        heat_setpoint_f=HEAT_SETPOINT_FLOOR_F,
+        fan_mode=None,
+    )
+
+
 def _fetch_pjm_inputs_for_target_date(
     query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
 ) -> tuple[float | None, float]:
@@ -1016,6 +1168,18 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
         season_5th_highest_mw=season_5th_mw,
     )
     write_decision(write_api, cfg.influx_bucket, decision_date, day_type, reasons, comed_price)
+
+    # §7 day-ahead price-aware pre-cool window. Computed at 21:00 the
+    # night before per ARM_B_IMPLEMENTATION; if a qualifying cheap+spike
+    # pattern exists, persist a hvac.precool_window row so run_schedule_check
+    # can inject the synthetic ScheduleAction tomorrow.
+    precool_window = compute_price_aware_precool_window(
+        query_api, cfg.influx_bucket, decision_date, tz,
+        forecast_period="tomorrow",
+    )
+    if precool_window is not None:
+        write_precool_window(write_api, cfg.influx_bucket, decision_date, precool_window)
+
     firing.last_decision_date = decision_date
     log("info", "decision_made",
         for_date=decision_date,
@@ -1379,6 +1543,21 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # if forecast unavailable -- humid override just won't apply.
     today_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "today")
     today_dewpoint_f = (today_forecast or {}).get("max_dewpoint_f")
+
+    # §7 day-ahead price-aware pre-cool: read the window persisted at
+    # 21:00 last night and inject a synthetic ScheduleAction. Skipped on
+    # vacation/override schedules — the homeowner's vacation setpoint
+    # supersedes the price-aware layer. ``merge_same_hour_actions_deepest_wins``
+    # resolves conflicts when the synthetic action's hour matches a base
+    # schedule action.
+    if not active_override:
+        precool_window = read_precool_window_for_date(
+            query_api, cfg.influx_bucket, today_iso,
+        )
+        if precool_window is not None:
+            schedule = merge_same_hour_actions_deepest_wins(
+                schedule + [precool_window_action(precool_window)]
+            )
 
     # ---- Per-tick layer evaluation (Critical #2 fix) ----
     # Always evaluate price overlay + 5CP, write audit rows, regardless of
