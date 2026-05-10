@@ -1,10 +1,19 @@
 """PJM 5CP-eligibility detector (Arm B layer 3).
 
-The five highest hourly ComEd-zone loads of the cooling season set the
-following year's residential capacity charge. The detector predicts when
-the current hour is likely a 5CP-eligible hour and triggers an aggressive
-shutoff (cool setpoint = 85F) for the duration of the elevated-load
-window plus a 30-minute trailing hold.
+The residential capacity-charge dollar exposure depends on TWO separate
+sets of 5 coincident peak hours per cooling season (see HVAC_LOGIC.md
+"Capacity peak context"):
+
+  * **PJM 5CP**   -- 5 highest RTO-wide hourly loads.
+  * **ComEd 5CP** -- 5 highest ComEd-zone hourly loads.
+
+ComEd's zone peaks can land earlier in the afternoon than the RTO peaks
+because metro-Chicago load shape differs from the broader RTO. Each kW
+shaved during *any* 5CP hour saves roughly the same dollar amount, so
+the detector triggers aggressive shutoff (cool setpoint = 85F) on
+likely-eligible hours from EITHER set. The scheduler runs the detector
+twice (once per scope) and ORs the triggers; this module is the
+per-scope state machine.
 
 Triggers (all must be true to enter the active state):
 
@@ -40,16 +49,16 @@ Modeled on the joe248 AppDaemon 5CP-prediction implementation
 Two-feed data lineage (refined post-deploy when PJM's official OpenAPI
 spec confirmed the metered feed has multi-day publish lag):
 
-  * ``pjm.inst_load`` (area=COMED, ~5-min cadence, "approximate, NOT
-    official PJM Loads") feeds ``current_load_mw`` and the load
-    derivative — the real-time directional signal.
-  * ``pjm.metered_load`` (zone=CE, daily publish with up to 90-day
-    correction window, official metered values) feeds the
-    season-to-date 5th-highest baseline — the values that ultimately
+  * ``pjm.inst_load`` (area depends on scope, ~5-min cadence,
+    "approximate, NOT official PJM Loads") feeds ``current_load_mw``
+    and the load derivative -- the real-time directional signal.
+  * ``pjm.metered_load`` (zone depends on scope, daily publish with up
+    to 90-day correction window, official metered values) feeds the
+    season-to-date 5th-highest baseline -- the values that ultimately
     determine 5CP rank.
 
-Both feeds are needed; one without the other doesn't deliver the
-detector's locked rule (current/baseline > 0.95).
+Both feeds are needed per scope; one without the other doesn't deliver
+the detector's locked rule (current/baseline > 0.95).
 """
 from __future__ import annotations
 
@@ -68,10 +77,24 @@ WINDOW_START_CT = dtime(13, 0)
 WINDOW_END_CT = dtime(20, 0)
 COOL_SHUTOFF_F = 85
 HOLD_TAIL_MINUTES = 30
-# Used when fewer than 5 hourly observations have accumulated in the season
-# (pre-season cold start). 130,000 MW is the rough ComEd zone summer-peak
-# threshold below which 5CP-eligibility is essentially impossible.
-PRE_SEASON_FALLBACK_5TH_MW = 130000.0
+
+# Pre-season cold-start fallback for the season-to-date 5th-highest hourly
+# load. Used only when fewer than ``MIN_OBSERVATIONS_FOR_5TH`` hourly
+# observations exist in InfluxDB for the current cooling season. Once the
+# metered feed publishes enough hours (typically 3-5 days into June given
+# the 1-2 day publish lag), this value is unused.
+#
+# Value source: 2025 ComEd-zone 5th-highest hourly metered load.
+# Empirically pulled 2026-05-10 from ``pjm.metered_load{zone=CE}`` over the
+# 2025 cooling season (Jun-Sep): 5th-highest = 20,375.4 MW (2025-07-23
+# 18:00 CT). Rounded down to 20,375 so a real ComEd-zone hot day with
+# current load >= 19,357 MW (95% of 20,375) trips the detector pre-data.
+#
+# Prior value of 130,000 MW was RTO-scale (130 GW) misapplied to the
+# ComEd-zone path, leaving the detector inert pre-season because ComEd's
+# annual peak (20.7 GW) couldn't reach 95% of a 130 GW baseline. Fixed
+# 2026-05 ahead of randomization start.
+COMED_PRE_SEASON_FALLBACK_5TH_MW = 20375.0
 MIN_OBSERVATIONS_FOR_5TH = 5
 
 CHICAGO = ZoneInfo("America/Chicago")
@@ -174,23 +197,32 @@ def evaluate_5cp_risk(
 # ---- Season 5th-highest computation ---------------------------------------
 
 
-def season_5th_highest_from_loads(loads_mw: list[float]) -> float:
+def season_5th_highest_from_loads(loads_mw: list[float], *,
+                                   fallback_mw: float) -> float:
     """Pure function: given a list of hourly average loads (any order),
-    return the 5th-highest value. Falls back to PRE_SEASON_FALLBACK_5TH_MW
-    when fewer than MIN_OBSERVATIONS_FOR_5TH observations are supplied."""
+    return the 5th-highest value. Falls back to ``fallback_mw`` when
+    fewer than ``MIN_OBSERVATIONS_FOR_5TH`` observations are supplied.
+
+    ``fallback_mw`` must be scoped to the detector (ComEd-zone vs
+    PJM RTO) -- mixing scales here is the bug that left the ComEd
+    detector inert pre-season before 2026-05.
+    """
     if len(loads_mw) < MIN_OBSERVATIONS_FOR_5TH:
-        return PRE_SEASON_FALLBACK_5TH_MW
+        return fallback_mw
     sorted_desc = sorted(loads_mw, reverse=True)
     return float(sorted_desc[MIN_OBSERVATIONS_FOR_5TH - 1])
 
 
 def update_season_5th_highest(query_api, bucket: str,
                               season_start_utc: datetime,
-                              *, zone: str = "CE") -> float:
+                              *, zone: str = "CE",
+                              fallback_mw: float = COMED_PRE_SEASON_FALLBACK_5TH_MW
+                              ) -> float:
     """Query InfluxDB for hourly-average ``pjm.metered_load`` values since
     ``season_start_utc`` and return the 5th-highest. Falls back to
-    PRE_SEASON_FALLBACK_5TH_MW when fewer than 5 hourly observations
-    exist (pre-season cold start)."""
+    ``fallback_mw`` (scoped to the requested ``zone``) when fewer than
+    ``MIN_OBSERVATIONS_FOR_5TH`` hourly observations exist (pre-season
+    cold start)."""
     flux = f"""
         from(bucket: "{bucket}")
           |> range(start: {season_start_utc.isoformat()})
@@ -207,7 +239,7 @@ def update_season_5th_highest(query_api, bucket: str,
             v = record.get_value()
             if v is not None:
                 loads.append(float(v))
-    return season_5th_highest_from_loads(loads)
+    return season_5th_highest_from_loads(loads, fallback_mw=fallback_mw)
 
 
 # ---- Live load + derivative ------------------------------------------------

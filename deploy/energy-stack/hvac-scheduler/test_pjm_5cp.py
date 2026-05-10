@@ -6,11 +6,11 @@ from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from pjm_5cp import (
+    COMED_PRE_SEASON_FALLBACK_5TH_MW,
     COOL_SHUTOFF_F,
     LOAD_RATIO_RELEASE,
     LOAD_RATIO_TRIGGER,
     MIN_OBSERVATIONS_FOR_5TH,
-    PRE_SEASON_FALLBACK_5TH_MW,
     FiveCPState,
     evaluate_5cp_risk,
     fetch_forecast_peak_for_date,
@@ -33,7 +33,18 @@ def test_locked_thresholds():
     assert LOAD_RATIO_TRIGGER == 0.95
     assert LOAD_RATIO_RELEASE == 0.90
     assert COOL_SHUTOFF_F == 85
-    assert PRE_SEASON_FALLBACK_5TH_MW == 130000.0
+
+
+def test_comed_pre_season_fallback_is_zone_scaled():
+    """ComEd-zone cold-start fallback must be at ComEd-zone scale (~20 GW),
+    not RTO scale (~150 GW). The prior 130,000 MW value was RTO-scale
+    misapplied to the zone path, leaving the detector inert pre-season.
+
+    Source: 2025 ComEd-zone 5th-highest hourly metered load = 20,375.4 MW
+    (empirically pulled from pjm.metered_load{zone=CE} on 2026-05-10)."""
+    assert COMED_PRE_SEASON_FALLBACK_5TH_MW == 20375.0
+    # Sanity-check the scale is plausible for ComEd zone (15-25 GW range).
+    assert 15000 <= COMED_PRE_SEASON_FALLBACK_5TH_MW <= 25000
 
 
 # ---- season_5th_highest_from_loads ---------------------------------------
@@ -41,15 +52,32 @@ def test_locked_thresholds():
 
 def test_pre_season_fallback_when_under_5_observations():
     """First 4 hourly observations of the season -- the detector still
-    needs a comparison value, so we fall back to a hardcoded zone-summer
-    threshold rather than letting current_load / 0 explode."""
-    assert season_5th_highest_from_loads([]) == PRE_SEASON_FALLBACK_5TH_MW
-    assert season_5th_highest_from_loads([100, 200, 300, 400]) == PRE_SEASON_FALLBACK_5TH_MW
+    needs a comparison value, so we fall back to the caller-supplied
+    scope-scoped fallback rather than letting current_load / 0 explode."""
+    assert season_5th_highest_from_loads(
+        [], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
+    assert season_5th_highest_from_loads(
+        [100, 200, 300, 400], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
+
+
+def test_pre_season_fallback_respects_caller_scope():
+    """The fallback comes from the caller, not a module constant -- so an
+    RTO-scoped caller using a 151,525 MW fallback gets back 151,525, not
+    the ComEd-scoped 20,375. This is the invariant that prevents the
+    2026-05 ComEd-scale-confusion regression from sneaking back in."""
+    assert season_5th_highest_from_loads([], fallback_mw=151525.0) == 151525.0
+    assert season_5th_highest_from_loads(
+        [10, 20, 30], fallback_mw=151525.0,
+    ) == 151525.0
 
 
 def test_5th_highest_from_exactly_5_observations():
     """At exactly 5 observations the smallest one is the 5th highest."""
-    assert season_5th_highest_from_loads([100, 200, 300, 400, 500]) == 100
+    assert season_5th_highest_from_loads(
+        [100, 200, 300, 400, 500], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    ) == 100
 
 
 def test_5th_highest_picks_correct_index_in_unsorted_input():
@@ -57,7 +85,9 @@ def test_5th_highest_picks_correct_index_in_unsorted_input():
     loads = [12000, 14500, 11000, 13200, 14000, 13800, 14300]  # 7 hours
     # Sorted desc: 14500, 14300, 14000, 13800, 13200, 12000, 11000
     # 5th highest (index 4) = 13200
-    assert season_5th_highest_from_loads(loads) == 13200
+    assert season_5th_highest_from_loads(
+        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    ) == 13200
 
 
 # ---- hold_end_time --------------------------------------------------------
