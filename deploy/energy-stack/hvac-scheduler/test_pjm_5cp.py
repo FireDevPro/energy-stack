@@ -14,6 +14,7 @@ from pjm_5cp import (
     FiveCPState,
     evaluate_5cp_risk,
     fetch_forecast_peak_for_date,
+    fetch_zone_live,
     hold_end_time,
     season_5th_highest_from_loads,
 )
@@ -239,6 +240,63 @@ def test_no_release_when_derivative_negative_but_ratio_above_release():
         state=state,
     )
     assert is_active is True
+
+
+# ---- fetch_zone_live (real-time current-load via pjm.inst_load) -----------
+
+
+def test_fetch_zone_live_reads_inst_load_with_area_filter():
+    """Post-architecture-fix the live-current-load reader queries
+    pjm.inst_load (real-time, ~5-min cadence, area=COMED) rather than
+    the daily-published-with-multi-day-lag pjm.metered_load. Pin the
+    Flux query so the regression that motivated this refactor doesn't
+    sneak back in."""
+    api = MagicMock()
+    api.query.return_value = []
+    fetch_zone_live(api, "energy")
+    flux = api.query.call_args[0][0]
+    assert 'r._measurement == "pjm.inst_load"' in flux
+    assert 'r.area == "COMED"' in flux
+    # NOT the metered feed:
+    assert 'pjm.metered_load' not in flux
+    assert 'r.zone' not in flux
+
+
+def test_fetch_zone_live_returns_none_when_under_two_observations():
+    """The detector requires two observations to compute a derivative;
+    if the inst_load poller hasn't caught up yet, return None so the
+    caller skips the 5CP layer for this tick rather than treating
+    absence as zero load."""
+    api = MagicMock()
+    table = MagicMock()
+    rec = MagicMock()
+    rec.get_value.return_value = 14000.0
+    rec.get_time.return_value = datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc)
+    table.records = [rec]  # only one observation
+    api.query.return_value = [table]
+    out = fetch_zone_live(api, "energy")
+    assert out is None
+
+
+def test_fetch_zone_live_computes_per_hour_derivative():
+    """Two observations 5 minutes apart with a 100 MW rise = +1200 MW/hr
+    derivative. This is the directional signal the 5CP detector uses
+    (positive derivative = load is climbing, eligible to trigger)."""
+    api = MagicMock()
+    table = MagicMock()
+    later = MagicMock()
+    later.get_value.return_value = 14100.0
+    later.get_time.return_value = datetime(2026, 7, 15, 19, 5, tzinfo=timezone.utc)
+    earlier = MagicMock()
+    earlier.get_value.return_value = 14000.0
+    earlier.get_time.return_value = datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc)
+    table.records = [later, earlier]
+    api.query.return_value = [table]
+    out = fetch_zone_live(api, "energy")
+    assert out is not None
+    assert out.current_mw == 14100.0
+    # 100 MW / (5/60) hour = 1200 MW/hr
+    assert round(out.derivative_mw_per_hour) == 1200
 
 
 # ---- fetch_forecast_peak_for_date (§7 wire-up) ---------------------------

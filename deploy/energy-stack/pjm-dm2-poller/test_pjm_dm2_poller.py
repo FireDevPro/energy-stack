@@ -15,6 +15,7 @@ import pytest
 
 from app import (
     COMED_FORECAST_AREA,
+    COMED_INST_AREA,
     COMED_METERED_ZONE,
     COMED_NSPL_ZONE,
     COMED_PNODE_ID,
@@ -24,11 +25,13 @@ from app import (
     Schedule,
     _parse_ept,
     build_da_lmp_points,
+    build_inst_load_points,
     build_load_forecast_points,
     build_metered_load_points,
     build_nspl_points,
     build_peak_forecast_points,
     fetch_da_lmp_for_tomorrow,
+    fetch_inst_load_recent,
     fetch_metered_load_recent,
     poll_once,
 )
@@ -46,11 +49,19 @@ def test_comed_pnode_id_pinned():
 
 
 def test_comed_zone_codes_differ_by_feed():
-    """The PJM API does NOT have a single canonical ComEd zone code.
-    hrl_load_metered uses 'CE'; annual_zonal_nspl uses 'COMED'. These
-    constants pin the correct value per feed; if either changes the
-    poller writes zero rows."""
+    """The PJM API does NOT have a single canonical ComEd zone code per
+    the official DM2 OpenAPI spec; the convention varies by feed.
+
+    - hrl_load_metered: zone="CE" (PJM transmission-zone code list)
+    - inst_load:        area="COMED" (PJM area-code list; same data,
+                                      different filter param + value)
+    - annual_zonal_nspl: zone="COMED" (full name, on a third list)
+    - load_frcstd_7_day: forecast_area="COMED"
+
+    These constants pin the correct value per feed; if any drifts from
+    the spec the poller writes zero rows for that feed."""
     assert COMED_METERED_ZONE == "CE"
+    assert COMED_INST_AREA == "COMED"
     assert COMED_NSPL_ZONE == "COMED"
     assert COMED_FORECAST_AREA == "COMED"
 
@@ -142,21 +153,40 @@ def test_load_forecast_fires_twice_daily():
     assert FEED_SCHEDULE["load_frcstd_7_day"] == Schedule(hours=(6, 13))
 
 
-def test_metered_load_fires_every_hour():
-    """Hourly cadence with 3-hour rolling lookback (per ARM_B_IMPLEMENTATION
-    §0b). Cadence migrated from Sunday-02:00 weekly in May 2026 so the
-    Arm B 5CP-eligibility detector has fresh zone-load observations."""
+def test_metered_load_fires_every_hour_at_top_of_hour():
+    """Hourly cadence with 5-day rolling lookback. PJM publishes
+    hrl_load_metered daily with multi-day publish lag (per official
+    DM2 OpenAPI spec: "lag in updated data availability... data
+    adjustments can occur up to 90 days after the actual date"). Hourly
+    polling catches newly-posted observations within ~1h of when PJM
+    ships them. Default minutes=(0,) means each hour fires once at
+    :00 even though the wake loop ticks every 5 min."""
     s = FEED_SCHEDULE["hrl_load_metered"]
     assert s.hours == tuple(range(0, 24))
+    assert s.minutes == (0,)
     assert s.weekdays is None
     assert s.months is None
     assert s.days is None
 
 
-def test_fetch_metered_load_recent_uses_3h_window():
-    """Per ARM_B_IMPLEMENTATION §0b: each hourly tick requests the trailing
-    3 hours, not 7 days. Window endpoints carry second-level precision so
-    overlapping pulls dedup cleanly on identical PJM hourly timestamps."""
+def test_inst_load_fires_every_5_min():
+    """inst_load (PJM's approximate, real-time area load) is polled every
+    5 minutes per the locked architecture for §3 5CP detection.
+    minutes=(0, 5, 10, ..., 55) gates every 5 min within each hour."""
+    s = FEED_SCHEDULE["inst_load"]
+    assert s.hours == tuple(range(0, 24))
+    assert s.minutes == tuple(range(0, 60, 5))
+    assert s.weekdays is None
+    assert s.months is None
+    assert s.days is None
+
+
+def test_fetch_metered_load_recent_uses_5_day_window():
+    """Per the official PJM DM2 OpenAPI spec for hrl_load_metered: the
+    feed is published daily with multi-day publish lag. The 5-day
+    lookback absorbs PJM's typical 2-3 day publish delay plus weekend
+    gaps. Earlier 3h lookback (May 2026) was wrong against PJM's actual
+    publishing cadence and produced 0-row writes post-deploy."""
     captured: dict[str, object] = {}
 
     class FakeClient:
@@ -174,9 +204,39 @@ def test_fetch_metered_load_recent_uses_3h_window():
 
     assert captured["feed"] == "hrl_load_metered"
     assert captured["params"]["zone"] == COMED_METERED_ZONE
+    # 5 days back from 2026-07-15 14:17:30 = 2026-07-10 14:17:30.
     assert (
         captured["params"]["datetime_beginning_ept"]
-        == "2026-07-15T11:17:30.0to2026-07-15T14:17:30.0"
+        == "2026-07-10T14:17:30.0to2026-07-15T14:17:30.0"
+    )
+
+
+def test_fetch_inst_load_recent_uses_30min_window_and_area_filter():
+    """inst_load filters by ``area`` (not ``zone`` like hrl_load_metered)
+    per the DM2 OpenAPI spec — and the ComEd code on inst_load's allowed
+    list is "COMED" (not "CE" like hrl_load_metered's). 30-minute
+    lookback catches stragglers if the 5-min poll missed a tick."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
+
+    import asyncio
+    asyncio.run(fetch_inst_load_recent(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "inst_load"
+    assert captured["params"]["area"] == COMED_INST_AREA
+    assert "zone" not in captured["params"]
+    assert (
+        captured["params"]["datetime_beginning_ept"]
+        == "2026-07-15T13:47:30.0to2026-07-15T14:17:30.0"
     )
 
 
@@ -309,6 +369,38 @@ def test_metered_load_carries_zone_and_verification_tags():
 def test_metered_load_unverified_rows_marked():
     [pt] = build_metered_load_points([_metered_item(0, verified=False)], CHICAGO)
     assert "is_verified=false" in pt.to_line_protocol()
+
+
+# =========================================================================
+# build_inst_load_points (real-time current load for §3 5CP detector)
+# =========================================================================
+
+
+def _inst_load_item(hour: int, mw: float = 14000.0, minute: int = 0) -> dict:
+    return {
+        "datetime_beginning_ept": f"2026-07-15T{hour:02d}:{minute:02d}:00",
+        "area": COMED_INST_AREA,
+        "instantaneous_load": mw,
+    }
+
+
+def test_inst_load_points_count():
+    """Each posted observation becomes one point. PJM publishes inst_load
+    sub-hourly so a 30-min window may contain 6+ observations."""
+    pts = build_inst_load_points([_inst_load_item(13, 14000.0 + h, minute=h*10)
+                                   for h in range(3)], CHICAGO)
+    assert len(pts) == 3
+
+
+def test_inst_load_carries_area_tag_and_mw_field():
+    """``area`` is the tag (matches the PJM filter param); ``mw`` is the
+    field name (matches pjm.metered_load's `mw` field so the §3 detector
+    can swap feeds without renaming downstream queries)."""
+    [pt] = build_inst_load_points([_inst_load_item(13, 14250.5)], CHICAGO)
+    line = pt.to_line_protocol()
+    assert line.startswith("pjm.inst_load")
+    assert "area=COMED" in line
+    assert "mw=14250.5" in line
 
 
 # =========================================================================
@@ -517,6 +609,8 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
             raise RuntimeError("PJM HTTP 500")
         if feed == "hrl_load_metered":
             return [_metered_item(13, 14000.0)]
+        if feed == "inst_load":
+            return [_inst_load_item(13, 14250.0)]
         return [_peak_item()]  # peak forecast succeeds
     client.fetch = maybe_fail
     write_api = MagicMock()
@@ -525,14 +619,17 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
     # All due feeds were attempted; the failure of one didn't abort the cycle
     assert "load_frcstd_7_day" in calls
     assert "hrl_load_metered" in calls
+    assert "inst_load" in calls
     assert "ops_sum_frcst_peak_rto" in calls
 
-    # 13:00 in summer fires three feeds; each writes a pjm.feed_status row.
-    # Plus one peak_forecast and one metered_load row from successful feeds.
+    # 13:00 (minute 0) in summer fires four feeds; each writes a
+    # pjm.feed_status row. Plus one row each from peak_forecast,
+    # metered_load, inst_load successful pulls.
     measurements = _measurements_written(write_api)
     assert measurements.count("pjm.peak_forecast_rto") == 1
     assert measurements.count("pjm.metered_load") == 1
-    assert measurements.count("pjm.feed_status") == 3
+    assert measurements.count("pjm.inst_load") == 1
+    assert measurements.count("pjm.feed_status") == 4
 
 
 # =========================================================================
@@ -629,7 +726,9 @@ async def test_feed_status_row_written_on_success(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    assert len(status_lines) == 3  # load_frcstd_7_day, hrl_load_metered, ops_sum_frcst_peak_rto
+    # 13:00 (minute 0) in summer fires four feeds: load_frcstd_7_day,
+    # hrl_load_metered, inst_load, ops_sum_frcst_peak_rto.
+    assert len(status_lines) == 4
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=true" in line
@@ -653,7 +752,9 @@ async def test_feed_status_row_written_on_failure(monkeypatch, tmp_path):
     await poll_once(client, write_api, cfg)
 
     status_lines = _status_rows(write_api)
-    assert len(status_lines) == 3  # load_frcstd_7_day, hrl_load_metered, ops_sum_frcst_peak_rto
+    # 13:00 (minute 0) in summer fires four feeds: load_frcstd_7_day,
+    # hrl_load_metered, inst_load, ops_sum_frcst_peak_rto.
+    assert len(status_lines) == 4
     for line in status_lines:
         assert "pjm.feed_status" in line
         assert "success=false" in line

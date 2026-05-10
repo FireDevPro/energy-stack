@@ -36,6 +36,20 @@ Hold semantics:
 
 Modeled on the joe248 AppDaemon 5CP-prediction implementation
 (community.home-assistant.io/t/hacking-your-comed-electricity-bill/111494).
+
+Two-feed data lineage (refined post-deploy when PJM's official OpenAPI
+spec confirmed the metered feed has multi-day publish lag):
+
+  * ``pjm.inst_load`` (area=COMED, ~5-min cadence, "approximate, NOT
+    official PJM Loads") feeds ``current_load_mw`` and the load
+    derivative — the real-time directional signal.
+  * ``pjm.metered_load`` (zone=CE, daily publish with up to 90-day
+    correction window, official metered values) feeds the
+    season-to-date 5th-highest baseline — the values that ultimately
+    determine 5CP rank.
+
+Both feeds are needed; one without the other doesn't deliver the
+detector's locked rule (current/baseline > 0.95).
 """
 from __future__ import annotations
 
@@ -208,17 +222,35 @@ class ZoneLoadSnapshot:
     observed_at_utc: datetime
 
 
-def fetch_zone_live(query_api, bucket: str, *, zone: str = "CE") -> Optional[ZoneLoadSnapshot]:
-    """Pull the two most recent hourly metered-load points for the given
-    zone and compute a simple discrete derivative.
+def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[ZoneLoadSnapshot]:
+    """Pull the two most recent ``pjm.inst_load`` observations for the
+    given ComEd area and compute a simple discrete derivative (MW/hour).
 
-    Returns None when fewer than two observations exist (so the caller can
-    skip the 5CP check rather than treat the absence as zero load)."""
+    Reads ``pjm.inst_load`` (PJM "Instantaneous Load" feed, ~5-min
+    cadence, area=COMED) rather than ``pjm.metered_load`` (which is
+    daily-published with multi-day lag and is not suitable for the §3
+    5CP detector's current-load comparison).
+
+    Per the PJM DM2 OpenAPI spec, ``inst_load`` is "approximate, NOT
+    official PJM Loads" but "frequently updated throughout the operating
+    day" — the right tradeoff for a real-time directional signal of
+    "is current load climbing toward season-to-date 5th-highest right
+    now?". The season-to-date baseline still comes from the official
+    metered feed via ``update_season_5th_highest``; the two feeds
+    cooperate by purpose (inst_load = real-time current, metered_load =
+    historical baseline).
+
+    Note the parameter is ``area``, not ``zone`` — PJM's inst_load filter
+    list uses ``area=COMED`` while hrl_load_metered uses ``zone=CE``.
+
+    Returns None when fewer than two observations exist (e.g., container
+    just started and the inst_load poller hasn't caught up); caller
+    skips the 5CP check rather than treat absence as zero load."""
     flux = f"""
         from(bucket: "{bucket}")
-          |> range(start: -6h)
-          |> filter(fn: (r) => r._measurement == "pjm.metered_load"
-                                and r.zone == "{zone}"
+          |> range(start: -1h)
+          |> filter(fn: (r) => r._measurement == "pjm.inst_load"
+                                and r.area == "{area}"
                                 and r._field == "mw")
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: 2)
