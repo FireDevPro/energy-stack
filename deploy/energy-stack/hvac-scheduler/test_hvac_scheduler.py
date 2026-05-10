@@ -19,11 +19,82 @@ from app import (
     NORMAL_SCHEDULE,
     HOT_SCHEDULE,
     ScheduleAction,
+    _classify_one_day,
+    decide_day_type,
     execute_action,
     fetch_today_decision,
     resolve_cool_setpoint,
     run_decision_revisit,
 )
+
+
+# ---- Day-type classifier (recalibrated thresholds, EXPERIMENT_DESIGN App. A)
+
+
+def test_classify_high_88_apparent_88_is_hot():
+    """Pre-§1 this would be NORMAL (82-94F band); under the recalibrated
+    thresholds 88F crosses the HOT >=85F line and triggers HOT."""
+    assert _classify_one_day({"high_f": 88.0, "apparent_max_f": 88.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_HOT
+
+
+def test_classify_high_82_apparent_92_is_hot():
+    """Apparent-temperature path: dry-bulb is below the 85F floor but
+    apparent crosses 90F (humidity-driven), so HOT triggers regardless."""
+    assert _classify_one_day({"high_f": 82.0, "apparent_max_f": 92.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_HOT
+
+
+def test_classify_high_84_no_advisory_no_apparent_is_normal():
+    """Edge case: 84F is on the inside of NORMAL (75-85F band); 85F would
+    flip to HOT. Without apparent_max_f or heat advisory, stays NORMAL."""
+    assert _classify_one_day({"high_f": 84.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
+
+
+def test_classify_high_84_with_apparent_88_stays_normal():
+    """Apparent below the 90F threshold doesn't bump 84F dry-bulb to HOT;
+    the apparent path requires apparent_max_f >= 90F."""
+    assert _classify_one_day({"high_f": 84.0, "apparent_max_f": 88.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
+
+
+def test_classify_high_76_apparent_88_is_normal():
+    """76F dry-bulb stays in the 75-85F NORMAL band; apparent 88F is below
+    the 90F apparent threshold so no HOT trigger."""
+    assert _classify_one_day({"high_f": 76.0, "apparent_max_f": 88.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
+
+
+def test_classify_high_70_is_mild():
+    """Below the 75F NORMAL threshold -> MILD (no active scheduling)."""
+    assert _classify_one_day({"high_f": 70.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_MILD
+
+
+def test_classify_heat_advisory_overrides_temp():
+    """Even at 70F, an active heat advisory (sustained high-humidity event)
+    is treated as HOT for safety. Behaviour preserved from pre-§1."""
+    assert _classify_one_day({"high_f": 70.0, "is_heat_advisory": 1}) == DAYTYPE_HOT
+
+
+def test_classify_apparent_alone_can_trigger_hot():
+    """If high_f is missing entirely (degraded fixture) but apparent_max_f
+    is >= 90F, HOT still triggers — graceful behaviour when one variable
+    drops out of the upstream forecast."""
+    assert _classify_one_day({"apparent_max_f": 91.0,
+                              "is_heat_advisory": 0}) == DAYTYPE_HOT
+
+
+def test_decide_day_type_carries_apparent_in_reasons():
+    """Per §1 the reasons dict surfaces apparent_max_f for audit so the
+    hvac.decisions InfluxDB row records which threshold fired."""
+    day_type, reasons = decide_day_type(
+        {"high_f": 82.0, "apparent_max_f": 92.0, "is_heat_advisory": 0}
+    )
+    assert day_type == DAYTYPE_HOT
+    assert reasons["apparent_max_f"] == 92.0
+    assert reasons["reason"].startswith("apparent_ge_")
 
 
 # ---- ScheduleAction & schedules -------------------------------------------
@@ -205,7 +276,8 @@ def test_fetch_today_decision_recomputes_when_stored_missing(monkeypatch):
     today_forecast = {"high_f": 97.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
 
     def _forecast(query_api, bucket, period):
-        return today_forecast if period == "today" else {"high_f": 88.0}
+        # Tomorrow NORMAL (80F) so today is plain HOT, not HOT_STREAK.
+        return today_forecast if period == "today" else {"high_f": 80.0}
 
     monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
     monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.5)
@@ -278,8 +350,10 @@ def test_revisit_no_change_does_not_overwrite(monkeypatch):
     revisit must NOT write a new decision (no-op log only)."""
     monkeypatch.setattr(app, "_read_stored_decision",
                         lambda q, b, d: DAYTYPE_NORMAL)
+    # 80F max -- inside the 75-85F NORMAL band under the recalibrated
+    # thresholds, so the live forecast still classifies as NORMAL.
     monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 87.0,
+                        lambda q, b, p: {"high_f": 80.0,
                                           "max_dewpoint_f": 60.0,
                                           "is_heat_advisory": 0})
     monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
@@ -297,13 +371,14 @@ def test_revisit_escalates_normal_to_hot_when_forecast_busts_up(monkeypatch):
     fire under HOT_SCHEDULE."""
     monkeypatch.setattr(app, "_read_stored_decision",
                         lambda q, b, d: DAYTYPE_NORMAL)
-    # Today HOT, tomorrow NORMAL — plain HOT, not streak.
+    # Today HOT (96F), tomorrow NORMAL (80F under the recalibrated 75-85F
+    # NORMAL band) -- plain HOT, not streak.
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, period: (
                             {"high_f": 96.0, "max_dewpoint_f": 70.0,
                              "is_heat_advisory": 0}
                             if period == "today"
-                            else {"high_f": 86.0, "max_dewpoint_f": 60.0,
+                            else {"high_f": 80.0, "max_dewpoint_f": 60.0,
                                   "is_heat_advisory": 0}
                         ))
     monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
@@ -320,12 +395,12 @@ def test_revisit_escalates_normal_to_hot_when_forecast_busts_up(monkeypatch):
 
 def test_revisit_de_escalates_hot_to_normal_when_forecast_cools(monkeypatch):
     """Symmetric: forecast yesterday said 96 (HOT), this morning's update
-    says 88 (NORMAL). Revisit overwrites so we don't unnecessarily run the
-    aggressive HOT shutoff."""
+    says 80 (NORMAL under the recalibrated 75-85F band). Revisit overwrites
+    so we don't unnecessarily run the aggressive HOT shutoff."""
     monkeypatch.setattr(app, "_read_stored_decision",
                         lambda q, b, d: DAYTYPE_HOT)
     monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 88.0,
+                        lambda q, b, p: {"high_f": 80.0,
                                           "max_dewpoint_f": 60.0,
                                           "is_heat_advisory": 0})
     monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)

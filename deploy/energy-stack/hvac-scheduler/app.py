@@ -30,11 +30,13 @@ Safety nets:
   * Pi failure mode: thermostat keeps last-set setpoint; not a safety
     issue, just degraded scheduling.
 
-Day-type rules:
-  * MILD             -- forecast high < 82F            -- no actions
-  * NORMAL           -- 82 <= forecast high < 95F      -- standard schedule
-  * HOT_5CP_RISK     -- forecast high >= 95F OR active heat advisory
-                                                       -- aggressive schedule
+Day-type rules (locked per EXPERIMENT_DESIGN.md Appendix A, recalibrated
+May 2026 against the 2025 ComEd RTP price-spike distribution):
+  * MILD             -- forecast high < 75F             -- no actions
+  * NORMAL           -- 75 <= forecast high < 85F       -- standard schedule
+  * HOT_5CP_RISK     -- forecast high >= 85F OR
+                        forecast apparent >= 90F OR
+                        active heat advisory             -- aggressive schedule
 
 Environment variables:
     CONTROL4_EMAIL              Control4 account email
@@ -393,15 +395,40 @@ def fetch_latest_comed(query_api, bucket: str) -> float | None:
 
 # ---- Day-type decision -----------------------------------------------------
 
+# Day-type thresholds (locked per EXPERIMENT_DESIGN.md Appendix A; recalibrated
+# May 2026 against the 2025 ComEd RTP price-spike distribution). The earlier
+# >=95F HOT threshold reflected absolute heat severity; the new threshold is
+# tuned to capture price-spike risk: ~52% of 2025 spike days had max temp
+# >=85F or apparent >=90F. The remaining ~40% of spikes are grid-event-driven
+# (forecast-mild but PJM-stressed) and are addressed by the price-overlay
+# layer (§2) and 5CP detector (§3), not by day-type classification.
+HOT_TEMP_THRESHOLD_F = 85
+HOT_APPARENT_THRESHOLD_F = 90
+NORMAL_TEMP_THRESHOLD_F = 75
+
+
 def _classify_one_day(forecast: dict | None) -> str:
-    """Single-day classification helper without the full reasons dict."""
+    """Single-day classification helper without the full reasons dict.
+
+    Triggers (any one fires HOT):
+      * forecast high >= HOT_TEMP_THRESHOLD_F (85F)
+      * forecast apparent_max_f >= HOT_APPARENT_THRESHOLD_F (90F) -- humidity
+        and wind-driven heat risk that dry-bulb alone misses; sourced from
+        the forecastGridData `apparentTemperature` field (§0a)
+      * active heat advisory -- preserves the existing alert-driven path
+    """
     if not forecast:
         return DAYTYPE_NORMAL
     high_f = forecast.get("high_f")
+    apparent_max_f = forecast.get("apparent_max_f")
     is_heat_adv = bool(forecast.get("is_heat_advisory", 0))
-    if is_heat_adv or (high_f is not None and high_f >= 95):
+    if is_heat_adv:
         return DAYTYPE_HOT
-    if high_f is not None and high_f >= 82:
+    if high_f is not None and high_f >= HOT_TEMP_THRESHOLD_F:
+        return DAYTYPE_HOT
+    if apparent_max_f is not None and apparent_max_f >= HOT_APPARENT_THRESHOLD_F:
+        return DAYTYPE_HOT
+    if high_f is not None and high_f >= NORMAL_TEMP_THRESHOLD_F:
         return DAYTYPE_NORMAL
     return DAYTYPE_MILD
 
@@ -417,11 +444,13 @@ def decide_day_type(forecast: dict | None,
     if not forecast:
         return DAYTYPE_NORMAL, {"reason": "no_forecast_available", "fallback": True}
     high_f = forecast.get("high_f")
+    apparent_max_f = forecast.get("apparent_max_f")
     is_heat_adv = bool(forecast.get("is_heat_advisory", 0))
     dewpoint_f = forecast.get("max_dewpoint_f")
 
     reasons = {
         "high_f": high_f,
+        "apparent_max_f": apparent_max_f,
         "is_heat_advisory": is_heat_adv,
         "max_dewpoint_f": dewpoint_f,
         "alert_summary": forecast.get("alert_summary", ""),
@@ -434,14 +463,20 @@ def decide_day_type(forecast: dict | None,
         if day2_type == DAYTYPE_HOT:
             reasons["reason"] = "hot_streak_starting"
             reasons["day2_high_f"] = (day2_forecast or {}).get("high_f")
+            reasons["day2_apparent_max_f"] = (day2_forecast or {}).get("apparent_max_f")
             reasons["day2_is_heat_advisory"] = bool((day2_forecast or {}).get("is_heat_advisory", 0))
             return DAYTYPE_HOT_STREAK_DAY1, reasons
-        reasons["reason"] = "heat_advisory" if is_heat_adv else "high_ge_95"
+        if is_heat_adv:
+            reasons["reason"] = "heat_advisory"
+        elif high_f is not None and high_f >= HOT_TEMP_THRESHOLD_F:
+            reasons["reason"] = f"high_ge_{HOT_TEMP_THRESHOLD_F}"
+        else:
+            reasons["reason"] = f"apparent_ge_{HOT_APPARENT_THRESHOLD_F}"
         return DAYTYPE_HOT, reasons
     if base_type == DAYTYPE_NORMAL:
-        reasons["reason"] = "high_82_to_94"
+        reasons["reason"] = f"high_{NORMAL_TEMP_THRESHOLD_F}_to_{HOT_TEMP_THRESHOLD_F - 1}"
         return DAYTYPE_NORMAL, reasons
-    reasons["reason"] = "high_lt_82"
+    reasons["reason"] = f"high_lt_{NORMAL_TEMP_THRESHOLD_F}"
     return DAYTYPE_MILD, reasons
 
 
