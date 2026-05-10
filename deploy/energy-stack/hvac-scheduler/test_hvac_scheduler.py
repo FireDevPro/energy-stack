@@ -193,6 +193,47 @@ def test_decide_day_type_carries_apparent_in_reasons():
     assert reasons["reason"].startswith("apparent_ge_")
 
 
+def test_decide_day_type_escalates_to_streak_on_single_day_5cp_risk():
+    """§7 single-day path: tomorrow HOT (95F), tomorrow's PJM peak forecast
+    >5% above season-to-date 5th highest. Even without a multi-day heat
+    streak, escalate to HOT_STREAK_DAY1 to bank deeper thermal mass before
+    the grid-stress hour."""
+    from app import DAYTYPE_HOT_STREAK_DAY1
+    day_type, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=145000,
+        season_5th_highest_mw=130000,
+    )
+    assert day_type == DAYTYPE_HOT_STREAK_DAY1
+    assert reasons["reason"] == "forecast_5cp_risk_single_day"
+
+
+def test_decide_day_type_no_streak_when_pjm_inputs_absent():
+    """§7 escalation requires both PJM inputs. If either is None (e.g.,
+    pre-season tick), fall back to plain HOT classification."""
+    day_type, _ = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=None,
+        season_5th_highest_mw=130000,
+    )
+    assert day_type == DAYTYPE_HOT
+
+
+def test_decide_day_type_multi_day_streak_path_still_works():
+    """Existing multi-day path (§7 added an alternative escalation path,
+    didn't replace this one). When BOTH days HOT, still escalates to
+    HOT_STREAK_DAY1 with the older reason string for backwards-compat."""
+    from app import DAYTYPE_HOT_STREAK_DAY1
+    day_type, reasons = decide_day_type(
+        {"high_f": 96.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 97.0, "is_heat_advisory": 0},
+    )
+    assert day_type == DAYTYPE_HOT_STREAK_DAY1
+    assert reasons["reason"] == "hot_streak_starting"
+
+
 # ---- ScheduleAction & schedules -------------------------------------------
 
 

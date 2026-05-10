@@ -81,6 +81,7 @@ from pjm_5cp import (
     fetch_zone_live,
     update_season_5th_highest,
 )
+from precool import should_deepen_precool
 from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -446,12 +447,26 @@ def _classify_one_day(forecast: dict | None) -> str:
 
 
 def decide_day_type(forecast: dict | None,
-                    day2_forecast: dict | None = None) -> tuple[str, dict]:
+                    day2_forecast: dict | None = None,
+                    *,
+                    tomorrow_peak_load_mw: float | None = None,
+                    season_5th_highest_mw: float | None = None
+                    ) -> tuple[str, dict]:
     """Return (day_type, reasoning_dict).
 
-    If `day2_forecast` is provided AND tomorrow is HOT AND day-after is also
-    HOT, escalates to HOT_STREAK_DAY1 (extra-aggressive pre-cool to build
-    thermal mass for the multi-day heat event).
+    Two paths escalate a HOT day to HOT_STREAK_DAY1 (the deepest pre-cool
+    schedule, 03:00 start at 66F):
+
+      * **Multi-day heat path** (existing): if `day2_forecast` is provided
+        AND tomorrow is HOT AND day-after is also HOT, escalate to
+        HOT_STREAK_DAY1 to bank multi-day thermal mass.
+
+      * **Forecast 5CP-risk path** (§7, NEW): if both
+        `tomorrow_peak_load_mw` and `season_5th_highest_mw` are provided
+        and `precool.should_deepen_precool` returns True (peak forecast
+        > season-5th * 1.05 AND tomorrow's high >= 90F), escalate even
+        on a single-day HOT forecast. Captures grid-stress days that
+        aren't part of a multi-day heat streak.
     """
     if not forecast:
         return DAYTYPE_NORMAL, {"reason": "no_forecast_available", "fallback": True}
@@ -477,6 +492,19 @@ def decide_day_type(forecast: dict | None,
             reasons["day2_high_f"] = (day2_forecast or {}).get("high_f")
             reasons["day2_apparent_max_f"] = (day2_forecast or {}).get("apparent_max_f")
             reasons["day2_is_heat_advisory"] = bool((day2_forecast or {}).get("is_heat_advisory", 0))
+            return DAYTYPE_HOT_STREAK_DAY1, reasons
+        # §7 single-day forecast 5CP-risk path: deepen pre-cool when PJM
+        # peak forecast clearly exceeds the season-to-date 5th highest
+        # AND tomorrow's high reaches 90F.
+        if (tomorrow_peak_load_mw is not None
+                and season_5th_highest_mw is not None
+                and should_deepen_precool(
+                    {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
+                    season_5th_highest_mw,
+                )):
+            reasons["reason"] = "forecast_5cp_risk_single_day"
+            reasons["tomorrow_peak_load_mw"] = tomorrow_peak_load_mw
+            reasons["season_5th_highest_mw"] = season_5th_highest_mw
             return DAYTYPE_HOT_STREAK_DAY1, reasons
         if is_heat_adv:
             reasons["reason"] = "heat_advisory"
