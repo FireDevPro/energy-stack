@@ -433,8 +433,15 @@ async def fetch_da_lmp_for_tomorrow(client: PJMClient, cfg: Config, now_local: d
 
     `row_is_current=true` filters out superseded revisions when PJM
     re-posts a price.
+
+    EPT conversion (post-2026-05): the ``datetime_beginning_ept`` filter
+    expects Eastern Prevailing Time. Convert from cfg.tz (Chicago) to
+    EPT before formatting so the "tomorrow" date boundary is computed
+    in Eastern (matters near midnight when the CT and EPT calendar
+    dates diverge).
     """
-    target = (now_local + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.0")
+    now_ept = now_local.astimezone(EPT)
+    target = (now_ept + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.0")
     items = await client.fetch(
         "da_hrl_lmps",
         {
@@ -502,8 +509,13 @@ async def _fetch_metered_load_recent_for_zone(
     dedups identical timestamps so the hourly polling cadence layered
     on top of this 5-day window writes nothing extra unless PJM posted
     new data.
+
+    EPT conversion: ``datetime_beginning_ept`` expects Eastern; convert
+    from cfg.tz (Chicago) before formatting. With a 5-day window the
+    1-hour offset is rounding error, but consistency across fetchers
+    matters.
     """
-    end = now_local
+    end = now_local.astimezone(EPT)
     start = end - timedelta(days=5)
     items = await client.fetch(
         "hrl_load_metered",
@@ -552,8 +564,17 @@ async def _fetch_inst_load_recent_for_area(
     intentional; ``area="COMED"`` is the right code for ComEd in this
     feed, and ``area="PJM RTO"`` is the RTO-wide aggregate (URL-encoded
     as ``PJM%20RTO`` by the HTTP client).
+
+    EPT conversion (post-2026-05): the ``datetime_beginning_ept``
+    filter expects Eastern Prevailing Time. Pre-fix this function
+    formatted ``now_local`` (cfg.tz = America/Chicago) directly,
+    which in summer asks PJM for the 30-min window ending 1 hour BEFORE
+    actual now -- the 5CP detector then reads stale or empty
+    ``pjm.inst_load`` rows and the live-load side of the trigger
+    silently degrades. Converting to ``EPT`` aligns the request
+    window with what PJM expects.
     """
-    end = now_local
+    end = now_local.astimezone(EPT)
     start = end - timedelta(minutes=30)
     items = await client.fetch(
         "inst_load",
@@ -588,15 +609,20 @@ async def fetch_inst_load_recent_rto(client: PJMClient, cfg: Config, now_local: 
 
 async def fetch_peak_forecast_rto(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
     """Pull today's PJM RTO peak forecast. PJM may revise through the day,
-    so we fetch all rows generated since midnight local."""
-    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    so we fetch all rows generated since midnight Eastern.
+
+    EPT conversion: ``generated_at_ept`` expects Eastern. The "today
+    midnight" boundary is in Eastern, which can differ from Chicago
+    midnight by an hour. Convert before formatting."""
+    now_ept = now_local.astimezone(EPT)
+    today_start = now_ept.replace(hour=0, minute=0, second=0, microsecond=0)
     items = await client.fetch(
         "ops_sum_frcst_peak_rto",
         {
             "area": "PJM RTO",
             "generated_at_ept": (
                 f"{today_start.strftime('%Y-%m-%dT%H:%M:%S')}.0to"
-                f"{now_local.strftime('%Y-%m-%dT23:59:59')}.0"
+                f"{now_ept.strftime('%Y-%m-%dT23:59:59')}.0"
             ),
             "rowCount": 50,
             "startRow": 1,
