@@ -148,29 +148,33 @@ NORMAL_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(21, 0, "SLEEP",    cool_setpoint_f=73),
 ]
 
-# HOT/5CP-risk day: forecast >=95F or active heat advisory.
+# HOT/5CP-risk day: forecast >=85F max OR apparent >=90F (per Appendix A).
 #
 # ComEd Hourly Pricing capacity charges use TWO separate peak sets:
 #   - PJM 5CP: 5 highest RTO demand hours/year. 2025 empirics: 4 of 5 landed
 #     in the 16-17 CDT hour, 1 (6/25/2025) hit 13-14 CDT.
 #   - ComEd 5CP: 5 highest ComEd-zone demand hours/year. Historical window
-#     noon-18:00 weekdays per the ComEd Hourly Pricing FAQ.
+#     noon-18:00 per the ComEd Hourly Pricing FAQ.
 #
-# Schedule:
+# Schedule (Arm B post-prereg):
 #   04:00 HOT_PRE_COOL (68°F)   bank thermal mass off-peak
-#   12:00 HOT_COAST (80°F)      coast through ComEd peak window's pre-shutoff
-#                                hours (12-14); 80°F isn't a hard cutoff but
-#                                limits compressor calls during ComEd-only
-#                                peak risk
-#   14:00 HOT_5CP_SHUTOFF (85°F) hard cutoff for the PJM 5CP window AND the
-#                                back half of the ComEd window
-#   18:00 HOT_RECOVER_LOW (78°F) gentle recovery start
+#   12:00 HOT_COAST (80°F)      coast through the high-risk afternoon
+#   19:00 HOT_RECOVER (75°F)    transition out of coast
 #   21:00 SLEEP (73°F)
 #
-# Open tradeoff: extending the shutoff start back to 12:00 (instead of coast
-# at 80°F) would tighten ComEd 5CP avoidance at a real comfort cost during
-# the noon-14 window. Currently leaning on the coast setpoint as a softer
-# response there.
+# The fixed 14:00-18:00 CT shutoff window from the original scheduler
+# design is DROPPED here per EXPERIMENT_DESIGN.md §3 (Arm B). The dynamic
+# layers (§2 real-time RTP price-spike reactivity + §3 dual-scope 5CP
+# detector) drive shutoff timing instead -- they can push the effective
+# cool to 85°F mid-period via "warmer wins" layer priority when actual
+# conditions warrant. This replaces a historical-window assumption with
+# real-time conditioning; 2025 data showed the actual RTO peak hour at
+# 18:00 CT, not 14-17 as the fixed window assumed.
+#
+# Spec also describes an "optional fallback floor of 13:00-20:00 CT
+# shutoff" for when the price feed is unavailable. That fallback is
+# tracked as a separate follow-up; for now the dynamic layers carry
+# the shutoff responsibility under normal feed conditions.
 #
 # Capacity-charge impact: a load reduction during one PJM Five Peak hour
 # shifts the customer's Average-Customer-Coincident-Peak-Load (ACustCPL)
@@ -186,9 +190,7 @@ HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(4,  0, "HOT_PRE_COOL",     cool_setpoint_f=68),
     ScheduleAction(12, 0, "HOT_COAST",        cool_setpoint_f=80, fan_mode="Circulate",
                    cool_setpoint_humid_f=76),
-    ScheduleAction(14, 0, "HOT_5CP_SHUTOFF",  cool_setpoint_f=85),  # PJM 5CP avoidance
-    ScheduleAction(18, 0, "HOT_RECOVER_LOW",  cool_setpoint_f=78, fan_mode="Auto"),
-    ScheduleAction(19, 0, "HOT_RECOVER",      cool_setpoint_f=75),
+    ScheduleAction(19, 0, "HOT_RECOVER",      cool_setpoint_f=75, fan_mode="Auto"),
     ScheduleAction(21, 0, "SLEEP",            cool_setpoint_f=73),
 ]
 
@@ -209,9 +211,7 @@ HOT_STREAK_DAY1_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(3,  0, "STREAK_PRE_COOL_EARLY", cool_setpoint_f=66),
     ScheduleAction(12, 0, "HOT_COAST",             cool_setpoint_f=80, fan_mode="Circulate",
                    cool_setpoint_humid_f=76),
-    ScheduleAction(14, 0, "HOT_5CP_SHUTOFF",       cool_setpoint_f=85),
-    ScheduleAction(18, 0, "HOT_RECOVER_LOW",       cool_setpoint_f=78, fan_mode="Auto"),
-    ScheduleAction(19, 0, "HOT_RECOVER",           cool_setpoint_f=75),
+    ScheduleAction(19, 0, "HOT_RECOVER",           cool_setpoint_f=75, fan_mode="Auto"),
     ScheduleAction(21, 0, "SLEEP",                 cool_setpoint_f=73),
 ]
 

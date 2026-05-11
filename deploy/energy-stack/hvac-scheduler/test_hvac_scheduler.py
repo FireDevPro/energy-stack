@@ -35,6 +35,7 @@ from app import (
     MILD_SCHEDULE,
     NORMAL_SCHEDULE,
     HOT_SCHEDULE,
+    HOT_STREAK_DAY1_SCHEDULE,
     ScheduleAction,
     _classify_one_day,
     _evaluate_layer_inputs,
@@ -311,6 +312,41 @@ def test_existing_schedules_still_have_setpoints():
         assert action.release_hold is False
         assert action.cool_setpoint_f is not None
         assert action.cool_setpoint_f > 0
+
+
+def test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window():
+    """Prereg compliance (EXPERIMENT_DESIGN.md §3): the fixed 14:00-
+    18:00 CT shutoff window is dropped from Arm B. The 85°F shutoff
+    timing comes from dynamic layers (§2 price-scarcity tier + §3
+    dual-scope 5CP detector), NOT from schedule entries.
+
+    This test pins the schedule so a future regression (someone
+    re-adding the hard 14:00 / 18:00 hardcoded actions) fails
+    loudly. The dynamic layers still produce 85°F effective cool
+    via 'warmer wins' priority when real conditions warrant -- the
+    layer evaluation is exercised separately by the dual-scope and
+    price-overlay test families."""
+    dropped_labels = {"HOT_5CP_SHUTOFF", "HOT_RECOVER_LOW"}
+    hot_labels = {a.label for a in HOT_SCHEDULE}
+    streak_labels = {a.label for a in HOT_STREAK_DAY1_SCHEDULE}
+    assert not (hot_labels & dropped_labels), (
+        f"HOT_SCHEDULE still carries fixed-window actions: "
+        f"{hot_labels & dropped_labels}"
+    )
+    assert not (streak_labels & dropped_labels), (
+        f"HOT_STREAK_DAY1_SCHEDULE still carries fixed-window actions: "
+        f"{streak_labels & dropped_labels}"
+    )
+    # No schedule entry should pin cool >= 85 on a HOT day -- those
+    # are dynamic-layer territory now.
+    for a in HOT_SCHEDULE + HOT_STREAK_DAY1_SCHEDULE:
+        if a.cool_setpoint_f is not None:
+            assert a.cool_setpoint_f < 85, (
+                f"HOT-day schedule action {a.label} pins cool="
+                f"{a.cool_setpoint_f}; that's the dynamic-layer "
+                f"shutoff range and should not appear in the locked "
+                f"schedule baseline."
+            )
 
 
 # ---- resolve_cool_setpoint ------------------------------------------------
@@ -861,8 +897,9 @@ def test_supervisor_clamps_heat_setpoint():
 
 
 def test_supervisor_emergency_overrides_when_indoor_too_hot():
-    """Even if the schedule says cool=85 (HOT_5CP_SHUTOFF), if indoor
-    temp is already 87°F, force the AC to engage at the emergency target."""
+    """Even if a layer (price scarcity tier or 5CP detector) pushes
+    cool=85, if indoor temp is already 87°F, force the AC to engage at
+    the emergency target."""
     d = validate_setpoints(85, 60, snapshot={"indoor_temp_f": 87.0})
     assert d.decision == DECISION_EMERGENCY
     assert d.cool_setpoint_f == EMERGENCY_COOL_TARGET_F
@@ -927,7 +964,10 @@ def test_merge_same_hour_actions_keeps_distinct_hours():
     """Actions at different hours don't merge — both fire at their
     scheduled times."""
     a = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL", cool_setpoint_f=66)
-    b = ScheduleAction(14, 0, "HOT_5CP_SHUTOFF", cool_setpoint_f=85)
+    # Synthetic fixture: just a different-hour action with any label.
+    # HOT_5CP_SHUTOFF was the pre-prereg fixed-window action; kept here
+    # as a label string only because the test logic is opaque to it.
+    b = ScheduleAction(14, 0, "SYNTHETIC_AFTERNOON", cool_setpoint_f=85)
     merged = merge_same_hour_actions_deepest_wins([a, b])
     assert len(merged) == 2
     assert sorted(m.hour for m in merged) == [12, 14]
@@ -1185,8 +1225,9 @@ def test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data(monkeypatch
 
 def test_dual_scope_or_fires_when_rto_alone_qualifies(monkeypatch):
     """The OR semantics: even if ComEd-zone load is well below trigger,
-    an RTO-scale ramp-up alone is enough to enter HOT_5CP_SHUTOFF. This
-    is the coverage P1.1 adds -- the prior single-scope ComEd detector
+    an RTO-scale ramp-up alone is enough to push the §3 5CP layer to
+    its 85°F shutoff setpoint. This is the coverage P1.1 adds -- the
+    prior single-scope ComEd detector
     would miss PJM 5CP hours that don't also coincide with ComEd zone
     peaks (per HVAC_LOGIC.md, ComEd zone tends to peak earlier than
     RTO; a late-afternoon RTO ramp without ComEd-zone elevation is
