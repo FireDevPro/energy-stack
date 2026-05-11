@@ -1071,6 +1071,269 @@ def test_stage3_weekly_skips_weeks_without_stage1_inputs(monkeypatch, tmp_path):
     assert float(rows[0]["o1_dollars_per_cdd"]) == 0.0
 
 
+# -- Stage 6: O2 Layer 1 (observed ACustCPL difference) --------------------
+
+
+def _pjm_5cp_2025():
+    return [
+        datetime.datetime(2025, 6, 24, 17),
+        datetime.datetime(2025, 7, 22, 17),
+        datetime.datetime(2025, 7, 23, 18),
+        datetime.datetime(2025, 8, 12, 17),
+        datetime.datetime(2025, 8, 26, 18),
+    ]
+
+
+def test_compute_a_cust_cpl_kw_uniform_load():
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks}
+    assert pipeline.compute_a_cust_cpl_kw(peaks, hourly_kw) == 3.0
+
+
+def test_compute_a_cust_cpl_kw_skips_missing_hours():
+    # Two of five peaks have no household data → mean over the three present
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {peaks[0]: 2.0, peaks[1]: 4.0, peaks[2]: 6.0}
+    assert pipeline.compute_a_cust_cpl_kw(peaks, hourly_kw) == 4.0
+
+
+def test_compute_a_cust_cpl_kw_returns_zero_when_no_data():
+    out = pipeline.compute_a_cust_cpl_kw(_pjm_5cp_2025(), {})
+    assert out == 0.0
+
+
+def test_compute_a_cust_cpl_kw_empty_peak_list_is_zero():
+    assert pipeline.compute_a_cust_cpl_kw([], {}) == 0.0
+
+
+def test_compute_layer1_arm_delta_arm_b_lower_means_negative_delta():
+    # Arm A: 3 peaks at 4 kW → mean 4. Arm B: 2 peaks at 3 kW → mean 3.
+    # delta = -1 kW. At $10.13567/kW-mo × 5 months → -$50.67835.
+    peaks = _pjm_5cp_2025()
+    peaks_a, peaks_b = peaks[:3], peaks[3:]
+    hourly_kw = {p: 4.0 for p in peaks_a} | {p: 3.0 for p in peaks_b}
+    out = pipeline.compute_layer1_arm_delta(
+        pjm_peak_hours_by_arm={"A": peaks_a, "B": peaks_b},
+        hourly_mains_kw=hourly_kw,
+        capacity_rate_dollars_per_kw_month=10.13567,
+    )
+    assert out["a_cust_cpl_kw_arm_a"] == 4.0
+    assert out["a_cust_cpl_kw_arm_b"] == 3.0
+    assert out["n_peaks_arm_a"] == 3
+    assert out["n_peaks_arm_b"] == 2
+    assert out["delta_kw"] == -1.0
+    assert out["delta_dollars_total"] == pytest.approx(-50.67835, abs=1e-4)
+
+
+def test_compute_layer1_arm_delta_zero_when_arms_identical():
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.5 for p in peaks}
+    out = pipeline.compute_layer1_arm_delta(
+        pjm_peak_hours_by_arm={"A": peaks[:3], "B": peaks[3:]},
+        hourly_mains_kw=hourly_kw,
+        capacity_rate_dollars_per_kw_month=10.13567,
+    )
+    assert out["delta_kw"] == 0.0
+    assert out["delta_dollars_total"] == 0.0
+
+
+# -- Stage 6: O2 Layer 2 (CPLC scenarios) ----------------------------------
+
+
+def _layer2_constants():
+    from tools.o2_capacity_reconstruction.reconstruct import TariffConstants
+    return TariffConstants(
+        year=2025,
+        comed_npl_mw=20736.0,
+        a_comed_cpl_mw=19138.22,
+        portfolio_sum_mw=1500.0,
+        rate_dollars_per_kw_month=10.13567,
+        is_placeholder=False,
+    )
+
+
+def test_compute_layer2_scenarios_emits_three_named_scenarios():
+    peaks_pjm = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks_pjm}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        comed_peak_hours_by_arm={"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    names = {r["scenario"] for r in out}
+    assert names == {"low", "anchor_2021", "high"}
+
+
+def test_compute_layer2_scenarios_branch1_collapses_when_pl_le_cpl():
+    # ComEd peaks coincide with PJM peaks; identical kW → branch 1
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks, "B": []},
+        comed_peak_hours_by_arm={"A": peaks, "B": []},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    cplc_arm_a = {r["cplc_kw_arm_a"] for r in out}
+    # Branch 1 collapses CPLC = ACustCPL regardless of scenario
+    assert cplc_arm_a == {3.0}
+
+
+def test_compute_layer2_scenarios_branch2_widens_with_smaller_denominator():
+    # ACustPL > ACustCPL → branch 2; smaller portfolio_sum → bigger adjustment
+    peaks_pjm = _pjm_5cp_2025()
+    peaks_comed = [datetime.datetime(2025, 7, 20, 15)]
+    hourly_kw = {p: 2.0 for p in peaks_pjm} | {peaks_comed[0]: 6.0}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks_pjm, "B": []},
+        comed_peak_hours_by_arm={"A": peaks_comed, "B": []},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    rows = {r["scenario"]: r["cplc_kw_arm_a"] for r in out}
+    # low denominator (1500) → biggest adjustment; high (3000) → smallest
+    assert rows["low"] > rows["anchor_2021"] > rows["high"]
+
+
+# -- Stage 6: O2 Layer 3 (bill reconciliation) -----------------------------
+
+
+def test_compute_layer3_bill_capacity_dollars_sums_may_through_sep_only():
+    bills = [
+        {"year": 2026, "month": 4, "capacity_charge_dollars": 5.0},   # excluded
+        {"year": 2026, "month": 5, "capacity_charge_dollars": 30.0},  # May
+        {"year": 2026, "month": 6, "capacity_charge_dollars": 50.0},  # Jun
+        {"year": 2026, "month": 9, "capacity_charge_dollars": 35.0},  # Sep
+        {"year": 2026, "month": 10, "capacity_charge_dollars": 5.0},  # excluded
+        {"year": 2027, "month": 6, "capacity_charge_dollars": 99.0},  # wrong year
+    ]
+    out = pipeline.compute_layer3_bill_capacity_dollars(bills, year_y_plus_1=2026)
+    assert out["year"] == 2026
+    assert out["months_summed"] == 3
+    assert out["total_capacity_charge_dollars"] == pytest.approx(115.0)
+
+
+def test_compute_layer3_bill_capacity_dollars_handles_missing_months():
+    bills = [{"year": 2026, "month": 7, "capacity_charge_dollars": 42.0}]
+    out = pipeline.compute_layer3_bill_capacity_dollars(bills, year_y_plus_1=2026)
+    assert out["months_summed"] == 1
+    assert out["total_capacity_charge_dollars"] == 42.0
+
+
+# -- Stage 6: Detector accuracy --------------------------------------------
+
+
+def test_compute_detector_accuracy_perfect_detector():
+    peaks = _pjm_5cp_2025()
+    other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
+    all_summer = peaks + other_hours
+    state = {h: ("holding" if h in peaks else "off") for h in all_summer}
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=peaks,
+        summer_hours=all_summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tp"] == 5
+    assert out["fn"] == 0
+    assert out["fp"] == 0
+    assert out["tn"] == 24
+    assert out["tpr"] == 1.0
+    assert out["fpr"] == 0.0
+
+
+def test_compute_detector_accuracy_one_miss_and_one_false_alarm():
+    peaks = _pjm_5cp_2025()
+    other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
+    all_summer = peaks + other_hours
+    state = {h: "off" for h in all_summer}
+    for p in peaks[1:]:  # miss peaks[0]
+        state[p] = "holding"
+    state[datetime.datetime(2025, 7, 10, 14)] = "holding"  # false alarm
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=peaks,
+        summer_hours=all_summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tp"] == 4
+    assert out["fn"] == 1
+    assert out["fp"] == 1
+    assert out["tpr"] == pytest.approx(0.8)
+    assert out["fnr"] == pytest.approx(0.2)
+
+
+def test_compute_detector_accuracy_empty_truth_returns_zero_rates():
+    summer = [datetime.datetime(2025, 7, 10, h) for h in range(3)]
+    state = {h: "off" for h in summer}
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=[],
+        summer_hours=summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tpr"] == 0.0
+    assert out["fnr"] == 0.0
+    assert out["tn"] == 3
+
+
+# -- Stage 6: stage6_o2 orchestrator ---------------------------------------
+
+
+def test_stage6_o2_writes_four_csvs_header_only_when_no_inputs(tmp_path):
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage6_o2(stage1, tmp_path)
+    stage6 = tmp_path / "stage6"
+    for name in ("o2_layer1.csv", "o2_layer2.csv",
+                 "o2_layer3.csv", "detector_accuracy.csv"):
+        assert (stage6 / name).exists()
+
+
+def test_stage6_o2_with_synthetic_loader_populates_layer1_layer2(
+    monkeypatch, tmp_path,
+):
+    peaks_pjm = _pjm_5cp_2025()
+    peaks_comed = peaks_pjm  # identical for this fixture; branch 1 case
+    hourly_kw = {p: 3.0 for p in peaks_pjm}
+    fake_inputs = {
+        "pjm_peak_hours_by_arm": {"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        "comed_peak_hours_by_arm": {"A": peaks_comed[:3], "B": peaks_comed[3:]},
+        "hourly_mains_kw": hourly_kw,
+        "tariff_constants": _layer2_constants(),
+        "summer_year": 2025,
+        "comed_bills": [
+            {"year": 2026, "month": 6, "capacity_charge_dollars": 20.0},
+        ],
+        "summer_hours": peaks_pjm,
+        "fivecp_state_by_hour": {h: "holding" for h in peaks_pjm},
+    }
+    monkeypatch.setattr(
+        pipeline, "_load_stage6_inputs", lambda _: fake_inputs,
+    )
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage6_o2(stage1, tmp_path)
+    # Layer 1: one row
+    with open(tmp_path / "stage6" / "o2_layer1.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert float(rows[0]["a_cust_cpl_kw_arm_a"]) == 3.0
+    assert float(rows[0]["a_cust_cpl_kw_arm_b"]) == 3.0
+    # Layer 2: three rows (one per scenario)
+    with open(tmp_path / "stage6" / "o2_layer2.csv") as f:
+        rows2 = list(csv.DictReader(f))
+    assert {r["scenario"] for r in rows2} == {"low", "anchor_2021", "high"}
+    # Layer 3: one row summing bills
+    with open(tmp_path / "stage6" / "o2_layer3.csv") as f:
+        rows3 = list(csv.DictReader(f))
+    assert len(rows3) == 1
+    assert float(rows3[0]["total_capacity_charge_dollars"]) == 20.0
+    # Detector accuracy: one row
+    with open(tmp_path / "stage6" / "detector_accuracy.csv") as f:
+        rows4 = list(csv.DictReader(f))
+    assert len(rows4) == 1
+    assert int(rows4[0]["tp"]) == 5
+
+
 # -- Math primitives --------------------------------------------------------
 
 

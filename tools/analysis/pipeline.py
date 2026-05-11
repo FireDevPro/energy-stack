@@ -1356,12 +1356,277 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
     return stage_dir
 
 
+# --- Stage 6: O2 layer reconstructions -------------------------------------
+
+
+def compute_a_cust_cpl_kw(
+    peak_hours: Sequence[datetime.datetime],
+    hourly_kw_by_ts: dict[datetime.datetime, float],
+) -> float:
+    """Mean household kW across a set of peak hours.
+
+    Missing peak hours (not in ``hourly_kw_by_ts``) are skipped — by
+    Stage 2's contract, rule 1 imputation has already filled any
+    recoverable gaps, so an absent hour means rule 1 declared the
+    interval tier-4 (no imputation possible). Returns 0 if no data is
+    present at any peak; callers decide flag/CI behavior.
+    """
+    present = [
+        float(hourly_kw_by_ts[h]) for h in peak_hours if h in hourly_kw_by_ts
+    ]
+    if not present:
+        return 0.0
+    return sum(present) / len(present)
+
+
+def compute_layer1_arm_delta(
+    pjm_peak_hours_by_arm: dict[str, Sequence[datetime.datetime]],
+    hourly_mains_kw: dict[datetime.datetime, float],
+    capacity_rate_dollars_per_kw_month: float,
+    months_billed: int = 5,
+) -> dict[str, Any]:
+    """O2 Layer 1: per-arm ACustCPL + B−A difference in kW and $.
+
+    Per EXPERIMENT_DESIGN §6 Layer 1: the primary, fully-observable O2
+    statement. ``ACustCPL_Y(arm)`` is the household's mean kW across the
+    PJM Five Peak hours falling in that arm's weeks. Layer 1 reports
+    ``ACustCPL_Y(B) − ACustCPL_Y(A)`` and the corresponding dollar
+    impact via the locked capacity rate × months billed.
+    """
+    peaks_a = list(pjm_peak_hours_by_arm.get("A", []))
+    peaks_b = list(pjm_peak_hours_by_arm.get("B", []))
+    cpl_a = compute_a_cust_cpl_kw(peaks_a, hourly_mains_kw)
+    cpl_b = compute_a_cust_cpl_kw(peaks_b, hourly_mains_kw)
+    delta_kw = cpl_b - cpl_a
+    delta_dollars = delta_kw * capacity_rate_dollars_per_kw_month * months_billed
+    return {
+        "a_cust_cpl_kw_arm_a": cpl_a,
+        "a_cust_cpl_kw_arm_b": cpl_b,
+        "n_peaks_arm_a": len(peaks_a),
+        "n_peaks_arm_b": len(peaks_b),
+        "delta_kw": delta_kw,
+        "delta_dollars_total": delta_dollars,
+        "capacity_rate_dollars_per_kw_month": capacity_rate_dollars_per_kw_month,
+        "months_billed": months_billed,
+    }
+
+
+def compute_layer2_scenarios(
+    pjm_peak_hours_by_arm: dict[str, Sequence[datetime.datetime]],
+    comed_peak_hours_by_arm: dict[str, Sequence[datetime.datetime]],
+    hourly_mains_kw: dict[datetime.datetime, float],
+    tariff_constants,
+    portfolio_sums_mw: dict[str, float] | None = None,
+    months_billed: int = 5,
+) -> list[dict[str, Any]]:
+    """O2 Layer 2: per-arm CPLC reconstruction across portfolio scenarios.
+
+    Uses the locked Att. M-2 §2 second-branch formula via
+    ``tools.o2_capacity_reconstruction.reconstruct.scenarios``. Layer 2
+    is descriptive only; reported across pre-registered named
+    denominators (low / anchor_2021 / high) rather than a ±pct band
+    (see EXPERIMENT_DESIGN.md §6 and tariff_snapshot.md §4).
+    """
+    from tools.o2_capacity_reconstruction.reconstruct import (
+        PORTFOLIO_SUM_SCENARIOS_MW,
+        scenarios as cplc_scenarios,
+    )
+    sums = portfolio_sums_mw if portfolio_sums_mw is not None else PORTFOLIO_SUM_SCENARIOS_MW
+
+    cpl_a = compute_a_cust_cpl_kw(
+        list(pjm_peak_hours_by_arm.get("A", [])), hourly_mains_kw,
+    )
+    cpl_b = compute_a_cust_cpl_kw(
+        list(pjm_peak_hours_by_arm.get("B", [])), hourly_mains_kw,
+    )
+    pl_a = compute_a_cust_cpl_kw(
+        list(comed_peak_hours_by_arm.get("A", [])), hourly_mains_kw,
+    )
+    pl_b = compute_a_cust_cpl_kw(
+        list(comed_peak_hours_by_arm.get("B", [])), hourly_mains_kw,
+    )
+    rows_a = cplc_scenarios(cpl_a, pl_a, tariff_constants, sums)
+    rows_b = cplc_scenarios(cpl_b, pl_b, tariff_constants, sums)
+    rate = tariff_constants.rate_dollars_per_kw_month
+    out: list[dict[str, Any]] = []
+    for name in sums:
+        cplc_a = rows_a[name]
+        cplc_b = rows_b[name]
+        delta = cplc_b - cplc_a
+        out.append({
+            "scenario": name,
+            "portfolio_sum_mw": sums[name],
+            "cplc_kw_arm_a": cplc_a,
+            "cplc_kw_arm_b": cplc_b,
+            "delta_kw": delta,
+            "delta_dollars_total": delta * rate * months_billed,
+        })
+    return out
+
+
+def compute_layer3_bill_capacity_dollars(
+    comed_bills: Sequence[dict],
+    year_y_plus_1: int,
+    months: Sequence[int] = (5, 6, 7, 8, 9),
+) -> dict[str, Any]:
+    """O2 Layer 3: sum of ComEd capacity-charge line items across
+    May-Sep of the Y+1 billing year. Descriptive only — no within-house
+    counterfactual (only one realized arm assignment in summer Y)."""
+    months_set = set(months)
+    matched = [
+        b for b in comed_bills
+        if int(b.get("year", 0)) == year_y_plus_1
+        and int(b.get("month", 0)) in months_set
+    ]
+    total = sum(float(b["capacity_charge_dollars"]) for b in matched)
+    return {
+        "year": year_y_plus_1,
+        "months_summed": len(matched),
+        "total_capacity_charge_dollars": total,
+    }
+
+
+def compute_detector_accuracy(
+    published_5cp_hours: Iterable[datetime.datetime],
+    summer_hours: Iterable[datetime.datetime],
+    fivecp_state_by_hour: dict[datetime.datetime, str],
+) -> dict[str, Any]:
+    """Arm B 5CP-detector accuracy vs PJM's October-published 5CP hours.
+
+    For each hour in ``summer_hours``:
+      - pred_holding = ``fivecp_state_by_hour.get(h) == "holding"``
+      - is_truth = h in ``published_5cp_hours``
+
+    Returns counts (tp/fp/fn/tn) and rates (tpr/fpr/fnr). Process
+    metric only — decoupled from O2's outcome statement.
+    """
+    truth = set(published_5cp_hours)
+    tp = fp = fn = tn = 0
+    for h in summer_hours:
+        pred = fivecp_state_by_hour.get(h, "off") == "holding"
+        is_truth = h in truth
+        if pred and is_truth:
+            tp += 1
+        elif pred and not is_truth:
+            fp += 1
+        elif not pred and is_truth:
+            fn += 1
+        else:
+            tn += 1
+    pos = tp + fn
+    neg = fp + tn
+    return {
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        "tpr": (tp / pos) if pos else 0.0,
+        "fpr": (fp / neg) if neg else 0.0,
+        "fnr": (fn / pos) if pos else 0.0,
+        "summer_hours_n": tp + fp + fn + tn,
+        "published_5cp_n": pos,
+    }
+
+
+# Output column schemas (locked schemas at OSF tag)
+O2_LAYER1_COLUMNS = (
+    "a_cust_cpl_kw_arm_a", "a_cust_cpl_kw_arm_b",
+    "n_peaks_arm_a", "n_peaks_arm_b",
+    "delta_kw", "delta_dollars_total",
+    "capacity_rate_dollars_per_kw_month", "months_billed",
+)
+O2_LAYER2_COLUMNS = (
+    "scenario", "portfolio_sum_mw",
+    "cplc_kw_arm_a", "cplc_kw_arm_b",
+    "delta_kw", "delta_dollars_total",
+)
+O2_LAYER3_COLUMNS = ("year", "months_summed", "total_capacity_charge_dollars")
+DETECTOR_ACCURACY_COLUMNS = (
+    "tp", "fp", "fn", "tn", "tpr", "fpr", "fnr",
+    "summer_hours_n", "published_5cp_n",
+)
+
+
+def _load_stage6_inputs(stage1_dir: Path) -> dict | None:
+    """Build Stage 6 inputs from Stage 1 parquet + bill PDFs + tariff JSON.
+
+    Empty-stub for now: returns None unconditionally. Real implementation
+    reads ``pjm.coincident_peak`` (for both PJM and ComEd 5CP hour lists),
+    ``refoss.channel`` (em:1 + em:7 mains pivoted to hourly), the locked
+    arm-assignment CSV (to map peak hours to arms), ``comed.bill``, and
+    ``hvac.5cp_state`` for the detector accuracy report. Real-data
+    integration runs against a 2025 replay export, gated by OSF criterion 14.
+    """
+    return None
+
+
 def stage6_o2(stage1_dir: Path, out_dir: Path) -> Path:
-    """O2 Layer 1, Layer 2, Layer 3 + detector accuracy."""
+    """O2 Layer 1, Layer 2, Layer 3 + detector accuracy.
+
+    Independent of Stage 2/3: consumes Stage 1 directly. Writes four
+    CSVs with locked schemas (empty header-only when the loader returns
+    None — synthetic-fixture path goes through `_load_stage6_inputs`
+    monkeypatched in tests).
+    """
     stage_dir = out_dir / "stage6"
     stage_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("o2_layer1", "o2_layer2", "o2_layer3", "detector_accuracy"):
-        (stage_dir / f"{name}.csv").touch()
+    paths = {
+        "layer1": stage_dir / "o2_layer1.csv",
+        "layer2": stage_dir / "o2_layer2.csv",
+        "layer3": stage_dir / "o2_layer3.csv",
+        "detector": stage_dir / "detector_accuracy.csv",
+    }
+
+    def _write_header(path, cols):
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(cols))
+            w.writeheader()
+
+    inputs = _load_stage6_inputs(stage1_dir)
+    if inputs is None:
+        _write_header(paths["layer1"], O2_LAYER1_COLUMNS)
+        _write_header(paths["layer2"], O2_LAYER2_COLUMNS)
+        _write_header(paths["layer3"], O2_LAYER3_COLUMNS)
+        _write_header(paths["detector"], DETECTOR_ACCURACY_COLUMNS)
+        return stage_dir
+
+    rate = inputs["tariff_constants"].rate_dollars_per_kw_month
+    layer1 = compute_layer1_arm_delta(
+        pjm_peak_hours_by_arm=inputs["pjm_peak_hours_by_arm"],
+        hourly_mains_kw=inputs["hourly_mains_kw"],
+        capacity_rate_dollars_per_kw_month=rate,
+    )
+    layer2 = compute_layer2_scenarios(
+        pjm_peak_hours_by_arm=inputs["pjm_peak_hours_by_arm"],
+        comed_peak_hours_by_arm=inputs["comed_peak_hours_by_arm"],
+        hourly_mains_kw=inputs["hourly_mains_kw"],
+        tariff_constants=inputs["tariff_constants"],
+    )
+    layer3 = compute_layer3_bill_capacity_dollars(
+        comed_bills=inputs["comed_bills"],
+        year_y_plus_1=int(inputs["summer_year"]) + 1,
+    )
+    detector = compute_detector_accuracy(
+        published_5cp_hours=inputs.get("published_5cp_hours") or inputs["pjm_peak_hours_by_arm"]["A"] + inputs["pjm_peak_hours_by_arm"]["B"],
+        summer_hours=inputs["summer_hours"],
+        fivecp_state_by_hour=inputs["fivecp_state_by_hour"],
+    )
+
+    with open(paths["layer1"], "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(O2_LAYER1_COLUMNS))
+        w.writeheader()
+        w.writerow({k: layer1[k] for k in O2_LAYER1_COLUMNS})
+    with open(paths["layer2"], "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(O2_LAYER2_COLUMNS))
+        w.writeheader()
+        for row in layer2:
+            w.writerow({k: row[k] for k in O2_LAYER2_COLUMNS})
+    with open(paths["layer3"], "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(O2_LAYER3_COLUMNS))
+        w.writeheader()
+        w.writerow({k: layer3[k] for k in O2_LAYER3_COLUMNS})
+    with open(paths["detector"], "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(DETECTOR_ACCURACY_COLUMNS))
+        w.writeheader()
+        w.writerow({k: detector[k] for k in DETECTOR_ACCURACY_COLUMNS})
+
     return stage_dir
 
 
