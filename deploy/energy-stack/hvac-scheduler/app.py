@@ -94,6 +94,7 @@ from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
     evaluate_price_overlay,
+    offset_and_override_for_tier,
 )
 from safety_supervisor import validate_setpoints
 
@@ -1475,11 +1476,18 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
     prev_tier = firing.price_overlay_state.current_tier
     if current_price_cents is None:
-        # Price feed unavailable: leave overlay state untouched. The
-        # current tier (whichever we last entered) continues to apply.
+        # Price feed unavailable: preserve the active tier's effective
+        # setpoint contributions. The comment used to claim "current
+        # tier continues to apply" but the code was zeroing the offset
+        # and override -- logs labeled the tier as scarcity while the
+        # effective setpoint silently fell back to the schedule
+        # baseline. Now both the label AND the setpoint contributions
+        # carry forward from the locked tier config. The state machine
+        # state (transition timestamps, hold-elapsed checks) is left
+        # untouched so the eventual feed recovery sees a coherent
+        # picture.
         active_tier = None
-        price_offset_f = 0
-        price_override_f = None
+        price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
         price_tier_name = prev_tier
     else:
         active_tier, firing.price_overlay_state = evaluate_price_overlay(
