@@ -1,0 +1,5 @@
+from(bucket: $bucket)
+  |> range(start: $start, stop: $end)
+  |> filter(fn: (r) => r._measurement == "comed.prices")
+  |> filter(fn: (r) => r._field == "price_cents")
+  |> yield(name: "comed_prices")

@@ -1,0 +1,13 @@
+{
+  "PLACEHOLDER": true,
+  "_comment": "This file is a placeholder so the pipeline runs in CI. It MUST be overwritten by `python compute_spread.py` against the real 2023-2025 RTP+LMP data before OSF filing. See README.md.",
+  "computed_at": null,
+  "input_hours_total": 0,
+  "input_years": [2023, 2024, 2025],
+  "median_spread_cents_per_kwh_by_month": {
+    "6": 1.5,
+    "7": 1.5,
+    "8": 1.5,
+    "9": 1.0
+  }
+}
