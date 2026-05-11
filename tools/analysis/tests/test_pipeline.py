@@ -236,6 +236,187 @@ def test_rule9_overrides_apply_overlapping_vacations_dedup():
     assert excluded_days == {datetime.date(2026, 6, 9), datetime.date(2026, 6, 10)}
 
 
+# -- Rule 3: ComEd RTP price feed -------------------------------------------
+
+
+def _hour(observed_prints: int) -> dict:
+    return {"observed_prints": observed_prints}
+
+
+def test_rule3_price_all_hours_observed():
+    hours = [_hour(12) for _ in range(168)]
+    out = pipeline.rule3_price_apply(hours)
+    assert out.passes is True
+    assert out.contributes["imputed_price_hours_pct"] == 0.0
+    assert out.contributes["imputed_price_hours_flagged"] is False
+
+
+def test_rule3_price_low_imputation_passes_but_unflagged():
+    # 5% imputed → still passes, NOT flagged (>5% threshold is strict)
+    hours = [_hour(0)] * 8 + [_hour(12)] * 160  # 8/168 ≈ 4.76%
+    out = pipeline.rule3_price_apply(hours)
+    assert out.passes is True
+    assert out.contributes["imputed_price_hours_flagged"] is False
+
+
+def test_rule3_price_above_5pct_flagged_but_passes():
+    # 10% imputed → passes, but flagged
+    hours = [_hour(0)] * 17 + [_hour(12)] * 151
+    out = pipeline.rule3_price_apply(hours)
+    assert out.passes is True
+    assert out.contributes["imputed_price_hours_flagged"] is True
+
+
+def test_rule3_price_above_20pct_excludes_week():
+    # 30% imputed → excluded
+    hours = [_hour(0)] * 50 + [_hour(12)] * 118
+    out = pipeline.rule3_price_apply(hours)
+    assert out.passes is False
+    assert out.exclusion_reason == "price_imputation_too_high"
+
+
+def test_rule3_price_observed_threshold_is_six_inclusive():
+    # observed_prints == 6 → observed; observed_prints == 5 → imputed
+    hours = [_hour(6) for _ in range(84)] + [_hour(5) for _ in range(84)]  # 50% imputed
+    out = pipeline.rule3_price_apply(hours)
+    assert out.contributes["imputed_price_hours_pct"] == pytest.approx(0.5)
+    assert out.passes is False
+
+
+# -- Rule 7: scheduler service outages --------------------------------------
+
+
+def _outage(start_hour: int, start_min: int, duration_min: int,
+            day: int = 9) -> tuple:
+    start = datetime.datetime(2026, 6, day, start_hour, start_min)
+    return (start, start + datetime.timedelta(minutes=duration_min))
+
+
+def test_rule7_no_outages_passes():
+    out = pipeline.rule7_scheduler_apply(outages=[], control_relevant_windows=[])
+    assert out.passes is True
+    assert out.contributes["scheduler_downtime_min"] == 0
+
+
+def test_rule7_short_single_outage_passes():
+    out = pipeline.rule7_scheduler_apply(
+        outages=[_outage(10, 0, 30)], control_relevant_windows=[],
+    )
+    assert out.passes is True
+    assert out.contributes["scheduler_downtime_min"] == 30
+
+
+def test_rule7_long_single_outage_excludes():
+    # 65-min single outage → over the 60-min single-outage threshold
+    out = pipeline.rule7_scheduler_apply(
+        outages=[_outage(10, 0, 65)], control_relevant_windows=[],
+    )
+    assert out.passes is False
+    assert out.exclusion_reason == "scheduler_outage_single_too_long"
+
+
+def test_rule7_cumulative_downtime_excludes_above_1pct():
+    # 12 × 10-min outages = 120 min > 100 min (1% of 168h)
+    outages = [_outage(10 + i, 0, 10) for i in range(12)]
+    out = pipeline.rule7_scheduler_apply(outages=outages, control_relevant_windows=[])
+    assert out.passes is False
+    assert out.exclusion_reason == "scheduler_downtime_too_high"
+
+
+def test_rule7_outage_overlapping_control_window_excludes():
+    # 10-min outage during 04:00-06:00 pre-cool window
+    out = pipeline.rule7_scheduler_apply(
+        outages=[_outage(4, 30, 10)],
+        control_relevant_windows=[
+            (datetime.datetime(2026, 6, 9, 4, 0),
+             datetime.datetime(2026, 6, 9, 6, 0)),
+        ],
+    )
+    assert out.passes is False
+    assert out.exclusion_reason == "scheduler_outage_in_control_window"
+
+
+def test_rule7_outage_outside_control_window_passes():
+    # 10-min outage at 02:00, control window is 04:00-06:00
+    out = pipeline.rule7_scheduler_apply(
+        outages=[_outage(2, 0, 10)],
+        control_relevant_windows=[
+            (datetime.datetime(2026, 6, 9, 4, 0),
+             datetime.datetime(2026, 6, 9, 6, 0)),
+        ],
+    )
+    assert out.passes is True
+
+
+def test_detect_scheduler_outages_from_write_gaps():
+    # Generate scheduler writes every minute for 10 minutes, then a 7-min
+    # gap, then resume. detect_scheduler_outages should find ONE outage.
+    state_ts = [
+        datetime.datetime(2026, 6, 9, 10, m) for m in range(10)
+    ] + [
+        datetime.datetime(2026, 6, 9, 10, 17 + m) for m in range(10)
+    ]
+    action_ts = list(state_ts)
+    outages = pipeline.detect_scheduler_outages(state_ts, action_ts)
+    assert len(outages) == 1
+    start, end = outages[0]
+    assert (end - start).total_seconds() >= 5 * 60  # ≥5 min per spec
+
+
+def test_detect_scheduler_outages_short_gap_under_5min_not_an_outage():
+    # 4-min gap is below the 5-min outage-detection threshold.
+    state_ts = [datetime.datetime(2026, 6, 9, 10, m) for m in [0, 1, 2, 3, 4, 5, 9, 10]]
+    outages = pipeline.detect_scheduler_outages(state_ts, list(state_ts))
+    assert outages == []
+
+
+# -- Rule 5: Ecowitt CDD basis ----------------------------------------------
+
+
+def test_rule5_ecowitt_no_gaps_no_flags():
+    out = pipeline.rule5_ecowitt_apply(daily_both_missing_hours=[0] * 7)
+    assert out.passes is True
+    assert out.contributes["ecowitt_substituted_days"] == 0
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 0
+
+
+def test_rule5_ecowitt_2h_gap_below_substitution_threshold():
+    # Exactly 2h is NOT >2, so neither substituted nor dropped.
+    out = pipeline.rule5_ecowitt_apply(daily_both_missing_hours=[2, 0, 0, 0, 0, 0, 0])
+    assert out.contributes["ecowitt_substituted_days"] == 0
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 0
+
+
+def test_rule5_ecowitt_3h_gap_flagged_substituted():
+    out = pipeline.rule5_ecowitt_apply(daily_both_missing_hours=[3, 0, 0, 0, 0, 0, 0])
+    assert out.contributes["ecowitt_substituted_days"] == 1
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 0
+
+
+def test_rule5_ecowitt_7h_gap_dropped_not_substituted():
+    # >6h supersedes the substitution band; the day is dropped, not substituted.
+    out = pipeline.rule5_ecowitt_apply(daily_both_missing_hours=[7, 0, 0, 0, 0, 0, 0])
+    assert out.contributes["ecowitt_substituted_days"] == 0
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 1
+
+
+def test_rule5_ecowitt_never_gates_even_with_all_days_dropped():
+    out = pipeline.rule5_ecowitt_apply(daily_both_missing_hours=[24] * 7)
+    assert out.passes is True
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 7
+
+
+def test_rule5_ecowitt_mixed_thresholds():
+    # day 0: 1h (none), day 1: 4h (substituted), day 2: 7h (dropped),
+    # day 3: 2h (none, exact threshold), day 4: 6h (substituted, exact threshold for drop),
+    # day 5-6: 0h
+    out = pipeline.rule5_ecowitt_apply(
+        daily_both_missing_hours=[1, 4, 7, 2, 6, 0, 0],
+    )
+    assert out.contributes["ecowitt_substituted_days"] == 2  # days 1, 4
+    assert out.contributes["ecowitt_dropped_days_for_cdd"] == 1  # day 2
+
+
 # -- Math primitives --------------------------------------------------------
 
 

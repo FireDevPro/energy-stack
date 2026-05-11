@@ -474,6 +474,172 @@ def rule10_arm_transition_deadline(
     return min(first_control_window_ts, six_h)
 
 
+RULE5_SUBSTITUTION_HOURS_GT = 2     # >2h both missing → daily estimator
+RULE5_DROP_HOURS_GT = 6             # >6h both missing → drop day from CDD
+
+
+def rule5_ecowitt_apply(daily_both_missing_hours: Sequence[int]) -> RuleResult:
+    """Rule 5: Ecowitt outdoor-temperature coverage (CDD basis).
+
+    Per spec, the two thresholds are strictly greater-than:
+      - >2h with both Ecowitt AND NWS missing → use (Tmax+Tmin)/2 − 65
+        daily estimator; flag the day as substituted.
+      - >6h with both missing → drop the day from the week's CDD
+        numerator and denominator entirely.
+
+    The two bands are exclusive: >6h is dropped, NOT also counted as
+    substituted. Rule 5 never gates the week.
+    """
+    substituted = 0
+    dropped = 0
+    for h in daily_both_missing_hours:
+        if h > RULE5_DROP_HOURS_GT:
+            dropped += 1
+        elif h > RULE5_SUBSTITUTION_HOURS_GT:
+            substituted += 1
+    return RuleResult(
+        passes=True,
+        contributes={
+            "ecowitt_substituted_days": substituted,
+            "ecowitt_dropped_days_for_cdd": dropped,
+        },
+    )
+
+
+SCHEDULER_OUTAGE_GAP_THRESHOLD_MIN = 5      # spec: ≥5 min with no writes on either feed
+SCHEDULER_OUTAGE_SINGLE_LIMIT_MIN = 60      # spec: single continuous outage >60 min
+SCHEDULER_OUTAGE_TOTAL_PCT = 0.01           # spec: total downtime >1% of week-hours
+SCHEDULER_WEEK_HOURS = 24 * 7
+
+
+def detect_scheduler_outages(
+    fivecp_state_ts: Sequence[datetime.datetime],
+    action_ts: Sequence[datetime.datetime],
+) -> list[tuple[datetime.datetime, datetime.datetime]]:
+    """Detect scheduler-service outages from write-gap analysis.
+
+    Per spec: the scheduler writes one ``hvac.5cp_state`` row per ~2.5 min
+    and at least one ``hvac.actions`` row per minute when alive. An outage
+    is flagged when BOTH feeds have no writes for ≥5 minutes simultaneously.
+
+    Returns the list of (outage_start, outage_end) datetimes (UTC).
+    """
+    merged = sorted(set(fivecp_state_ts) | set(action_ts))
+    outages: list[tuple[datetime.datetime, datetime.datetime]] = []
+    threshold = datetime.timedelta(minutes=SCHEDULER_OUTAGE_GAP_THRESHOLD_MIN)
+    for i in range(1, len(merged)):
+        gap = merged[i] - merged[i - 1]
+        if gap >= threshold:
+            outages.append((merged[i - 1], merged[i]))
+    return outages
+
+
+def _outage_overlaps_window(
+    outage: tuple[datetime.datetime, datetime.datetime],
+    window: tuple[datetime.datetime, datetime.datetime],
+) -> bool:
+    return outage[0] < window[1] and outage[1] > window[0]
+
+
+def rule7_scheduler_apply(
+    outages: Sequence[tuple[datetime.datetime, datetime.datetime]],
+    control_relevant_windows: Sequence[tuple[datetime.datetime, datetime.datetime]],
+) -> RuleResult:
+    """Rule 7: scheduler-service outages.
+
+    Spec: exclude the week if ANY of (i) total scheduler downtime > 1% of
+    week-hours, (ii) any single continuous outage > 60 min, (iii) any
+    outage overlaps a control-relevant window (pre-cool, recover, or an
+    active 5CP / scarcity hold).
+    """
+    total_min = sum(
+        (end - start).total_seconds() / 60.0 for start, end in outages
+    )
+    contributes = {
+        "scheduler_downtime_min": int(total_min),
+        "scheduler_outage_count": len(outages),
+    }
+    intervals_log = [
+        {"start": s, "end": e, "kind": "scheduler_outage"}
+        for s, e in outages
+    ]
+    # Gate (iii): any outage overlapping a control-relevant window
+    for out_iv in outages:
+        for w in control_relevant_windows:
+            if _outage_overlaps_window(out_iv, w):
+                return RuleResult(
+                    passes=False,
+                    exclusion_reason="scheduler_outage_in_control_window",
+                    contributes=contributes,
+                    intervals_log=intervals_log,
+                )
+    # Gate (ii): single outage > 60 min
+    for start, end in outages:
+        if (end - start).total_seconds() / 60.0 > SCHEDULER_OUTAGE_SINGLE_LIMIT_MIN:
+            return RuleResult(
+                passes=False,
+                exclusion_reason="scheduler_outage_single_too_long",
+                contributes=contributes,
+                intervals_log=intervals_log,
+            )
+    # Gate (i): total downtime > 1% of week-hours
+    limit_min = SCHEDULER_WEEK_HOURS * 60.0 * SCHEDULER_OUTAGE_TOTAL_PCT
+    if total_min > limit_min:
+        return RuleResult(
+            passes=False,
+            exclusion_reason="scheduler_downtime_too_high",
+            contributes=contributes,
+            intervals_log=intervals_log,
+        )
+    return RuleResult(passes=True, contributes=contributes, intervals_log=intervals_log)
+
+
+RULE3_OBSERVED_PRINTS_MIN = 6           # ≥6 of 12 5-min prints = "observed"
+RULE3_FLAG_PCT = 0.05                   # >5% imputed → flagged
+RULE3_EXCLUDE_PCT = 0.20                # >20% imputed → excluded
+
+
+def rule3_price_apply(hourly_prices: Sequence[dict]) -> RuleResult:
+    """Rule 3: ComEd RTP price feed.
+
+    Each hour entry needs ``observed_prints`` (count of 5-min prints,
+    0-12). An hour is "observed" iff ``observed_prints >= 6``; below
+    that, it is imputed downstream (Stage 3 fills from PJM day-ahead
+    LMP + the month-matched spread constant in
+    ``tools/comed_price_imputation/spread_constants.json``).
+
+    Week-level gate (per EXPERIMENT_DESIGN.md §4 Rule 3):
+      - ``imputed_pct > 0.20`` → excluded as ``price_imputation_too_high``
+      - ``imputed_pct > 0.05`` → flagged (still passes)
+    """
+    n_total = len(hourly_prices)
+    if n_total == 0:
+        return RuleResult(
+            passes=True,
+            contributes={"imputed_price_hours_pct": 0.0,
+                         "imputed_price_hours_flagged": False},
+        )
+    n_imputed = sum(
+        1 for h in hourly_prices
+        if h["observed_prints"] < RULE3_OBSERVED_PRINTS_MIN
+    )
+    pct = n_imputed / n_total
+    if pct > RULE3_EXCLUDE_PCT:
+        return RuleResult(
+            passes=False,
+            exclusion_reason="price_imputation_too_high",
+            contributes={"imputed_price_hours_pct": pct,
+                         "imputed_price_hours_flagged": True},
+        )
+    return RuleResult(
+        passes=True,
+        contributes={
+            "imputed_price_hours_pct": pct,
+            "imputed_price_hours_flagged": pct > RULE3_FLAG_PCT,
+        },
+    )
+
+
 def rule9_overrides_apply(
     week_start_ct: datetime.date,
     overrides: Sequence[dict],
