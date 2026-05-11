@@ -109,6 +109,79 @@ MIN_OBSERVATIONS_FOR_5TH = 5
 CHICAGO = ZoneInfo("America/Chicago")
 
 
+# ---- Cooling-season window (PJM Manual 19 / ComEd Att. M-2) ---------------
+#
+# The 5CP summer period is **June 1 - September 30** per PJM Manual 19
+# and ComEd Attachment M-2. The hvac-scheduler runs year-round, so all
+# detector inputs must be clipped to this window:
+#
+#   * season_5th_highest must be computed from rows whose CT-local
+#     timestamp falls inside Jun 1 - Sep 30. Including May or October
+#     rows would let off-season low loads infiltrate the baseline.
+#     This was the 2026-05-11 production incident: a fresh RTO ingest
+#     of sparse May rows produced a season_5th_mw of 90,244 MW, which
+#     a real RTO load of 85,410 MW already cleared (ratio 0.946,
+#     dangerously close to the locked 0.95 trigger). PJM Manual 19's
+#     definition keeps this out.
+#
+#   * The detector itself must not fire outside Jun-Sep -- a 5CP can
+#     only happen during the official summer window by definition. An
+#     active state crossing Sep 30 -> Oct 1 is reset to inactive.
+#
+# Off-season ticks (Oct-May) still need a season_5th reference for
+# logging and for §7 night-before deepening decisions. They use the
+# last completed cooling season's window:
+#
+#   * Jun-Sep    -> current year, Jun 1 to today (season-to-date)
+#   * Oct-Dec    -> current year, Jun 1 to Sep 30 (just completed)
+#   * Jan-May    -> previous year, Jun 1 to Sep 30 (last completed)
+COOLING_SEASON_START_MONTH = 6
+COOLING_SEASON_END_MONTH = 9
+
+
+def in_cooling_season(now_local: datetime) -> bool:
+    """True when ``now_local`` falls inside the PJM 5CP eligibility
+    window (Jun 1 through Sep 30, CT local). The §3 detector skips its
+    trigger evaluation outside this window because a 5CP can only
+    happen during the official cooling season.
+    """
+    return COOLING_SEASON_START_MONTH <= now_local.month <= COOLING_SEASON_END_MONTH
+
+
+def cooling_season_window_utc(
+    now_local: datetime, *, tz: ZoneInfo = CHICAGO,
+) -> tuple[datetime, datetime]:
+    """Return ``(start_utc, end_utc)`` of the cooling-season window
+    relevant to ``now_local``.
+
+    Determined per the table in the module-level comment:
+      - In-season (Jun-Sep): this year's Jun 1 -> Sep 30 (clipped to
+        now if before Sep 30 -- callers should cap end at now_utc).
+      - Off-season Oct-Dec:  this year's Jun 1 -> Sep 30 (just
+        completed).
+      - Off-season Jan-May:  previous year's Jun 1 -> Sep 30 (last
+        completed).
+
+    The returned values are timezone-aware UTC datetimes. Callers
+    passing these into a Flux ``range(start, stop)`` should still cap
+    ``stop`` at the current ``now_utc`` to avoid querying future
+    timestamps when in-season.
+    """
+    year = now_local.year
+    if now_local.month < COOLING_SEASON_START_MONTH:
+        season_year = year - 1
+    else:
+        season_year = year
+    start_local = datetime(season_year, COOLING_SEASON_START_MONTH, 1,
+                            0, 0, 0, tzinfo=tz)
+    end_local = datetime(season_year, COOLING_SEASON_END_MONTH, 30,
+                          23, 59, 59, tzinfo=tz)
+    return (
+        start_local.astimezone(timezone.utc),
+        end_local.astimezone(timezone.utc),
+    )
+
+
 # ---- Detector scope (P1.1) -------------------------------------------------
 
 
@@ -268,17 +341,29 @@ def season_5th_highest_from_loads(loads_mw: list[float], *,
 
 def update_season_5th_highest(query_api, bucket: str,
                               season_start_utc: datetime,
+                              season_end_utc: datetime,
                               *, zone: str = "CE",
                               fallback_mw: float = COMED_PRE_SEASON_FALLBACK_5TH_MW
                               ) -> float:
-    """Query InfluxDB for hourly-average ``pjm.metered_load`` values since
-    ``season_start_utc`` and return the 5th-highest. Falls back to
-    ``fallback_mw`` (scoped to the requested ``zone``) when fewer than
+    """Query InfluxDB for hourly-average ``pjm.metered_load`` values
+    inside the half-open window ``[season_start_utc, season_end_utc)``
+    and return the 5th-highest. Falls back to ``fallback_mw`` (scoped
+    to the requested ``zone``) when fewer than
     ``MIN_OBSERVATIONS_FOR_5TH`` hourly observations exist (pre-season
-    cold start)."""
+    cold start or sparse-ingest condition).
+
+    The window MUST be a cooling-season window (Jun 1 - Sep 30 per
+    PJM Manual 19 / ComEd Attachment M-2). Including off-season rows
+    is what produced the 2026-05-11 incident: sparse RTO ingest of
+    May rows yielded a 90,244 MW "season 5th" that real RTO load
+    almost cleared. Callers should compute the window via
+    ``cooling_season_window_utc(now_local)`` and cap the end at
+    ``now_utc`` when in-season.
+    """
     flux = f"""
         from(bucket: "{bucket}")
-          |> range(start: {season_start_utc.isoformat()})
+          |> range(start: {season_start_utc.isoformat()},
+                   stop: {season_end_utc.isoformat()})
           |> filter(fn: (r) => r._measurement == "pjm.metered_load"
                                 and r.zone == "{zone}"
                                 and r._field == "mw")
@@ -386,43 +471,65 @@ def evaluate_for_scope(
     query_api,
     bucket: str,
     season_start_utc: datetime,
+    season_end_utc: datetime,
     forecast_peak_today_mw: Optional[float],
     state: FiveCPState,
     now_utc: datetime,
+    *,
+    tz: ZoneInfo = CHICAGO,
 ) -> ScopeEvaluation:
     """Top-level per-scope 5CP detector evaluation.
 
     Fetches inputs from InfluxDB (current load via ``pjm.inst_load``
     tagged with ``scope.inst_load_area``, season-to-date 5th-highest
-    via ``pjm.metered_load`` tagged with ``scope.metered_load_zone``),
-    runs the state machine, and returns the binding decision plus the
-    log payload describing every input.
+    via ``pjm.metered_load`` tagged with ``scope.metered_load_zone``,
+    bracketed by the cooling-season window), runs the state machine,
+    and returns the binding decision plus the log payload describing
+    every input.
 
-    When the snapshot or forecast peak is unavailable, returns the
-    prior ``state.is_active`` (carry decision rather than treating
-    missing data as zero load) and records the data gap in
-    ``log_fields["data_status"]``.
+    Off-season skip (PJM Manual 19 / ComEd Attachment M-2): a 5CP can
+    only happen Jun 1 - Sep 30 by definition. Outside that window the
+    function short-circuits to ``is_active=False`` with a fresh state
+    (a hold that would have crossed Sep 30 -> Oct 1 is released).
+    ``log_fields["data_status"]`` is ``"off_season"`` for these ticks.
+
+    When in-season but the snapshot or forecast peak is unavailable,
+    carries ``state.is_active`` (don't treat missing data as zero
+    load, which would prematurely release a triggered scope).
     """
-    season_5th_mw = update_season_5th_highest(
-        query_api, bucket, season_start_utc,
-        zone=scope.metered_load_zone,
-        fallback_mw=scope.pre_season_fallback_5th_mw,
-    )
-    snapshot = fetch_zone_live(query_api, bucket, area=scope.inst_load_area)
+    now_local = now_utc.astimezone(tz)
 
     log_fields: dict = {
         "scope": scope.name,
         "area": scope.inst_load_area,
         "zone": scope.metered_load_zone,
-        "season_5th_mw": season_5th_mw,
         "fallback_5th_mw": scope.pre_season_fallback_5th_mw,
     }
+
+    if not in_cooling_season(now_local):
+        log_fields["data_status"] = "off_season"
+        log_fields["season_5th_mw"] = scope.pre_season_fallback_5th_mw
+        return ScopeEvaluation(
+            is_active=False,
+            new_state=FiveCPState(),
+            season_5th_mw=scope.pre_season_fallback_5th_mw,
+            snapshot=None,
+            log_fields=log_fields,
+        )
+
+    season_5th_mw = update_season_5th_highest(
+        query_api, bucket, season_start_utc, season_end_utc,
+        zone=scope.metered_load_zone,
+        fallback_mw=scope.pre_season_fallback_5th_mw,
+    )
+    snapshot = fetch_zone_live(query_api, bucket, area=scope.inst_load_area)
+
+    log_fields["season_5th_mw"] = season_5th_mw
 
     if snapshot is None or forecast_peak_today_mw is None:
         log_fields["data_status"] = (
             "no_snapshot" if snapshot is None else "no_forecast_peak"
         )
-        # Carry prior state rather than treat missing data as zero load.
         return ScopeEvaluation(
             is_active=state.is_active,
             new_state=state,

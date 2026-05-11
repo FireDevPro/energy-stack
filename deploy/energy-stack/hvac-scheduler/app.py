@@ -78,9 +78,11 @@ from pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
     FiveCPState,
+    cooling_season_window_utc,
     evaluate_for_scope,
     fetch_forecast_peak_for_date,
     fetch_forecast_peak_today,
+    in_cooling_season,
     update_season_5th_highest,
 )
 from precool import (
@@ -405,6 +407,42 @@ def fetch_latest_forecast(query_api, bucket: str, for_period: str) -> dict | Non
 
 def fetch_latest_comed(query_api, bucket: str) -> float | None:
     for table in query_api.query(fq_latest_comed_5min(bucket)):
+        for record in table.records:
+            v = record.get_value()
+            if v is not None:
+                return float(v)
+    return None
+
+
+def fetch_rto_peak_forecast_today(query_api, bucket: str) -> float | None:
+    """Read the latest PJM RTO projected daily-peak load from
+    ``pjm.peak_forecast_rto`` (sourced from PJM DM2's
+    ``ops_sum_frcst_peak_rto`` feed, area="PJM RTO"). PJM publishes
+    twice daily (06:00 + 13:00 CT, cooling-season only) and may revise
+    the same day's projection; we take the latest row generated since
+    midnight UTC of today's UTC date. The poller already tags rows
+    with the EPT generated_at, but for the gate-condition use we just
+    want the most recent scalar.
+
+    This replaces the cross-scale bug where the RTO scope was being
+    handed the COMED-area hourly forecast peak (~10-22 GW scale) as
+    its gate input -- a number that never exceeds RTO season-5th
+    (~150 GW) so the RTO scope could never fire. Now each scope reads
+    its own scope-appropriate projected peak.
+
+    Returns None when no row exists (off-season ticks, or the poller
+    hasn't run since midnight on the first cooling-season day).
+    """
+    flux = f"""
+        from(bucket: "{bucket}")
+          |> range(start: -24h)
+          |> filter(fn: (r) => r._measurement == "pjm.peak_forecast_rto"
+                                and r.area == "PJM RTO"
+                                and r._field == "load_forecast_mw")
+          |> sort(columns: ["_time"], desc: true)
+          |> limit(n: 1)
+    """
+    for table in query_api.query(flux):
         for record in table.records:
             v = record.get_value()
             if v is not None:
@@ -941,9 +979,14 @@ def _fetch_pjm_inputs_for_target_date(
     # RTO/ComEd scales here (which was the latent bug fixed in the
     # prior commit).
     target_dt = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
-    season_start_utc = cooling_season_start_utc(target_dt)
+    season_start_utc, season_end_utc = cooling_season_window_utc(target_dt, tz=tz)
+    # Cap end at the target date itself so "season-to-date" semantics
+    # are honored for in-season targets. Off-season targets get the
+    # last completed season's full Jun-Sep window.
+    target_utc = target_dt.astimezone(timezone.utc)
+    capped_end_utc = min(season_end_utc, target_utc) if in_cooling_season(target_dt) else season_end_utc
     season_5th_mw = update_season_5th_highest(
-        query_api, bucket, season_start_utc,
+        query_api, bucket, season_start_utc, capped_end_utc,
         zone=COMED_SCOPE.metered_load_zone,
         fallback_mw=COMED_SCOPE.pre_season_fallback_5th_mw,
     )
@@ -951,17 +994,6 @@ def _fetch_pjm_inputs_for_target_date(
         query_api, bucket, target_date_iso, tz=tz,
     )
     return target_peak_mw, season_5th_mw
-
-
-def cooling_season_start_utc(now_local: datetime) -> datetime:
-    """Compute the start of the PJM cooling season (June 1 00:00 CT) in
-    UTC for the year ``now_local`` falls in. Months Jan-May fall back to
-    the previous year so off-season ticks still get a coherent reference.
-    The 5CP detector only fires inside the 13-20 CT window, so off-season
-    queries are safe-but-irrelevant lookups."""
-    year = now_local.year if now_local.month >= 6 else now_local.year - 1
-    season_start_local = datetime(year, 6, 1, 0, 0, 0, tzinfo=now_local.tzinfo)
-    return season_start_local.astimezone(timezone.utc)
 
 
 def write_5cp_state(
@@ -1428,17 +1460,36 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     # OR; structured-log payload records per-scope inputs so a
     # scale-mismatch regression (RTO fallback on ComEd path or vice
     # versa) shows up immediately in logs, not silently in behavior.
-    season_start_utc = cooling_season_start_utc(now_local)
-    forecast_peak = fetch_forecast_peak_today(
+    #
+    # Cooling-season window (PJM Manual 19 / ComEd Att. M-2: Jun 1 -
+    # Sep 30) is the same for both scopes; off-season the detector
+    # short-circuits inside evaluate_for_scope and no Flux is issued
+    # for the season-5th. Forecast peaks are scope-specific:
+    #   * COMED uses pjm.load_forecast{forecast_area=COMED} max-for-today
+    #   * RTO   uses pjm.peak_forecast_rto{area="PJM RTO"} latest scalar
+    # Sharing one forecast across scopes (the original P1.1 mis-wire)
+    # silently disabled the RTO scope because a ComEd-scale forecast
+    # (~10-22 GW) never exceeds RTO season-5th (~150 GW).
+    season_start_utc, season_end_utc = cooling_season_window_utc(now_local)
+    capped_end_utc = (
+        min(season_end_utc, now_utc) if in_cooling_season(now_local)
+        else season_end_utc
+    )
+    comed_forecast_peak = fetch_forecast_peak_today(
         query_api, cfg.influx_bucket, tz=ZoneInfo(cfg.tz_name),
     )
+    rto_forecast_peak = fetch_rto_peak_forecast_today(
+        query_api, cfg.influx_bucket,
+    )
     comed_eval = evaluate_for_scope(
-        COMED_SCOPE, query_api, cfg.influx_bucket, season_start_utc,
-        forecast_peak, firing.fivecp_state_comed, now_utc,
+        COMED_SCOPE, query_api, cfg.influx_bucket,
+        season_start_utc, capped_end_utc,
+        comed_forecast_peak, firing.fivecp_state_comed, now_utc,
     )
     rto_eval = evaluate_for_scope(
-        RTO_SCOPE, query_api, cfg.influx_bucket, season_start_utc,
-        forecast_peak, firing.fivecp_state_rto, now_utc,
+        RTO_SCOPE, query_api, cfg.influx_bucket,
+        season_start_utc, capped_end_utc,
+        rto_forecast_peak, firing.fivecp_state_rto, now_utc,
     )
     firing.fivecp_state_comed = comed_eval.new_state
     firing.fivecp_state_rto = rto_eval.new_state
@@ -1467,7 +1518,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         comed_eval.snapshot.derivative_mw_per_hour
         if comed_eval.snapshot is not None else 0.0
     )
-    fivecp_forecast_peak = forecast_peak if forecast_peak is not None else 0.0
+    fivecp_forecast_peak = comed_forecast_peak if comed_forecast_peak is not None else 0.0
     season_5th_mw = comed_eval.season_5th_mw
 
     # ---- Audit writes ----
@@ -1490,6 +1541,15 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         firing.last_5cp_audit_at_utc is None
         or now_utc - firing.last_5cp_audit_at_utc >= _FIVECP_AUDIT_INTERVAL
     ):
+        # Per-scope forecast peaks must be passed individually so the
+        # audit row records the actual value the detector saw. Sharing
+        # one forecast across scopes was the P1.1-post-merge bug: an
+        # RTO audit row tagged with a ComEd-scale forecast peak hid
+        # the cross-scale gate failure.
+        scope_forecast: dict[str, float | None] = {
+            COMED_SCOPE.name: comed_forecast_peak,
+            RTO_SCOPE.name:   rto_forecast_peak,
+        }
         for scope, ev in (
             (COMED_SCOPE, comed_eval), (RTO_SCOPE, rto_eval),
         ):
@@ -1505,7 +1565,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
                 load_derivative_mw_per_hour=(
                     ev.snapshot.derivative_mw_per_hour if ev.snapshot else 0.0
                 ),
-                forecast_peak_today_mw=forecast_peak or 0.0,
+                forecast_peak_today_mw=scope_forecast[scope.name] or 0.0,
             )
         firing.last_5cp_audit_at_utc = now_utc
 

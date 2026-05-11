@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from pjm_5cp import (
     COMED_PRE_SEASON_FALLBACK_5TH_MW,
     COMED_SCOPE,
@@ -18,11 +20,13 @@ from pjm_5cp import (
     FiveCPState,
     ScopeEvaluation,
     ZoneLoadSnapshot,
+    cooling_season_window_utc,
     evaluate_5cp_risk,
     evaluate_for_scope,
     fetch_forecast_peak_for_date,
     fetch_zone_live,
     hold_end_time,
+    in_cooling_season,
     season_5th_highest_from_loads,
 )
 
@@ -574,10 +578,12 @@ def _scope_evaluation_fixture(*,
     monkeypatch.setattr(pjm_5cp, "fetch_zone_live",
                         lambda q, b, *, area: snapshot)
     monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
-                        lambda q, b, s, *, zone, fallback_mw: season_5th_mw)
+                        lambda q, b, s, e, *, zone, fallback_mw: season_5th_mw)
+    season_start = datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc)
+    season_end = datetime(2026, 10, 1, 5, 0, tzinfo=timezone.utc)
     return evaluate_for_scope(
         scope, MagicMock(), "energy",
-        datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
+        season_start, season_end,
         forecast_peak, state, now_utc,
     )
 
@@ -666,7 +672,147 @@ def test_evaluate_for_scope_triggers_when_all_inputs_say_go(monkeypatch):
     assert ev.log_fields["load_ratio"] > LOAD_RATIO_TRIGGER
 
 
-# ---- Import test for pytest -----------------------------------------------
+# ---- Cooling-season window (PJM Manual 19 / ComEd Att. M-2) --------------
 
 
-import pytest  # noqa: E402 -- imported here so test fixtures above can use it
+@pytest.mark.parametrize("month,day,expected_in_season", [
+    (5, 31, False),  # day before season starts
+    (6,  1, True),   # season begins
+    (6, 15, True),   # mid-June
+    (7,  4, True),   # mid-summer
+    (8, 31, True),   # peak summer
+    (9, 30, True),   # last day of season
+    (10, 1, False),  # day after season ends
+    (11, 15, False), # late fall
+    (1,  1, False),  # winter
+    (3, 15, False),  # spring
+])
+def test_in_cooling_season_boundaries(month, day, expected_in_season):
+    """Per PJM Manual 19 / ComEd Att. M-2: cooling season is
+    inclusive Jun 1 - Sep 30. Boundary days must be classified
+    correctly so the detector doesn't trigger on May 31 or Oct 1."""
+    now_local = datetime(2026, month, day, 14, 0, tzinfo=CHICAGO)
+    assert in_cooling_season(now_local) is expected_in_season
+
+
+def test_cooling_season_window_in_season_uses_current_year():
+    """In June-September, the relevant window is the current year's
+    Jun 1 00:00 CT -> Sep 30 23:59 CT."""
+    now = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
+    start, end = cooling_season_window_utc(now)
+    start_local = start.astimezone(CHICAGO)
+    end_local = end.astimezone(CHICAGO)
+    assert (start_local.year, start_local.month, start_local.day) == (2026, 6, 1)
+    assert (end_local.year, end_local.month, end_local.day) == (2026, 9, 30)
+
+
+def test_cooling_season_window_off_season_october_to_december_uses_current_year():
+    """Oct-Dec: the season just completed; window is current year's
+    Jun 1 -> Sep 30. This is what off-season §7 deepening references
+    when looking up the historical 5th-highest baseline."""
+    now = datetime(2026, 11, 15, 14, 0, tzinfo=CHICAGO)
+    start, end = cooling_season_window_utc(now)
+    start_local = start.astimezone(CHICAGO)
+    end_local = end.astimezone(CHICAGO)
+    assert (start_local.year, start_local.month, start_local.day) == (2026, 6, 1)
+    assert (end_local.year, end_local.month, end_local.day) == (2026, 9, 30)
+
+
+def test_cooling_season_window_off_season_january_to_may_uses_previous_year():
+    """Jan-May: the current year's season hasn't started yet. The
+    window must point at the *previous* year's Jun-Sep. This is the
+    fix for the 2026-05-11 production incident: sparse RTO ingest of
+    May 2026 rows produced a 90,244 MW "season 5th" that real RTO
+    load almost cleared (ratio 0.946). Forcing the window to 2025
+    Jun-Sep keeps off-season rows out of the baseline."""
+    now = datetime(2026, 5, 11, 14, 0, tzinfo=CHICAGO)
+    start, end = cooling_season_window_utc(now)
+    start_local = start.astimezone(CHICAGO)
+    end_local = end.astimezone(CHICAGO)
+    assert (start_local.year, start_local.month, start_local.day) == (2025, 6, 1)
+    assert (end_local.year, end_local.month, end_local.day) == (2025, 9, 30)
+
+
+def test_evaluate_for_scope_skips_off_season(monkeypatch):
+    """Off-season ticks short-circuit: no Flux is issued, the state
+    is reset (a hold can't cross Sep 30 -> Oct 1), and is_active
+    returns False. log_fields["data_status"] surfaces the skip so
+    the audit can confirm the detector intentionally stayed inert.
+
+    This is the safety guard against the 2026-05-11 incident: even
+    if InfluxDB had bogus May 2026 RTO rows, the detector cannot
+    fire during off-season."""
+    import pjm_5cp
+
+    # Spies: we should NEVER reach the Flux helpers during off-season.
+    called: dict[str, bool] = {"fetch_zone_live": False, "update_season": False}
+    def _spy_fetch_zone_live(q, b, *, area):
+        called["fetch_zone_live"] = True
+        return ZoneLoadSnapshot(99999.0, 0.0, T_AT_1430_CT)
+    def _spy_update_season(q, b, s, e, *, zone, fallback_mw):
+        called["update_season"] = True
+        return 90244.0  # the bogus 2026-05-11 value
+    monkeypatch.setattr(pjm_5cp, "fetch_zone_live", _spy_fetch_zone_live)
+    monkeypatch.setattr(pjm_5cp, "update_season_5th_highest", _spy_update_season)
+
+    # 2026-05-11 14:30 CT = May, off-season. Even if a prior-state
+    # active hold existed, it must reset on off-season transition.
+    may_now_utc = datetime(2026, 5, 11, 19, 30, tzinfo=timezone.utc)
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=datetime(2026, 5, 11, 19, 20, tzinfo=timezone.utc),
+        triggered_hour_ct=14,
+    )
+    ev = evaluate_for_scope(
+        RTO_SCOPE, MagicMock(), "energy",
+        datetime(2025, 6, 1, 5, 0, tzinfo=timezone.utc),
+        datetime(2025, 10, 1, 5, 0, tzinfo=timezone.utc),
+        160000.0,  # would normally trigger
+        prior_state,
+        may_now_utc,
+    )
+    assert ev.is_active is False
+    assert ev.new_state == FiveCPState()  # reset, not the prior active hold
+    assert ev.log_fields["data_status"] == "off_season"
+    assert ev.log_fields["season_5th_mw"] == RTO_PRE_SEASON_FALLBACK_5TH_MW
+    assert called["fetch_zone_live"] is False  # no Flux issued
+    assert called["update_season"] is False    # no Flux issued
+
+
+def test_evaluate_for_scope_rto_fires_from_rto_forecast_alone(monkeypatch):
+    """Chris-requested invariant: RTO scope must be able to trigger
+    on RTO inputs alone. Set up: RTO ratio 0.96 (above 0.95 trigger),
+    RTO forecast 160 GW > RTO season-5th 151.525 GW, in the 13-20 CT
+    window. ComEd has no data at all. RTO scope fires.
+
+    This is the test that would have failed pre-fix because the RTO
+    scope was receiving the ComEd forecast (~9 GW), failing the
+    forecast > season-5th gate regardless of load ratio."""
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(145500.0, 800.0, T_AT_1430_CT),
+        season_5th_mw=151525.0,
+        forecast_peak=160000.0,  # RTO-scale forecast (the fix)
+        scope=RTO_SCOPE, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is True
+    assert ev.new_state.is_active is True
+    assert ev.log_fields["forecast_peak_today_mw"] == 160000.0
+
+
+def test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast(monkeypatch):
+    """Chris-requested invariant: a ComEd-scale forecast (~9 GW) MUST
+    NOT satisfy the RTO scope's forecast > season-5th gate. This is
+    the failure mode that the per-scope forecast wiring fixes -- the
+    original P1.1 passed one shared ``forecast_peak`` to both scopes
+    so the RTO scope was being handed a ComEd-scale number that could
+    never exceed an RTO-scale baseline."""
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(145500.0, 800.0, T_AT_1430_CT),  # RTO ratio 0.96
+        season_5th_mw=151525.0,
+        forecast_peak=9110.0,  # ComEd-scale "leakage" -- must not trigger RTO
+        scope=RTO_SCOPE, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is False  # gate failure -- forecast_peak < season_5th
+    assert ev.new_state.is_active is False
+
+
