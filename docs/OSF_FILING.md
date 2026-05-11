@@ -65,6 +65,15 @@ without operator intervention.
       end-to-end on a 2025 replay dump under the frozen env without
       operator intervention, producing the Stage 1-9 output tree
       that is tar'd into the OSF attachment.
+  14. ✅ 2025 replay export exists at a recorded path with a SHA-256
+      manifest checksum committed to the filing bundle. If no such
+      export has been produced by 2026-05-30, the prereg text must
+      be amended to drop the "executable on 2025 replay" claim
+      before filing. Synthetic-fixture-only execution is not
+      sufficient to satisfy this gate; the gate exists because
+      the locked spec [ANALYSIS_PIPELINE.md §6](ANALYSIS_PIPELINE.md)
+      lists "all Stage scripts present and runnable on a 2025 replay
+      dump" as an acceptance criterion.
 
 If any of these is incomplete by 2026-05-30, OSF filing slips and
 randomization start date moves accordingly.

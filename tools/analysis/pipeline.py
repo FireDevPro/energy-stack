@@ -15,6 +15,18 @@ Synthetic-data smoke tests live in tests/test_pipeline.py. Real
 end-to-end runs require an InfluxDB connection (Stage 1) and the
 locked constants in `tools/comed_price_imputation/` and
 `tools/o2_capacity_reconstruction/`.
+
+Build sequence (one PR per stage, against synthetic fixtures):
+  Stage 2 (data quality, this PR) → Stage 3 (weekly aggregates) →
+  Stage 6 (O2 layers) → Stage 7 (SCED) → Stage 8 (decomposition) →
+  Stage 9 (sensitivities). Stage 1/4/5 already implemented.
+
+Test contract for Stages 2-9: rule applicator functions take
+DataFrames as input and return DataFrames or scalar diagnostics so
+unit tests can synthesize inputs without parquet I/O. The Stage
+orchestrators handle parquet read/write and call the rule applicators
+on the in-memory DataFrames. Real-data integration runs against a
+2025 replay export, gated by OSF_FILING.md criterion 14.
 """
 from __future__ import annotations
 
