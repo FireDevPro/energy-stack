@@ -23,6 +23,219 @@ import pytest
 from tools.analysis import pipeline
 
 
+# -- Stage 2 rule applicators (test-first; rules 2/4/6 first) --------------
+
+
+def test_rule6_pjm_never_gates():
+    out = pipeline.rule6_pjm_apply()
+    assert out.passes is True
+    assert out.exclusion_reason is None
+
+
+def test_rule4_forecast_missing_issuance_flagged_but_passes():
+    out = pipeline.rule4_forecast_apply(missing_issuance_count=1)
+    assert out.passes is True
+    assert out.contributes.get("forecast_substitutions") == 1
+
+
+def test_rule4_forecast_no_substitutions_when_zero():
+    out = pipeline.rule4_forecast_apply(missing_issuance_count=0)
+    assert out.passes is True
+    assert out.contributes.get("forecast_substitutions") == 0
+
+
+def test_rule2_comfortnet_no_downtime_all_days_eligible():
+    # 7 days, all with 0 minutes of comfortnet downtime
+    daily_downtime_minutes = [0, 0, 0, 0, 0, 0, 0]
+    out = pipeline.rule2_comfortnet_apply(daily_downtime_minutes)
+    assert out.passes is True
+    assert out.contributes["o6_ineligible_days"] == 0
+    assert out.contributes["o6_eligible_day_count"] == 7
+
+
+def test_rule2_comfortnet_day_with_over_30min_downtime_flagged():
+    # day 3 has 35 min downtime; should be flagged O6-ineligible
+    daily_downtime_minutes = [0, 5, 0, 35, 0, 0, 10]
+    out = pipeline.rule2_comfortnet_apply(daily_downtime_minutes)
+    assert out.passes is True  # rule 2 never gates the week
+    assert out.contributes["o6_ineligible_days"] == 1
+    assert out.contributes["o6_eligible_day_count"] == 6
+
+
+def test_rule2_comfortnet_boundary_exactly_30min_is_eligible():
+    # spec: ">30 minutes" downtime → ineligible. 30 exactly is eligible.
+    out = pipeline.rule2_comfortnet_apply([0, 30, 0, 0, 0, 0, 0])
+    assert out.contributes["o6_ineligible_days"] == 0
+
+
+# -- Rule 10: arm-transition verification ----------------------------------
+
+
+def test_rule10_transition_verified_by_arm_b_action_within_6h():
+    switch = datetime.datetime(2026, 6, 8, 5, 0)  # Mon 00:00 CT
+    actions = [
+        {"timestamp": datetime.datetime(2026, 6, 8, 9, 0),
+         "arm": "B", "action": "HOT_PRE_COOL", "dry_run": False},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="B", action_events=actions,
+    )
+    assert out.passes is True
+    assert out.exclusion_reason is None
+
+
+def test_rule10_transition_verified_by_arm_a_dry_run_action():
+    switch = datetime.datetime(2026, 6, 15, 5, 0)
+    actions = [
+        {"timestamp": datetime.datetime(2026, 6, 15, 8, 30),
+         "arm": "A", "action": "NORMAL_PRE_COOL", "dry_run": True},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="A", action_events=actions,
+    )
+    assert out.passes is True
+
+
+def test_rule10_transition_fails_when_no_action_before_deadline():
+    switch = datetime.datetime(2026, 6, 8, 5, 0)
+    actions = [
+        # Outside the 6h window
+        {"timestamp": datetime.datetime(2026, 6, 8, 12, 0),
+         "arm": "B", "action": "HOT_PRE_COOL", "dry_run": False},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="B", action_events=actions,
+    )
+    assert out.passes is False
+    assert out.exclusion_reason == "arm_transition_unverified"
+
+
+def test_rule10_transition_fails_when_arm_tag_mismatches():
+    switch = datetime.datetime(2026, 6, 8, 5, 0)
+    actions = [
+        # Right window, but the action is tagged with the OLD arm
+        {"timestamp": datetime.datetime(2026, 6, 8, 9, 0),
+         "arm": "A", "action": "HOT_PRE_COOL", "dry_run": True},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="B", action_events=actions,
+    )
+    assert out.passes is False
+
+
+def test_rule10_transition_arm_b_active_actions_only():
+    # Arm B requires non-dry-run; an Arm B dry_run row doesn't verify.
+    switch = datetime.datetime(2026, 6, 8, 5, 0)
+    actions = [
+        {"timestamp": datetime.datetime(2026, 6, 8, 9, 0),
+         "arm": "B", "action": "HOT_PRE_COOL", "dry_run": True},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="B", action_events=actions,
+    )
+    assert out.passes is False
+
+
+def test_rule10_transition_only_control_relevant_actions_count():
+    # SLEEP, COAST, etc. are not control-relevant; only PRE_COOL variants.
+    switch = datetime.datetime(2026, 6, 8, 5, 0)
+    actions = [
+        {"timestamp": datetime.datetime(2026, 6, 8, 9, 0),
+         "arm": "B", "action": "COAST", "dry_run": False},
+    ]
+    out = pipeline.rule10_transition_apply(
+        switch_ts=switch, intended_arm="B", action_events=actions,
+    )
+    assert out.passes is False
+
+
+# -- Rule 9: manual setpoint overrides --------------------------------------
+
+
+def test_rule9_overrides_apply_no_overrides_is_pass():
+    out = pipeline.rule9_overrides_apply(
+        week_start_ct=datetime.date(2026, 6, 8), overrides=[],
+    )
+    assert out.passes is True
+    assert out.contributes["override_operational_count"] == 0
+    assert out.contributes["override_vacation_days"] == 0
+
+
+def test_rule9_overrides_apply_operational_counted():
+    overrides = [
+        {"category": "operational",
+         "start_ts": datetime.datetime(2026, 6, 9, 13, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 15, 0),
+         "setpoint_f": 79.0},
+        {"category": "operational",
+         "start_ts": datetime.datetime(2026, 6, 11, 16, 0),
+         "end_ts": datetime.datetime(2026, 6, 11, 18, 0),
+         "setpoint_f": 78.0},
+    ]
+    out = pipeline.rule9_overrides_apply(
+        week_start_ct=datetime.date(2026, 6, 8), overrides=overrides,
+    )
+    assert out.passes is True
+    assert out.contributes["override_operational_count"] == 2
+    assert out.contributes["override_vacation_days"] == 0
+
+
+def test_rule9_overrides_apply_vacation_marks_days():
+    # 3-day vacation (Tue, Wed, Thu)
+    overrides = [
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 9, 8, 0),
+         "end_ts": datetime.datetime(2026, 6, 11, 17, 0),
+         "setpoint_f": 82.0},
+    ]
+    out = pipeline.rule9_overrides_apply(
+        week_start_ct=datetime.date(2026, 6, 8), overrides=overrides,
+    )
+    assert out.passes is True  # rule9 itself never gates; orchestrator does <5 check
+    assert out.contributes["override_vacation_days"] == 3
+    excluded_days = {entry["date"] for entry in out.intervals_log}
+    assert excluded_days == {
+        datetime.date(2026, 6, 9),
+        datetime.date(2026, 6, 10),
+        datetime.date(2026, 6, 11),
+    }
+
+
+def test_rule9_overrides_apply_reclassifies_long_high_setpoint():
+    # Mistagged operational override (24h at 82F) gets reclassified to vacation
+    # per the existing rule9_classify_override logic.
+    overrides = [
+        {"category": "operational",
+         "start_ts": datetime.datetime(2026, 6, 9, 6, 0),
+         "end_ts": datetime.datetime(2026, 6, 10, 6, 0),
+         "setpoint_f": 82.0},
+    ]
+    out = pipeline.rule9_overrides_apply(
+        week_start_ct=datetime.date(2026, 6, 8), overrides=overrides,
+    )
+    assert out.contributes["override_operational_count"] == 0
+    assert out.contributes["override_vacation_days"] >= 1
+
+
+def test_rule9_overrides_apply_overlapping_vacations_dedup():
+    # Two vacation overrides covering the same day count as one excluded day.
+    overrides = [
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 9, 8, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 20, 0),
+         "setpoint_f": 82.0},
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 9, 22, 0),
+         "end_ts": datetime.datetime(2026, 6, 10, 6, 0),
+         "setpoint_f": 82.0},
+    ]
+    out = pipeline.rule9_overrides_apply(
+        week_start_ct=datetime.date(2026, 6, 8), overrides=overrides,
+    )
+    excluded_days = {entry["date"] for entry in out.intervals_log}
+    assert excluded_days == {datetime.date(2026, 6, 9), datetime.date(2026, 6, 10)}
+
+
 # -- Math primitives --------------------------------------------------------
 
 

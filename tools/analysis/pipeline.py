@@ -38,9 +38,9 @@ import json
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -353,6 +353,73 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
     return stage_dir
 
 
+# --- Stage 2 rule applicator return type -----------------------------------
+#
+# Each rule applicator returns a RuleResult so the Stage 2 orchestrator can
+# combine outcomes into the per-week qualifying_weeks row without each rule
+# having to know the full schema. See docs/ANALYSIS_PIPELINE.md §3 Stage 2.
+
+
+@dataclass(frozen=True)
+class RuleResult:
+    passes: bool                            # True if the week qualifies under THIS rule
+    exclusion_reason: str | None = None     # short string written to qualifying_weeks.csv if !passes
+    contributes: dict[str, Any] = field(default_factory=dict)  # extra fields merged into the row
+    intervals_log: list[dict] | None = None  # rule1/7/8 outage/imputation intervals
+
+
+# --- Stage 2 rule applicators (spec: EXPERIMENT_DESIGN.md §4 + ANALYSIS_PIPELINE.md §3 Stage 2) --
+
+
+def rule6_pjm_apply() -> RuleResult:
+    """Rule 6: PJM DM2 ``inst_load`` feed (5CP detector input).
+
+    Per spec: outages do not affect O2 (O2 is anchored to PJM's
+    final-published 5CP hour list, not the live detector). The applicator
+    therefore never gates the week — detector-accuracy descriptive stats
+    are produced by Stage 6, not Stage 2.
+    """
+    return RuleResult(passes=True)
+
+
+def rule4_forecast_apply(missing_issuance_count: int) -> RuleResult:
+    """Rule 4: NWS forecast substitutions.
+
+    Per spec: forecast availability does not affect week eligibility.
+    Missing 21:00 issuances fill from prior-day same-issuance; if both
+    are missing the day is forced to NORMAL and the substitution is
+    flagged. The applicator records the substitution count and always
+    passes.
+    """
+    return RuleResult(
+        passes=True,
+        contributes={"forecast_substitutions": int(missing_issuance_count)},
+    )
+
+
+COMFORTNET_DAILY_DOWNTIME_LIMIT_MIN = 30  # spec: >30 min/day → O6-ineligible
+
+
+def rule2_comfortnet_apply(daily_downtime_minutes: Sequence[int | float]) -> RuleResult:
+    """Rule 2: CT-485 / ComfortNet HVAC-state.
+
+    Per spec: missing intervals are not imputed; O6 reports any day with
+    >30 minutes of ComfortNet downtime as ineligible for the recovery-
+    ratio computation. The week's O6 average uses the qualifying-day
+    subset. Rule 2 does not gate the formal-analysis week itself; it
+    only narrows the O6 day-set.
+    """
+    ineligible = sum(1 for m in daily_downtime_minutes if m > COMFORTNET_DAILY_DOWNTIME_LIMIT_MIN)
+    eligible = len(daily_downtime_minutes) - ineligible
+    return RuleResult(
+        passes=True,
+        contributes={
+            "o6_ineligible_days": ineligible,
+            "o6_eligible_day_count": eligible,
+        },
+    )
+
+
 # Rule signatures — concrete data-handling implementations land here.
 # Documented in detail in docs/ANALYSIS_PIPELINE.md §3 Stage 2.
 
@@ -405,6 +472,87 @@ def rule10_arm_transition_deadline(
     if first_control_window_ts is None:
         return six_h
     return min(first_control_window_ts, six_h)
+
+
+def rule9_overrides_apply(
+    week_start_ct: datetime.date,
+    overrides: Sequence[dict],
+) -> RuleResult:
+    """Rule 9: manual setpoint overrides.
+
+    Classifies each override using ``rule9_classify_override`` (which also
+    reclassifies obviously mistagged long high-setpoint operational rows
+    as vacation). Operational overrides are counted only. Vacation
+    overrides produce per-day exclusion entries in ``intervals_log``;
+    rule9 itself never gates the week — the orchestrator combines per-day
+    exclusions across rules and applies the <5 qualifying-days threshold.
+
+    `overrides` entries: ``category``, ``start_ts`` (datetime), ``end_ts``
+    (datetime), ``setpoint_f`` (float). Timestamps are assumed local CT.
+    """
+    operational_count = 0
+    vacation_dates: set[datetime.date] = set()
+    for ov in overrides:
+        duration_hours = (ov["end_ts"] - ov["start_ts"]).total_seconds() / 3600.0
+        cls = rule9_classify_override(
+            category=ov.get("category", "operational"),
+            duration_hours=duration_hours,
+            setpoint_f=float(ov["setpoint_f"]),
+        )
+        if cls == "operational":
+            operational_count += 1
+            continue
+        # Vacation: enumerate calendar days spanned (CT-local, inclusive).
+        cur = ov["start_ts"].date()
+        end_day = ov["end_ts"].date()
+        while cur <= end_day:
+            vacation_dates.add(cur)
+            cur += datetime.timedelta(days=1)
+    intervals_log = [
+        {"date": d, "exclusion_source": "rule9_vacation"}
+        for d in sorted(vacation_dates)
+    ]
+    return RuleResult(
+        passes=True,
+        contributes={
+            "override_operational_count": operational_count,
+            "override_vacation_days": len(vacation_dates),
+        },
+        intervals_log=intervals_log,
+    )
+
+
+CONTROL_RELEVANT_ACTIONS = frozenset({"HOT_PRE_COOL", "NORMAL_PRE_COOL"})
+
+
+def rule10_transition_apply(
+    switch_ts: datetime.datetime,
+    intended_arm: str,
+    action_events: Sequence[dict],
+) -> RuleResult:
+    """Rule 10: arm-transition verification.
+
+    Pass condition: at least one action event within the 6h-or-earlier
+    deadline (per ``rule10_arm_transition_deadline``) has:
+      - ``arm == intended_arm``
+      - control-relevant action kind (``HOT_PRE_COOL`` or
+        ``NORMAL_PRE_COOL``)
+      - mode matches arm policy: dry_run for Arm A, non-dry-run for Arm B
+    Otherwise the week is excluded with reason ``arm_transition_unverified``.
+    """
+    deadline = rule10_arm_transition_deadline(switch_ts, None)
+    expected_dry_run = (intended_arm == "A")
+    for ev in action_events:
+        if ev["timestamp"] >= deadline:
+            continue
+        if ev.get("arm") != intended_arm:
+            continue
+        if ev.get("action") not in CONTROL_RELEVANT_ACTIONS:
+            continue
+        if bool(ev.get("dry_run", False)) != expected_dry_run:
+            continue
+        return RuleResult(passes=True)
+    return RuleResult(passes=False, exclusion_reason="arm_transition_unverified")
 
 
 def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
