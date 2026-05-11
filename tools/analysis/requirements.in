@@ -1,0 +1,20 @@
+# Loose pins for the pre-registered analysis pipeline.
+# See docs/ANALYSIS_PIPELINE.md §1 (Frozen environment).
+#
+# requirements.txt is the hash-pinned lock generated from this file:
+#   pip-compile --generate-hashes tools/analysis/requirements.in \
+#       -o tools/analysis/requirements.txt
+#
+# Install with:
+#   pip install --require-hashes -r tools/analysis/requirements.txt
+#
+# Pin ranges target Python 3.13 (matches the .python-version and
+# python:3.13-slim used by all production services). numpy<2.0 has
+# no 3.13 wheels, hence the numpy 2.x floor below.
+
+numpy>=2.0,<3.0
+pandas>=2.2,<3.0
+scipy>=1.13,<2.0
+pyarrow>=15,<23
+influxdb-client>=1.40,<2.0
+pytest>=8.0,<10.0

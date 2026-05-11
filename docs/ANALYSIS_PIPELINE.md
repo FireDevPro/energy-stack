@@ -25,13 +25,22 @@ repository can reproduce every cited number.
 
 | Item | Value |
 |---|---|
-| Python version | 3.11.x (`.python-version`) |
-| Locked dependencies | [`tools/analysis/requirements.txt`](../tools/analysis/requirements.txt) with full hash pins via `pip-compile --generate-hashes` |
+| Python version | `3.13` ([`.python-version`](../.python-version); matches the `python:3.13-slim` base image used by all production services) |
+| Loose pins (input) | [`tools/analysis/requirements.in`](../tools/analysis/requirements.in) |
+| Locked dependencies (hash-pinned) | [`tools/analysis/requirements.txt`](../tools/analysis/requirements.txt), generated via `pip-compile --generate-hashes tools/analysis/requirements.in -o tools/analysis/requirements.txt` |
 | PRNG seed (matching analyses + bootstrap) | `20260601` |
 | Timezone for all human-readable timestamps | `America/Chicago` (CT) |
 | Numeric timestamps | UTC (Unix epoch seconds) |
 
-A clean install (`pip install -r tools/analysis/requirements.txt --require-hashes`) followed by `pytest tools/analysis/tests/` is the bootstrap acceptance test.
+Bootstrap acceptance test (run from a clean checkout in an isolated venv):
+
+```bash
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install --require-hashes -r tools/analysis/requirements.txt
+.venv/Scripts/python.exe -m pytest tools/analysis/tests/
+```
+
+Replace `.venv/Scripts/python.exe` with `.venv/bin/python` on POSIX. Verified 2026-05-11 on Windows / Python 3.13.13 with 51 tests passing.
 
 ---
 
