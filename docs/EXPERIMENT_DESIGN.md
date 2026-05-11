@@ -177,7 +177,7 @@ A week qualifies for the formal O1 / O3 / O5 / O6 analysis if it passes the cool
 - Any single continuous outage exceeds 60 minutes, OR
 - Any outage overlaps a control-relevant window: pre-cool, recover, or an active 5CP / scarcity hold.
 
-Outage detection: `hvac.health` heartbeats absent for ≥ 5 minutes.
+Outage detection (post-hoc, from Influx): the scheduler writes one `hvac.5cp_state` row per ~2.5 min and at least one `hvac.actions` row per minute when alive; an outage is flagged when both have no writes for ≥ 5 minutes simultaneously. (The runtime container-health gate is filesystem-based — Docker `HEALTHCHECK` on `/tmp/last_tick_ok` per the P2.3 hardening in `hvac-scheduler/app.py` — and triggers operator alerts; the post-hoc Influx gap is the analysis-time signal.)
 
 **8. Pi-lab / data-collection power outages.** Treated as scheduler-service outages (rule 7) AND as Refoss outages (rule 1) — the Pi hosts both the scheduler and the Refoss/ComfortNet loggers. If the resulting affected-day exclusions leave a week with <5 qualifying days, the week is excluded.
 
