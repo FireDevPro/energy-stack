@@ -1437,3 +1437,163 @@ async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_uncha
         "P1.2 regression: dry-run mid-period push wrote a phantom row "
         "on a tick where the effective cool setpoint did not change"
     )
+
+
+# ---- P1.2: failed-action retry (run_schedule_check integration) ----------
+
+
+def _drive_run_schedule_check(
+    monkeypatch,
+    *,
+    now_local: datetime,
+    firing: FiringState,
+    execute_result: tuple[bool, str | None] = (True, None),
+    day_type: str = "NORMAL",
+    dry_run: bool = False,
+):
+    """Drive ``app.run_schedule_check`` end-to-end with the IO stubbed.
+    ``execute_result`` controls the (applied, error) tuple returned by
+    the patched ``execute_action``. Returns the cfg/c4/write_api so
+    callers can inspect side effects."""
+    import asyncio
+
+    _stub_layer_eval_io(monkeypatch, zone_load=14000.0, derivative=0.0,
+                         forecast_peak=17000.0, season_5th=20375.0)
+
+    # The rest of the run_schedule_check dependency surface:
+    monkeypatch.setattr(app, "fetch_today_decision",
+                        lambda q, w, b, t: day_type)
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: None)  # no dewpoint -> no humid override
+    monkeypatch.setattr(app, "read_precool_window_for_date",
+                        lambda q, b, d: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 73.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=execute_result))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    cfg = _make_schedule_check_cfg(dry_run=dry_run)
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+    query_api = MagicMock()
+    write_api = MagicMock()
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, query_api, write_api,
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+    return cfg, c4, write_api
+
+
+def test_successful_action_marks_done(monkeypatch):
+    """Happy path: live mode, execute_action succeeds, key IS added
+    to firing.fired_actions so the action won't refire."""
+    firing = FiringState()
+    # NORMAL_SCHEDULE has PRE_COOL at 06:00.
+    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(True, None), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) in firing.fired_actions
+
+
+def test_failed_action_in_live_mode_does_not_mark_done(monkeypatch):
+    """P1.2 invariant: when execute_action returns an error in live
+    mode, the key is NOT added to fired_actions. The next tick within
+    the make-up window must be able to retry the action."""
+    firing = FiringState()
+    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(False, "Control4 timeout"), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) not in firing.fired_actions
+
+
+def test_dry_run_marks_done_regardless_of_apply_flag(monkeypatch):
+    """Dry-run mode is an intentional no-push; the action is treated
+    as 'handled' once the per-tick orchestration completes. Without
+    this, every dry-run tick within the make-up window would replay
+    the same action."""
+    firing = FiringState()
+    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
+    # In dry-run, execute_action returns (False, None) by convention --
+    # nothing was pushed but no error occurred.
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(False, None), dry_run=True,
+    )
+    assert ("2026-07-15", 6, 0) in firing.fired_actions
+
+
+def test_failed_action_retries_within_makeup_window(monkeypatch):
+    """A failed action at hh:00 can refire at hh:01-hh:05. This is the
+    behavior the make-up window enables. The pre-fix code would have
+    permanently suppressed the action after the first failure because
+    (a) the key was added before the I/O and (b) the time-match check
+    only allowed firing on the exact-minute tick."""
+    firing = FiringState()
+    base = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    # Tick 1: 06:00 fails.
+    _drive_run_schedule_check(
+        monkeypatch, now_local=base, firing=firing,
+        execute_result=(False, "Control4 timeout"), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) not in firing.fired_actions
+
+    # Tick 2: 06:03, still inside make-up window, this time succeeds.
+    _drive_run_schedule_check(
+        monkeypatch, now_local=base + timedelta(minutes=3), firing=firing,
+        execute_result=(True, None), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) in firing.fired_actions
+
+
+def test_failed_action_stops_retrying_after_makeup_window(monkeypatch):
+    """Beyond the make-up window (5 min by default), the time-match
+    check stops firing the action even if it never succeeded. This
+    is the design choice that bounds the retry to "near scheduled
+    time" rather than letting an action fire arbitrarily late."""
+    firing = FiringState()
+    base = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    # Tick 1: 06:00 fails.
+    _drive_run_schedule_check(
+        monkeypatch, now_local=base, firing=firing,
+        execute_result=(False, "Control4 timeout"), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) not in firing.fired_actions
+
+    # Tick 2: 06:06, BEYOND the 5-minute make-up window. Action no
+    # longer matches the time check, so it cannot refire today even
+    # if the underlying problem is now resolved. Operator must wait
+    # for tomorrow's schedule (or manually re-fire).
+    _drive_run_schedule_check(
+        monkeypatch, now_local=base + timedelta(minutes=6), firing=firing,
+        execute_result=(True, None), dry_run=False,
+    )
+    assert ("2026-07-15", 6, 0) not in firing.fired_actions
+
+
+def test_already_fired_action_does_not_refire_within_window(monkeypatch):
+    """Once an action has succeeded and been marked done, ticks within
+    the make-up window must NOT refire it (the fired_actions set is
+    the de-duplication guard)."""
+    firing = FiringState(fired_actions={("2026-07-15", 6, 0)})
+    base = datetime(2026, 7, 15, 6, 2, tzinfo=ZoneInfo("America/Chicago"))
+
+    _, _, _ = _drive_run_schedule_check(
+        monkeypatch, now_local=base, firing=firing,
+        execute_result=(True, None), dry_run=False,
+    )
+    # execute_action should NOT have been awaited: the fired_actions
+    # short-circuit kicks in BEFORE the action body runs.
+    assert app.execute_action.await_count == 0  # type: ignore[attr-defined]

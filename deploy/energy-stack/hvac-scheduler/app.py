@@ -1412,6 +1412,19 @@ class LayerInputs:
 
 _FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
 
+# Action make-up window: a scheduled action that didn't successfully
+# apply on its exact-minute tick (Control4 transient error, network
+# blip, partial snapshot) can be retried on the next N ticks until
+# either (a) it succeeds and gets marked done, or (b) the window
+# elapses. Without this window, the exact-minute match in the
+# action-fire loop would never re-fire after a transient failure
+# and a failed 19:00 HOT_RECOVER (for example) would silently
+# leave the thermostat in the prior schedule's setpoint until
+# 21:00 SLEEP. Five minutes is short enough that an action's
+# intent stays close to its scheduled time but long enough to
+# absorb typical transient C4 / network blips.
+ACTION_MAKEUP_WINDOW_MIN = 5
+
 
 def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
                             firing: FiringState, now_local: datetime) -> LayerInputs:
@@ -1738,13 +1751,25 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
 
     fired_anything = False
+    now_minutes = now_local.hour * 60 + now_local.minute
     for action in schedule:
-        if now_local.hour != action.hour or now_local.minute != action.minute:
+        # P1.2: actions can fire either on their exact scheduled minute or
+        # within a short make-up window after, so a transient C4 failure
+        # at hh:00 doesn't permanently suppress the action for the rest
+        # of the day. ``firing.fired_actions`` is the post-success marker
+        # set at the bottom of this block.
+        action_minutes = action.hour * 60 + action.minute
+        delta_min = now_minutes - action_minutes
+        if delta_min < 0 or delta_min > ACTION_MAKEUP_WINDOW_MIN:
             continue
         key = (today_iso, action.hour, action.minute)
         if key in firing.fired_actions:
             continue
-        firing.fired_actions.add(key)
+        # NOTE: do NOT add ``key`` to ``firing.fired_actions`` yet; the
+        # add is deferred until after execute_action succeeds (or the
+        # tick is a deliberate dry-run skip). Pre-2026-05 the add was
+        # here, which marked the action done even when the Control4
+        # read/write threw -- silently suppressing retry.
 
         schedule_cool, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
         snapshot = await read_thermostat_snapshot(c4)
@@ -1834,6 +1859,22 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             # row even though nothing changed.
             firing.last_pushed_effective_cool_f = sup_cool
         fired_anything = True
+
+        # P1.2: only mark the action done AFTER it actually applied (or
+        # in dry-run, where the intentional no-push counts as success).
+        # A failed live push leaves the key out of fired_actions so the
+        # next tick within the make-up window can retry. release_hold
+        # actions don't push setpoints so they also count as success
+        # the moment execute_action returns without error.
+        if cfg.dry_run or error is None:
+            firing.fired_actions.add(key)
+        else:
+            log("warn", "action_retry_pending",
+                day_type=day_type,
+                label=action.label,
+                delta_min=delta_min,
+                retry_window_remaining_min=ACTION_MAKEUP_WINDOW_MIN - delta_min,
+                error=error)
 
     # ---- Mid-period re-push (Critical #2 fix) ----
     # No new action fired this tick, but the per-tick layer evaluation
