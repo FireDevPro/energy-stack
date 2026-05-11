@@ -52,7 +52,6 @@ def test_parse_dateutc_standard_format():
 
 
 def test_parse_dateutc_with_plus():
-    # If the parser receives the raw '+' form it must still work.
     ts = app.parse_dateutc("2026-05-11+14:32:00")
     assert ts == datetime(2026, 5, 11, 14, 32, 0, tzinfo=timezone.utc)
 
@@ -73,158 +72,298 @@ def test_parse_dateutc_falls_back_on_missing():
 
 # ---------- payload → point mapping ----------
 
-def _real_world_payload() -> dict[str, str]:
-    """GW1200B v1.4.7 + WN32 (WH26 slot) + WS90 push.
+def _payload_with_shaded_and_sun() -> dict[str, str]:
+    """GW1200B + WS90 (sun, on tempf/humidity) + WN31 on channel 1 (shaded).
 
-    With the WN32 paired the gateway sends a *single* outdoor temp/humidity
-    pair (``tempf``/``humidity``) which is the WN32's shaded reading; the
-    WS90's onboard temp/humidity is shadowed and not separately reported.
+    This is the steady-state architecture: the WH26/WH32 outdoor slot is
+    intentionally empty so the WS90's onboard temp/RH fills tempf/humidity
+    as the sun comparator, and a WH31 channel provides the shaded canonical
+    reading.
     """
     return {
         "PASSKEY": "ABC123DEF456",
         "stationtype": "GW1200B_V1.4.7",
         "dateutc": "2026-05-11 19:00:00",
         "model": "GW1200B",
-        # GW1200 internal (WH25 block in livedata)
+        # GW1200 internal
         "tempinf": "71.8",
         "humidityin": "34",
         "baromrelin": "29.51",
         "baromabsin": "29.51",
-        # Outdoor slot -> WN32 wins (shaded N/E wall)
-        "tempf": "75.0",
-        "humidity": "38",
-        # WS90: wind, solar, UV, rain
-        "windspeedmph": "0.0",
-        "windgustmph": "0.0",
+        # WS90 onboard (sun-exposed pergola)
+        "tempf": "82.4",
+        "humidity": "31",
+        # WS90 wind/solar/rain/UV
+        "windspeedmph": "3.2",
+        "windgustmph": "5.8",
         "winddir": "224",
-        "maxdailygust": "1.79",
-        "solarradiation": "0.55",
-        "uv": "0",
+        "maxdailygust": "10.4",
+        "solarradiation": "742.1",
+        "uv": "6",
         "rrain_piezo": "0.00",
         "erain_piezo": "0.00",
         "drain_piezo": "0.00",
         "srain_piezo": "0",
+        # WN31 on channel 1 (shaded N/E wall) -- canonical
+        "temp1f": "74.6",
+        "humidity1": "38",
     }
 
 
-def test_build_point_real_world_payload_writes_canonical_schema():
-    p = app.build_point(_real_world_payload())
+# ---- canonical shaded outdoor (WN31 on ECOWITT_SHADED_CHANNEL) ----
+
+def test_outdoor_sourced_from_configured_shaded_channel():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
     lp = p.to_line_protocol()
-    # Measurement and tag
-    assert lp.startswith("ecowitt.weather,gateway=ABC123DEF456 ")
-    # Canonical outdoor (WN32 via WH26 slot)
-    assert "outdoor_temp_f=75" in lp
+    # outdoor_* IS the shaded WN31 (channel 1), not the sun-exposed WS90
+    assert "outdoor_temp_f=74.6" in lp
     assert "outdoor_rh_pct=38" in lp
     assert "outdoor_dewpoint_f=" in lp
-    # WS90 wind + solar + baro
-    assert "wind_mph=0" in lp
-    assert "solar_wm2=0.55" in lp
-    assert "pressure_inhg=29.51" in lp
+
+
+def test_outdoor_omitted_when_shaded_channel_unset():
+    # The "WN31 not yet paired" gap. Service must not silently substitute the
+    # WS90 sun reading -- downstream analysis would be biased.
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=None)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "outdoor_temp_f" not in lp
+    assert "outdoor_rh_pct" not in lp
+    assert "outdoor_dewpoint_f" not in lp
+    # WS90 sun comparator still present.
+    assert "ws90_temp_f=82.4" in lp
+
+
+def test_outdoor_omitted_when_shaded_channel_silent():
+    # Shaded sensor configured but the gateway didn't include its channel in
+    # this push (battery dead, lost RF, etc.). Treated as a data gap, not as
+    # a fall-through to WS90.
+    form = _payload_with_shaded_and_sun()
+    form.pop("temp1f")
+    form.pop("humidity1")
+
+    p = app.build_point(form, shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "outdoor_temp_f" not in lp
+    assert "outdoor_rh_pct" not in lp
+    assert "outdoor_dewpoint_f" not in lp
+
+
+# ---- WS90 sun comparator (always emitted on tempf/humidity) ----
+
+def test_ws90_onboard_always_emitted():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "ws90_temp_f=82.4" in lp
+    assert "ws90_rh_pct=31" in lp
+    assert "ws90_dewpoint_f=" in lp
+
+
+def test_ws90_onboard_emitted_even_without_shaded_channel():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=None)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "ws90_temp_f=82.4" in lp
+    assert "ws90_rh_pct=31" in lp
+
+
+def test_ws90_and_outdoor_are_independent_values():
+    # The sun vs shade split is the whole point. Make sure they don't get
+    # collapsed.
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "outdoor_temp_f=74.6" in lp
+    assert "ws90_temp_f=82.4" in lp
+
+
+# ---- WS90 wind / solar / rain / GW1200 (unchanged) ----
+
+def test_ws90_wind_solar_baro_fields_present():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "wind_mph=3.2" in lp
+    assert "wind_gust_mph=5.8" in lp
     assert "wind_dir_deg=224" in lp
-    assert "wind_gust_max_daily_mph=1.79" in lp
-    assert "uv_index=0" in lp
-    # Piezo rain (state stays integer)
-    assert "rain_state=0i" in lp
+    assert "wind_gust_max_daily_mph=10.4" in lp
+    assert "solar_wm2=742.1" in lp
+    assert "uv_index=6" in lp
+    assert "pressure_inhg=29.51" in lp
+
+
+def test_rain_fields_use_correct_types():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "rain_state=0i" in lp  # int
     assert "rain_event_in=0" in lp
     assert "rain_daily_in=0" in lp
-    # Indoor + abs baro
+
+
+def test_gw1200_internal_fields_present():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
     assert "indoor_temp_f=71.8" in lp
     assert "indoor_rh_pct=34" in lp
     assert "baro_abs_inhg=29.51" in lp
-    # No WS90 temp/RH fields -- WN32 shadows them in the WH26 slot.
-    assert "ws90_temp_f" not in lp
-    assert "ws90_rh_pct" not in lp
 
+
+# ---- other WH31 channels (not the shaded canonical) ----
+
+def test_other_channels_emitted_as_ch_fields():
+    # WN31 on channel 1 is the shaded canonical; a separate WH31 on channel 3
+    # (e.g. basement, garage) is just supplemental.
+    form = _payload_with_shaded_and_sun()
+    form["temp3f"] = "64.2"
+    form["humidity3"] = "55"
+
+    p = app.build_point(form, shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    # Shaded canonical still on channel 1
+    assert "outdoor_temp_f=74.6" in lp
+    # Supplemental channel 3 emitted as ch3_*
+    assert "ch3_temp_f=64.2" in lp
+    assert "ch3_rh_pct=55" in lp
+    assert "ch3_dewpoint_f=" in lp
+
+
+def test_shaded_channel_not_duplicated_as_ch_fields():
+    # Channel 1 hosts the shaded sensor -- it populates outdoor_* and should
+    # NOT also appear as ch1_*. Double-writing the same physical sensor under
+    # two field names would confuse downstream analysis.
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    assert "ch1_temp_f" not in lp
+    assert "ch1_rh_pct" not in lp
+    assert "ch1_dewpoint_f" not in lp
+
+
+def test_unpaired_channels_omitted():
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    for ch in (2, 3, 4, 5, 6, 7, 8):
+        assert f"ch{ch}_temp_f" not in lp
+
+
+def test_multiple_supplemental_channels_emitted():
+    form = _payload_with_shaded_and_sun()
+    for ch in (2, 4, 7):
+        form[f"temp{ch}f"] = f"{60 + ch}.0"
+        form[f"humidity{ch}"] = f"{50 + ch}"
+
+    p = app.build_point(form, shaded_channel=1)
+    assert p is not None
+    lp = p.to_line_protocol()
+    for ch in (2, 4, 7):
+        assert f"ch{ch}_temp_f={60 + ch}" in lp
+        assert f"ch{ch}_rh_pct={50 + ch}" in lp
+
+
+# ---- timestamp ----
 
 def test_build_point_uses_dateutc_for_timestamp():
-    p = app.build_point(_real_world_payload())
+    p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
     lp = p.to_line_protocol()
     expected_ts = int(datetime(2026, 5, 11, 19, 0, 0, tzinfo=timezone.utc).timestamp())
     assert lp.endswith(f" {expected_ts}")
 
 
-def test_build_point_emits_wh31_channel_fields_when_present():
-    # Simulates tomorrow's WN31 paired on channel 1. The parser should pick
-    # it up generically without configuration.
-    form = _real_world_payload()
-    form["temp1f"] = "68.4"
-    form["humidity1"] = "72"
-
-    p = app.build_point(form)
-    assert p is not None
-    lp = p.to_line_protocol()
-    assert "ch1_temp_f=68.4" in lp
-    assert "ch1_rh_pct=72" in lp
-    assert "ch1_dewpoint_f=" in lp
-    # Canonical outdoor still sourced from WN32, not from channel 1.
-    assert "outdoor_temp_f=75" in lp
-
-
-def test_build_point_omits_unpaired_wh31_channels():
-    # Real-world payload has no WH31 channels paired; none of the ch*_ fields
-    # should appear in the line protocol.
-    p = app.build_point(_real_world_payload())
-    assert p is not None
-    lp = p.to_line_protocol()
-    for ch in range(1, 9):
-        assert f"ch{ch}_temp_f" not in lp
-        assert f"ch{ch}_rh_pct" not in lp
-        assert f"ch{ch}_dewpoint_f" not in lp
-
-
-def test_build_point_supports_multiple_simultaneous_channels():
-    # Stress test: WN31 has 8 dip-switch channels and we should map all of
-    # them. Tomorrow's deployment is one channel; design for the upper bound.
-    form = _real_world_payload()
-    for ch in range(1, 9):
-        form[f"temp{ch}f"] = f"{60 + ch}.0"
-        form[f"humidity{ch}"] = f"{50 + ch}"
-
-    p = app.build_point(form)
-    assert p is not None
-    lp = p.to_line_protocol()
-    for ch in range(1, 9):
-        assert f"ch{ch}_temp_f={60 + ch}" in lp
-        assert f"ch{ch}_rh_pct={50 + ch}" in lp
-
+# ---- empty / malformed / tag handling ----
 
 def test_build_point_returns_none_for_handshake_only():
-    p = app.build_point({"PASSKEY": "ABC", "dateutc": "2026-05-11 12:00:00"})
+    p = app.build_point(
+        {"PASSKEY": "ABC", "dateutc": "2026-05-11 12:00:00"},
+        shaded_channel=1,
+    )
     assert p is None
 
 
 def test_build_point_handles_partial_payload():
-    # Wind sensor offline mid-storm but everything else reports.
-    form = _real_world_payload()
+    form = _payload_with_shaded_and_sun()
     form.pop("windspeedmph")
     form.pop("windgustmph")
-    p = app.build_point(form)
+    p = app.build_point(form, shaded_channel=1)
     assert p is not None
     lp = p.to_line_protocol()
     assert "wind_mph" not in lp
     assert "wind_gust_mph" not in lp
-    # Outdoor temp still present.
-    assert "outdoor_temp_f=75" in lp
+    # Both temp streams still present.
+    assert "outdoor_temp_f=74.6" in lp
+    assert "ws90_temp_f=82.4" in lp
 
 
 def test_build_point_ignores_garbage_numeric_values():
-    form = _real_world_payload()
+    form = _payload_with_shaded_and_sun()
     form["tempf"] = "not-a-number"
-    p = app.build_point(form)
+    p = app.build_point(form, shaded_channel=1)
     assert p is not None
     lp = p.to_line_protocol()
-    # Outdoor temp silently dropped, not crashed.
-    assert "outdoor_temp_f" not in lp
-    # WS90-side fields still present.
-    assert "solar_wm2=0.55" in lp
+    # ws90 sun comparator silently dropped, not crashed.
+    assert "ws90_temp_f" not in lp
+    # Shaded outdoor unaffected (separate sensor).
+    assert "outdoor_temp_f=74.6" in lp
 
 
 def test_build_point_tags_unknown_gateway_when_passkey_missing():
-    form = _real_world_payload()
+    form = _payload_with_shaded_and_sun()
     form.pop("PASSKEY")
-    p = app.build_point(form)
+    p = app.build_point(form, shaded_channel=1)
     assert p is not None
     lp = p.to_line_protocol()
     assert "gateway=unknown" in lp
+
+
+# ---- Config.from_env shaded-channel parsing ----
+
+def test_config_shaded_channel_unset(monkeypatch):
+    monkeypatch.delenv("ECOWITT_SHADED_CHANNEL", raising=False)
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    cfg = app.Config.from_env()
+    assert cfg.shaded_channel is None
+
+
+def test_config_shaded_channel_set(monkeypatch):
+    monkeypatch.setenv("ECOWITT_SHADED_CHANNEL", "3")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    cfg = app.Config.from_env()
+    assert cfg.shaded_channel == 3
+
+
+def test_config_shaded_channel_empty_string_is_unset(monkeypatch):
+    monkeypatch.setenv("ECOWITT_SHADED_CHANNEL", "")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    cfg = app.Config.from_env()
+    assert cfg.shaded_channel is None
+
+
+def test_config_shaded_channel_invalid_value_exits(monkeypatch):
+    monkeypatch.setenv("ECOWITT_SHADED_CHANNEL", "abc")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    with pytest.raises(SystemExit):
+        app.Config.from_env()
+
+
+def test_config_shaded_channel_out_of_range_exits(monkeypatch):
+    monkeypatch.setenv("ECOWITT_SHADED_CHANNEL", "9")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    with pytest.raises(SystemExit):
+        app.Config.from_env()

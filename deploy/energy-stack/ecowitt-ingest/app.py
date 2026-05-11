@@ -3,27 +3,37 @@
 The GW1200 gateway POSTs sensor readings to a "Customized Server" endpoint on a
 fixed cadence (default 60s). This service is that endpoint. It parses the
 form-encoded payload, maps Ecowitt protocol fields to the project's canonical
-``ecowitt.weather`` schema, computes outdoor dewpoint from the shaded WN32
-temp/RH via the Magnus formula, and writes to InfluxDB.
+``ecowitt.weather`` schema, computes dewpoints via the Magnus formula, and
+writes to InfluxDB.
+
+Two-stream design (shaded canonical + sun comparator)
+------------------------------------------------------
+The WS90 ships with an onboard temp/RH sensor on the same pole as the wind /
+solar / rain hardware -- which means it sits in direct sun on the pergola.
+That reading is useful as a sun-exposure comparator but it is NOT a valid
+"outdoor air temperature" for meteorological work (forecast bias correction,
+HVAC pre-cool decisions, dewpoint-driven comfort modeling all assume a shaded
+sensor).
+
+A standalone WN31 on a WH31 channel -- mounted in a UV-shielded enclosure on
+the shaded N/E wall -- gives us the canonical shaded reading on a separate
+multi-channel slot. The WH26 outdoor slot is left empty intentionally; with
+no WH26-class sensor present the WS90 fills ``tempf``/``humidity`` from its
+onboard sensor and we capture that as the sun comparator. Both streams land
+in the same measurement, distinguished by field name.
 
 Hardware in this deployment:
     GW1200B v1.4.7    gateway, indoor (basement / utility room). Source of
                       ``baromrelin``, ``tempinf``, ``humidityin``.
-    WN32              shaded outdoor temp/RH on North/East wall under UV
-                      shield. Pairs as a WH26 / WH32 "outdoor" slot — single
-                      slot, no channel — and OVERRIDES the WS90's onboard
-                      temp/RH in the Ecowitt push (``tempf``/``humidity``).
-                      That override is the documented design intent: see
-                      shop.ecowitt.com/products/wn32-outdoor. Canonical
-                      outdoor temp/RH source.
-    WS90              7-in-1 (wind, solar, rain, UV, lightning, temp, RH)
-                      on pergola roof, South/East. With the WN32 paired,
-                      the WS90's onboard temp/RH is not separately reported
-                      in the push; we keep wind, solar, rain, UV.
-    WN31 (optional)   8-channel multi-temp/RH sensor (dip-switch channel
-                      1-8). When paired the parser emits ``ch{N}_temp_f``
-                      / ``ch{N}_rh_pct`` / ``ch{N}_dewpoint_f`` per active
-                      channel; no env var needed.
+    WS90              7-in-1 on pergola roof, South/East. Wind, solar, UV,
+                      piezo rain, lightning, AND its onboard temp/RH (sun-
+                      exposed comparator at ``tempf``/``humidity``).
+    WN31              Multi-channel temp/RH sensor on the shaded N/E wall
+                      under a UV shield. Dip switches 1-3 set channel 1-8
+                      at the sensor; ``ECOWITT_SHADED_CHANNEL`` env var
+                      tells the parser which channel is the canonical
+                      shaded reference. Source of ``outdoor_temp_f``,
+                      ``outdoor_rh_pct``, ``outdoor_dewpoint_f``.
 
 Gateway-side config (WSView app → Weather Services → Customized):
     Protocol:  Ecowitt
@@ -35,13 +45,23 @@ Gateway-side config (WSView app → Weather Services → Customized):
 Schema written (single measurement ``ecowitt.weather``):
     tag    gateway          GW1200 PASSKEY (stable per-device id)
 
-    field  outdoor_temp_f         WN32 (canonical, via tempf)
-    field  outdoor_rh_pct         WN32 (canonical, via humidity)
-    field  outdoor_dewpoint_f     computed from WN32 via Magnus
+    Canonical shaded outdoor (WN31 on ECOWITT_SHADED_CHANNEL):
+    field  outdoor_temp_f         shaded WN31
+    field  outdoor_rh_pct         shaded WN31
+    field  outdoor_dewpoint_f     computed from WN31 via Magnus
+                                  Not written if ECOWITT_SHADED_CHANNEL is
+                                  unset or the channel is silent -- fail loud
+                                  rather than silently substituting sun data.
+
+    Sun-exposed comparator (WS90 onboard temp/RH on tempf/humidity):
+    field  ws90_temp_f            WS90 onboard
+    field  ws90_rh_pct            WS90 onboard
+    field  ws90_dewpoint_f        computed from WS90 via Magnus
+
+    WS90 wind / solar / rain / UV:
     field  wind_mph               WS90
     field  solar_wm2              WS90
     field  pressure_inhg          GW1200 relative baro
-
     field  wind_gust_mph          WS90
     field  wind_dir_deg           WS90
     field  wind_gust_max_daily_mph  WS90
@@ -50,16 +70,25 @@ Schema written (single measurement ``ecowitt.weather``):
     field  rain_event_in          WS90 piezo
     field  rain_daily_in          WS90 piezo
     field  rain_state             WS90 piezo (0/1)
+
+    GW1200 internal:
     field  indoor_temp_f          GW1200 internal
     field  indoor_rh_pct          GW1200 internal
     field  baro_abs_inhg          GW1200 absolute baro
 
-    field  ch{N}_temp_f           WH31/WN31 channel N, N in 1..8 (when paired)
-    field  ch{N}_rh_pct           WH31/WN31 channel N, N in 1..8 (when paired)
-    field  ch{N}_dewpoint_f       computed via Magnus, N in 1..8 (when paired)
+    Other paired WH31 channels (any channel != ECOWITT_SHADED_CHANNEL):
+    field  ch{N}_temp_f           WH31/WN31 channel N (when paired)
+    field  ch{N}_rh_pct           WH31/WN31 channel N (when paired)
+    field  ch{N}_dewpoint_f       computed via Magnus (when paired)
 
 Environment variables:
     ECOWITT_LISTEN_PORT     TCP port to bind (default 8088)
+    ECOWITT_SHADED_CHANNEL  WH31 channel (1-8) hosting the shaded reference
+                            sensor. When set, outdoor_temp_f/rh_pct/dewpoint_f
+                            are sourced from that channel. When unset, those
+                            fields are not written -- forcing downstream
+                            consumers to surface the gap rather than silently
+                            using the WS90 sun reading as canonical.
     INFLUXDB_URL            default http://influxdb:8086
     INFLUXDB_TOKEN          required
     INFLUXDB_ORG            required
@@ -96,6 +125,7 @@ def log(level: str, msg: str, **fields: Any) -> None:
 @dataclass
 class Config:
     listen_port: int
+    shaded_channel: int | None
     influx_url: str
     influx_token: str
     influx_org: str
@@ -110,8 +140,23 @@ class Config:
                 sys.exit(2)
             return v
 
+        raw_ch = os.environ.get("ECOWITT_SHADED_CHANNEL", "").strip()
+        shaded_channel: int | None
+        if raw_ch == "":
+            shaded_channel = None
+        else:
+            try:
+                shaded_channel = int(raw_ch)
+            except ValueError:
+                log("error", "invalid_shaded_channel", value=raw_ch)
+                sys.exit(2)
+            if not 1 <= shaded_channel <= 8:
+                log("error", "shaded_channel_out_of_range", value=shaded_channel)
+                sys.exit(2)
+
         return Config(
             listen_port=int(os.environ.get("ECOWITT_LISTEN_PORT", "8088")),
+            shaded_channel=shaded_channel,
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
@@ -169,20 +214,18 @@ def parse_dateutc(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def build_point(form: dict[str, str]) -> Point | None:
+def build_point(form: dict[str, str], shaded_channel: int | None = None) -> Point | None:
     """Map an Ecowitt POST payload to an InfluxDB point.
 
     Returns None if the payload contains no usable fields (e.g. handshake or
     misconfigured gateway sending only PASSKEY).
+
+    ``shaded_channel`` selects which WH31 channel hosts the canonical shaded
+    reference. When None, ``outdoor_*`` fields are NOT written -- analytical
+    consumers see a gap instead of a silently sun-biased substitute.
     """
     passkey = form.get("PASSKEY", "unknown")
     ts = parse_dateutc(form.get("dateutc"))
-
-    # WN32 occupies the outdoor (WH26/WH32) slot, so its readings arrive on
-    # the singular ``tempf``/``humidity`` fields. When WN32 is paired with a
-    # WS90 array the WN32's reading wins by design (see module docstring).
-    outdoor_temp_f = _f(form, "tempf")
-    outdoor_rh_pct = _f(form, "humidity")
 
     fields: dict[str, float | int] = {}
 
@@ -190,10 +233,24 @@ def build_point(form: dict[str, str]) -> Point | None:
         if value is not None:
             fields[name] = value
 
-    # Canonical outdoor (WN32, shaded). Project queries depend on these names.
-    put("outdoor_temp_f", outdoor_temp_f)
-    put("outdoor_rh_pct", outdoor_rh_pct)
-    put("outdoor_dewpoint_f", compute_dewpoint_f(outdoor_temp_f, outdoor_rh_pct))
+    # Canonical shaded outdoor (WN31 on shaded_channel). Project queries depend
+    # on these names. Written only if a channel is configured AND that channel
+    # is actually transmitting in this push.
+    if shaded_channel is not None:
+        shaded_temp_f = _f(form, f"temp{shaded_channel}f")
+        shaded_rh_pct = _f(form, f"humidity{shaded_channel}")
+        put("outdoor_temp_f", shaded_temp_f)
+        put("outdoor_rh_pct", shaded_rh_pct)
+        put("outdoor_dewpoint_f", compute_dewpoint_f(shaded_temp_f, shaded_rh_pct))
+
+    # WS90 onboard temp/RH arrives on the singular tempf/humidity fields
+    # whenever the WH26/WH32 outdoor slot is empty (intentional in this
+    # deployment). Sun-exposed comparator, NOT the canonical outdoor.
+    ws90_temp_f = _f(form, "tempf")
+    ws90_rh_pct = _f(form, "humidity")
+    put("ws90_temp_f", ws90_temp_f)
+    put("ws90_rh_pct", ws90_rh_pct)
+    put("ws90_dewpoint_f", compute_dewpoint_f(ws90_temp_f, ws90_rh_pct))
 
     # WS90 wind, solar, plus GW1200 relative baro.
     put("wind_mph", _f(form, "windspeedmph"))
@@ -217,11 +274,12 @@ def build_point(form: dict[str, str]) -> Point | None:
     put("indoor_rh_pct", _f(form, "humidityin"))
     put("baro_abs_inhg", _f(form, "baromabsin"))
 
-    # WH31 / WN31 multi-channel temp/RH (channels 1-8). Each channel only
-    # appears when a sensor is paired to that slot — missing fields are
-    # silently dropped. Sensor placement is decided at the sensor's dip
-    # switch, not here.
+    # Other WH31 / WN31 channels (1-8) excluding the shaded canonical -- those
+    # already populate outdoor_* above and we do not duplicate them. Each
+    # channel only appears when a sensor is paired to that slot.
     for ch in range(1, 9):
+        if ch == shaded_channel:
+            continue
         t = _f(form, f"temp{ch}f")
         rh = _f(form, f"humidity{ch}")
         put(f"ch{ch}_temp_f", t)
@@ -248,6 +306,7 @@ class _Handler(BaseHTTPRequestHandler):
     write_api = None  # type: ignore[assignment]
     bucket: str = ""
     org: str = ""
+    shaded_channel: int | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:  # silence default stderr noise
         return
@@ -284,7 +343,7 @@ class _Handler(BaseHTTPRequestHandler):
             form_multi = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
             form = {k: v[0] for k, v in form_multi.items()}
 
-            point = build_point(form)
+            point = build_point(form, self.shaded_channel)
             if point is None:
                 log("warning", "empty_payload", path=self.path, keys=list(form.keys()))
                 self._ok()
@@ -305,13 +364,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._bad(500, "ingest error")
 
 
-def make_handler(write_api, bucket: str, org: str):
+def make_handler(write_api, bucket: str, org: str, shaded_channel: int | None):
     class Bound(_Handler):
         pass
 
     Bound.write_api = write_api
     Bound.bucket = bucket
     Bound.org = org
+    Bound.shaded_channel = shaded_channel
     return Bound
 
 
@@ -321,13 +381,21 @@ def main() -> None:
         "info",
         "starting",
         port=cfg.listen_port,
+        shaded_channel=cfg.shaded_channel,
         bucket=cfg.influx_bucket,
     )
+    if cfg.shaded_channel is None:
+        log(
+            "warning",
+            "no_shaded_channel_configured",
+            detail="outdoor_temp_f / outdoor_rh_pct / outdoor_dewpoint_f will NOT be "
+                   "written. Set ECOWITT_SHADED_CHANNEL once the shaded sensor is paired.",
+        )
 
     client = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
-    handler = make_handler(write_api, cfg.influx_bucket, cfg.influx_org)
+    handler = make_handler(write_api, cfg.influx_bucket, cfg.influx_org, cfg.shaded_channel)
     server = ThreadingHTTPServer(("0.0.0.0", cfg.listen_port), handler)
 
     stop_event = threading.Event()
