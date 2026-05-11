@@ -1,6 +1,6 @@
 {
   "PLACEHOLDER": false,
-  "_comment": "Locked OSF-filing values for the Att. M-2 §2 second-branch reconstruction. See tariff_snapshot.md for full citations. Three of four values are taken from primary published sources; portfolio_sum_mw is the only stipulation (explicit per EXPERIMENT_DESIGN.md §6 with ±20% sensitivity band).",
+  "_comment": "Locked OSF-filing values for the Att. M-2 §2 second-branch reconstruction. See tariff_snapshot.md for full citations. ComEdNPL, AComEdCPL, and the capacity rate come from primary published sources. portfolio_sum_mw is the only stipulation: ComEd computes it internally each year from customer-register data and does not publish current-year values. The FERC ER22-1520-001 deficiency response (Exhibits 1(b), 2(b)(i), 2(b)(ii)) discloses the Summer 2021 value for Weather Sensitive Customers as 2,033.653 MW. Per EXPERIMENT_DESIGN.md §6, Layer 2 is reported across three pre-registered named scenarios (low/anchor_2021/high), NOT as a single point estimate with a confidence band.",
   "locked_at": "2026-05-11",
   "tariff_source": {
     "icc_capacity_rate": {
@@ -31,7 +31,21 @@
       "url": "https://www.pjm.com/pjmfiles/directory/etariff/MasterTariffs/23TariffSections/18111.pdf",
       "local_pdf": "data/pjm_oatt_attM2_comed.pdf",
       "retrieved": "2026-05-11",
-      "note": "Defines the CPLC_(Y+1) two-branch formula. Portfolio_sum is the denominator of branch 2 and is computed by ComEd across customers; not separately published as a public scalar."
+      "note": "Defines the CPLC_(Y+1) two-branch formula. Portfolio_sum is the denominator of branch 2 and is computed by ComEd across the subset of customers with positive (ACustPL − ACustCPL); not separately published as a current-year scalar in PJM or ICC public filings."
+    },
+    "ferc_er22_1520_001_deficiency_response": {
+      "title": "ComEd Att. M-2 amendment, FERC ER22-1520-001 deficiency response",
+      "exhibits": "Exhibits 1(b), 2(b)(i), 2(b)(ii)",
+      "summer_year": 2021,
+      "local_pdf": "data/ferc_er22_1520_filing_letter.pdf",
+      "discloses": {
+        "difference_avg_comed_and_pjm_5cps_weather_sensitive_kw": 2033653,
+        "summer_2021_weather_normalized_pjm_coincident_peak_mw": 20290,
+        "summer_2021_comed_zone_pjm_coincident_5cp_mw": 18491,
+        "allocation_to_weather_sensitive_load_mw": 1798.5104
+      },
+      "verification_math": "1798.5104 / 2033.653 = 0.884374; sample customer gap 0.27012 kW × 0.884374 = 0.2389 kW, matches exhibit-stated Customer Weather Sensitivity Adjustment.",
+      "note": "Single disclosed historical anchor for Σ_5Pc(ACustPL − ACustCPL) restricted to the Weather Sensitive Customer class (the relevant class for Rate BESH residential AC load). Current-year value is not public."
     }
   },
   "ComEdNPL_mw_by_year": {
@@ -53,12 +67,13 @@
     "2027": 19138.22,
     "_note": "2026 and 2027 use most recent value (2025) as the locked baseline. Re-derive from pjm.coincident_peak after PJM publishes the corresponding summer's 5CP PDF (mid-October)."
   },
-  "portfolio_sum_mw_by_year": {
-    "_source": "STIPULATED — Σ_5Pc(ACustPL − ACustCPL) is computed by ComEd across customers and is not separately published. Per EXPERIMENT_DESIGN.md §6 Layer 2 is descriptive and reported with sensitivity.",
-    "_estimation_note": "Anchored on (ComEdNPL − AComEdCPL) system-wide gap which is 1,500-3,000 MW for recent years; portfolio_sum is restricted to branch-2 customers and is therefore SMALLER than that system gap. Best estimate ~1,500 MW with ±20% sensitivity reported alongside.",
-    "_sensitivity_band": "±20% (widened from spec's ±10% to reflect the stipulation nature)",
-    "2026": 1500.0,
-    "2027": 1500.0
+  "portfolio_sum_mw_scenarios": {
+    "_source": "STIPULATED — Σ_5Pc(ACustPL − ACustCPL) is computed by ComEd across the positive-gap customer population (per Att. M-2 §2) and the current-year value is not separately published. The FERC ER22-1520-001 deficiency response discloses Summer 2021 = 2,033.653 MW for Weather Sensitive Customers; see tariff_source.ferc_er22_1520_001_deficiency_response.",
+    "_aggregation_inequality": "Σ max(ACustPL_i − ACustCPL_i, 0) ≠ max(Σ ACustPL_i − Σ ACustCPL_i, 0). No PJM zonal feed (NSPL, weather-normalized peaks, load_recon_bill_deter_hrly) reconstructs this customer-population sum.",
+    "_reporting": "Layer 2 is reported across all three named scenarios as a side-table per EXPERIMENT_DESIGN.md §6. These are pre-registered scenario analyses, not confidence intervals.",
+    "low": 1500.0,
+    "anchor_2021": 2033.653,
+    "high": 3000.0
   },
   "capacity_rate_dollars_per_kw_month_by_year": {
     "_source": "ComEd ICC Informational Sheet 4 (71st Revised), tariff_source.icc_capacity_rate",

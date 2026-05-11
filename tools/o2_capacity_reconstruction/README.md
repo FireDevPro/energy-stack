@@ -50,22 +50,18 @@ this household's meter. The two ComEd-portfolio terms are NOT:
   function. Pure: takes household `ACustCPL`, `ACustPL`, and the
   stipulated constants; returns `CPLC_(Y+1)` in $.
 
-## Pre-OSF lock procedure
+## Lock status
 
-The shipped `tariff_constants.json` is a **placeholder**. Before OSF
-filing:
+`tariff_constants.json` is locked (`PLACEHOLDER: false`, `locked_at: 2026-05-11`). All four tariff inputs come from the citations in [`tariff_snapshot.md`](tariff_snapshot.md):
 
-1. Open the most recent ComEd Schedule of Rates Rider PE — Purchased
-   Electricity (or whichever Schedule contains the Att. M-2 portfolio
-   inputs at the time of filing). The reference snapshot in
-   [`tariff_snapshot.md`](tariff_snapshot.md) shows where these values
-   appear; the user must verify the snapshot still matches the live
-   tariff.
-2. Update `tariff_constants.json` with the verified values; set
-   `PLACEHOLDER: false` and fill `tariff_source.effective_date`.
-3. Update `tariff_snapshot.md` with the verified citation if the
-   tariff has been re-filed since the snapshot was taken.
-4. Commit. [`tools/analysis/check_constants_locked.py`](../analysis/check_constants_locked.py) verifies this file no longer carries the placeholder sentinel.
+- **ComEdNPL_Y** — PJM Weather-Normalized Peaks XLSX (per year)
+- **AComEdCPL_Y** — derived from `pjm.coincident_peak` Influx measurement (per year)
+- **Capacity rate** — ComEd ICC Schedule of Rates Informational Sheet 4 ($/kW-month, per year)
+- **portfolio_sum_mw** — three pre-registered named scenarios (see §"Reconstruction scenarios" below); the `anchor_2021` value is taken from the FERC ER22-1520-001 deficiency response
+
+[`tools/analysis/check_constants_locked.py`](../analysis/check_constants_locked.py) is the pre-OSF-tag gate; it currently passes.
+
+If ComEd re-files Informational Sheet 4 between now and OSF tag, refresh `capacity_rate_dollars_per_kw_month_by_year` and bump `tariff_source.icc_capacity_rate.effective_date`. Similarly if PJM publishes a new WN Peaks XLSX or the next summer's 5CP PDF lands, refresh those year entries.
 
 ## Output schema
 
@@ -74,33 +70,33 @@ filing:
 ```json
 {
   "PLACEHOLDER": <bool>,
+  "locked_at": "<YYYY-MM-DD>",
   "tariff_source": {
-    "title": "<schedule name>",
-    "icc_docket": "<docket number>",
-    "effective_date": "<YYYY-MM-DD>",
-    "page": "<section reference>",
-    "url": "<best public link to the filed tariff>"
+    "icc_capacity_rate": { ... },
+    "pjm_wn_peaks": { ... },
+    "pjm_5cp_zonal": { ... },
+    "pjm_oatt_att_m2_comed": { ... },
+    "ferc_er22_1520_001_deficiency_response": { ... }
   },
-  "ComEdNPL_mw_by_year": {
-    "<year>": <float MW>
-  },
-  "AComEdCPL_mw_by_year": {
-    "<year>": <float MW>
-  },
-  "portfolio_sum_mw_by_year": {
-    "<year>": <float MW>
-  },
-  "capacity_rate_dollars_per_kw_by_year": {
-    "<year>": <float $/kW-month>
-  }
+  "ComEdNPL_mw_by_year":            {"<year>": <MW>},
+  "AComEdCPL_mw_by_year":           {"<year>": <MW>},
+  "portfolio_sum_mw_scenarios":     {"low": 1500.0, "anchor_2021": 2033.653, "high": 3000.0},
+  "capacity_rate_dollars_per_kw_month_by_year": {"<year>": <float $/kW-month>}
 }
 ```
 
-Per-year keys because the portfolio constants are re-filed annually.
+ComEdNPL, AComEdCPL, and the capacity rate are keyed by year because ComEd and PJM re-file them annually. `portfolio_sum_mw_scenarios` is not year-keyed: the scenarios are pre-registered values used across all study years, since the current-year denominator is not publicly disclosed and re-keying by year would imply a precision the data does not support.
 
-## Reconstruction sensitivity
+## Reconstruction scenarios
 
-Layer 2 is reported with ±10% sensitivity on the portfolio sum
-(per [`EXPERIMENT_DESIGN.md §6`](../../docs/EXPERIMENT_DESIGN.md#o2-capacity-charge-avoidance-three-layer-measurement)).
-`reconstruct.py` exposes a `sensitivity_band(...)` helper that
-returns the band low/high alongside the point estimate.
+Layer 2 is descriptive only and is reported across three pre-registered named denominators rather than a confidence band (per [`EXPERIMENT_DESIGN.md §6`](../../docs/EXPERIMENT_DESIGN.md#o2-capacity-charge-avoidance-three-layer-measurement)):
+
+| Scenario | portfolio_sum_mw | Source |
+|---|---|---|
+| `low` | 1,500 MW | prior planning case |
+| `anchor_2021` | 2,033.653 MW | FERC ER22-1520-001 disclosed Summer 2021 Weather Sensitive denominator |
+| `high` | 3,000 MW | wide upper sensitivity near historical system-gap scale |
+
+`reconstruct.py` exposes a `scenarios(a_cust_cpl_kw, a_cust_pl_kw, constants)` helper that returns a dict of CPLC(kW) keyed by scenario name. When branch 1 applies (`ACustCPL >= ACustPL`), the portfolio denominator is unused and all three scenarios collapse to the same value. The locked scenario set is exposed as `PORTFOLIO_SUM_SCENARIOS_MW` for tests and external consumers.
+
+These are pre-registered scenario analyses, not confidence intervals. See [`tariff_snapshot.md`](tariff_snapshot.md) §4 for the FERC exhibit citations, verification math, and rationale for the scenario choice over a ±pct band.

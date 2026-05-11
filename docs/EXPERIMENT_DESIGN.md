@@ -251,7 +251,17 @@ Full `CPLC_(Y+1)` reconstruction using both Att. M-2 branches:
 - Branch 1 as in Layer 1.
 - Branch 2: `CPLC_(Y+1) = ACustCPL_Y + (ComEdNPL_Y − AComEdCPL_Y) × (ACustPL_Y − ACustCPL_Y) / Σ_5Pc(ACustPL − ACustCPL)` where `ACustPL_Y` is the household's average demand across the five ComEd Five Peak hours, `ComEdNPL_Y` is ComEd's weather-normalized peak load, `AComEdCPL_Y` is ComEd's average coincident peak at the PJM five peaks, and `Σ_5Pc(ACustPL − ACustCPL)` is the portfolio sum across all customers in branch 2.
 
-The portfolio sum is unobservable from a single household. It is sourced as a stipulated constant from ComEd's published tariff Schedule of Rates (cited by version and date in [`tools/o2_capacity_reconstruction/`](../tools/o2_capacity_reconstruction/), to be added under PR-C). Layer 2 is treated as a descriptive overlay that puts Layer 1 into tariff-conversion units; the stipulated constant's sensitivity is reported as a side-table (Layer 2 ± 10% on the portfolio constant).
+The portfolio sum is unobservable from a single household. ComEd computes it internally each year from customer-register data across the positive-gap customer population defined by Att. M-2 §2, and does not publish current-year values. The Summer 2021 value for the Weather Sensitive Customer class (the relevant class for Rate BESH residential AC-driven load) was disclosed as **2,033.653 MW** in the FERC ER22-1520-001 deficiency response, Exhibits 1(b), 2(b)(i), and 2(b)(ii); see [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md) §4 for the source PDF, exhibit references, and verification math. The aggregation inequality `Σ max(ACustPL_i − ACustCPL_i, 0) ≠ max(Σ ACustPL_i − Σ ACustCPL_i, 0)` means no PJM Data Miner zonal feed reconstructs this denominator from public aggregates.
+
+Layer 2 is descriptive only and is reported across three pre-registered named denominators rather than a single point estimate with a confidence band:
+
+| Scenario | portfolio_sum_mw | Source |
+|---|---|---|
+| `low` | 1,500 MW | prior planning case |
+| `anchor_2021` | 2,033.653 MW | FERC ER22-1520-001 disclosed Summer 2021 Weather Sensitive denominator |
+| `high` | 3,000 MW | wide upper sensitivity near historical system-gap scale |
+
+These are scenario analyses, not confidence intervals. The reported CPLC reconstruction is presented as a side-table with one row per scenario. If a future ICC e-Docket or ComEd workpaper publishes the current-year denominator, the locked scenarios will be replaced with the disclosed value and a tighter sensitivity under an OSF amendment.
 
 **Layer 3 — Bill reconciliation (descriptive, post-Y+1).**
 The actual ComEd Capacity Charge line item on the Y+1 bills (May-Sep months, the period over which `CPLC_(Y+1)` is applied per tariff) is recorded month-by-month and summed. The ratio (Layer 2 / Layer 3) is reported as a tariff-reconstruction fidelity number. Layer 3 has no within-house counterfactual — there is only one realized bill trajectory for the realized arm assignment in summer Y — so Layer 3 is descriptive only and does not enter any effect-size statement.
