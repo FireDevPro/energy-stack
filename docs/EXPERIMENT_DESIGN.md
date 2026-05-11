@@ -373,7 +373,7 @@ The following are binding once this document is filed to OSF and the pre-registr
 
 1. The outcome definitions in §2 (O1-O6) including the HVAC channel set (`em:2 + em:8 + em:9`).
 2. The arm definitions in §3, including the commit hash for both controllers and the boundary-conditions block.
-3. **The locked Arm B threshold values in Appendix A**: day-type classification (HOT at ≥85°F max OR apparent ≥90°F), price-spike tier thresholds (10¢ elevated, 20¢ scarcity, 2¢ hysteresis, 30 min hold), 5CP detection rule (load ratio >0.95 in 13-20 CT window, dual-scope ComEd-zone + RTO OR'd, pre-season fallbacks 20,375 MW and 151,525 MW respectively), pre-cool deepening forecast trigger, and layer priority resolution.
+3. **The locked Arm B threshold values in Appendix A**: day-type classification (HOT at ≥85°F max OR apparent ≥90°F), price-spike tier thresholds (10¢ elevated, 20¢ scarcity, 2¢ hysteresis, 30 min hold), 5CP detection rule (load ratio >0.95 in 13-20 CT window, summer eligibility gate Jun 1 - Sep 30 per PJM Manual 19, dual-scope ComEd-zone + RTO OR'd with per-scope forecast feeds, pre-season fallbacks 20,375 MW and 151,525 MW respectively), pre-cool deepening forecast trigger, and layer priority resolution.
 4. The cooling-relevance criterion in §4 (weekly CDD ≥ 5).
 5. The randomization seed (`20260601`) and the `randomize_arms.py` script that derives the assignment list, plus the year-round assignment CSV.
 6. The 2-week-arm structure within 4-week blocks with randomized order.
@@ -442,17 +442,18 @@ Two scopes run in parallel; effective shutoff trigger is the OR of their per-sco
 
 **Data lineage per scope** (per PJM DM2 OpenAPI spec):
 
-| Scope | `current_load_mw` feed | `season_to_date_5th_highest_mw` feed |
-|---|---|---|
-| `comed_zone` | `inst_load?area=COMED` (~5-min cadence) | `hrl_load_metered?zone=CE` (hourly, 1-2 day publish lag, 90-day correction window) |
-| `rto` | `inst_load?area=PJM RTO` (~5-min cadence) | `hrl_load_metered?zone=RTO` (hourly aggregate of the entire PJM footprint, same cadence/lag as zonal) |
+| Scope | `current_load_mw` feed | `season_to_date_5th_highest_mw` feed | `forecast_peak_today_mw` feed |
+|---|---|---|---|
+| `comed_zone` | `inst_load?area=COMED` (~5-min cadence) | `hrl_load_metered?zone=CE` (hourly, 1-2 day publish lag, 90-day correction window) | `load_frcstd_7_day?forecast_area=COMED` max over today's 24 hours |
+| `rto` | `inst_load?area=PJM RTO` (~5-min cadence) | `hrl_load_metered?zone=RTO` (hourly aggregate of the entire PJM footprint, same cadence/lag as zonal) | `ops_sum_frcst_peak_rto?area=PJM RTO` latest `load_forecast_mw` (scalar daily peak) |
 
-The `inst_load` feed is described in the PJM spec as "approximate, NOT official PJM Loads" but "frequently updated throughout the operating day" — the right tradeoff for a real-time directional signal. The `hrl_load_metered` feed carries official metered values that determine the actual 5CP rank. Four feeds total; the detector is uncomputable without all four.
+The `inst_load` feed is described in the PJM spec as "approximate, NOT official PJM Loads" but "frequently updated throughout the operating day" — the right tradeoff for a real-time directional signal. The `hrl_load_metered` feed carries official metered values that determine the actual 5CP rank. **Per-scope forecast peak** is required because the gate condition (`forecast_peak > season_to_date_5th_highest`) is unsatisfiable cross-scale — a ComEd-area forecast (~10-22 GW) never exceeds an RTO-scale season 5th-highest (~150 GW), which silently disables the RTO scope if a shared forecast value is used. Six feeds total per tick.
 
 | Parameter | Value | Basis |
 |---|---|---|
 | Load-ratio trigger | `current_load_mw(scope) / season_to_date_5th_highest_mw(scope) > 0.95` | Allows for prediction error, catches ramp-up. Per-scope; ComEd-zone ratio and RTO ratio evaluated independently. |
-| Window | 13:00-20:00 CT | Broadened from current 14-18 CT; 2025 RTO peak hour was 18:00 CT |
+| Window | 13:00-20:00 CT (time-of-day) | Broadened from current 14-18 CT; 2025 RTO peak hour was 18:00 CT |
+| Summer eligibility gate | June 1 - September 30 (date) | Per PJM Manual 19 and ComEd Attachment M-2, 5CP eligibility is restricted to this window. Detector short-circuits to inactive outside Jun-Sep (state machines reset across the boundary so a hold cannot cross Sep 30 -> Oct 1). Season-5th computation is bracketed to the same window so off-season rows in the bucket cannot infiltrate the baseline. |
 | Hold | end-of-hour + 30 min, per scope | Independent state machines: a ComEd-zone release does not exit an RTO-scope hold or vice versa |
 | ComEd-zone pre-season fallback | 20,375 MW | 2025 ComEd-zone 5th-highest hourly metered load (empirical, `pjm.metered_load{zone=CE}`). Replaces a prior 130,000 MW value that was RTO-scale misapplied to the zone path (left the ComEd detector inert pre-season). |
 | RTO pre-season fallback | 151,525 MW | 2025 PJM RTO 5th-highest published 5CP (PJM Summer 2025 5CPs report) |

@@ -1014,7 +1014,8 @@ def _stub_layer_eval_io(monkeypatch, *,
                          season_5th: float = 20375.0,
                          rto_zone_load: float | None = None,
                          rto_derivative: float = 0.0,
-                         rto_season_5th: float = 151525.0):
+                         rto_season_5th: float = 151525.0,
+                         rto_forecast_peak: float | None = None):
     """Stub the InfluxDB IO that _evaluate_layer_inputs makes. Lets tests
     drive the price/load/forecast inputs without spinning up Flux.
 
@@ -1024,6 +1025,12 @@ def _stub_layer_eval_io(monkeypatch, *,
     RTO load and vice versa. Pass ``rto_zone_load=None`` (default) to
     simulate no RTO data (poller hasn't backfilled yet); pass a value
     to drive RTO detector inputs explicitly.
+
+    Per-scope forecast peaks (P1.1 post-merge fix): the ComEd scope
+    reads ``pjm.load_forecast{forecast_area=COMED}`` and the RTO
+    scope reads ``pjm.peak_forecast_rto{area="PJM RTO"}``. The two
+    feeds are independent in production. Pass ``rto_forecast_peak``
+    explicitly when driving RTO triggers in tests.
     """
     monkeypatch.setattr(app, "fetch_latest_comed",
                         lambda q, b: price_cents)
@@ -1047,7 +1054,7 @@ def _stub_layer_eval_io(monkeypatch, *,
     def _fetch_zone_live_stub(q, b, *, area="COMED"):
         return snapshots[area]
 
-    def _update_season_5th_highest_stub(q, b, s, *, zone="CE", fallback_mw=None):
+    def _update_season_5th_highest_stub(q, b, s, e, *, zone="CE", fallback_mw=None):
         return fallback_seasons[zone]
 
     # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also
@@ -1063,6 +1070,8 @@ def _stub_layer_eval_io(monkeypatch, *,
     # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
     monkeypatch.setattr(app, "fetch_forecast_peak_today",
                         lambda q, b, *, tz=None: forecast_peak)
+    monkeypatch.setattr(app, "fetch_rto_peak_forecast_today",
+                        lambda q, b: rto_forecast_peak)
 
 
 def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
@@ -1153,7 +1162,9 @@ def test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data(monkeypatch
     via the `scope` tag (`comed_zone` | `rto`) carried on the row."""
     _stub_layer_eval_io(monkeypatch,
                          zone_load=14000.0, rto_zone_load=140000.0,
-                         season_5th=20375.0, rto_season_5th=151525.0)
+                         season_5th=20375.0, rto_season_5th=151525.0,
+                         forecast_peak=17000.0,  # ComEd-scale forecast
+                         rto_forecast_peak=155000.0)  # RTO-scale forecast
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -1184,10 +1195,14 @@ def test_dual_scope_or_fires_when_rto_alone_qualifies(monkeypatch):
                          # ComEd well below trigger: 13k / 20.375k = 0.638
                          zone_load=13000.0, derivative=0.0,
                          season_5th=20375.0,
+                         # ComEd-scale forecast (low; would never satisfy
+                         # the cross-scale RTO gate in the pre-fix code)
+                         forecast_peak=15000.0,
                          # RTO above trigger: 145k / 151.525k = 0.957 > 0.95
                          rto_zone_load=145000.0, rto_derivative=400.0,
                          rto_season_5th=151525.0,
-                         forecast_peak=160000.0)
+                         # RTO-scale forecast > RTO season_5th: satisfies gate
+                         rto_forecast_peak=160000.0)
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -1209,10 +1224,12 @@ def test_dual_scope_or_fires_when_comed_alone_qualifies(monkeypatch):
                          # ComEd above trigger: 19.6k / 20.375k = 0.962
                          zone_load=19600.0, derivative=300.0,
                          season_5th=20375.0,
+                         forecast_peak=22000.0,  # ComEd-scale, > ComEd season_5th
                          # RTO well below trigger: 140k / 151.525k = 0.924
                          rto_zone_load=140000.0, rto_derivative=0.0,
                          rto_season_5th=151525.0,
-                         forecast_peak=22000.0)
+                         # RTO forecast below season_5th: gate fails
+                         rto_forecast_peak=148000.0)
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -1231,9 +1248,10 @@ def test_dual_scope_per_scope_state_is_independent(monkeypatch):
     _stub_layer_eval_io(monkeypatch,
                          zone_load=19600.0, derivative=300.0,
                          season_5th=20375.0,
+                         forecast_peak=22000.0,
                          rto_zone_load=140000.0, rto_derivative=0.0,
                          rto_season_5th=151525.0,
-                         forecast_peak=22000.0)
+                         rto_forecast_peak=148000.0)
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -1243,6 +1261,38 @@ def test_dual_scope_per_scope_state_is_independent(monkeypatch):
     _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert firing.fivecp_state_comed.is_active is True   # ComEd triggered
     assert firing.fivecp_state_rto.is_active is False    # RTO did not
+
+
+def test_may_off_season_cannot_fire_against_bogus_low_baseline(monkeypatch):
+    """Reproducer for the 2026-05-11 production incident: sparse RTO
+    ingest of May 2026 rows produced an RTO 'season 5th' of 90,244 MW,
+    against which a real-time RTO load of 85,410 MW reached ratio
+    0.946 -- just below the 0.95 trigger. The summer-eligibility gate
+    (PJM Manual 19 / ComEd Att. M-2: Jun 1 - Sep 30) makes the
+    detector refuse to evaluate triggers outside cooling season, so
+    even a malformed off-season baseline cannot fire the layer."""
+    _stub_layer_eval_io(monkeypatch,
+                         # Drive the exact production-incident values:
+                         rto_zone_load=85410.0, rto_derivative=1294.0,
+                         rto_season_5th=90244.0,  # bogus, off-season
+                         rto_forecast_peak=156000.0,  # RTO-scale, would normally
+                                                       # exceed bogus baseline
+                         zone_load=14000.0, season_5th=20375.0,
+                         forecast_peak=10000.0)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    # 2026-05-11 14:30 CT -- May, off-season per Manual 19.
+    now_local = datetime(2026, 5, 11, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.fivecp_active is False
+    assert inputs.fivecp_scopes_fired == ()
+    # State machines are reset across the off-season boundary (no
+    # carried hold from a prior in-season trigger).
+    assert firing.fivecp_state_comed.is_active is False
+    assert firing.fivecp_state_rto.is_active is False
 
 
 def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypatch):
