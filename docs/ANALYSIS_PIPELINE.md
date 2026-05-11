@@ -66,7 +66,7 @@ All raw data lives in the `energy` bucket of the on-prem InfluxDB 2 instance des
 | ComEd bill PDFs | [`scripts/parse_comed_bill.py`](../deploy/energy-stack/scripts/parse_comed_bill.py) — monthly ingestion | O4 (whole-home), O2 Layer 3 (bill reconciliation) |
 | ComEd tariff Schedule of Rates | committed snapshot at [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md) | O2 Layer 2 stipulated portfolio constant |
 | Historical PJM day-ahead LMP (COMED zone, summers 2023-2025) | [`tools/comed_price_imputation/fetch_lmp.py`](../tools/comed_price_imputation/fetch_lmp.py) — runs once at OSF lock | Rule 3 (price feed imputation) spread constant |
-| 2020-2025 NOAA Chicago (KORD) cooling-relevant weeks | [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) — outputs `data/baseline_cov.npz` | Mahalanobis Σ (matched-pair distance) |
+| 2020-2025 ERA5 reanalysis at KORD coordinates (41.9786°N, 87.9047°W), cooling-relevant weeks (CDD ≥ 5) | [`tools/analysis/fetch_kord_era5.py`](../tools/analysis/fetch_kord_era5.py) → [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → `data/baseline_cov.npz` | Mahalanobis Σ (matched-pair distance) |
 
 ---
 
@@ -282,7 +282,7 @@ Before OSF filing (target 2026-05-30):
 - [ ] `pytest tools/analysis/tests/` green against synthetic fixtures
 - [ ] `spread_constants.json` populated from real 2023-2025 RTP and LMP data (not the placeholder shipped in this PR)
 - [ ] `tariff_constants.json` populated from the ComEd Schedule of Rates citation (not the placeholder shipped in this PR)
-- [ ] `baseline_cov.npz` produced from 2020-2025 NOAA KORD cooling-relevant weeks
+- [ ] `baseline_cov.npz` produced from 2020-2025 ERA5 reanalysis at KORD coords, cooling-relevant weeks (CDD ≥ 5)
 
 The three "shipped placeholder" files in this PR are intentionally
 flagged and tested-against to guarantee the pipeline runs end-to-end
