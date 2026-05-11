@@ -585,9 +585,12 @@ def _annual_check_window(dt: datetime) -> bool:
     return dt.month == 12 or dt.month == 1
 
 
-# Tolerances are roughly 2× the natural inter-fire gap during the active
-# season, so a single missed cycle is tolerated and two consecutive
-# misses fire. Tuned per feed against FEED_SCHEDULE in pjm-dm2-poller/app.py.
+# Tolerances are tuned to the feed's MAXIMUM natural inter-fire gap
+# (e.g. 17h for a 06:00+13:00 CT schedule because of the overnight gap,
+# not the 7h same-day gap) plus a 1-2 hour buffer. A tolerance shorter
+# than the natural max gap produces guaranteed false alarms whenever
+# the longest gap straddles the alert window. Tuned per feed against
+# FEED_SCHEDULE in pjm-dm2-poller/app.py.
 PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
     FeedSLA(
         feed="da_hrl_lmps",
@@ -597,7 +600,7 @@ PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
     ),
     FeedSLA(
         feed="load_frcstd_7_day",
-        tolerance_hours=14,                      # fires 06:00 + 13:00 CT
+        tolerance_hours=18,                      # fires 06:00 + 13:00 CT; max natural gap (13:00 -> next 06:00) is 17h, so 18h gives 1h buffer
         in_season=_always,
         description="7-day load forecast (06:00 + 13:00 CT)",
     ),
@@ -609,7 +612,7 @@ PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
     ),
     FeedSLA(
         feed="ops_sum_frcst_peak_rto",
-        tolerance_hours=14,                      # cooling season only
+        tolerance_hours=18,                      # cooling season only; same 06+13 CT schedule as load_frcstd_7_day → same 17h overnight gap → 18h buffer
         in_season=_cooling_season,
         description="RTO peak forecast (cooling season, 06:00 + 13:00 CT)",
     ),
