@@ -1781,3 +1781,73 @@ def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
     assert inputs.price_tier_name == "normal"
     assert inputs.price_offset_f == 0
     assert inputs.price_override_f is None
+
+
+# ---- P1.3 (reviewer-flagged 2026-05-11): failed-push guard gating ----------
+
+
+def test_failed_action_does_not_update_pushed_guard(monkeypatch):
+    """Reviewer-flagged 2026-05-11: when a live scheduled push fails,
+    ``firing.last_pushed_effective_cool_f`` MUST NOT be updated to the
+    target setpoint. Otherwise a later mid-period repush sees
+    ``effective == last_pushed`` and silently skips, leaving the
+    thermostat at whatever value WAS successfully pushed (which is
+    the stale prior schedule action's setpoint).
+
+    Reproducer: starting with last_pushed=78 (prior schedule action's
+    successful push), the 19:00 HOT_RECOVER action targets 75 but
+    ``execute_action`` returns ``(False, "C4 timeout")``. The guard
+    must stay at 78, not move to 75."""
+    firing = FiringState(
+        last_pushed_effective_cool_f=78,
+        last_schedule_cool_f=78,
+        last_action_label="HOT_COAST",
+    )
+    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(False, "Control4 timeout"), dry_run=False,
+    )
+    # Guard MUST stay at the last successfully-pushed value, not the
+    # failed-target value.
+    assert firing.last_pushed_effective_cool_f == 78
+
+
+def test_successful_action_updates_pushed_guard(monkeypatch):
+    """Symmetric: a successful live scheduled push DOES update the
+    guard to the supervisor-approved cool setpoint, so the next
+    mid-period evaluation has the correct reference."""
+    firing = FiringState(
+        last_pushed_effective_cool_f=78,
+        last_schedule_cool_f=78,
+        last_action_label="HOT_COAST",
+    )
+    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(True, None), dry_run=False,
+    )
+    # NORMAL_SCHEDULE at 19:00 has RECOVER 75. So the guard moves to 75.
+    # But schedule_for here is determined by day_type stub (NORMAL),
+    # which has RECOVER at 19:00 with cool=75 -- so sup_cool == 75.
+    assert firing.last_pushed_effective_cool_f == 75
+
+
+def test_dry_run_action_updates_pushed_guard(monkeypatch):
+    """Dry-run mode is an intentional no-push; the guard MUST still
+    update to keep the mid-period re-push path's Arm-A guard
+    correctly populated. Pre-PR #50 the guard was gated on
+    ``not cfg.dry_run`` and left None across dry-run weeks, producing
+    phantom MID_PERIOD_REPUSH audit rows every tick. This test pins
+    that dry-run still moves the guard."""
+    firing = FiringState(
+        last_pushed_effective_cool_f=None,
+        last_action_label="",
+    )
+    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        execute_result=(False, None),  # dry-run: no error, no apply
+        dry_run=True,
+    )
+    assert firing.last_pushed_effective_cool_f == 75
