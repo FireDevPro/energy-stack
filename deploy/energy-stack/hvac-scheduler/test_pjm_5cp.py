@@ -29,6 +29,7 @@ from pjm_5cp import (
     hold_end_time,
     in_cooling_season,
     season_5th_highest_from_loads,
+    update_season_5th_highest,
 )
 
 
@@ -871,3 +872,79 @@ def test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast(monkeypatc
     assert ev.new_state.is_active is False
 
 
+
+
+# ---- P2: metered-load season-5th must dedup by hour -----------------------
+
+
+def _mock_metered_query_api(records: list[float]):
+    """Build a query_api mock whose ``.query(flux)`` captures the Flux
+    string and returns one table of ``mw`` records. The fixed
+    ``|> group()`` pipeline produces a single flattened table after
+    aggregateWindow + sort + limit; this mock matches that shape."""
+    mock = MagicMock()
+    mock.last_flux = None
+
+    def _query(flux):
+        mock.last_flux = flux
+
+        class _Rec:
+            def __init__(self, v):
+                self._v = v
+
+            def get_value(self):
+                return self._v
+
+            def get_time(self):
+                return None
+
+        class _Table:
+            def __init__(self, recs):
+                self.records = [_Rec(r) for r in recs]
+
+        return [_Table(records)]
+
+    mock.query = _query
+    return mock
+
+
+def test_update_season_5th_flux_query_flattens_is_verified_with_group():
+    """P2 regression guard: ``pjm.metered_load`` carries ``is_verified``
+    as a tag, so when PJM publishes a row (is_verified=false) and
+    later corrects it (is_verified=true), the bucket holds two
+    series at the same ``_time``. Without ``|> group()`` to flatten
+    them, ``aggregateWindow`` and ``sort/limit`` operate per-series
+    and a single physical hour can fill multiple top-5 slots, skewing
+    the season-5th value upward.
+
+    Post-fix: the Flux MUST contain ``|> group()`` to collapse the
+    is_verified-keyed series before aggregating."""
+    q = _mock_metered_query_api([21000.0, 22000.0, 23000.0, 24000.0, 25000.0])
+    update_season_5th_highest(
+        q, "energy",
+        datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
+        zone="CE",
+        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    )
+    assert "|> group()" in q.last_flux
+
+
+def test_update_season_5th_flux_group_appears_before_aggregate_window():
+    """Order matters: ``group()`` must appear BEFORE
+    ``aggregateWindow`` so the flatten removes the is_verified tag
+    from the group key. If group() came after, the per-series
+    aggregation would already have produced the duplicate-hour rows
+    and a late group() couldn't collapse them back."""
+    q = _mock_metered_query_api([21000.0, 22000.0, 23000.0, 24000.0, 25000.0])
+    update_season_5th_highest(
+        q, "energy",
+        datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
+        zone="CE",
+        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    )
+    flux = q.last_flux
+    group_pos = flux.index("|> group()")
+    agg_pos = flux.index("|> aggregateWindow")
+    assert group_pos < agg_pos

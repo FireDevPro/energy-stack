@@ -1685,3 +1685,76 @@ def test_read_stored_decision_targets_correct_decision_for_date():
     q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
     app._read_stored_decision(q, "energy", "2026-07-15")
     assert 'r.decision_for_date == "2026-07-15"' in q.last_flux
+
+
+# ---- P2: price tier preservation across feed gap --------------------------
+
+
+def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
+    """P2 review fix: when ``fetch_latest_comed`` returns None mid-tick,
+    the price-overlay tier label was carried forward but the
+    setpoint contributions (offset/override) were silently zeroed.
+    Result: logs labeled the tier as ``scarcity`` while the
+    effective setpoint fell back to the schedule baseline.
+
+    Post-fix: when the feed is unavailable, the active tier's
+    locked offset/override are looked up from PRICE_TIERS and
+    carried forward to the layer-priority resolver."""
+    _stub_layer_eval_io(monkeypatch, price_cents=None)
+    cfg = _make_schedule_check_cfg()
+    # Simulate a prior tick where scarcity was active.
+    firing = FiringState(
+        price_overlay_state=app.PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc),
+        ),
+    )
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    # Label preserved (was already correct).
+    assert inputs.price_tier_name == "scarcity"
+    # Setpoint contribution preserved (the fix): scarcity tier has
+    # cool_setpoint_override_f=85 in PRICE_TIERS.
+    assert inputs.price_override_f == 85
+    # Offset is 0 for scarcity (since it uses override, not offset).
+    assert inputs.price_offset_f == 0
+
+
+def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
+    """Symmetric for the elevated tier (offset=+3, override=None)."""
+    _stub_layer_eval_io(monkeypatch, price_cents=None)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState(
+        price_overlay_state=app.PriceOverlayState(
+            current_tier="elevated",
+            triggered_at_utc=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc),
+        ),
+    )
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.price_tier_name == "elevated"
+    assert inputs.price_offset_f == 3   # locked elevated offset
+    assert inputs.price_override_f is None
+
+
+def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
+    """Normal tier produces zero contribution regardless of feed
+    availability -- the fix should not introduce a phantom offset
+    when there was no active tier to begin with."""
+    _stub_layer_eval_io(monkeypatch, price_cents=None)
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()   # default state: tier=normal
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    assert inputs.price_tier_name == "normal"
+    assert inputs.price_offset_f == 0
+    assert inputs.price_override_f is None

@@ -406,6 +406,17 @@ def update_season_5th_highest(query_api, bucket: str,
     almost cleared. Callers should compute the window via
     ``cooling_season_window_utc(now_local)`` and cap the end at
     ``now_utc`` when in-season.
+
+    Hour-dedup invariant: ``pjm.metered_load`` carries ``is_verified``
+    as a tag (set by the poller). When PJM corrects a row from
+    unverified -> verified, Influx stores it as a separate series at
+    the same timestamp. Without ``|> group()`` before the aggregation,
+    ``aggregateWindow`` and ``sort/limit`` would operate per-series:
+    the same physical hour could fill two of the top-5 slots and
+    skew the season-5th value. The ``group()`` flatten pulls all
+    is_verified series for a given hour into one table, so
+    ``aggregateWindow(every: 1h, fn: mean)`` collapses any
+    duplicate-hour rows into a single mean before ranking.
     """
     flux = f"""
         from(bucket: "{bucket}")
@@ -414,6 +425,7 @@ def update_season_5th_highest(query_api, bucket: str,
           |> filter(fn: (r) => r._measurement == "pjm.metered_load"
                                 and r.zone == "{zone}"
                                 and r._field == "mw")
+          |> group()
           |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
           |> sort(columns: ["_value"], desc: true)
           |> limit(n: {MIN_OBSERVATIONS_FOR_5TH})
