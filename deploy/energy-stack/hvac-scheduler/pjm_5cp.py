@@ -106,6 +106,32 @@ RTO_PRE_SEASON_FALLBACK_5TH_MW = 151525.0
 
 MIN_OBSERVATIONS_FOR_5TH = 5
 
+# Sparse-data threshold: below this number of in-window hourly observations,
+# the season-5th is statistically unreliable (the bucket likely has only
+# the first few days of season data, OR a multi-day publish gap left
+# coverage thin). The detector falls back to the prior-year published 5th
+# instead of trusting a tiny sample.
+#
+# Pinned at 200 hours (~8 days of cooling-season coverage). After 8 days
+# the bucket holds enough representative range that the current-year
+# 5th-highest is a meaningful baseline -- even if 2026 turns out cooler
+# than 2025, the detector should adapt to current conditions, not stay
+# anchored to last year's hot days (which a permanent floor would force).
+#
+# Sized for:
+#   - Comfortably above the 24-hour span of a single hot day (so one
+#     anomalously hot June 2 can't be the only observation driving the
+#     baseline)
+#   - Well below a half-month (~360 hours), so the floor releases before
+#     mid-June
+#   - Compatible with PJM's ~1-2 day publish lag for hrl_load_metered
+#     (a healthy bucket reaches 200 hours by June 9-10)
+#
+# Larger N = more cold-start safety, longer suppression of current-year
+# detection. Smaller N = floor releases earlier, more vulnerable to a
+# sparse-then-gap pattern.
+SPARSE_DATA_THRESHOLD = 200
+
 CHICAGO = ZoneInfo("America/Chicago")
 
 
@@ -324,16 +350,37 @@ def evaluate_5cp_risk(
 
 
 def season_5th_highest_from_loads(loads_mw: list[float], *,
-                                   fallback_mw: float) -> float:
-    """Pure function: given a list of hourly average loads (any order),
-    return the 5th-highest value. Falls back to ``fallback_mw`` when
-    fewer than ``MIN_OBSERVATIONS_FOR_5TH`` observations are supplied.
+                                   fallback_mw: float,
+                                   sparse_threshold: int = SPARSE_DATA_THRESHOLD,
+                                   ) -> float:
+    """Return the season-to-date 5th-highest hourly load, with a
+    sparse-data fallback that releases as the current-year sample grows.
 
-    ``fallback_mw`` must be scoped to the detector (ComEd-zone vs
-    PJM RTO) -- mixing scales here is the bug that left the ComEd
-    detector inert pre-season before 2026-05.
+    Sparse-data path (fallback ACTIVE):
+      - ``len(loads_mw) < sparse_threshold``: return ``fallback_mw``.
+        Covers the first ~8 days of a fresh cooling season, multi-day
+        publish gaps, ingest-in-progress conditions, and off-season
+        ticks against thin prior-year archives.
+
+    Sufficient-data path (fallback RELEASES):
+      - ``len(loads_mw) >= sparse_threshold``: return the actual
+        5th-highest from the data. The detector adapts to current-year
+        conditions, including cooler-than-prior-year summers where the
+        real 5th-highest legitimately lands below the prior-year value.
+
+    A *permanent* ``max(5th, fallback)`` floor would suppress real
+    current-year 5CP detection in any season cooler than the prior
+    year. If 2026's real ComEd 5th lands at 18,500 MW and current load
+    reaches 17,800 MW, the true ratio is 0.962 (trigger) but a
+    permanent 20,375 MW floor would force ratio to 0.874 (no trigger)
+    -- a real-money miss. The sparse-threshold pattern keeps the
+    cold-start safety without baking 2025 into 2026.
+
+    ``fallback_mw`` must be scoped to the detector (ComEd-zone vs PJM
+    RTO) -- mixing scales here is the bug that left the ComEd detector
+    inert pre-season before 2026-05.
     """
-    if len(loads_mw) < MIN_OBSERVATIONS_FOR_5TH:
+    if len(loads_mw) < sparse_threshold:
         return fallback_mw
     sorted_desc = sorted(loads_mw, reverse=True)
     return float(sorted_desc[MIN_OBSERVATIONS_FOR_5TH - 1])

@@ -172,8 +172,16 @@ NORMAL_SCHEDULE: list[ScheduleAction] = [
 # the noon-14 window. Currently leaning on the coast setpoint as a softer
 # response there.
 #
-# Each kW shaved from a 5CP hour saves ~$240-480/yr in next-year capacity
-# charges; the math is the same whether the peak is PJM or ComEd.
+# Capacity-charge impact: a load reduction during one PJM Five Peak hour
+# shifts the customer's Average-Customer-Coincident-Peak-Load (ACustCPL)
+# by roughly kW/5, and a reduction during one ComEd Five Peak hour shifts
+# Average-Customer-Peak-Load (ACustPL) by roughly kW/5. The final CPLC
+# (Capacity Peak Load Contribution, billed for the next delivery year)
+# is computed via PJM OATT Attachment M-2 §2 with a conditional branch on
+# whether ACustCPL >= ACustPL or not, plus a portfolio-wide term involving
+# ComEd weather-normalized peak. Single-hour reductions are diluted
+# through the relevant five-hour average, not full-year-per-kW. See O2
+# in EXPERIMENT_DESIGN.md for the modeling approach.
 HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(4,  0, "HOT_PRE_COOL",     cool_setpoint_f=68),
     ScheduleAction(12, 0, "HOT_COAST",        cool_setpoint_f=80, fan_mode="Circulate",
