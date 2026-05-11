@@ -17,10 +17,11 @@ What this catches (v1 scope):
 
   2. Emergency indoor temperature. If the thermostat snapshot reports
      indoor > EMERGENCY_INDOOR_F (= 86), regardless of what the
-     scheduled action says, override cool setpoint to
-     EMERGENCY_COOL_TARGET_F (= 74). Catches HOT_5CP_SHUTOFF / HOT_COAST
-     periods that overshoot in real heat-wave conditions, plus any case
-     where the household is uncomfortably hot for any reason.
+     scheduled action or layer-resolved setpoint says, override cool
+     to EMERGENCY_COOL_TARGET_F (= 74). Catches HOT_COAST periods (or
+     a price-scarcity / 5CP layer pushed to 85°F) that overshoot in
+     real heat-wave conditions, plus any case where the household is
+     uncomfortably hot for any reason.
 
 What this does NOT catch (deferred to a follow-up):
 

@@ -125,10 +125,10 @@ def test_classify_no_override_when_minutes_since_unknown():
 def test_classify_override_carries_label_for_diagnostics():
     """The override row records which action got overridden — useful when
     the user is fighting one specific time-of-day setpoint."""
-    last = _last(80, 65, label="HOT_5CP_SHUTOFF", minutes_since=30)
+    last = _last(80, 65, label="HOT_COAST", minutes_since=30)
     summary = classify_override(_snap(75, 65), last, override_grace_min=5)
     assert summary is not None
-    assert summary["last_action_label"] == "HOT_5CP_SHUTOFF"
+    assert summary["last_action_label"] == "HOT_COAST"
 
 
 def test_classify_override_with_negative_delta():

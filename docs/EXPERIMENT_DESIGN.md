@@ -215,7 +215,7 @@ O6 (recovery-overhead ratio) integrated 18:00-23:59 on HOT-classified days; a po
 
 ### Descriptive accompaniments
 
-For each matched pair, the following are reported alongside the cost outcomes for reader context: max temperature, max dewpoint, mean temperature, mean dewpoint, total CDD, total solar irradiance, mean wind speed, mean outdoor enthalpy, indoor temperature distribution (median, 90th, 95th percentile during HOT_5CP_SHUTOFF window for both arms).
+For each matched pair, the following are reported alongside the cost outcomes for reader context: max temperature, max dewpoint, mean temperature, mean dewpoint, total CDD, total solar irradiance, mean wind speed, mean outdoor enthalpy, indoor temperature distribution (median, 90th, 95th percentile during 13:00-20:00 CT 5CP-eligibility window (per §3 Appendix A) for both arms).
 
 ---
 
@@ -355,7 +355,7 @@ The Committee on Publication Ethics has acknowledged that requiring formal IRB r
 
 ### Companion-animal welfare
 
-The household includes companion dogs. Indoor temperature is held within the comfort-ceiling envelope governing human comfort, which is consistent with [AVMA companion-animal welfare guidance](https://www.avma.org/resources-tools/animal-health-and-welfare/animal-welfare-changing-environment) (sustained indoor temperature should not exceed 80°F). Realized indoor temperature distributions during HOT_5CP_SHUTOFF windows are reported descriptively (median, 90th, 95th percentile) so any envelope excursions are auditable.
+The household includes companion dogs. Indoor temperature is held within the comfort-ceiling envelope governing human comfort, which is consistent with [AVMA companion-animal welfare guidance](https://www.avma.org/resources-tools/animal-health-and-welfare/animal-welfare-changing-environment) (sustained indoor temperature should not exceed 80°F). Realized indoor temperature distributions during 13:00-20:00 CT 5CP-eligibility windows (per §3 Appendix A) are reported descriptively (median, 90th, 95th percentile) so any envelope excursions are auditable.
 
 ### Conduct commitments
 
@@ -450,7 +450,7 @@ Recalibration captures 52% of historical price-spike days and 65% of scarcity da
 | Scarcity release | 18¢/kWh | 2¢ hysteresis |
 | Minimum hold | 30 min | Prevent thrashing on borderline prices / single-tick spikes |
 | Elevated offset | +3°F to active cool setpoint | Meaningful pull-back without abandoning comfort |
-| Scarcity setpoint | 85°F (effective shutoff) | Matches existing HOT_5CP_SHUTOFF setpoint |
+| Scarcity setpoint | 85°F (effective shutoff) | Equipment-safe upper bound below the safety supervisor's 86°F ceiling; carries the shutoff role now that the fixed-window HOT_5CP_SHUTOFF schedule action is dropped |
 
 ### PJM 5CP-eligibility detection (dual-scope)
 

@@ -115,16 +115,16 @@ All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65
 | 19:00 | RECOVER | 75 | Auto | Off-peak begins, recover for evening |
 | 21:00 | SLEEP | 73 | Auto | Cooler sleep, captures full DTOD overnight cheap window |
 
-### HOT_5CP_RISK — ≥ 95°F or heat advisory
+### HOT_5CP_RISK — ≥ 85°F max or apparent ≥ 90°F (per EXPERIMENT_DESIGN Appendix A)
 
 | Time | Label | Cool °F | Fan | Notes |
 |---|---|---|---|---|
 | 04:00 | HOT_PRE_COOL | 68 | Auto | Aggressive pre-cool, deeper mass charge |
-| 12:00 | HOT_COAST | 80 (76 if humid) | Circulate | Coast through pre-peak |
-| 14:00 | HOT_5CP_SHUTOFF | 85 | (unchanged) | **Hard shutoff** for 5CP window; 85°F effectively turns AC off unless the house overshoots |
-| 18:00 | HOT_RECOVER_LOW | 78 | Auto | Gentle recovery start (5CP window ends 17:00 typically, 18:00 conservatively) |
-| 19:00 | HOT_RECOVER | 75 | (unchanged) | |
+| 12:00 | HOT_COAST | 80 (76 if humid) | Circulate | Coast through the high-risk afternoon |
+| 19:00 | HOT_RECOVER | 75 | Auto | Transition out of coast |
 | 21:00 | SLEEP | 73 | (unchanged) | Same as NORMAL |
+
+**Shutoff timing is dynamic, not scheduled.** Per EXPERIMENT_DESIGN.md §3 (Arm B), the fixed 14:00-18:00 CT shutoff window from the original scheduler is dropped. The §2 real-time RTP price-spike reactivity (scarcity tier ≥ 20¢ → 85°F effective shutoff) and §3 dual-scope 5CP detector (ComEd-zone + PJM-RTO, OR'd) drive 85°F shutoff timing per-tick during the 13:00-20:00 CT eligibility window. "Warmer wins" layer priority lets these dynamic layers push the effective cool above the schedule's coast baseline when conditions warrant.
 
 ### HOT_STREAK_DAY1 — HOT today AND HOT tomorrow forecast
 
@@ -132,10 +132,10 @@ All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65
 |---|---|---|---|---|
 | 03:00 | STREAK_PRE_COOL_EARLY | 66 | Auto | One hour earlier, two degrees deeper than HOT — banks extra mass for day 2 |
 | 12:00 | HOT_COAST | 80 (76 if humid) | Circulate | Same as HOT |
-| 14:00 | HOT_5CP_SHUTOFF | 85 | (unchanged) | Same as HOT |
-| 18:00 | HOT_RECOVER_LOW | 78 | Auto | Same as HOT |
-| 19:00 | HOT_RECOVER | 75 | (unchanged) | |
+| 19:00 | HOT_RECOVER | 75 | Auto | Same as HOT |
 | 21:00 | SLEEP | 73 | (unchanged) | Same as HOT |
+
+Same dynamic-shutoff semantics as HOT_5CP_RISK above.
 
 > **Open re-tune:** post-research review (May 2026) suggests softening pre-cool depth from 68→71-72°F starting at 3am instead of 4am @ 68°F captures 90%+ of peak shift at materially less off-peak kWh in low-mass wood-frame homes. Per NREL/Davis Energy Group field studies. Worth A/B testing in summer 2026. See [PROJECT.md decision log](../PROJECT.md).
 
@@ -183,7 +183,7 @@ Precedence is emergency > clamp > approved (first match wins). Each `hvac.action
 
 **Bounds rationale:**
 
-- **Cool `[65, 86]`** — accommodates VACATION setpoints (cool=83) and `HOT_5CP_SHUTOFF` (cool=85) with a small margin. Below 65°F is wasteful overcooling; above 86°F is outside the equipment's design operating envelope.
+- **Cool `[65, 86]`** — accommodates VACATION setpoints (cool=83) and the 85°F shutoff that the §2 price-scarcity tier and §3 5CP detector layers push when conditions warrant, with a small margin. Below 65°F is wasteful overcooling; above 86°F is outside the equipment's design operating envelope.
 - **Heat `[55, 75]`** — well above pipe-freeze territory at the low end, well below summer setpoints at the high end (so it never displaces a real comfort intent).
 - **Emergency `86°F` indoor / `74°F` cool target** — 86°F indoor is uncomfortable enough that no scheduled action should leave the AC sitting idle; 74°F cool target is aggressive enough to actually pull the indoor temp down quickly while staying inside the safe range above.
 
@@ -325,13 +325,13 @@ The scheduler doesn't need to predict WHICH days are 5CP days (neither PJM nor C
 
 ### Schedule coverage of the two peak windows
 
-| Time | Action | PJM 5CP coverage | ComEd 5CP coverage |
-|------|--------|------------------|---------------------|
-| 12:00-14:00 | `HOT_COAST` 80°F | low risk (1/5 historical) | **partial** — 80°F limits compressor calls but isn't a hard cutoff |
-| 14:00-18:00 | `HOT_5CP_SHUTOFF` 85°F | high risk (4/5 historical) | high risk (back half of ComEd window) |
-| 18:00+ | `HOT_RECOVER_LOW` 78°F → `HOT_RECOVER` 75°F | post-window recovery | post-window recovery |
+| Time | Schedule baseline | Dynamic shutoff (Arm B) | PJM 5CP coverage | ComEd 5CP coverage |
+|------|-------------------|--------------------------|------------------|---------------------|
+| 12:00-13:00 | `HOT_COAST` 80°F | inactive (outside 13-20 CT eligibility window) | low risk (1/5 historical) | **partial** — 80°F limits compressor calls |
+| 13:00-19:00 | `HOT_COAST` 80°F | §2 scarcity tier (≥20¢) and §3 5CP detector can push to 85°F per-tick | high risk (4/5 historical RTO; back half of ComEd window) | high risk |
+| 19:00+ | `HOT_RECOVER` 75°F | inactive (outside 13-20 CT eligibility window) | post-window recovery | post-window recovery |
 
-The 12:00-14:00 ComEd-only window is currently covered by the looser COAST setpoint rather than full shutoff. Open tradeoff: tighten that window by extending the shutoff back to 12:00, at a real comfort cost during those two hours. Empirically, ComEd 5CP hours haven't all clustered at noon-14; if/when actual zone-peak history shows that window matters more, the schedule can shift.
+Post-prereg (Arm B): the **schedule baseline** is HOT_COAST 80°F through the afternoon. The 85°F shutoff timing comes from dynamic layers (real-time price-spike reactivity + dual-scope 5CP detector), not a hard-coded clock window. The dynamic layers track actual price/load conditions instead of historical-cluster assumptions, which the 2025 RTO peak hour (18:00 CT, not 14-17 as the old fixed window assumed) made visible.
 
 ---
 
