@@ -84,11 +84,13 @@ def parse_lmp_csv(path: Path) -> dict[datetime.datetime, float]:
     return out
 
 
-def compute_for_years(years: list[int]) -> dict[int, float]:
+def compute_for_years(years: list[int]):
     """For each month 6..9, compute the median (RTP - LMP) spread in
-    cents/kWh across all available hours in `years`."""
+    cents/kWh across all available hours in `years`. Returns
+    (medians_by_month, total_hour_pairs, contributing_years)."""
     by_month: dict[int, list[float]] = defaultdict(list)
     total_hours = 0
+    contributing_years: list[int] = []
     for year in years:
         rtp_path = DATA_DIR / f"rtp_{year}.txt"
         lmp_path = DATA_DIR / f"lmp_{year}.csv"
@@ -100,6 +102,7 @@ def compute_for_years(years: list[int]) -> dict[int, float]:
             continue
         rtp = parse_rtp_file(rtp_path)
         lmp = parse_lmp_csv(lmp_path)
+        contributed = False
         for hour, rtp_cents in rtp:
             if hour.month not in (6, 7, 8, 9):
                 continue
@@ -109,17 +112,21 @@ def compute_for_years(years: list[int]) -> dict[int, float]:
             lmp_cents = lmp_per_mwh / 10.0  # $/MWh -> ¢/kWh
             by_month[hour.month].append(rtp_cents - lmp_cents)
             total_hours += 1
-    return {
+            contributed = True
+        if contributed:
+            contributing_years.append(year)
+    medians = {
         m: round(median(by_month[m]), 4)
         for m in sorted(by_month)
         if by_month[m]
-    }, total_hours
+    }
+    return medians, total_hours, contributing_years
 
 
 def main() -> int:
-    years = [2023, 2024, 2025]
-    print(f"computing spread for years {years} from {DATA_DIR}")
-    medians, total_hours = compute_for_years(years)
+    requested_years = [2023, 2024, 2025]
+    print(f"computing spread; trying years {requested_years} from {DATA_DIR}")
+    medians, total_hours, contributing_years = compute_for_years(requested_years)
     if not medians:
         print("ERROR: no valid input data found. See README.md for "
               "the data-acquisition step (fetch_lmp.py).")
@@ -127,7 +134,8 @@ def main() -> int:
 
     out = {
         "computed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "input_years": years,
+        "input_years": contributing_years,
+        "requested_years": requested_years,
         "input_hours_total": total_hours,
         "median_spread_cents_per_kwh_by_month": {
             str(m): v for m, v in medians.items()
