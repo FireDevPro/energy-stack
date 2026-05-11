@@ -1597,3 +1597,91 @@ def test_already_fired_action_does_not_refire_within_window(monkeypatch):
     # execute_action should NOT have been awaited: the fired_actions
     # short-circuit kicks in BEFORE the action body runs.
     assert app.execute_action.await_count == 0  # type: ignore[attr-defined]
+
+
+# ---- P1.3: _read_stored_decision multi-revision Flux semantics ------------
+
+
+def _mock_query_api_for_decisions(records: list[dict]):
+    """Build a query_api mock whose ``.query(flux)`` returns a list of
+    tables. ``records`` is a flat list of dicts, each mapped to one
+    Flux record's ``.values``. All records appear in a single table
+    (matching what the fixed ``group() |> sort |> limit 1`` pipeline
+    produces -- one flattened table with the chosen rows).
+
+    Side effect: the mock stores the Flux query string at ``.last_flux``
+    for regression assertions against the pipeline structure.
+    """
+    mock = MagicMock()
+    mock.last_flux = None
+
+    def _query(flux):
+        mock.last_flux = flux
+
+        class _Rec:
+            def __init__(self, values):
+                self.values = values
+
+        class _Table:
+            def __init__(self, recs):
+                self.records = [_Rec(r) for r in recs]
+
+        return [_Table(records)]
+
+    mock.query = _query
+    return mock
+
+
+def test_read_stored_decision_returns_day_type_when_present():
+    """Happy path: one decision row exists, function returns its
+    day_type tag value."""
+    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
+    assert app._read_stored_decision(q, "energy", "2026-07-15") == "HOT"
+
+
+def test_read_stored_decision_returns_none_when_empty():
+    """No decision rows in bucket -> None. fetch_today_decision's lazy
+    recompute path depends on this being None, not raising."""
+    q = _mock_query_api_for_decisions([])
+    assert app._read_stored_decision(q, "energy", "2026-07-15") is None
+
+
+def test_read_stored_decision_flux_query_flattens_series_with_group():
+    """Regression guard: the Flux pipeline MUST include ``group()`` to
+    flatten tag-keyed series before picking the latest. Without it,
+    a NORMAL->HOT revisit creates two series (different day_type tag
+    values), and ``last()`` per-series + Python iteration in
+    unspecified order can return the older NORMAL day_type and silently
+    defeat the 06:00/11:00 forecast-bust correction path."""
+    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
+    app._read_stored_decision(q, "energy", "2026-07-15")
+    assert "|> group()" in q.last_flux
+
+
+def test_read_stored_decision_flux_query_picks_latest_by_time():
+    """Regression guard: after ``group()``, the query MUST sort
+    descending by ``_time`` and ``limit(n: 1)`` so the most recent
+    decision wins. Returning an older row when a newer revisit
+    exists is the P1.3 bug class."""
+    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
+    app._read_stored_decision(q, "energy", "2026-07-15")
+    flux = q.last_flux
+    assert "sort(columns: [\"_time\"], desc: true)" in flux
+    assert "limit(n: 1)" in flux
+
+
+def test_read_stored_decision_handles_record_without_day_type():
+    """Defensive: if a row somehow lacks ``day_type`` (corrupt tag
+    state, partial write), continue iterating rather than crash.
+    Returns None when no row carries a non-empty day_type."""
+    q = _mock_query_api_for_decisions([{"day_type": None}, {"day_type": ""}])
+    assert app._read_stored_decision(q, "energy", "2026-07-15") is None
+
+
+def test_read_stored_decision_targets_correct_decision_for_date():
+    """The decision_for_date filter must appear verbatim in the Flux
+    so a query for 2026-07-15 doesn't accidentally pull 2026-07-14's
+    last decision."""
+    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
+    app._read_stored_decision(q, "energy", "2026-07-15")
+    assert 'r.decision_for_date == "2026-07-15"' in q.last_flux
