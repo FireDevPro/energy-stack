@@ -32,7 +32,20 @@ for fname in ['may2025.txt', 'jun2025.txt', 'jul2025.txt', 'aug2025.txt', 'sep20
 
 print(f"\nTotal 5-min records: {len(all_5min)}")
 
-# Aggregate to hourly averages (this is what's billed)
+# Aggregate to hourly averages.
+#
+# Inclusion rule: keep an hour if >=6 of 12 5-minute prints are present
+# (the same threshold used by the locked analysis pipeline at runtime;
+# see EXPERIMENT_DESIGN.md §4 Rule 3). NOT the strict ComEd billing
+# rule (which requires the full 12 prints).
+#
+# Why the looser rule for threshold derivation: a partial-print hour
+# is still a real hour the household experienced; tightening to 12/12
+# only changes May-Sep P95 by 0.02 c/kWh (9.53 -> 9.55) and leaves
+# P99, max, and the 17-scarcity-day count exact. The bundled 2025
+# data has 3,556 hours with all 12 prints, 107 hours with 6-11 prints,
+# and 7 hours below 6 prints (excluded). See check_partial_hours.py
+# for the side-by-side comparison.
 hourly = defaultdict(list)
 for ts, price in all_5min:
     hour_key = ts.replace(minute=0, second=0, microsecond=0)

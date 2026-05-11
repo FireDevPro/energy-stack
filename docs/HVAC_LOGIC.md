@@ -91,7 +91,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 |---|---|---|---|
 | `MILD` | High < 75°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 75-85°F max (and apparent < 90°F) | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
-| `HOT_5CP_RISK` | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool, hard 5CP shutoff window |
+| `HOT_5CP_RISK` | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay and 5CP-detector layers drive shutoff per the locked logic below; there is no fixed shutoff clock on HOT days. |
 | `HOT_STREAK_DAY1` | HOT + day-after also HOT | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool to bank thermal mass for the multi-day event. Day 2 of the streak runs the regular `HOT_SCHEDULE` (the mass is already there). |
 
 ---

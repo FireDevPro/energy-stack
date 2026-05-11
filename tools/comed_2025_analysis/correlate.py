@@ -34,6 +34,8 @@ hourly_price = defaultdict(list)
 for ts, price in all_5min:
     hour_key = ts.replace(minute=0, second=0, microsecond=0)
     hourly_price[hour_key].append(price)
+# Inclusion rule: >=6 of 12 prints — see analyze.py for rationale and
+# check_partial_hours.py for sensitivity. Matches EXPERIMENT_DESIGN.md §4 Rule 3.
 hourly_price_avg = {k: mean(v) for k, v in hourly_price.items() if len(v) >= 6}
 
 # Load weather
