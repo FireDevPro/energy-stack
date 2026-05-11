@@ -39,24 +39,37 @@ A clean install (`pip install -r tools/analysis/requirements.txt --require-hashe
 
 ### 2.1 InfluxDB measurements
 
-All raw data lives in the `energy` bucket of the on-prem InfluxDB 2 instance described in [`SERVICES.md`](SERVICES.md). The analysis reads the following measurements:
+All raw data lives in the `energy` bucket of the on-prem InfluxDB 2 instance described in [`SERVICES.md`](SERVICES.md). The analysis reads the following measurements (reconciled 2026-05-11 against production schema; container heartbeat is filesystem-based per the P2.3 hardening, not an Influx measurement — see Stage 2 Rule 7 for how outages are detected):
 
-| Measurement | Source service | Fields used | Cadence |
+| Measurement | Source service / script | Fields used | Cadence |
 |---|---|---|---|
-| `comed.prices` | `comed-poller` | `price_cents` | 5-min (raw); hourly avg derived |
-| `hvac.energy` | `refoss-poller` | `em_2_kwh`, `em_8_kwh`, `em_9_kwh`, `em_1_kwh`, `em_7_kwh` | 1-min |
-| `hvac.actions` | `hvac-scheduler` | `action`, `arm`, `cool_setpoint_f`, `source`, `override_category` | event |
-| `hvac.health` | `hvac-scheduler` | `heartbeat` | 1-min |
-| `hvac.arm_transitions` | `scripts/log_arm_transition.py` | `from_arm`, `to_arm`, `air_setting` | event |
-| `hvac.overrides` | `tools/log_override.py` (this PR) | `category`, `start_ts`, `end_ts`, `setpoint_f`, `note` | event |
-| `hvac.5cp_state` | `hvac-scheduler` | `state`, `scope`, `ratio` | 1-min |
-| `hvac.price_overlay` | `hvac-scheduler` | `tier`, `effective_setpoint_f` | event |
-| `thermostat.state` | `thermostat-poller` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `running` | 1-min |
-| `thermostat.comfortnet` | `thermostat-poller` | `cool_actual_pct`, `heat_actual_pct`, `blower_cfm` | 1-min |
-| `nws.forecast` | `nws-poller` | `max_temp_f`, `apparent_max_f`, `min_temp_f`, `rh_max_pct` | 6-hourly issuance |
+| `comed.prices` | `comed-poller` | `price_cents` | 5-min |
+| `refoss.channel` | `refoss-poller` | `power_w`, `energy_wh`, per-channel tag `channel` (`em:1`..`em:9`) | 1-min |
+| `refoss.system` | `refoss-poller` | system-level health and totals | 1-min |
+| `hvac.thermostat` | `thermostat-poller` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `running`, `hvac_mode` | 1-min |
+| `hvac.comfortnet` | `thermostat-poller` (CT-485 ingestion) | `cool_actual_pct`, `heat_actual_pct`, `blower_cfm` | 1-min |
+| `hvac.overrides` | `thermostat-poller` (occupant-driven detection) and [`tools/log_override.py`](../tools/log_override.py) (operator annotation) | `category`, `start_ts`, `end_ts`, `setpoint_f`, `note` | event |
+| `hvac.actions` | `hvac-scheduler` | `action`, `arm`, `cool_setpoint_f`, `source`, `override_category`, `applied`, `dry_run` | per-tick (every minute when actionable) |
+| `hvac.decisions` | `hvac-scheduler` | per-tick day-type / schedule decision audit row | per-tick |
+| `hvac.5cp_state` | `hvac-scheduler` | `state`, `scope`, `ratio` | ~2.5-min (matches PJM `inst_load` cadence) |
+| `hvac.price_overlay` | `hvac-scheduler` | `tier`, `effective_setpoint_f` | ~30-min (price-overlay evaluation cadence) |
+| `hvac.precool_window` | `hvac-scheduler` | `hour_ct`, `depth_f`, `target_date` | event (one per night's pre-cool decision) |
+| `hvac.arm_transitions` | [`scripts/log_arm_transition.py`](../deploy/energy-stack/scripts/log_arm_transition.py) | `from_arm`, `to_arm`, `air_setting`, `pi_dry_run` | event (Monday switches) |
+| `nws.forecast` | `nws-poller` | `max_temp_f`, `apparent_max_f`, `min_temp_f`, `rh_max_pct`, `sky_cover_avg_pct`, `wind_gust_max_mph` | 6-hourly issuance |
+| `nws.alerts` | `nws-poller` | active NWS alert ingest (heat advisories etc.) | event |
 | `ecowitt.weather` | `ecowitt` integration | `outdoor_temp_f`, `outdoor_dewpoint_f`, `outdoor_rh_pct`, `wind_mph`, `solar_wm2`, `pressure_inhg` | 5-min |
-| `pjm.coincident_peak` | `scripts/scrape_pjm_5cp_pdf.py` | `peak_load_mw`, `comed_zone_load_mw` | yearly, 5 rows |
-| `comed.bill` | `scripts/parse_comed_bill.py` | `capacity_charge_dollars`, `supply_kwh`, `delivery_dollars` | monthly |
+| `pjm.inst_load` | `pjm-dm2-poller` | `mw`, `area` tag | ~5-min |
+| `pjm.metered_load` | `pjm-dm2-poller` | `mw`, `zone` tag | hourly |
+| `pjm.peak_forecast_rto` | `pjm-dm2-poller` | `peak_load_mw`, `peak_hour_ept` | daily 06:00 / 13:00 |
+| `pjm.lmp_da_hourly` | `pjm-dm2-poller` | `total_lmp_da`, `pnode_name` | daily 17:00 (24 rows for next day) |
+| `pjm.load_forecast` | `pjm-dm2-poller` | 7-day load forecast | daily |
+| `pjm.nspl_zonal` | `pjm-dm2-poller` | `nspl_mw`, `zone` | annual |
+| `pjm.feed_status` | `pjm-dm2-poller` | per-feed last-successful-fetch timestamp | per-feed |
+| `pjm.poller_heartbeat` | `pjm-dm2-poller` | `tick_ok` | per minute |
+| `pjm.coincident_peak` | [`scripts/scrape_pjm_5cp_pdf.py`](../deploy/energy-stack/scripts/scrape_pjm_5cp_pdf.py) | `peak_load_mw`, `comed_zone_load_mw`, tags `summer_year` + `peak_rank` | yearly, 5 rows |
+| `comed.bill` | [`scripts/parse_comed_bill.py`](../deploy/energy-stack/scripts/parse_comed_bill.py) | `capacity_charge_dollars`, `supply_kwh`, `delivery_dollars` | monthly |
+
+The HVAC energy channels referenced as `em_2_kwh + em_8_kwh + em_9_kwh` in §3 Stage 3 are derived at analysis time from the per-channel rows of `refoss.channel` (filter `channel == em:2`, etc.) — the production schema is long-format (one row per channel per tick), not wide-format. The pipeline pivots at Stage 1 before passing to Stage 3.
 
 ### 2.2 External data (not in Influx)
 
@@ -108,7 +121,7 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 - **Rule 4 (NWS forecast)** — `pipeline.rule4_forecast`. Flags substitutions; does not gate week eligibility.
 - **Rule 5 (Ecowitt CDD)** — `pipeline.rule5_ecowitt`. NWS gridpoint fallback then daily `(Tmax+Tmin)/2−65` estimator.
 - **Rule 6 (PJM `inst_load`)** — `pipeline.rule6_pjm`. Logs detector-accuracy descriptive stats; does not gate.
-- **Rule 7 (scheduler outages)** — `pipeline.rule7_scheduler`. Three OR gates.
+- **Rule 7 (scheduler outages)** — `pipeline.rule7_scheduler`. Three OR gates per §4 Rule 7. Outage detection runs against the Influx schema directly: a contiguous gap of ≥5 min where `hvac.5cp_state` AND `hvac.actions` both have zero writes is treated as scheduler-down. (The container-health filesystem heartbeat — Docker `HEALTHCHECK` on `/tmp/last_tick_ok` — is the runtime alert path, not the post-hoc analysis signal.)
 - **Rule 8 (Pi outages)** — `pipeline.rule8_pi`. Combines rule 1 + 7 effects per affected day.
 - **Rule 9 (manual overrides)** — `pipeline.rule9_overrides`. Reads `hvac.overrides`; classifies operational vs vacation; vacation excludes affected days; <5 qualifying days excludes week.
 - **Rule 10 (arm-transition verification)** — `pipeline.rule10_transition`. First-control-relevant-window-OR-6h check; failure excludes the week.
