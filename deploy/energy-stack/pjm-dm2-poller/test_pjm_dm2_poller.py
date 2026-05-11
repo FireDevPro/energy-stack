@@ -293,15 +293,46 @@ def test_nspl_dec_1_only():
 # =========================================================================
 
 
-def test_parse_ept_attaches_local_tz_then_converts():
-    dt = _parse_ept("2026-07-15T13:00:00", CHICAGO)
+def test_parse_ept_attaches_eastern_prevailing_time():
+    """PJM ``_ept`` fields are Eastern Prevailing Time, NOT the
+    operator's local tz. Summer: 13:00 EDT (UTC-4) -> 17:00 UTC.
+    Pre-fix the parser attached ``cfg.tz=America/Chicago``, so 13:00
+    "EPT" was being read as 13:00 CDT -> 18:00 UTC (one hour late).
+    This test pins the post-fix Eastern semantics."""
+    dt = _parse_ept("2026-07-15T13:00:00")
     assert dt.tzinfo is not None
-    assert dt.astimezone(timezone.utc).hour == 18
+    assert dt.astimezone(timezone.utc).hour == 17
 
 
 def test_parse_ept_handles_dst_boundary():
-    dt = _parse_ept("2026-11-01T02:30:00", CHICAGO)
-    assert dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") == "2026-11-01 08:30"
+    """DST ends 2026-11-01 02:00 EDT -> 01:00 EST. By 02:30 the
+    fallback has already occurred (the ambiguous hour is 01:00-01:59),
+    so 02:30 is unambiguously EST (UTC-5) -> 07:30 UTC. Pinning
+    Eastern semantics; a future regression to ``cfg.tz=Chicago``
+    would produce 08:30 UTC and fail loudly."""
+    dt = _parse_ept("2026-11-01T02:30:00")
+    assert dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") == "2026-11-01 07:30"
+
+
+def test_summer_ept_produces_edt_offset_in_influx_point():
+    """End-to-end pin: PJM publishes a June 23, 2025 17:00 EPT (= EDT in
+    summer = UTC-4) peak; the Influx point's timestamp must be
+    2025-06-23T21:00:00Z. Pre-fix this came out as 2025-06-23T22:00:00Z
+    because the poller treated the EPT field as Chicago time (CDT,
+    UTC-5). This test would have caught the 1-hour offset bug
+    immediately if it had existed before the fix."""
+    item = {
+        "datetime_beginning_ept": "2025-06-23T17:00:00",
+        "is_verified": True,
+        "load_area": "CE",
+        "mw": 20528.0,
+        "zone": "CE",
+    }
+    [pt] = build_metered_load_points([item])
+    line = pt.to_line_protocol()
+    ts_ns = int(line.split()[-1])
+    expected_utc = int(datetime(2025, 6, 23, 21, 0, 0, tzinfo=timezone.utc).timestamp() * 1e9)
+    assert ts_ns == expected_utc
 
 
 # =========================================================================
@@ -325,11 +356,11 @@ def _da_item(hour: int, lmp: float = 30.0) -> dict:
 
 def test_da_lmp_points_count_matches_input():
     items = [_da_item(h, 25 + h) for h in range(24)]
-    assert len(build_da_lmp_points(items, CHICAGO)) == 24
+    assert len(build_da_lmp_points(items)) == 24
 
 
 def test_da_lmp_zone_tag_falls_back_to_pnode_name():
-    [pt] = build_da_lmp_points([_da_item(0)], CHICAGO)
+    [pt] = build_da_lmp_points([_da_item(0)])
     assert "zone=COMED" in pt.to_line_protocol()
 
 
@@ -337,7 +368,7 @@ def test_da_lmp_handles_missing_optional_fields():
     item = _da_item(10)
     item["congestion_price_da"] = None
     item["marginal_loss_price_da"] = None
-    [pt] = build_da_lmp_points([item], CHICAGO)
+    [pt] = build_da_lmp_points([item])
     line = pt.to_line_protocol()
     assert "congestion_price_da=0" in line
     assert "marginal_loss_price_da=0" in line
@@ -360,7 +391,6 @@ def _forecast_item(target_hour: int, eval_hour: int, mw: float = 10000.0) -> dic
 def test_forecast_points_carry_evaluated_at_tag():
     [a, b] = build_load_forecast_points(
         [_forecast_item(15, 6, 11000), _forecast_item(15, 13, 11500)],
-        CHICAGO,
     )
     eval_a = next(t for t in a.to_line_protocol().split(",") if "evaluated_at_iso" in t)
     eval_b = next(t for t in b.to_line_protocol().split(",") if "evaluated_at_iso" in t)
@@ -368,7 +398,7 @@ def test_forecast_points_carry_evaluated_at_tag():
 
 
 def test_forecast_horizon_field():
-    [pt] = build_load_forecast_points([_forecast_item(15, 6)], CHICAGO)
+    [pt] = build_load_forecast_points([_forecast_item(15, 6)])
     assert "horizon_hours=33i" in pt.to_line_protocol()
 
 
@@ -388,12 +418,12 @@ def _metered_item(hour: int, mw: float = 12000.0, verified: bool = True) -> dict
 
 
 def test_metered_load_points_count():
-    pts = build_metered_load_points([_metered_item(h) for h in range(24)], CHICAGO)
+    pts = build_metered_load_points([_metered_item(h) for h in range(24)])
     assert len(pts) == 24
 
 
 def test_metered_load_carries_zone_and_verification_tags():
-    [pt] = build_metered_load_points([_metered_item(13, 14500.5)], CHICAGO)
+    [pt] = build_metered_load_points([_metered_item(13, 14500.5)])
     line = pt.to_line_protocol()
     assert "pjm.metered_load" in line
     assert "zone=CE" in line  # NOTE: not COMED — see COMED_METERED_ZONE constant
@@ -402,7 +432,7 @@ def test_metered_load_carries_zone_and_verification_tags():
 
 
 def test_metered_load_unverified_rows_marked():
-    [pt] = build_metered_load_points([_metered_item(0, verified=False)], CHICAGO)
+    [pt] = build_metered_load_points([_metered_item(0, verified=False)])
     assert "is_verified=false" in pt.to_line_protocol()
 
 
@@ -423,7 +453,7 @@ def test_inst_load_points_count():
     """Each posted observation becomes one point. PJM publishes inst_load
     sub-hourly so a 30-min window may contain 6+ observations."""
     pts = build_inst_load_points([_inst_load_item(13, 14000.0 + h, minute=h*10)
-                                   for h in range(3)], CHICAGO)
+                                   for h in range(3)])
     assert len(pts) == 3
 
 
@@ -431,7 +461,7 @@ def test_inst_load_carries_area_tag_and_mw_field():
     """``area`` is the tag (matches the PJM filter param); ``mw`` is the
     field name (matches pjm.metered_load's `mw` field so the §3 detector
     can swap feeds without renaming downstream queries)."""
-    [pt] = build_inst_load_points([_inst_load_item(13, 14250.5)], CHICAGO)
+    [pt] = build_inst_load_points([_inst_load_item(13, 14250.5)])
     line = pt.to_line_protocol()
     assert line.startswith("pjm.inst_load")
     assert "area=COMED" in line
@@ -459,7 +489,7 @@ def _peak_item(hour_generated: int = 8, peak_hour: int = 16) -> dict:
 
 
 def test_peak_forecast_points_carry_load_forecast():
-    [pt] = build_peak_forecast_points([_peak_item()], CHICAGO)
+    [pt] = build_peak_forecast_points([_peak_item()])
     line = pt.to_line_protocol()
     assert "pjm.peak_forecast_rto" in line
     assert "area=PJM" in line  # Influx tag escapes spaces; see line for actual form
@@ -469,7 +499,7 @@ def test_peak_forecast_points_carry_load_forecast():
 def test_peak_forecast_includes_projected_peak_string():
     """The projected-peak datetime is stored as a string field for
     downstream parsing rather than being collapsed into the timestamp."""
-    [pt] = build_peak_forecast_points([_peak_item(peak_hour=17)], CHICAGO)
+    [pt] = build_peak_forecast_points([_peak_item(peak_hour=17)])
     assert 'projected_peak_datetime_ept="2026-07-15T17:00:00"' in pt.to_line_protocol()
 
 
@@ -478,7 +508,6 @@ def test_peak_forecast_uses_generated_at_as_timestamp():
     the timestamp keeps each revision distinct."""
     [a, b] = build_peak_forecast_points(
         [_peak_item(hour_generated=8), _peak_item(hour_generated=14)],
-        CHICAGO,
     )
     # Different generated_at -> different Influx timestamps
     assert a.to_line_protocol().split()[-1] != b.to_line_protocol().split()[-1]
@@ -499,7 +528,7 @@ def _nspl_item(year: int = 2026, peak_dt: str = "2025-06-23T17:00:00", mw: float
 
 
 def test_nspl_points_carry_year_tag():
-    [pt] = build_nspl_points([_nspl_item(year=2026)], CHICAGO)
+    [pt] = build_nspl_points([_nspl_item(year=2026)])
     line = pt.to_line_protocol()
     assert "pjm.nspl_zonal" in line
     assert "year=2026" in line
@@ -510,14 +539,18 @@ def test_nspl_points_carry_year_tag():
 def test_nspl_timestamp_is_underlying_peak_hour():
     """The NSPL effective for billing year N is determined by the peak
     hour of summer N-1. We timestamp the Influx point at that peak hour
-    so it lines up with pjm.coincident_peak rank-1 for the same summer."""
-    [pt] = build_nspl_points([_nspl_item(peak_dt="2025-06-23T17:00:00")], CHICAGO)
-    # 17:00 CDT = 22:00 UTC
+    so it lines up with pjm.coincident_peak rank-1 for the same summer.
+
+    Time conversion: PJM ``_ept`` is Eastern Prevailing Time. June 23
+    is EDT (UTC-4), so 17:00 EDT = 21:00 UTC. Pre-2026-05 the parser
+    used the operator's ``cfg.tz=America/Chicago`` and produced 22:00
+    UTC -- one hour late."""
+    [pt] = build_nspl_points([_nspl_item(peak_dt="2025-06-23T17:00:00")])
     line = pt.to_line_protocol()
     # Final field of line protocol is the unix-ns timestamp
     ts_ns = int(line.split()[-1])
-    # 2025-06-23T22:00:00 UTC
-    expected = int(datetime(2025, 6, 23, 22, 0, 0, tzinfo=timezone.utc).timestamp() * 1e9)
+    # 17:00 EDT == 21:00 UTC
+    expected = int(datetime(2025, 6, 23, 21, 0, 0, tzinfo=timezone.utc).timestamp() * 1e9)
     assert ts_ns == expected
 
 
