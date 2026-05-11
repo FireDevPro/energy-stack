@@ -108,12 +108,51 @@ Layer 2's branch-2 adjustment factor (`(ComEdNPL − AComEdCPL) / portfolio_sum`
 
 For most residential profiles ACustCPL ≥ ACustPL (branch 1) and Layer 2 collapses to Layer 1. Branch 2 activates when the household's load peaks more with ComEd-zone-only afternoons than with PJM-RTO-wide peaks. AC-driven residential loads in the ComEd zone can sit in either branch depending on whether the household's coincidence with RTO-wide peaks (broader and later) matches or misses.
 
+## Layer 1 observability — does the per-customer §3 formula actually apply to this household?
+
+Att. M-2 §3 carries a "for certain situations" clause that lets ComEd substitute a delivery-class-average CPLC instead of the per-customer 5CP formula. The federal tariff doesn't define "certain situations"; it points at the General Terms and Conditions of Ill. C. C. No. 10. If the class-average clause applied to this household, O2 Layer 1's "ACustCPL_arm_B − ACustCPL_arm_A" framing would measure the right physics but the wrong bill — the household's individual peak-hour load shape wouldn't enter the actual capacity charge.
+
+**Verdict for this household: PER-CUSTOMER applies. Layer 1's observability claim stands.**
+
+Resolved against the 2026 Ratebook (Ill. C. C. No. 10, 867 pages). The ICC tariff uses "PLC" (Peak Load Contribution) — same quantity PJM calls CPLC — and the substitution clause maps, in ICC-tariff terms, to the **load-profile substitution for non-interval-metered customers** described in the GT&C "Measurement of Energy and Demand" section. The bifurcation is by metering, not by customer class:
+
+> **GT&C Definitions (PDF p. 176)**: "PLC means peak load contribution, in kW. The retail customer's PLC is determined by the Company based on PJM's Reliability Pricing Model methodology for a period of twelve (12) monthly billing periods beginning with the June monthly billing period and extending through the following May monthly billing period. For a situation in which insufficient historical electric power and energy consumption data exist for a retail customer, the Company determines such retail customer's PLC based upon, in the Company's judgment, the retail customer's expected electric power and energy requirements and its expected contribution to such peak electric load on the PJM electric system region."
+
+> **GT&C "Measurement of Energy and Demand" (PDF p. 260)**: "a. For a situation in which an interval demand recording metering installation is provided for such retail customer, the average of the interval demand recording meter's data for the two (2) thirty (30) minute intervals within each hour is used to determine such sixty (60) minute demand. b. For a situation in which no metering installation or a metering installation that does not have an interval demand recording register is provided for the retail customer, the sixty (60) minute demands established by the retail customer are statistically derived utilizing the load profile applicable to the retail customer..."
+
+The household in this study is on **Rate BESH (Basic Electric Service Hourly Pricing)**, which requires interval/AMI metering to operate — the supply rate literally depends on hourly prints. So the household is by definition AMI-metered and falls in GT&C item (a): per-customer interval-measured demand → per-customer PJM-RPM-methodology PLC → per-customer CPLC. The Watt-Hour Delivery Class (the residential non-AMI analog) is **nonresidential-only** per the tariff text and does not apply here; Rider NAM (the AMI opt-out) is also not in play.
+
+Across all 867 pages of Ill. C. C. No. 10 the ICC ratebook contains **no "class average PLC" language** for AMI customers — the only class/profile-substitution language in the tariff is the non-interval clause above. The Att. M-2 §3 "average CPLC attributable to the delivery class" clause is therefore the federal-tariff phrasing of the same non-interval substitution rule, applied to customers in situations where interval data is unavailable (new account without 12-month history, missing interval reads, non-AMI accounts, etc.) — not a generic residential override.
+
+**Caveat noted for future amendment.** The agent that resolved this did not fully read Rate RDS body (Ill. C. C. No. 10 sheet 47, PDF p. 80-100), which is the delivery rate that translates PLC into the capacity-charge line on the bill. If a class-average override exists, it would be in the "Determination of Customer Charges" or "Billing Demand" subsection of Rate RDS. This is the place to look if the Layer 1 framing ever needs to be amended post-filing.
+
+**Provenance note: the ICC 22-0036 docket challenge was about Net Metering, not the class-average mechanism.** The ICC Staff Rebuttal Testimony of Torsten Clausen ([`data/icc_22-0036_staff_exhibit_2.0_rebuttal_torsten_clausen.pdf`](data/icc_22-0036_staff_exhibit_2.0_rebuttal_torsten_clausen.pdf)) and the parallel FERC ER22-1520-001 docket ([`data/ferc_er22_1520_filing_letter.pdf`](data/ferc_er22_1520_filing_letter.pdf), [`data/ferc_er22_1520_order.pdf`](data/ferc_er22_1520_order.pdf)) both concern Rider POGNM (solar net metering) and the parallel FERC change allowing negative CPLC values for net-metered customers. The class-average clause for non-net-metered residential customers was carried forward verbatim and not litigated.
+
+---
+
 ## Local PDFs / data files archived alongside this snapshot
 
-| File | Size | Source URL |
+### Primary citations (value-locking sources)
+
+| File | Size | Source |
 |---|---|---|
-| `data/comed_icc_info_sheet_4_capacity_charge.pdf` | 128 KB | ComEd Schedule of Rates filing 2026-04-24 |
-| `data/pjm_weather_normalized_peaks.xlsx` | 27 KB | PJM Resource Adequacy Planning |
-| `data/pjm_2026_load_forecast_report.pdf` | 8.5 MB | PJM Resource Adequacy Planning, January 2026 |
-| `data/pjm_nspl_2025.pdf` | 85 KB | PJM Markets-Ops Settlements |
-| `data/pjm_oatt_attM2_comed.pdf` | 185 KB | PJM OATT eTariff |
+| `data/comed_icc_info_sheet_4_capacity_charge.pdf` | 128 KB | ComEd Schedule of Rates Informational Sheet 4, 71st Revised, eff 2026-04-25 — locks MCC = $10.13567/kW-month |
+| `data/pjm_weather_normalized_peaks.xlsx` | 27 KB | PJM Resource Adequacy Planning — locks ComEdNPL |
+| `data/pjm_oatt_attM2_comed.pdf` | 185 KB | PJM OATT eTariff Att. M-2 (ComEd), eff 2022-09-01 — the locked formula |
+| `data/cub_comed_delivery_tod_fact_sheet_2026-03.pdf` | 505 KB | CUB DTOD fact sheet, March 2026 — source for delivery-rate base values locked in `deploy/energy-stack/hvac-scheduler/precool.py` |
+
+### Provenance / evidence-of-absence (search trail for portfolio sum)
+
+| File | Size | Purpose |
+|---|---|---|
+| `data/pjm_2026_load_forecast_report.pdf` | 8.5 MB | PJM Jan 2026 forecast — context for ComEdNPL forward values |
+| `data/pjm_nspl_2025.pdf` | 85 KB | PJM Markets-Ops NSPL Summary 2025 — ComEd zonal single-peak NSPL provenance |
+| `data/pjm_oatt_attM2_comed_2015_2019_pre_er22_1520.pdf` | 282 KB | Older Att. M-2 (created 2015-11, modified 2019-04) for tariff-version diff |
+| `data/pjm_oatt_attM_appendix_imm_2026-01-08.pdf` | 177 KB | OATT Att. M Appendix (IMM procedural rules) — confirmed orthogonal to load-side portfolio sum |
+| `data/imm_2025_som_sec5_capacity.pdf` | 3.1 MB | IMM 2025 State of the Market Section 5 (Capacity) — searched for portfolio sum; not found |
+| `data/comed_ipa_5yr_load_forecast_2026-2031_filed_2025-07-15.pdf` | 1.9 MB | ComEd IPA-filed 5-year load forecast — searched for customer-class peaks; not found |
+| `data/icc_22-0036_staff_exhibit_2.0_rebuttal_torsten_clausen.pdf` | 136 KB | ICC docket 22-0036 Staff Rebuttal — Net Metering proceeding (orthogonal to class-average mechanism) |
+| `data/ferc_er22_1520_filing_letter.pdf` | 679 KB | FERC filing letter for the net-metering Att. M-2 amendment |
+| `data/ferc_er22_1520_order.pdf` | 102 KB | FERC order accepting the amendment (no Illinois protests) |
+
+Two independent public-filing sweeps (IMM SOM Section 5; ComEd IPA Appendix C) confirm the customer-class portfolio sum is not separately published in IL/PJM public sources. ±20% stipulation on `portfolio_sum_mw` is the honest representation.
