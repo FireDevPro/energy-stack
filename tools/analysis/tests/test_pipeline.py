@@ -573,6 +573,160 @@ def test_rule8_pi_apply_ignores_days_outside_the_week():
     assert out.contributes["qualifying_days"] == 7
 
 
+# -- Stage 2 orchestrator: combine rule results into a per-week row --------
+
+
+def _happy_week_inputs(arm: str = "B") -> dict:
+    """Helper: minimal week-input dict that passes every rule."""
+    week = datetime.date(2026, 6, 8)
+    switch = datetime.datetime(2026, 6, 8, 5, 0)
+    return {
+        "week_start_ct": week,
+        "arm": arm,
+        "weekly_hvac_kwh": 100.0,
+        "refoss_intervals": [],  # no gaps
+        "hourly_prices": [_hour(12) for _ in range(168)],
+        "daily_comfortnet_downtime_minutes": [0] * 7,
+        "daily_ecowitt_both_missing_hours": [0] * 7,
+        "scheduler_outages": [],
+        "control_relevant_windows": [],
+        "overrides": [],
+        "missing_forecast_issuances": 0,
+        "arm_transition": {
+            "switch_ts": switch,
+            "intended_arm": arm,
+            "action_events": [
+                {"timestamp": switch + datetime.timedelta(hours=3),
+                 "arm": arm, "action": "HOT_PRE_COOL",
+                 "dry_run": (arm == "A")},
+            ],
+        },
+    }
+
+
+def test_stage2_apply_week_happy_path_qualifies():
+    out = pipeline._apply_rules_for_week(_happy_week_inputs())
+    assert out.row["qualifying"] is True
+    assert out.row["exclusion_reason"] is None
+    assert out.row["arm"] == "B"
+    assert out.row["week_start_ct"] == "2026-06-08"
+
+
+def test_stage2_apply_week_excludes_on_rule1_imputation_cap():
+    inputs = _happy_week_inputs()
+    inputs["refoss_intervals"] = [
+        {"tier": 1, "imputed_kwh": 15.0,
+         "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 10, 4)},
+    ]
+    out = pipeline._apply_rules_for_week(inputs)
+    assert out.row["qualifying"] is False
+    assert out.row["exclusion_reason"] == "refoss_imputation_too_high"
+
+
+def test_stage2_apply_week_excludes_on_unverified_arm_transition():
+    inputs = _happy_week_inputs()
+    inputs["arm_transition"]["action_events"] = []  # no verification action
+    out = pipeline._apply_rules_for_week(inputs)
+    assert out.row["qualifying"] is False
+    assert out.row["exclusion_reason"] == "arm_transition_unverified"
+
+
+def test_stage2_apply_week_exclusion_priority_follows_spec_order():
+    # Rule 1 and rule 10 both fail → rule 1's reason wins (spec order)
+    inputs = _happy_week_inputs()
+    inputs["refoss_intervals"] = [
+        {"tier": 1, "imputed_kwh": 15.0,
+         "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 10, 4)},
+    ]
+    inputs["arm_transition"]["action_events"] = []
+    out = pipeline._apply_rules_for_week(inputs)
+    assert out.row["exclusion_reason"] == "refoss_imputation_too_high"
+
+
+def test_stage2_apply_week_vacation_excludes_via_rule8():
+    inputs = _happy_week_inputs()
+    inputs["overrides"] = [
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 9, 8, 0),
+         "end_ts": datetime.datetime(2026, 6, 11, 17, 0),  # Tue-Thu = 3 days
+         "setpoint_f": 82.0},
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 12, 8, 0),
+         "end_ts": datetime.datetime(2026, 6, 12, 17, 0),  # Fri = 1 more day
+         "setpoint_f": 82.0},
+    ]
+    out = pipeline._apply_rules_for_week(inputs)
+    # 7 - 4 = 3 qualifying days < 5
+    assert out.row["qualifying"] is False
+    assert out.row["exclusion_reason"] == "insufficient_qualifying_days"
+
+
+def test_stage2_apply_week_merges_rule_contributions_into_row():
+    inputs = _happy_week_inputs()
+    inputs["overrides"] = [
+        {"category": "operational",
+         "start_ts": datetime.datetime(2026, 6, 9, 13, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 15, 0),
+         "setpoint_f": 79.0},
+    ]
+    inputs["daily_comfortnet_downtime_minutes"] = [0, 35, 0, 0, 0, 0, 0]
+    inputs["missing_forecast_issuances"] = 2
+    out = pipeline._apply_rules_for_week(inputs)
+    assert out.row["qualifying"] is True
+    assert out.row["override_operational_count"] == 1
+    assert out.row["override_vacation_days"] == 0
+    assert out.row["o6_ineligible_days"] == 1
+    assert out.row["forecast_substitutions"] == 2
+
+
+def test_stage2_apply_week_tier4_refoss_intervals_recorded():
+    inputs = _happy_week_inputs()
+    inputs["refoss_intervals"] = [
+        {"tier": 4, "imputed_kwh": 0.0,
+         "start_ts": datetime.datetime(2026, 6, 10, 10, 0),
+         "end_ts": datetime.datetime(2026, 6, 10, 14, 0)},
+    ]
+    out = pipeline._apply_rules_for_week(inputs)
+    assert any(iv.get("tier") == 4 for iv in out.imputed_intervals)
+
+
+def test_stage2_apply_week_scheduler_outages_recorded():
+    inputs = _happy_week_inputs()
+    outage = (
+        datetime.datetime(2026, 6, 10, 3, 0),
+        datetime.datetime(2026, 6, 10, 3, 30),
+    )
+    inputs["scheduler_outages"] = [outage]
+    out = pipeline._apply_rules_for_week(inputs)
+    assert any(o.get("kind") == "scheduler_outage" for o in out.outages)
+
+
+# -- Stage 2 parquet-I/O wrapper -------------------------------------------
+
+
+def test_stage2_quality_writes_locked_csv_schema_for_no_weeks(tmp_path):
+    """When no weeks are configured, stage2_quality still writes the
+    three output files with locked headers (existing skeleton behavior).
+    """
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage2_quality(stage1, tmp_path)
+    stage2 = tmp_path / "stage2"
+    assert (stage2 / "qualifying_weeks.csv").exists()
+    assert (stage2 / "imputed_intervals.csv").exists()
+    assert (stage2 / "outages.csv").exists()
+    # Header rows match the locked schema
+    with open(stage2 / "qualifying_weeks.csv") as f:
+        header = next(csv.reader(f))
+    assert header == [
+        "week_start_ct", "arm", "qualifying", "exclusion_reason",
+        "imputed_hvac_kwh_pct", "imputed_price_hours_pct",
+        "override_operational_count", "override_vacation_days",
+    ]
+
+
 # -- Math primitives --------------------------------------------------------
 
 
