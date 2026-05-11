@@ -39,6 +39,7 @@ from app import (
     fetch_inst_load_recent_rto,
     fetch_metered_load_recent,
     fetch_metered_load_recent_rto,
+    fetch_peak_forecast_rto,
     poll_once,
     seconds_to_next_aligned_tick,
 )
@@ -239,10 +240,12 @@ def test_fetch_metered_load_recent_uses_5_day_window():
 
     assert captured["feed"] == "hrl_load_metered"
     assert captured["params"]["zone"] == COMED_METERED_ZONE
-    # 5 days back from 2026-07-15 14:17:30 = 2026-07-10 14:17:30.
+    # 5 days back from 2026-07-15 14:17:30 CDT (= 15:17:30 EDT).
+    # Filter is formatted in Eastern Prevailing Time per PJM's _ept
+    # convention.
     assert (
         captured["params"]["datetime_beginning_ept"]
-        == "2026-07-10T14:17:30.0to2026-07-15T14:17:30.0"
+        == "2026-07-10T15:17:30.0to2026-07-15T15:17:30.0"
     )
 
 
@@ -269,9 +272,14 @@ def test_fetch_inst_load_recent_uses_30min_window_and_area_filter():
     assert captured["feed"] == "inst_load"
     assert captured["params"]["area"] == COMED_INST_AREA
     assert "zone" not in captured["params"]
+    # 14:17:30 CDT (UTC-5) == 15:17:30 EDT (UTC-4). The 30-min window
+    # is built in Eastern Prevailing Time per PJM's _ept filter
+    # convention. Pre-fix the poller used CDT for the filter string,
+    # which asked PJM for an hour-stale window and silently degraded
+    # the §3 5CP detector's live-load input. See PR #62.
     assert (
         captured["params"]["datetime_beginning_ept"]
-        == "2026-07-15T13:47:30.0to2026-07-15T14:17:30.0"
+        == "2026-07-15T14:47:30.0to2026-07-15T15:17:30.0"
     )
 
 
@@ -1164,3 +1172,105 @@ def test_comed_metered_does_not_run_rto_tripwire(capsys):
     asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
     captured = capsys.readouterr()
     assert "rto_metered_load_unexpected_rows_per_hour" not in captured.out
+
+
+# ---- P1.1 (reviewer-flagged 2026-05-11): EPT request windows --------------
+
+
+def test_request_window_is_ept_not_chicago_for_inst_load():
+    """Reviewer-flagged 2026-05-11: PJM's ``_ept`` filter expects
+    Eastern Prevailing Time on REQUEST as well as RESPONSE. Pre-fix
+    the poller formatted ``now_local`` (cfg.tz = Chicago) directly,
+    asking PJM for a window 1 hour stale in summer.
+
+    Cross-DST stability check: a Chicago-local time always resolves
+    to the same Eastern wall-clock regardless of which DST band
+    we're in. This test pins the EDT case (Jul = both CDT and EDT
+    in summer)."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    # 12:00 CT = 13:00 ET in summer (cleanly hour-aligned for clarity).
+    now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
+    asyncio.run(fetch_inst_load_recent(FakeClient(), cfg, now_local))
+
+    # The window must end at 13:00 EDT, not 12:00 (which would be CDT
+    # leaking through as if it were EDT).
+    assert (
+        captured["params"]["datetime_beginning_ept"]
+        == "2026-07-15T12:30:00.0to2026-07-15T13:00:00.0"
+    )
+
+
+def test_request_window_is_ept_not_chicago_for_metered_load():
+    """Symmetric for ``hrl_load_metered`` (5-day window). The window
+    boundaries are in EPT regardless of cfg.tz."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
+    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+
+    # End in EDT (13:00 ET), 5 days back from there.
+    assert (
+        captured["params"]["datetime_beginning_ept"]
+        == "2026-07-10T13:00:00.0to2026-07-15T13:00:00.0"
+    )
+
+
+def test_request_window_is_ept_for_da_lmp_tomorrow():
+    """The DA LMP fetcher asks for tomorrow's date at 00:00 EPT. The
+    "tomorrow" boundary must be computed in Eastern -- a late-night
+    Chicago poll could fall on a different EPT date."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    # Edge case: 23:30 CT = 00:30 EDT next day. EPT "tomorrow" is two
+    # calendar days from now in Chicago terms.
+    now_local = datetime(2026, 7, 15, 23, 30, 0, tzinfo=CHICAGO)
+    asyncio.run(fetch_da_lmp_for_tomorrow(FakeClient(), cfg, now_local))
+
+    # 23:30 CDT (Jul 15) = 00:30 EDT (Jul 16). Tomorrow in EPT = Jul 17.
+    assert captured["params"]["datetime_beginning_ept"] == "2026-07-17T00:00:00.0"
+
+
+def test_request_window_is_ept_for_peak_forecast_rto():
+    """``ops_sum_frcst_peak_rto`` uses ``generated_at_ept`` which also
+    needs to be EPT-formatted. The "today midnight" boundary is in
+    Eastern."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
+    asyncio.run(fetch_peak_forecast_rto(FakeClient(), cfg, now_local))
+
+    # "Today midnight EPT" = 2026-07-15T00:00:00; today end = today
+    # 23:59:59 in EPT.
+    assert (
+        captured["params"]["generated_at_ept"]
+        == "2026-07-15T00:00:00.0to2026-07-15T23:59:59.0"
+    )
