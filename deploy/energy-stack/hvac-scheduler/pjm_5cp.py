@@ -410,13 +410,18 @@ def update_season_5th_highest(query_api, bucket: str,
     Hour-dedup invariant: ``pjm.metered_load`` carries ``is_verified``
     as a tag (set by the poller). When PJM corrects a row from
     unverified -> verified, Influx stores it as a separate series at
-    the same timestamp. Without ``|> group()`` before the aggregation,
-    ``aggregateWindow`` and ``sort/limit`` would operate per-series:
-    the same physical hour could fill two of the top-5 slots and
-    skew the season-5th value. The ``group()`` flatten pulls all
-    is_verified series for a given hour into one table, so
-    ``aggregateWindow(every: 1h, fn: mean)`` collapses any
-    duplicate-hour rows into a single mean before ranking.
+    the same timestamp. The ``group()`` flatten pulls all is_verified
+    series for a given hour into one table.
+
+    Aggregation choice: ``fn: max`` (not ``mean``) so the corrected
+    (verified) value is preferred over the initial estimate. PJM's
+    initial unverified publish is typically conservative; the
+    subsequent verified value adjusts slightly upward as corrections
+    are applied. Taking ``max`` always selects the corrected value
+    when both exist, while still returning the unverified value when
+    PJM hasn't shipped a correction yet. ``mean`` averaged the two
+    and produced a value lower than the verified actual, biasing the
+    season-5th baseline downward for hours that had been corrected.
     """
     flux = f"""
         from(bucket: "{bucket}")
@@ -426,7 +431,7 @@ def update_season_5th_highest(query_api, bucket: str,
                                 and r.zone == "{zone}"
                                 and r._field == "mw")
           |> group()
-          |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+          |> aggregateWindow(every: 1h, fn: max, createEmpty: false)
           |> sort(columns: ["_value"], desc: true)
           |> limit(n: {MIN_OBSERVATIONS_FOR_5TH})
     """

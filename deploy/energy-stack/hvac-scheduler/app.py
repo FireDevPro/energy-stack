@@ -797,6 +797,13 @@ class FiringState:
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
     last_5cp_audit_at_utc: datetime | None = None
+    # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
+    # where ``fetch_latest_comed`` returned a real price. Used to release
+    # a carried-forward price-overlay tier when the feed has been
+    # unavailable for longer than ``PRICE_FEED_STALE_THRESHOLD``. Without
+    # this, a scarcity tier active when the feed dropped would hold the
+    # 85F effective setpoint indefinitely.
+    price_feed_last_ok_at_utc: datetime | None = None
 
 
 def fetch_day_ahead_prices_for_date(
@@ -1444,6 +1451,16 @@ class LayerInputs:
 
 _FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
 
+# P2.2 reviewer-flagged 2026-05-11: a carried-forward price-overlay
+# tier (preserved across a brief feed gap per PR #60's P2.A fix) must
+# not hold indefinitely. If the ComEd RTP feed has been unavailable
+# for longer than this threshold, the overlay releases back to NORMAL
+# tier. 30 minutes mirrors the minimum-hold window for tier
+# transitions (price_overlay.DEFAULT_MINIMUM_HOLD_MINUTES) -- if a
+# tier event can resolve in 30 min on healthy data, an outage of
+# similar length is plausibly a real release rather than a brief blip.
+PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)
+
 # Action make-up window: a scheduled action that didn't successfully
 # apply on its exact-minute tick (Control4 transient error, network
 # blip, partial snapshot) can be retried on the next N ticks until
@@ -1488,19 +1505,48 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     prev_tier = firing.price_overlay_state.current_tier
     if current_price_cents is None:
         # Price feed unavailable: preserve the active tier's effective
-        # setpoint contributions. The comment used to claim "current
-        # tier continues to apply" but the code was zeroing the offset
-        # and override -- logs labeled the tier as scarcity while the
-        # effective setpoint silently fell back to the schedule
-        # baseline. Now both the label AND the setpoint contributions
-        # carry forward from the locked tier config. The state machine
-        # state (transition timestamps, hold-elapsed checks) is left
-        # untouched so the eventual feed recovery sees a coherent
-        # picture.
-        active_tier = None
-        price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
-        price_tier_name = prev_tier
+        # setpoint contributions UNTIL the feed has been stale for too
+        # long (PRICE_FEED_STALE_THRESHOLD, default 30 min). Pre-PR #60
+        # the offset/override were zeroed immediately, dropping the
+        # scarcity 85F shutoff silently. PR #60 preserved them but
+        # without a max-age -- a feed that stalls during scarcity
+        # could hold 85F indefinitely. P2.2 splits the difference: a
+        # brief gap carries the tier; a sustained gap releases.
+        # Fallback for the cold-start / state-restore case: a non-NORMAL
+        # prev_tier had to have been triggered by a real price reading,
+        # so its triggered_at_utc is a reasonable floor for
+        # last_ok_at_utc if the explicit timestamp is missing.
+        last_ok = firing.price_feed_last_ok_at_utc
+        if last_ok is None:
+            last_ok = firing.price_overlay_state.triggered_at_utc
+        stale = (
+            last_ok is None
+            or now_utc - last_ok > PRICE_FEED_STALE_THRESHOLD
+        )
+        if stale and prev_tier != NORMAL_TIER_NAME:
+            log("warn", "price_feed_stale_tier_released",
+                prev_tier=prev_tier,
+                last_ok_at_utc=last_ok.isoformat() if last_ok else None,
+                threshold_min=PRICE_FEED_STALE_THRESHOLD.total_seconds() / 60.0)
+            # Release the overlay state cleanly so a later feed
+            # recovery starts from NORMAL rather than re-entering the
+            # stale tier's hold window.
+            firing.price_overlay_state = PriceOverlayState(
+                current_tier=NORMAL_TIER_NAME,
+                triggered_at_utc=None,
+            )
+            active_tier = None
+            price_offset_f = 0
+            price_override_f = None
+            price_tier_name = NORMAL_TIER_NAME
+        else:
+            active_tier = None
+            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+            price_tier_name = prev_tier
     else:
+        # Feed is healthy this tick; record the timestamp for the
+        # stale-detection path above.
+        firing.price_feed_last_ok_at_utc = now_utc
         active_tier, firing.price_overlay_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
@@ -2047,18 +2093,32 @@ async def main_async(cfg: Config) -> int:
                 except Exception as exc:
                     log("error", "revisit_failed", error=str(exc), error_type=type(exc).__name__)
 
-            # Schedule actions
+            # Schedule actions. P2.3 (reviewer-flagged 2026-05-11): the
+            # health marker MUST be gated on tick success. Pre-fix the
+            # marker was touched unconditionally, so a repeated
+            # ``schedule_check_failed`` was visible in logs but
+            # invisible to Docker's HEALTHCHECK + any deadman alert
+            # built on top of it -- the container stayed "healthy"
+            # while the control loop was broken (e.g., the 2026-05-11
+            # incident).
+            tick_ok = True
             try:
                 await run_schedule_check(cfg, c4, query_api, write_api, tz, now_local, firing)
             except Exception as exc:
-                log("error", "schedule_check_failed", error=str(exc), error_type=type(exc).__name__)
+                tick_ok = False
+                log("error", "schedule_check_failed",
+                    error=str(exc), error_type=type(exc).__name__)
 
-            # Heartbeat for Docker healthcheck (touch every minute regardless of
-            # whether actions fired). If this stops, the container is wedged.
-            try:
-                health_marker.touch()
-            except Exception:
-                pass
+            # Heartbeat for Docker healthcheck. Touched ONLY when the
+            # schedule_check completed without raising; a sustained
+            # failure age past the HEALTHCHECK staleness window
+            # (5 min) flips the container unhealthy and triggers
+            # whatever restart / alert path the operator has wired.
+            if tick_ok:
+                try:
+                    health_marker.touch()
+                except Exception:
+                    pass
 
         try:
             await asyncio.wait_for(stop.wait(), timeout=10)
