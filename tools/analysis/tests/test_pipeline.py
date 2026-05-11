@@ -727,6 +727,350 @@ def test_stage2_quality_writes_locked_csv_schema_for_no_weeks(tmp_path):
     ]
 
 
+# -- Stage 3: DTOD rates synced with production scheduler ------------------
+
+
+def test_dtod_periods_synced_with_precool_module():
+    """The Stage 3 dollar-cost computation uses the ComEd DTOD delivery
+    rate, which is also used live by the scheduler in
+    deploy/energy-stack/hvac-scheduler/precool.py. The two must stay
+    aligned; this test loads precool by file path and asserts the
+    rate schedule is identical.
+    """
+    import importlib.util
+    from pathlib import Path
+    precool_path = (
+        Path(__file__).resolve().parents[3]
+        / "deploy" / "energy-stack" / "hvac-scheduler" / "precool.py"
+    )
+    spec = importlib.util.spec_from_file_location("precool", precool_path)
+    precool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(precool)
+    assert pipeline.DTOD_PERIODS_CT == precool.DTOD_PERIODS_CT
+    # Helpers agree for every hour
+    for h in range(24):
+        assert (
+            pipeline.dtod_delivery_rate_for_hour_ct(h)
+            == precool.dtod_delivery_rate_for_hour(h)
+        )
+
+
+def test_dtod_delivery_rate_for_hour_ct_known_buckets():
+    # Locked rate schedule per CUB March 2026 fact sheet
+    assert pipeline.dtod_delivery_rate_for_hour_ct(7) == 4.009    # Morning
+    assert pipeline.dtod_delivery_rate_for_hour_ct(15) == 10.712  # Mid-Day Peak
+    assert pipeline.dtod_delivery_rate_for_hour_ct(20) == 3.747   # Evening
+    assert pipeline.dtod_delivery_rate_for_hour_ct(3) == 2.984    # Overnight
+
+
+def test_dtod_delivery_rate_for_hour_ct_rejects_out_of_range():
+    with pytest.raises(ValueError):
+        pipeline.dtod_delivery_rate_for_hour_ct(24)
+    with pytest.raises(ValueError):
+        pipeline.dtod_delivery_rate_for_hour_ct(-1)
+
+
+# -- Stage 3: weekly_cdd ----------------------------------------------------
+
+
+def test_weekly_cdd_no_cooling_days():
+    # All daily T_avg ≤ 65°F → 0 CDD contribution
+    assert pipeline.weekly_cdd([60.0, 62.0, 65.0, 64.0, 50.0, 55.0, 65.0]) == 0.0
+
+
+def test_weekly_cdd_uniform_hot_week():
+    # 7 days at 75°F → 7 × (75-65) = 70 CDD
+    assert pipeline.weekly_cdd([75.0] * 7) == 70.0
+
+
+def test_weekly_cdd_mixed_temps():
+    # 70, 80, 65, 90, 60, 75, 85 → 5+15+0+25+0+10+20 = 75
+    assert pipeline.weekly_cdd([70, 80, 65, 90, 60, 75, 85]) == 75.0
+
+
+def test_weekly_cdd_handles_short_week_after_day_drops():
+    # Spec rule 5: some days may be dropped from CDD numerator/denominator.
+    # Sum is over whatever days are present.
+    assert pipeline.weekly_cdd([75.0, 80.0]) == (10.0 + 15.0)
+
+
+# -- Stage 3: weekly_mean_enthalpy_btu_lb ----------------------------------
+
+
+def test_weekly_mean_enthalpy_btu_lb_constant_hours_equals_point_value():
+    # Three identical hours → mean equals the point enthalpy
+    rec = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    expected = pipeline.enthalpy_btu_per_lb(85.0, 70.0)
+    out = pipeline.weekly_mean_enthalpy_btu_lb([rec, rec, rec])
+    assert out == pytest.approx(expected)
+
+
+def test_weekly_mean_enthalpy_btu_lb_averages_across_hours():
+    # Two distinct hourly enthalpies — output is the mean
+    r1 = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    r2 = {"temp_f": 75.0, "dewpoint_f": 60.0}
+    expected = (
+        pipeline.enthalpy_btu_per_lb(85.0, 70.0)
+        + pipeline.enthalpy_btu_per_lb(75.0, 60.0)
+    ) / 2.0
+    out = pipeline.weekly_mean_enthalpy_btu_lb([r1, r2])
+    assert out == pytest.approx(expected)
+
+
+def test_weekly_mean_enthalpy_btu_lb_uses_per_record_pressure_when_given():
+    # If pressure_inhg is on the record, it overrides the default 29.92
+    rec_high = {"temp_f": 85.0, "dewpoint_f": 70.0, "pressure_inhg": 30.5}
+    rec_default = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    h_high = pipeline.weekly_mean_enthalpy_btu_lb([rec_high])
+    h_default = pipeline.weekly_mean_enthalpy_btu_lb([rec_default])
+    # Higher pressure → slightly lower humidity ratio → slightly lower enthalpy
+    assert h_high < h_default
+
+
+def test_weekly_mean_enthalpy_btu_lb_empty_returns_zero():
+    assert pipeline.weekly_mean_enthalpy_btu_lb([]) == 0.0
+
+
+# -- Stage 3: weekly_dollars_per_cdd ---------------------------------------
+
+
+def test_weekly_dollars_per_cdd_single_hour_mid_day_peak():
+    # 1 kWh consumed at hour=15 (Mid-Day Peak: 10.712¢/kWh delivery)
+    # supply = 10.0¢/kWh; total = 20.712¢ = $0.20712
+    # CDD = 1.0 → $/CDD = 0.20712
+    hourly = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 10.0}]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=1.0)
+    assert out == pytest.approx(0.20712, abs=1e-5)
+
+
+def test_weekly_dollars_per_cdd_zero_cdd_returns_zero_no_division():
+    hourly = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 10.0}]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=0.0)
+    assert out == 0.0
+
+
+def test_weekly_dollars_per_cdd_mixed_periods():
+    # Hour 4 (Overnight, 2.984¢) and hour 15 (Mid-Day Peak, 10.712¢)
+    # supply 5¢ both hours; 1 kWh each.
+    # cents = (5 + 2.984)*1 + (5 + 10.712)*1 = 7.984 + 15.712 = 23.696¢ = $0.23696
+    # CDD = 2 → $/CDD = 0.11848
+    hourly = [
+        {"hour_of_day_ct": 4, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0},
+        {"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0},
+    ]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=2.0)
+    assert out == pytest.approx(0.11848, abs=1e-5)
+
+
+def test_weekly_dollars_per_cdd_higher_in_peak_hours_than_overnight():
+    # Same kWh consumed in peak vs overnight → peak hour costs more per CDD
+    peak = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0}]
+    overnight = [{"hour_of_day_ct": 4, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0}]
+    peak_cost = pipeline.weekly_dollars_per_cdd(peak, weekly_cdd=1.0)
+    overnight_cost = pipeline.weekly_dollars_per_cdd(overnight, weekly_cdd=1.0)
+    assert peak_cost > overnight_cost
+
+
+# -- Stage 3: _compute_weekly_row orchestrator -----------------------------
+
+
+def _happy_stage3_inputs(arm: str = "A", qualifies: bool = True) -> dict:
+    """Synthetic happy-path Stage 3 input: hot week, no missing data."""
+    return {
+        "week_start_ct": datetime.date(2026, 6, 8),
+        "arm": arm,
+        "qualifies": qualifies,
+        "daily_avg_temps_f": [75.0] * 7,
+        "hourly_hvac_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 0.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        "hourly_mains_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 1.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        "hourly_weather": [
+            {"temp_f": 85.0, "dewpoint_f": 70.0, "pressure_inhg": 29.92,
+             "solar_wm2": 100.0, "wind_mph": 5.0}
+            for _ in range(168)
+        ],
+    }
+
+
+def test_stage3_compute_weekly_row_populates_all_locked_columns():
+    out = pipeline._compute_weekly_row(_happy_stage3_inputs())
+    expected_columns = (
+        "week_start_ct", "arm", "qualifies",
+        "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+        "o4_dollars_per_cdd_whole_home",
+    ) + pipeline.WEATHER_VECTOR_COMPONENTS
+    for col in expected_columns:
+        assert col in out, f"missing column: {col}"
+    assert out["week_start_ct"] == "2026-06-08"
+    assert out["arm"] == "A"
+    assert out["qualifies"] is True
+    # 7 days × (75-65) = 70 CDD
+    assert out["weekly_cdd"] == 70.0
+    # Every hour is 0.5 kWh → 0.5 kW peak
+    assert out["o3_peak_hvac_kw"] == 0.5
+    # Max temp/dewpoint from constant 85/70 hours
+    assert out["max_temp_f"] == 85.0
+    assert out["max_dewpoint_f"] == 70.0
+    # Mean wind/total solar
+    assert out["mean_wind_mph"] == pytest.approx(5.0)
+    assert out["total_solar_wh_m2"] == 168 * 100.0
+
+
+def test_stage3_compute_weekly_row_qualifies_comes_from_stage2_verbatim():
+    """Boundary rule: Stage 3 ECHOES Stage 2's qualifying decision; it
+    does not re-derive quality logic from Stage 1 inputs. Test that a
+    pristine Stage 1 dataset still gets qualifies=False when Stage 2
+    marked the week excluded."""
+    inputs = _happy_stage3_inputs(qualifies=False)
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["qualifies"] is False
+
+
+def test_stage3_compute_weekly_row_zero_cdd_week_handles_division():
+    # Cool week with all daily T_avg below 65 → CDD = 0; $/CDD must be 0
+    # (not NaN/inf) so the row writes cleanly.
+    inputs = _happy_stage3_inputs()
+    inputs["daily_avg_temps_f"] = [60.0] * 7
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["weekly_cdd"] == 0.0
+    assert out["o1_dollars_per_cdd"] == 0.0
+    assert out["o4_dollars_per_cdd_whole_home"] == 0.0
+
+
+def test_stage3_compute_weekly_row_mains_o4_uses_mains_records_not_hvac():
+    # Use distinct hvac vs mains hourly kWh values; verify each routes
+    # to the right column.
+    inputs = _happy_stage3_inputs()
+    for r in inputs["hourly_hvac_records"]:
+        r["hvac_kwh"] = 0.1
+    for r in inputs["hourly_mains_records"]:
+        r["hvac_kwh"] = 1.0  # mains 10x hvac
+    out = pipeline._compute_weekly_row(inputs)
+    # O4 should be ~10x O1 because mains uses 1.0 kWh vs hvac 0.1 kWh
+    assert out["o4_dollars_per_cdd_whole_home"] == pytest.approx(
+        10.0 * out["o1_dollars_per_cdd"], rel=1e-9,
+    )
+
+
+def test_stage3_compute_weekly_row_o3_uses_max_not_mean():
+    # Most hours 0.3 kWh, one hour 2.5 kWh → O3 = 2.5 kW (the peak)
+    inputs = _happy_stage3_inputs()
+    for r in inputs["hourly_hvac_records"]:
+        r["hvac_kwh"] = 0.3
+    inputs["hourly_hvac_records"][50]["hvac_kwh"] = 2.5
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["o3_peak_hvac_kw"] == 2.5
+
+
+# -- Stage 3: stage3_weekly orchestrator (parquet + Stage 2 CSV reader) ----
+
+
+def _write_stage2_qualifying_weeks(stage2_dir: Path, rows: list[dict]) -> None:
+    stage2_dir.mkdir(parents=True, exist_ok=True)
+    with open(stage2_dir / "qualifying_weeks.csv", "w", newline="") as f:
+        w = csv.DictWriter(
+            f, fieldnames=list(pipeline.QUALIFYING_WEEKS_LOCKED_COLUMNS),
+        )
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def test_stage3_weekly_writes_locked_schema_header(tmp_path):
+    """Existing schema test, preserved: weekly.csv has the locked columns."""
+    pipeline.stage3_weekly(
+        stage1_dir=tmp_path, stage2_dir=tmp_path, out_dir=tmp_path,
+    )
+    weekly = tmp_path / "stage3" / "weekly.csv"
+    assert weekly.exists()
+    with open(weekly) as f:
+        header = next(csv.reader(f))
+        data_rows = list(csv.reader(f))
+    assert header == [
+        "week_start_ct", "arm", "qualifies",
+        "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+        "o4_dollars_per_cdd_whole_home",
+        *pipeline.WEATHER_VECTOR_COMPONENTS,
+    ]
+    # Header-only when no Stage 2 / Stage 1 input is wired
+    assert data_rows == []
+
+
+def test_stage3_weekly_reads_stage2_qualifying_csv(monkeypatch, tmp_path):
+    """Stage 3 reads Stage 2's qualifying decision via the
+    qualifying_weeks.csv contract — does not re-derive it.
+    """
+    # Stage 2 says week 2026-06-08 / A passes, but 2026-06-15 / B is excluded.
+    _write_stage2_qualifying_weeks(tmp_path / "stage2", [
+        {"week_start_ct": "2026-06-08", "arm": "A", "qualifying": "True",
+         "exclusion_reason": "",
+         "imputed_hvac_kwh_pct": 0.0, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+        {"week_start_ct": "2026-06-15", "arm": "B", "qualifying": "False",
+         "exclusion_reason": "refoss_imputation_too_high",
+         "imputed_hvac_kwh_pct": 0.12, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+    ])
+
+    def fake_loader(stage1_dir, week_start_ct, arm):
+        # Same fixture for both weeks; differing qualifies bool below.
+        base = _happy_stage3_inputs(arm=arm)
+        base["week_start_ct"] = week_start_ct
+        # Note: qualifies is OVERWRITTEN by stage3_weekly with the
+        # Stage 2 CSV value, NOT this fixture's value.
+        base["qualifies"] = True  # try to lie about it — should be ignored
+        return base
+
+    monkeypatch.setattr(
+        pipeline, "_load_stage3_inputs_for_week", fake_loader,
+    )
+
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage3_weekly(stage1, tmp_path, tmp_path)
+
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    week_a = next(r for r in rows if r["arm"] == "A")
+    week_b = next(r for r in rows if r["arm"] == "B")
+    assert week_a["qualifies"] == "True"
+    # Stage 3 took Stage 2's False even though the fixture said True
+    assert week_b["qualifies"] == "False"
+
+
+def test_stage3_weekly_skips_weeks_without_stage1_inputs(monkeypatch, tmp_path):
+    """If the Stage 1 loader returns None for a week (no parquet data),
+    Stage 3 emits a row with qualifies and zero outcome values rather
+    than crashing.
+    """
+    _write_stage2_qualifying_weeks(tmp_path / "stage2", [
+        {"week_start_ct": "2026-06-08", "arm": "A", "qualifying": "True",
+         "exclusion_reason": "",
+         "imputed_hvac_kwh_pct": 0.0, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+    ])
+    monkeypatch.setattr(
+        pipeline, "_load_stage3_inputs_for_week",
+        lambda *args, **kwargs: None,
+    )
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage3_weekly(stage1, tmp_path, tmp_path)
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["week_start_ct"] == "2026-06-08"
+    assert rows[0]["qualifies"] == "True"
+    # Outcome values default to 0 when stage1 input is absent
+    assert float(rows[0]["o1_dollars_per_cdd"]) == 0.0
+
+
 # -- Math primitives --------------------------------------------------------
 
 

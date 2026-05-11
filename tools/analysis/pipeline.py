@@ -252,6 +252,96 @@ def enthalpy_btu_per_lb(temp_f: float, dewpoint_f: float, pressure_inhg: float =
     return 0.240 * temp_f + w * (1061.0 + 0.444 * temp_f)
 
 
+# --- ComEd DTOD delivery rates ($/kWh by hour-of-day CT) -------------------
+#
+# Used by Stage 3 O1/O4 dollar-cost computation. The same rate schedule is
+# used live by the scheduler in deploy/energy-stack/hvac-scheduler/precool.py
+# (DTOD_PERIODS_CT). Synced by test_dtod_periods_synced_with_precool_module
+# in test_pipeline.py — if the scheduler updates rates, that test will fail
+# until this constant is updated to match.
+#
+# Source: ComEd CUB Fact Sheet March 2026, Single-Family Non-Electric Heat.
+# Schema: (start_hour_inclusive, end_hour_exclusive, cents_per_kWh).
+
+DTOD_PERIODS_CT: tuple[tuple[int, int, float], ...] = (
+    ( 6, 13,  4.009),  # Morning
+    (13, 19, 10.712),  # Mid-Day Peak
+    (19, 21,  3.747),  # Evening
+    (21, 24,  2.984),  # Overnight (pre-midnight half)
+    ( 0,  6,  2.984),  # Overnight (post-midnight half)
+)
+
+
+def dtod_delivery_rate_for_hour_ct(hour_ct: int) -> float:
+    """ComEd DTOD delivery rate (¢/kWh) for a CT-local hour of day (0-23)."""
+    if not 0 <= hour_ct <= 23:
+        raise ValueError(f"hour_ct must be in [0, 23], got {hour_ct}")
+    for start, end, rate in DTOD_PERIODS_CT:
+        if start <= hour_ct < end:
+            return rate
+    raise RuntimeError(f"DTOD schedule does not cover hour_ct={hour_ct}")
+
+
+# --- Stage 3 aggregation primitives ---------------------------------------
+
+
+CDD_BASE_F = 65.0  # spec: CDD = max(T_avg − 65, 0) per day
+
+
+def weekly_cdd(daily_avg_temps_f: Sequence[float]) -> float:
+    """Σ_d max(T_avg_d − 65, 0) over the days of the week.
+
+    Per EXPERIMENT_DESIGN.md §4 Rule 5, dropped days don't appear here.
+    Caller (Stage 3 orchestrator) supplies only the day-T_avg values
+    that survived rule 5's >6h-both-missing exclusion.
+    """
+    return sum(max(t - CDD_BASE_F, 0.0) for t in daily_avg_temps_f)
+
+
+def weekly_mean_enthalpy_btu_lb(hourly_records: Sequence[dict]) -> float:
+    """Mean outdoor-air enthalpy (BTU/lb dry air) across hourly records.
+
+    Each record: ``{"temp_f": float, "dewpoint_f": float,
+    "pressure_inhg": float | optional}``. Per-record pressure overrides
+    the 29.92 inHg default if present.
+    """
+    if not hourly_records:
+        return 0.0
+    total = 0.0
+    for r in hourly_records:
+        p = float(r.get("pressure_inhg", 29.92))
+        total += enthalpy_btu_per_lb(
+            float(r["temp_f"]), float(r["dewpoint_f"]), p,
+        )
+    return total / len(hourly_records)
+
+
+def weekly_dollars_per_cdd(
+    hourly_records: Sequence[dict],
+    weekly_cdd: float,
+) -> float:
+    """Compute weekly $/CDD from hourly kWh × (supply + delivery) prices.
+
+    Each ``hourly_records`` entry needs ``hour_of_day_ct`` (0-23, CT),
+    ``hvac_kwh`` (energy that hour), and ``supply_c_per_kwh`` (ComEd
+    RTP hourly-avg supply price in cents/kWh after rule 3 imputation).
+    Delivery rate is looked up via ``dtod_delivery_rate_for_hour_ct``.
+
+    Returns 0 if ``weekly_cdd <= 0`` to avoid division by zero on
+    cooling-irrelevant weeks (which Stage 2 already gates out of the
+    formal analysis via the cooling-relevance criterion).
+    """
+    if weekly_cdd <= 0:
+        return 0.0
+    total_cents = 0.0
+    for r in hourly_records:
+        kwh = float(r["hvac_kwh"])
+        supply_c = float(r["supply_c_per_kwh"])
+        delivery_c = dtod_delivery_rate_for_hour_ct(int(r["hour_of_day_ct"]))
+        total_cents += kwh * (supply_c + delivery_c)
+    return (total_cents / 100.0) / weekly_cdd
+
+
 # --- Refoss Tier 3 ComfortNet-derived imputation ---------------------------
 
 
@@ -1032,25 +1122,142 @@ def rule10_transition_apply(
     return RuleResult(passes=False, exclusion_reason="arm_transition_unverified")
 
 
+WEEKLY_CSV_LOCKED_COLUMNS = (
+    "week_start_ct", "arm", "qualifies",
+    "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+    "o4_dollars_per_cdd_whole_home",
+    *WEATHER_VECTOR_COMPONENTS,
+)
+
+
+def _compute_weekly_row(inputs: dict) -> dict:
+    """Compute one weekly.csv row from per-week aggregation inputs.
+
+    `inputs` is a dict carrying the per-week data Stage 1 produced
+    plus Stage 2's qualifying decision (passed through verbatim):
+
+      - ``week_start_ct``: datetime.date
+      - ``arm``: "A" | "B"
+      - ``qualifies``: bool (from Stage 2's qualifying_weeks.csv)
+      - ``daily_avg_temps_f``: list of daily T_avg in °F (rule-5-surviving
+        days only)
+      - ``hourly_hvac_records``: list of dicts per HVAC-channel hour with
+        keys ``hour_of_day_ct``, ``hvac_kwh``, ``supply_c_per_kwh``
+      - ``hourly_mains_records``: same shape, mains channel
+      - ``hourly_weather``: list of dicts with ``temp_f``, ``dewpoint_f``,
+        optional ``pressure_inhg``, ``solar_wm2``, ``wind_mph``
+
+    Returns a dict keyed by the locked weekly.csv schema columns.
+    The boundary rule applies: ``qualifies`` is propagated unchanged
+    from Stage 2; this function never re-derives quality logic.
+    """
+    cdd = weekly_cdd(inputs["daily_avg_temps_f"])
+    hourly_hvac = inputs["hourly_hvac_records"]
+    hourly_mains = inputs["hourly_mains_records"]
+    weather = inputs["hourly_weather"]
+
+    o1 = weekly_dollars_per_cdd(hourly_hvac, cdd)
+    o4 = weekly_dollars_per_cdd(hourly_mains, cdd)
+    o3 = max((float(r["hvac_kwh"]) for r in hourly_hvac), default=0.0)
+
+    mean_enth = weekly_mean_enthalpy_btu_lb(weather)
+    total_solar = sum(float(r.get("solar_wm2", 0.0)) for r in weather)
+    mean_wind = (
+        sum(float(r.get("wind_mph", 0.0)) for r in weather) / len(weather)
+        if weather else 0.0
+    )
+    max_temp = max((float(r["temp_f"]) for r in weather), default=0.0)
+    max_dewpoint = max((float(r["dewpoint_f"]) for r in weather), default=0.0)
+
+    return {
+        "week_start_ct": inputs["week_start_ct"].isoformat(),
+        "arm": inputs["arm"],
+        "qualifies": bool(inputs["qualifies"]),
+        "o1_dollars_per_cdd": o1,
+        "o3_peak_hvac_kw": o3,
+        "o4_dollars_per_cdd_whole_home": o4,
+        "weekly_cdd": cdd,
+        "mean_enthalpy_btu_lb": mean_enth,
+        "total_solar_wh_m2": total_solar,
+        "mean_wind_mph": mean_wind,
+        "max_temp_f": max_temp,
+        "max_dewpoint_f": max_dewpoint,
+    }
+
+
+def _empty_weekly_row(week_start_ct: str, arm: str, qualifies: bool) -> dict:
+    """Row for a (week, arm) where Stage 1 produced no data — propagates
+    Stage 2's qualifying decision with zeroed outcomes."""
+    row = {col: 0.0 for col in WEATHER_VECTOR_COMPONENTS}
+    row.update({
+        "week_start_ct": week_start_ct,
+        "arm": arm,
+        "qualifies": qualifies,
+        "o1_dollars_per_cdd": 0.0,
+        "o3_peak_hvac_kw": 0.0,
+        "o4_dollars_per_cdd_whole_home": 0.0,
+    })
+    return row
+
+
+def _load_stage3_inputs_for_week(
+    stage1_dir: Path,
+    week_start_ct: datetime.date,
+    arm: str,
+) -> dict | None:
+    """Load per-week Stage 3 inputs from Stage 1 parquet outputs.
+
+    Empty-stub for now: returns None unconditionally. Real implementation
+    reads ``refoss.channel`` (filtering to em:2/em:8/em:9 for HVAC and
+    em:1/em:7 for mains; pivoting from long to wide), ``comed.prices``
+    (after rule 3 imputation), ``ecowitt.weather`` for the per-day
+    T_avg + hourly weather vector. Real-data integration runs against
+    a 2025 replay export, gated by OSF_FILING.md criterion 14.
+    """
+    return None
+
+
 def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
     """Compute per-(week, arm) outcome inputs and weather summary vector.
 
-    Skeleton: a full implementation reads the parquet HVAC/price/weather
-    data and produces weekly aggregates. This emits an empty CSV with
-    the locked schema for synthetic-data testing.
+    Reads Stage 2's qualifying_weeks.csv (the source of truth for
+    qualification per the boundary rule — Stage 3 never re-derives
+    quality logic), loads per-week aggregation inputs from Stage 1,
+    and writes weekly.csv with the locked schema.
+
+    When Stage 2's qualifying CSV is absent (e.g., a schema-only unit
+    test), the output is header-only.
     """
     stage_dir = out_dir / "stage3"
     stage_dir.mkdir(parents=True, exist_ok=True)
-    with open(stage_dir / "weekly.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(
-            [
-                "week_start_ct", "arm", "qualifies",
-                "o1_dollars_per_cdd", "o3_peak_hvac_kw",
-                "o4_dollars_per_cdd_whole_home",
-                *WEATHER_VECTOR_COMPONENTS,
-            ]
-        )
+    weekly_path = stage_dir / "weekly.csv"
+
+    qualifying_csv = stage2_dir / "stage2" / "qualifying_weeks.csv"
+    # Tests sometimes pass tmp_path as both stage2_dir and out_dir; in that
+    # case the qualifying CSV could also live at stage2_dir directly.
+    if not qualifying_csv.exists():
+        qualifying_csv = stage2_dir / "qualifying_weeks.csv"
+
+    with open(weekly_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(WEEKLY_CSV_LOCKED_COLUMNS))
+        w.writeheader()
+        if not qualifying_csv.exists():
+            return stage_dir
+        with open(qualifying_csv) as qf:
+            for q in csv.DictReader(qf):
+                week_start_ct_str = q["week_start_ct"]
+                arm = q["arm"]
+                qualifies = q["qualifying"].lower() in ("true", "1")
+                week_date = datetime.date.fromisoformat(week_start_ct_str)
+                inputs = _load_stage3_inputs_for_week(stage1_dir, week_date, arm)
+                if inputs is None:
+                    row = _empty_weekly_row(week_start_ct_str, arm, qualifies)
+                else:
+                    # Stage 2 decision is authoritative — override any
+                    # qualifies bool the loader may have set.
+                    inputs["qualifies"] = qualifies
+                    row = _compute_weekly_row(inputs)
+                w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
     return stage_dir
 
 
