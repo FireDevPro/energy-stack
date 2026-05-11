@@ -1289,13 +1289,33 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
 
 def _read_stored_decision(query_api, bucket: str, decision_for_date: str) -> str | None:
     """Return the persisted day-type for ``decision_for_date``, or None if
-    no decision was ever written."""
+    no decision was ever written.
+
+    Multi-revision safety: ``day_type`` is an Influx tag on
+    ``hvac.decisions`` (see ``write_decision``). A revisit from
+    NORMAL -> HOT (at 06:00 / 11:00 forecast-bust correction) writes a
+    NEW series for the same ``decision_for_date`` because the tag
+    changed. Pre-2026-05 this query used ``|> last()`` without first
+    flattening with ``|> group()``: ``last()`` runs per series, so it
+    returned one record per (day_type) value; Python then iterated
+    ``query_api.query(flux)`` tables in unspecified order and returned
+    whichever non-None ``day_type`` it saw first. The forecast-bust
+    correction was silently lost when the iterator yielded the older
+    NORMAL series before the newer HOT one.
+
+    Post-fix: ``|> group()`` flattens all series into one table; the
+    desc-sorted ``limit(n: 1)`` returns the single most recent row
+    across all day_type tag values. Whatever was written most recently
+    wins, regardless of tag-value alphabetic order or iterator order.
+    """
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -36h)
   |> filter(fn: (r) => r._measurement == "hvac.decisions"
                     and r.decision_for_date == "{decision_for_date}")
-  |> last()
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 1)
   |> keep(columns: ["day_type"])
 '''
     for table in query_api.query(flux):
