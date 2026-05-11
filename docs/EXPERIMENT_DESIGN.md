@@ -39,7 +39,7 @@ All outcomes are pre-committed before any data unblinding. Framing is descriptiv
 
 **O1 — Weekly HVAC-circuit cost per cooling-degree-day.** Sum across all hours in the calendar week of (`hvac_circuit_hourly_kWh × hourly_supply_price`) + (`hvac_circuit_hourly_kWh × delivery_rate`), divided by sum of cooling-degree-days base 65°F for the week. The HVAC channel set (`em:2 + em:8 + em:9` on the Refoss EM16P) is fixed at the OSF commit hash. Reported as the matched-pair median difference (Arm B minus Arm A) with bootstrap 95% CI.
 
-**O2 — Annual capacity-charge avoidance (cross-summer, descriptive).** Difference in the following-year ComEd Capacity Charge line item attributable to the experimental period. Computed by reconstructing the `CPLC_(Y+1)` term from [PJM OATT Attachment M-2 (ComEd) §2](https://www.pjm.com/pjmfiles/directory/etariff/MasterTariffs/23TariffSections/18111.pdf) using the household's metered demand at BOTH the season's PJM Five Peak hours (5 RTO-wide peaks) and ComEd Five Peak hours (5 zonal peaks). The formula has a conditional branch: when `ACustCPL >= ACustPL` the next-year CPLC reduces to the PJM-peak average alone; otherwise it incorporates a portfolio term involving ComEd's weather-normalized peak. A single-hour load reduction is diluted through the relevant five-hour average, so per-kW dollar impact is not linear and depends on which Att. M-2 branch the household sits in. Where the portfolio term `Σ_5Pc(ACustPL - ACustCPL)` is unobservable (it spans all customers in the branch), we report the PJM-peak component as the primary metric and the full Att. M-2 reconstruction as a descriptive overlay. With the 2025-2026 PJM Base Residual Auction increasing the residential capacity rate roughly tenfold, this outcome moves from secondary to co-primary in dollar terms. Reported as a YoY $ delta with 95% CI bootstrapped from the weekly peak-kW distribution; no directional reject/accept threshold.
+**O2 — Annual capacity-charge avoidance (cross-summer; three measurement layers).** Difference in the following-year ComEd Capacity Charge attributable to the experimental period, anchored to PJM's final-published 5CP hour lists (released mid-October per [PJM Manual 19 §4.3](https://www.pjm.com/-/media/documents/manuals/m19.ashx)) rather than to the live detector. Reported at three layers: **Layer 1** (primary, fully observable) — `ACustCPL` difference at the five PJM Five Peak hours, the first-branch term of [PJM OATT Attachment M-2 (ComEd) §2](https://www.pjm.com/pjmfiles/directory/etariff/MasterTariffs/23TariffSections/18111.pdf); **Layer 2** (descriptive) — full `CPLC_(Y+1)` reconstruction including the second branch's portfolio term, sourced as a stipulated constant from ComEd's published tariff Schedule; **Layer 3** (descriptive, post-Y+1) — the actual ComEd Capacity Charge line item on the Y+1 May-Sep bills. Full mechanics in §6. With the 2025-2026 PJM Base Residual Auction increasing the residential capacity rate roughly tenfold, this outcome moves from secondary to co-primary in dollar terms. Layer 1 reported as the matched-pair $ delta with 95% CI bootstrapped from the qualifying-weeks distribution; Layers 2 and 3 descriptive. No directional reject/accept threshold.
 
 ### Secondary outcomes
 
@@ -147,6 +147,54 @@ Generalization claims in the final paper are bounded to similar households. Equi
 
 This handles climate variability cleanly: spring and fall weeks with real cooling load qualify; deep-winter and dead-shoulder weeks where AC barely runs do not. Categorical "summer" boundaries are not used.
 
+### Data quality rules and missing-data handling
+
+A week qualifies for the formal O1 / O3 / O5 / O6 analysis if it passes the cooling-relevance criterion above AND every gate below. Weeks failing any gate are reported descriptively only and excluded from formal effect-size estimation. All gates pre-committed before OSF.
+
+**1. Refoss EM16P HVAC-channel coverage (`em:2`, `em:8`, `em:9`).** Four-tier handling, applied per-interval in order:
+
+| Tier | Gap length | Handling |
+|---|---|---|
+| 1 | < 5 min (single missed 1-min tick) | Linear interpolation across the gap. |
+| 2 | 5-30 min | Same-day-type same-hour median from the prior 14 days, scaled by the within-hour ratio of mains (`em:1 + em:7`) to its own same-window median. |
+| 3 | 30-180 min | ComfortNet CT-485 derived: `cool_actual_pct × cool_nameplate_kW + heat_actual_pct × furnace_nameplate_kW + blower_cfm_to_kW(cfm)`. |
+| 4 | > 180 min OR ComfortNet also offline | Flag the day; no imputation. |
+
+**Imputation cap:** if the imputed energy (Tiers 1-3 combined) ≥10% of total weekly HVAC kWh, the week is dropped from formal analysis. Per-tier imputed kWh is logged for reporting.
+
+**2. CT-485 / ComfortNet HVAC-state.** Used in Refoss Tier 3 imputation and in O6 recovery-overhead analysis. Missing intervals are not imputed. O6 reports any day with >30 minutes of ComfortNet downtime as ineligible for the recovery-ratio computation; the week's O6 average uses the qualifying-day subset.
+
+**3. ComEd RTP price feed.** Hourly average comes from `comed.prices period_type=hourly_avg`, computed within hour from 5-minute prints. An hour is considered observed if ≥6 of 12 5-minute prints are present. Hours below that are filled from the day-ahead PJM LMP at COMED, adjusted by the historical month-matched median (RTP − day-ahead LMP) spread computed once at OSF lock from public PJM data over summers 2023-2025 (computation in `tools/comed_price_imputation/`, to be added under PR-C). Weeks with >5% imputed hours are flagged but not excluded; weeks with >20% imputed hours are excluded.
+
+**4. NWS forecast.** Used only by Arm B's day-type classifier. A missing 21:00 issuance is filled from the prior-day same-issuance forecast; if both are missing, the day is forced to NORMAL classification and the substitution flagged. Forecast availability does not affect week eligibility.
+
+**5. Ecowitt outdoor temperature (CDD basis).** Missing Ecowitt readings filled from NWS gridpoint at the same hour. If both are missing for >2 hours in a day, that day's CDD contribution uses the `(Tmax + Tmin)/2 − 65` daily estimator on whatever station data is present; the substitution is flagged. If both sources are missing for >6 hours in a day, the day is dropped from the week's CDD numerator and denominator.
+
+**6. PJM DM2 `inst_load` feed (5CP detector input).** Used live by the detector and post-hoc only to characterize detector behavior. Outages do not affect O2: O2 is anchored to PJM's final-published 5CP hour list (truth source per §6 O2), not to the live detector's flagging.
+
+**7. Scheduler service outages.** A week is excluded from formal analysis if ANY of the following holds:
+- Total scheduler downtime exceeds 1% of week-hours (≈ 100 min/week), OR
+- Any single continuous outage exceeds 60 minutes, OR
+- Any outage overlaps a control-relevant window: pre-cool, recover, or an active 5CP / scarcity hold.
+
+Outage detection: `hvac.health` heartbeats absent for ≥ 5 minutes.
+
+**8. Pi-lab / data-collection power outages.** Treated as scheduler-service outages (rule 7) AND as Refoss outages (rule 1) — the Pi hosts both the scheduler and the Refoss/ComfortNet loggers. If the resulting affected-day exclusions leave a week with <5 qualifying days, the week is excluded.
+
+**9. Manual setpoint overrides.** Two categories with different handling:
+- **Operational overrides** (occupant briefly bumps the setpoint for comfort, e.g., +1°F during work-from-home stretches): kept in formal analysis with an `override=operational` flag. Reported descriptively as count and total-degree-hours per week.
+- **Vacation overrides** (occupant departs; thermostat held at 82°F absolute with no active scheduling): exclude the affected calendar-day(s). If the resulting week has <5 qualifying days, exclude the week.
+
+Source: `hvac.actions` rows with `source != scheduler` (manual API calls or thermostat-local overrides) annotated by the occupant via `tools/log_override.py` (to be added under PR-C) at the time of the override. Annotation requirement holds for both categories; absence of annotation at week-close defaults the override to "operational" with a flag.
+
+**10. Arm-transition verification.** After each Monday 00:00 CT arm switch, the new arm's scheduler must demonstrate it is in effect by the earlier of:
+- the first control-relevant window of the new arm executing successfully (HOT_PRE_COOL on a HOT day or NORMAL_PRE_COOL on a NORMAL day, with the expected `arm` tag and non-dry-run execution where applicable), OR
+- 6 hours past the switch time.
+
+Detection: an `hvac.actions` row with `arm == intended_arm` matching the expected mode (dry-run for Arm A, active for Arm B) within the verification deadline. Failure to verify by the deadline marks the calendar-week as an arm-mis-assignment week and excludes it from formal analysis; the 48h washout exclusion still applies regardless.
+
+Verification failures and the per-rule exclusion counts are reported in the OSF-deposited data-quality table.
+
 **Subject:** one single-occupant residence as described in §3 boundary conditions. The investigator-occupant.
 
 **Blinding:** investigator is necessarily unblinded (controls the system). Mitigated by pre-registered analysis plan with frozen code, frozen seed, and pre-committed metric definitions.
@@ -186,24 +234,33 @@ For each cooling-relevant week:
 - **Cost numerator:** sum across all hours of (`hvac_circuit_hourly_kWh × ComEd_hourly_supply_price + hvac_circuit_hourly_kWh × delivery_rate`). The HVAC channel set is `em:2 + em:8 + em:9` on the Refoss EM16P, fixed at the OSF commit hash. `em:2` and `em:8` are the two AC compressor legs; `em:9` is the furnace blower (which moves cool air during cooling cycles). Pricing granularity: hourly average from `comed.prices` `period_type=hourly_avg`, matching the ComEd bill calculation.
 - **CDD denominator:** sum of `cooling_degree_days_base_65F` for the week, computed from co-located weather observations (Ecowitt when online, NWS gridpoint as fallback).
 
-### O2 capacity-charge avoidance
+### O2 capacity-charge avoidance — three-layer measurement
 
-Per-year ComEd Capacity Charge line item, attributed to summer experimental weeks based on the household's metered demand at BOTH the season's PJM Five Peak hours (RTO-wide) AND the ComEd Five Peak hours (zonal). PJM publishes both sets after the season closes (mid-October per PJM Manual 19 §4.3).
+**Truth source for "which hours count":** PJM's final-published 5CP hour lists for the RTO (5 PJM Five Peak hours) and the ComEd zone (5 ComEd Five Peak hours), released mid-October after the season closes per [PJM Manual 19 §4.3](https://www.pjm.com/-/media/documents/manuals/m19.ashx). The Arm B live 5CP detector's hour-by-hour accuracy is reported descriptively as a process metric (see Detector accuracy report below); it does NOT define O2. O2 is computed at the PJM-published peak hours regardless of which hours the live detector flagged.
 
-Reconstruction follows PJM OATT Attachment M-2 (ComEd) §2:
+The outcome is reported at three layers, each strictly more inclusive of stipulation than the prior:
 
-- `ACustCPL_Y` — customer's average demand across the five PJM Five Peak hours of summer Y.
-- `ACustPL_Y` — customer's average demand across the five ComEd Five Peak hours of summer Y.
-- `CPLC_(Y+1) = ACustCPL_Y` when `ACustCPL_Y >= ACustPL_Y` (PJM-peak average dominates).
-- Otherwise `CPLC_(Y+1) = ACustCPL_Y + (ComEdNPL_Y - AComEdCPL_Y) × (ACustPL_Y - ACustCPL_Y) / Σ_5Pc(ACustPL - ACustCPL)`, where `ComEdNPL_Y` is ComEd's weather-normalized peak load and `AComEdCPL_Y` is ComEd's average coincident peak at the PJM five peaks. The denominator sums across all customers whose ACustPL exceeds ACustCPL, so this portfolio term is unobservable from a single household.
+**Layer 1 — Observed `ACustCPL` difference (primary, fully observable).**
+Arm B minus Arm A difference in `ACustCPL_Y`, the household's average metered demand across the five PJM Five Peak hours of summer Y. Fully observable from the household's revenue meter (EAGLE feed for instantaneous; cross-checked against ComEd-bill kWh for accumulation). Maps to the first branch of PJM OATT Attachment M-2 (ComEd) §2:
+- `CPLC_(Y+1) = ACustCPL_Y` when `ACustCPL_Y ≥ ACustPL_Y`.
 
-Reporting strategy:
+This is the dominant case for most residential profiles. Reported as the primary O2 number with bootstrap 95% CI computed across the qualifying-weeks distribution under each arm. **Diluted-per-kW caveat:** a single-hour reduction at one of the five peaks shifts the average by roughly `kW / 5`, not full kW; the reported delta reflects the five-hour average.
 
-- **Primary metric**: `ACustCPL` difference (Arm B − Arm A) — directly observable from metered demand at the five PJM Five Peak hours. Maps to the first branch of the Att. M-2 formula and is the dominant term for most residential profiles.
-- **Descriptive overlay**: full `CPLC_(Y+1)` reconstruction using a stipulated portfolio constant for the second branch's denominator, sourced from ComEd's published tariff Schedule and labeled explicitly as a stipulated input rather than observed.
-- **Diluted-per-kW caveat**: a single-hour reduction at one of the five peaks shifts that average by roughly `kW / 5`, not by full-kW. The reported delta reflects the five-hour average.
+**Layer 2 — Stipulated `CPLC_(Y+1)` reconstruction (descriptive, one stipulated input).**
+Full `CPLC_(Y+1)` reconstruction using both Att. M-2 branches:
+- Branch 1 as in Layer 1.
+- Branch 2: `CPLC_(Y+1) = ACustCPL_Y + (ComEdNPL_Y − AComEdCPL_Y) × (ACustPL_Y − ACustCPL_Y) / Σ_5Pc(ACustPL − ACustCPL)` where `ACustPL_Y` is the household's average demand across the five ComEd Five Peak hours, `ComEdNPL_Y` is ComEd's weather-normalized peak load, `AComEdCPL_Y` is ComEd's average coincident peak at the PJM five peaks, and `Σ_5Pc(ACustPL − ACustCPL)` is the portfolio sum across all customers in branch 2.
 
-Bootstrap CI computed across the 9 Arm A weeks and 9 Arm B weeks (or however many qualify under the cooling-relevance criterion).
+The portfolio sum is unobservable from a single household. It is sourced as a stipulated constant from ComEd's published tariff Schedule of Rates (cited by version and date in [`tools/o2_capacity_reconstruction/`](../tools/o2_capacity_reconstruction/), to be added under PR-C). Layer 2 is treated as a descriptive overlay that puts Layer 1 into tariff-conversion units; the stipulated constant's sensitivity is reported as a side-table (Layer 2 ± 10% on the portfolio constant).
+
+**Layer 3 — Bill reconciliation (descriptive, post-Y+1).**
+The actual ComEd Capacity Charge line item on the Y+1 bills (May-Sep months, the period over which `CPLC_(Y+1)` is applied per tariff) is recorded month-by-month and summed. The ratio (Layer 2 / Layer 3) is reported as a tariff-reconstruction fidelity number. Layer 3 has no within-house counterfactual — there is only one realized bill trajectory for the realized arm assignment in summer Y — so Layer 3 is descriptive only and does not enter any effect-size statement.
+
+**Counterfactual scope.** Layers 1 and 2 are computed twice: once on the Arm A weeks' realized demand, once on the Arm B weeks' realized demand. The pair difference is what the cross-summer SCED randomization permits as inference. Layer 3 is anchored only to the realized assignment.
+
+**Bootstrap CI** for Layer 1 (the primary statement) computed across whatever number of qualifying weeks the cooling-relevance criterion and §4 data-quality gates produce under each arm.
+
+**Detector accuracy report (process metric, not an outcome).** Separately, the Arm B live 5CP detector's hour-by-hour decisions during summer Y are cross-referenced against PJM's October-published 5CP hour list. Reported: true-positive rate (detector held shutoff during a published 5CP hour), false-positive rate (detector held shutoff during a non-5CP hour), false-negative rate (detector did not hold during a published 5CP hour). This characterizes the live detector as an engineering subsystem; it is decoupled from O2's outcome statement.
 
 ### Secondary metrics
 
@@ -291,7 +348,7 @@ The paper reports effect sizes with 95% CIs. It does not run a confirmatory hypo
 
 For each cooling season:
 
-1. **Headline:** matched-pair median O1 difference with bootstrap 95% CI, plus O2 capacity-charge $ delta with bootstrap 95% CI.
+1. **Headline:** matched-pair median O1 difference with bootstrap 95% CI, plus O2 Layer 1 (`ACustCPL` difference) $ delta with bootstrap 95% CI. O2 Layers 2 and 3 reported as descriptive side-tables.
 2. **Forecast-correlated vs grid-event decomposition** (per §7): Arm B - Arm A cost difference reported separately for forecast-correlated price-spike days, grid-event price-spike days, and no-spike days. Layer attribution (which Arm B layer triggered) reported for grid-event days specifically.
 3. **Continuous-axis scatter plots:** matched-pair O1 difference on the y-axis vs each weather summary vector component on the x-axis. Lets readers see whether the effect varies systematically with weather severity.
 4. **Per-pair table:** every matched pair shown with its weather summary vector and outcome difference.
