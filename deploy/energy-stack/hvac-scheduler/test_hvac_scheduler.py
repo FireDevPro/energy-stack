@@ -1725,16 +1725,19 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
     carried forward to the layer-priority resolver."""
     _stub_layer_eval_io(monkeypatch, price_cents=None)
     cfg = _make_schedule_check_cfg()
-    # Simulate a prior tick where scarcity was active.
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+    now_utc = now_local.astimezone(timezone.utc)
+    # Simulate a prior tick where scarcity was active and the feed was
+    # OK 2 min ago (well within the P2.2 stale threshold).
     firing = FiringState(
         price_overlay_state=app.PriceOverlayState(
             current_tier="scarcity",
-            triggered_at_utc=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc),
+            triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
+        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=2),
     )
     write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     # Label preserved (was already correct).
@@ -1750,15 +1753,17 @@ def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
     """Symmetric for the elevated tier (offset=+3, override=None)."""
     _stub_layer_eval_io(monkeypatch, price_cents=None)
     cfg = _make_schedule_check_cfg()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+    now_utc = now_local.astimezone(timezone.utc)
     firing = FiringState(
         price_overlay_state=app.PriceOverlayState(
             current_tier="elevated",
-            triggered_at_utc=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc),
+            triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
+        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=2),
     )
     write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
@@ -2049,3 +2054,123 @@ async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch
     # This is the supervisor-continuity invariant: the safety layer
     # MUST observe the thermostat every tick to catch emergencies.
     assert read_mock.await_count == 1
+
+
+# ---- P2.2 (reviewer-flagged 2026-05-11): price-feed stale tier release ----
+
+
+def test_price_tier_released_after_feed_stale_threshold(monkeypatch):
+    """P2.2: when ``fetch_latest_comed`` has been unavailable for
+    longer than ``PRICE_FEED_STALE_THRESHOLD`` (30 min), the
+    carried-forward tier MUST release to NORMAL. Pre-fix the tier
+    would carry forward indefinitely, so a scarcity-tier hold that
+    began an hour before a feed outage could keep the 85F shutoff
+    pinned for the rest of the day."""
+    _stub_layer_eval_io(monkeypatch, price_cents=None)
+    cfg = _make_schedule_check_cfg()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+    now_utc = now_local.astimezone(timezone.utc)
+    # Feed was last OK 45 min ago -- well past the 30-min threshold.
+    firing = FiringState(
+        price_overlay_state=app.PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=now_utc - timedelta(minutes=60),
+        ),
+        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=45),
+    )
+    write_api = MagicMock()
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    # Tier released to NORMAL; setpoint contributions zeroed.
+    assert inputs.price_tier_name == "normal"
+    assert inputs.price_offset_f == 0
+    assert inputs.price_override_f is None
+    # Internal state reset so a later recovery starts from NORMAL,
+    # not re-entering the stale tier's hold window.
+    assert firing.price_overlay_state.current_tier == "normal"
+    assert firing.price_overlay_state.triggered_at_utc is None
+
+
+def test_price_feed_last_ok_at_utc_updates_on_healthy_tick(monkeypatch):
+    """Every tick where ``fetch_latest_comed`` returns a real price
+    must update ``firing.price_feed_last_ok_at_utc``. This is the
+    timestamp the stale-tier-release path checks against; without
+    fresh updates a long-running stable feed would still be
+    considered stale on the first None it sees."""
+    _stub_layer_eval_io(monkeypatch, price_cents=5.0)   # healthy feed
+    cfg = _make_schedule_check_cfg()
+    firing = FiringState()
+    write_api = MagicMock()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+    now_utc = now_local.astimezone(timezone.utc)
+
+    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+
+    # Timestamp recorded within the last few seconds (allow tolerance
+    # for the layer-eval inner steps).
+    assert firing.price_feed_last_ok_at_utc is not None
+    assert (now_utc - firing.price_feed_last_ok_at_utc) < timedelta(seconds=5)
+
+
+def test_price_tier_release_falls_back_to_triggered_at_utc_when_last_ok_none(monkeypatch):
+    """Cold-start / state-restore case: when
+    ``price_feed_last_ok_at_utc`` is None but the prev_tier is
+    non-NORMAL, the tier must have been triggered by a real price
+    reading at some point. ``triggered_at_utc`` becomes the floor
+    for the staleness check so we don't erroneously release on
+    container startup with a pre-existing non-NORMAL state."""
+    _stub_layer_eval_io(monkeypatch, price_cents=None)
+    cfg = _make_schedule_check_cfg()
+    now_local = datetime(2026, 7, 15, 14, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+    now_utc = now_local.astimezone(timezone.utc)
+    firing = FiringState(
+        price_overlay_state=app.PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=now_utc - timedelta(minutes=5),   # recent
+        ),
+        price_feed_last_ok_at_utc=None,   # never recorded
+    )
+    write_api = MagicMock()
+
+    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
+    # Tier preserved: triggered_at_utc=5min ago, threshold=30min, so
+    # not stale. The fallback prevents erroneous release on cold start.
+    assert inputs.price_tier_name == "scarcity"
+    assert inputs.price_override_f == 85
+
+
+# ---- P2.3 (reviewer-flagged 2026-05-11): health marker gating -------------
+
+
+def test_health_marker_gating_pattern_in_main_loop():
+    """Regression guard for the 2026-05-11 outage: when
+    ``run_schedule_check`` raises, the main loop MUST NOT touch the
+    ``/tmp/last_tick_ok`` health marker. Pre-fix the marker was touched
+    unconditionally, so a repeated schedule_check_failed was visible
+    in logs but invisible to Docker's HEALTHCHECK -- the container
+    stayed 'healthy' while the control loop was broken (the actual
+    P1.3 schema-collision incident).
+
+    The marker now updates only when the tick completes without
+    raising. This test inspects the main-loop source to confirm the
+    gating is present; a runtime test would require spinning up
+    asyncio and mocking the whole main() entrypoint, which is more
+    fragile than the source assertion for a small structural fix."""
+    import inspect
+    main_src = inspect.getsource(app.main_async)
+    # The marker touch must be inside an ``if tick_ok:`` block, and
+    # ``tick_ok`` must be set False on the schedule_check exception path.
+    assert "tick_ok = False" in main_src
+    assert "if tick_ok:" in main_src
+    sched_check_idx = main_src.index("schedule_check_failed")
+    health_marker_idx = main_src.index("health_marker.touch")
+    tick_ok_false_idx = main_src.index("tick_ok = False")
+    # tick_ok = False must appear before the gated touch (so a failed
+    # tick prevents the touch from firing later in the same loop iter).
+    assert tick_ok_false_idx < health_marker_idx
+    # And it must appear AFTER the schedule_check_failed line (i.e.
+    # inside its except handler, not before).
+    assert tick_ok_false_idx > sched_check_idx

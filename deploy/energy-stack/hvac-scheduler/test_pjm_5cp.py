@@ -1045,3 +1045,28 @@ def test_update_season_5th_flux_group_appears_before_aggregate_window():
     group_pos = flux.index("|> group()")
     agg_pos = flux.index("|> aggregateWindow")
     assert group_pos < agg_pos
+
+
+def test_update_season_5th_flux_uses_max_to_prefer_verified():
+    """P2.1 regression guard: when PJM corrects a row (is_verified=
+    false -> is_verified=true), the bucket holds two values at the
+    same hour. ``aggregateWindow(fn: mean)`` averages them and
+    produces a value lower than the verified actual, biasing the
+    season-5th baseline downward.
+
+    ``fn: max`` selects the higher of the two -- which is almost
+    always the verified value (PJM's initial unverified publish is
+    conservative, corrections adjust slightly upward). When only
+    one row exists for an hour (unverified-only or verified-only),
+    max returns that single value unchanged."""
+    q = _mock_metered_query_api([21000.0, 22000.0, 23000.0, 24000.0, 25000.0])
+    update_season_5th_highest(
+        q, "energy",
+        datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
+        zone="CE",
+        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    )
+    flux = q.last_flux
+    assert "fn: max" in flux
+    assert "fn: mean" not in flux
