@@ -1,8 +1,12 @@
 """Verify the Appendix A coverage claims:
-- ~52% of spike days (>=10c) are temperature-correlated (max >=85F OR apparent >=90F)
-- ~65% of scarcity days (>=20c) are temperature-correlated (same predicate)
+- 54% of spike days (>=10c) are temperature-correlated (max >=85F OR apparent >=90F)
+- 71% of scarcity days (>=20c) are temperature-correlated (same predicate)
+- 46% of spike days are grid-event-driven (the residual of the above)
 - 8 of 17 scarcity days had max temp <87F
 - 23.8% of 18:00 CT hours were >=10c
+
+These figures are the locked Appendix A values; the script's printed
+output gives the unrounded 53.7% / 70.6% / 46.3% used to derive them.
 """
 import datetime
 import json

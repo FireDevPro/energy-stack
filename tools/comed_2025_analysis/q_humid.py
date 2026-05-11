@@ -31,6 +31,8 @@ for fname in ['may2025.txt', 'jun2025.txt', 'jul2025.txt', 'aug2025.txt', 'sep20
 hourly = defaultdict(list)
 for ts, p in all_5min:
     hourly[ts.replace(minute=0, second=0, microsecond=0)].append(p)
+# Inclusion rule: >=6 of 12 prints — see analyze.py for rationale and
+# check_partial_hours.py for sensitivity. Matches EXPERIMENT_DESIGN.md §4 Rule 3.
 hourly_avg = {k: mean(v) for k, v in hourly.items() if len(v) >= 6}
 
 with open(os.path.join(DATA_DIR, 'weather2025.json')) as f:

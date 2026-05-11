@@ -36,6 +36,33 @@ Each script is self-contained (stdlib only, Python 3.9+ for `zoneinfo`). Paths r
 
 `expected_output.md` captures the output every script produces against the frozen `data/`. Any change to the scripts or data must reproduce these numbers; deviations indicate either a data refresh or a script change and must be reconciled before the change is merged.
 
+## Partial-hour inclusion rule
+
+All five analysis scripts aggregate ComEd 5-minute prints into hourly
+averages and **keep an hour if at least 6 of 12 prints are present**.
+This matches the locked production analysis rule in
+[`EXPERIMENT_DESIGN.md §4 Rule 3`](../../docs/EXPERIMENT_DESIGN.md#data-quality-rules-and-missing-data-handling).
+It does **not** match the strict ComEd billing rule (which requires
+all 12 prints in the hour).
+
+The looser rule for threshold derivation is documented and bounded:
+
+| Inclusion rule | n hours included | P95 | P99 | Max | Scarcity days |
+|---|---|---|---|---|---|
+| ≥ 6 of 12 prints (locked) | 3,663 | 9.53 | 20.47 | 161.29 | 17 |
+| 12 of 12 prints (strict) | 3,556 | 9.55 | 20.47 | 161.29 | 17 |
+
+Tightening to strict 12/12 shifts P95 by 0.02 ¢/kWh and leaves P99,
+the overall max, and the scarcity-day count unchanged. The locked
+10 ¢ / 20 ¢ Arm B trigger values sit well outside this sensitivity
+band, so the rule choice does not materially affect any pre-registered
+threshold. Run [`check_partial_hours.py`](check_partial_hours.py) to
+reproduce.
+
+Underlying counts in the bundled `data/`: 3,556 hours with all 12
+prints, 107 hours with 6-11 prints (included), 7 hours with fewer
+than 6 prints (excluded).
+
 ## What each script answers
 
 | Script | Purpose | Drives |
@@ -56,7 +83,8 @@ Every numeric claim in `docs/EXPERIMENT_DESIGN.md` Appendix A is reproducible fr
 | `n = 122 summer days` (Jun-Sep) | `q_under87.py` | `Total summer days (Jun-Sep 2025): 122` |
 | `P95 = 9.53¢/kWh` | `analyze.py` | `P95: 9.53` (overall hourly distribution) |
 | `P99 = 20.47¢/kWh` | `analyze.py` | `P99: 20.47` |
-| `peak hour was 18:00 CT (mean 11.03¢, max 161.29¢)` | `analyze.py` | `18:00 CT: mean=11.03 ... max=146.29` (interior mean); top-20 list shows `2025-06-24 Tue 17:00 CT 161.29c/kWh` (which is the overall max; 18:00 is the highest-mean hour). |
+| 18:00 CT highest-mean hour (mean 11.03¢/kWh, 23.8% of hours ≥10¢) | `analyze.py` | `18:00 CT: mean=11.03 ... max=146.29  n=122` (in the hour-of-day distribution table) and `18:00: 29h ( 23.8%)` (in the threshold-frequency table) |
+| Overall hourly max 161.29¢/kWh at 17:00 CT on 2025-06-24 | `analyze.py` | Top-20 list row `1. 2025-06-24 Tue 17:00 CT 161.29c/kWh` |
 | `8 of 17 scarcity days had max temp <87°F` | `q_under87.py` / `verify_appendix_a.py` | `Max temp < 87F: 8 of 17 scarcity days (47.1%)` |
 | `18:00 CT had 23.8% of hours above 10¢` | `analyze.py` / `verify_appendix_a.py` | `18:00: 29h ( 23.8%)` |
 | `54% of spike days and 71% of scarcity days are temperature-correlated (max temp ≥85°F OR apparent ≥90°F)` | `verify_appendix_a.py` | `Spike days (>=10c): 29 of 54 = 53.7% ... Scarcity days (>=20c): 12 of 17 = 70.6%` |
