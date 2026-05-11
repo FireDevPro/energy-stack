@@ -293,7 +293,7 @@ Each Arm A week and each Arm B week (after washout exclusion and cooling-relevan
 
 Items 1-4 are the ASHRAE G14 canonical set. Items 5-6 are extensions to capture peak-condition distribution shape that the cumulative metrics integrate over.
 
-**Distance metric:** Mahalanobis distance (generalized point-to-point form) `d²(x,y) = (x-y)ᵀ Σ⁻¹ (x-y)` where Σ is the covariance matrix estimated from 2020-2025 NOAA Chicago (KORD) cooling-relevant weeks (CDD ≥ 5).
+**Distance metric:** Mahalanobis distance (generalized point-to-point form) `d²(x,y) = (x-y)ᵀ Σ⁻¹ (x-y)` where Σ is the covariance matrix estimated from 2020-2025 **ERA5 reanalysis at KORD coordinates** (41.9786°N, 87.9047°W), cooling-relevant weeks (CDD ≥ 5). ERA5 is chosen over multi-source NOAA stitching because it provides all six required weather-summary components (CDD basis, dewpoint, wind, solar, enthalpy inputs) consistently at a single grid point; NOAA GHCND/LCD/NSRDB would require three separate ingest paths with different timing skew and would produce a functionally equivalent covariance matrix for the matched-pair distance application. Computation: [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → [`tools/analysis/data/baseline_cov.npz`](../tools/analysis/data/baseline_cov.npz), locked at OSF filing.
 
 **Matching algorithm:** Hungarian optimal pairing without replacement, minimizing total Mahalanobis distance across all matched pairs.
 
