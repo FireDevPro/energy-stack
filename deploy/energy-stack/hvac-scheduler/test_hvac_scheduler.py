@@ -1658,6 +1658,29 @@ def test_read_stored_decision_flux_query_flattens_series_with_group():
     assert "|> group()" in q.last_flux
 
 
+def test_read_stored_decision_flux_filters_by_single_field_before_group():
+    """Regression guard for the 2026-05-11 production incident:
+    ``group()`` without a prior ``_field`` filter triggers an Influx
+    runtime error ``schema collision: cannot group string and float
+    types together`` because ``hvac.decisions`` carries fields of
+    mixed types (high_f float, dry_run string, etc.) and flattening
+    collides them in the ``_value`` column.
+
+    The Flux MUST filter to a single ``_field`` BEFORE ``group()`` so
+    the flattened table has a homogeneous ``_value`` type. ``high_f``
+    is the canonical choice because every ``write_decision`` call
+    writes it -- one row per decision write, one per
+    (decision_for_date, day_type) pair, which is exactly what the
+    rank-by-time path needs."""
+    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
+    app._read_stored_decision(q, "energy", "2026-07-15")
+    flux = q.last_flux
+    assert 'r._field == "high_f"' in flux
+    field_pos = flux.index('r._field == "high_f"')
+    group_pos = flux.index("|> group()")
+    assert field_pos < group_pos
+
+
 def test_read_stored_decision_flux_query_picks_latest_by_time():
     """Regression guard: after ``group()``, the query MUST sort
     descending by ``_time`` and ``limit(n: 1)`` so the most recent

@@ -1308,12 +1308,23 @@ def _read_stored_decision(query_api, bucket: str, decision_for_date: str) -> str
     desc-sorted ``limit(n: 1)`` returns the single most recent row
     across all day_type tag values. Whatever was written most recently
     wins, regardless of tag-value alphabetic order or iterator order.
+
+    Field filter: the query MUST pre-filter to a single ``_field``
+    before ``group()``. ``hvac.decisions`` carries multiple fields of
+    mixed types (high_f as float, dry_run as string, etc.) and
+    flattening without a field filter triggers a Flux runtime error
+    "schema collision: cannot group string and float types together".
+    ``high_f`` is unconditionally written by every ``write_decision``
+    call, so filtering to that single field gives one float-typed row
+    per decision write -- one per (decision_for_date, day_type) tag
+    pair -- which is exactly what we need to rank by ``_time``.
     """
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -36h)
   |> filter(fn: (r) => r._measurement == "hvac.decisions"
-                    and r.decision_for_date == "{decision_for_date}")
+                    and r.decision_for_date == "{decision_for_date}"
+                    and r._field == "high_f")
   |> group()
   |> sort(columns: ["_time"], desc: true)
   |> limit(n: 1)
