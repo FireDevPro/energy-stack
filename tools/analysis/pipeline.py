@@ -474,6 +474,130 @@ def rule10_arm_transition_deadline(
     return min(first_control_window_ts, six_h)
 
 
+RULE8_MIN_QUALIFYING_DAYS = 5     # spec: <5 qualifying days → week excluded
+
+
+def rule8_pi_apply(
+    week_start_ct: datetime.date,
+    rule1_tier4_days: set[datetime.date],
+    rule7_outage_days: set[datetime.date],
+    rule9_vacation_days: set[datetime.date],
+) -> RuleResult:
+    """Rule 8 + the cross-rule <5 qualifying-days threshold.
+
+    Pi outages manifest simultaneously as Refoss outages (rule 1) and
+    scheduler outages (rule 7), so the day-set is the UNION of rule 1
+    tier-4 days, rule 7 outage days, and rule 9 vacation days. If the
+    resulting qualifying day-count for this week is below 5, the week
+    is excluded as ``insufficient_qualifying_days``.
+
+    Day-sets outside the 7-day week window are ignored (defensive
+    against caller passing in nearby-week dates).
+    """
+    week_days = {
+        week_start_ct + datetime.timedelta(days=i) for i in range(7)
+    }
+    excluded = (
+        rule1_tier4_days | rule7_outage_days | rule9_vacation_days
+    ) & week_days
+    qualifying = len(week_days - excluded)
+    contributes = {
+        "qualifying_days": qualifying,
+        "excluded_days": len(excluded),
+    }
+    if qualifying < RULE8_MIN_QUALIFYING_DAYS:
+        return RuleResult(
+            passes=False,
+            exclusion_reason="insufficient_qualifying_days",
+            contributes=contributes,
+        )
+    return RuleResult(passes=True, contributes=contributes)
+
+
+RULE1_IMPUTATION_CAP_PCT = 0.10     # ≥10% imputed weekly HVAC kWh → week dropped
+
+
+def impute_refoss_gap(
+    interval: dict,
+    *,
+    mains_history_ratio: float = 1.0,
+    comfortnet_sample: dict | None = None,
+    nameplate: dict | None = None,
+) -> dict:
+    """Apply tier-specific imputation to a single Refoss gap interval.
+
+    `interval` must carry ``gap_minutes`` and ``tier``. The tier-specific
+    extra inputs:
+
+    - Tier 1 (<5 min): linear interpolation. Needs ``pre_kwh_per_min``
+      and ``post_kwh_per_min`` on the interval.
+    - Tier 2 (5-30 min): same-day-type same-hour median from prior 14
+      days scaled by within-hour mains ratio. Needs ``history_median_kw``
+      on the interval; ``mains_history_ratio`` defaults to 1.0.
+    - Tier 3 (30-180 min, ComfortNet available): ComfortNet-derived via
+      ``comfortnet_kw``. Needs ``comfortnet_sample`` kwarg with
+      ``cool_actual_pct``, ``heat_actual_pct``, ``blower_cfm``.
+    - Tier 4 (>180 min OR ComfortNet offline): no imputation, returns 0.
+
+    Returns the interval with ``imputed_kwh`` added.
+    """
+    nameplate = nameplate or NAMEPLATE
+    tier = interval["tier"]
+    duration_h = interval["gap_minutes"] / 60.0
+    if tier == 1:
+        pre = float(interval.get("pre_kwh_per_min", 0.0))
+        post = float(interval.get("post_kwh_per_min", 0.0))
+        kwh = ((pre + post) / 2.0) * interval["gap_minutes"]
+    elif tier == 2:
+        median_kw = float(interval.get("history_median_kw", 0.0))
+        kwh = median_kw * duration_h * mains_history_ratio
+    elif tier == 3:
+        if comfortnet_sample is None:
+            raise ValueError(
+                "Tier 3 imputation requires comfortnet_sample kwarg"
+            )
+        kw = comfortnet_kw(
+            float(comfortnet_sample["cool_actual_pct"]),
+            float(comfortnet_sample["heat_actual_pct"]),
+            float(comfortnet_sample["blower_cfm"]),
+        )
+        kwh = kw * duration_h
+    else:  # tier 4
+        kwh = 0.0
+    return {**interval, "imputed_kwh": kwh}
+
+
+def rule1_refoss_apply(
+    weekly_hvac_kwh: float,
+    imputed_intervals: Sequence[dict],
+) -> RuleResult:
+    """Rule 1: Refoss EM16P 4-tier handling — week-level cap.
+
+    Each input interval should already carry a ``tier`` (from
+    ``rule1_refoss``) and an ``imputed_kwh`` (from ``impute_refoss_gap``).
+    Per spec, if the combined Tier 1+2+3 imputed energy is ≥10% of total
+    weekly HVAC kWh, the week is dropped as ``refoss_imputation_too_high``.
+    Tier 4 intervals contribute 0 to the imputed total but are logged
+    so the orchestrator (rule 8) can convert affected days into day-level
+    exclusions.
+    """
+    imputed_total = sum(float(iv.get("imputed_kwh", 0.0)) for iv in imputed_intervals)
+    pct = (imputed_total / weekly_hvac_kwh) if weekly_hvac_kwh > 0 else 0.0
+    intervals_log = list(imputed_intervals)
+    if pct >= RULE1_IMPUTATION_CAP_PCT:
+        return RuleResult(
+            passes=False,
+            exclusion_reason="refoss_imputation_too_high",
+            contributes={"imputed_hvac_kwh_pct": pct},
+            intervals_log=intervals_log,
+        )
+    return RuleResult(
+        passes=True,
+        contributes={"imputed_hvac_kwh_pct": pct},
+        intervals_log=intervals_log,
+    )
+
+
 RULE5_SUBSTITUTION_HOURS_GT = 2     # >2h both missing → daily estimator
 RULE5_DROP_HOURS_GT = 6             # >6h both missing → drop day from CDD
 

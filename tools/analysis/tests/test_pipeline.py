@@ -417,6 +417,162 @@ def test_rule5_ecowitt_mixed_thresholds():
     assert out.contributes["ecowitt_dropped_days_for_cdd"] == 1  # day 2
 
 
+# -- Rule 1: Refoss EM16P 4-tier imputation ---------------------------------
+
+
+def test_impute_refoss_gap_tier1_linear_interpolation():
+    # 3-min gap; before-gap 0.05 kWh/min, after-gap 0.07 kWh/min.
+    # Linear interp midpoint: 0.06 kWh/min × 3 min = 0.18 kWh
+    iv = {"gap_minutes": 3, "tier": 1,
+          "pre_kwh_per_min": 0.05, "post_kwh_per_min": 0.07}
+    out = pipeline.impute_refoss_gap(iv)
+    assert out["imputed_kwh"] == pytest.approx(0.18, abs=1e-4)
+
+
+def test_impute_refoss_gap_tier2_history_median_scaled_by_mains():
+    # 20-min gap; same-hour median from prior 14d is 1.5 kW; mains ratio 1.2.
+    # Expected: 1.5 kW × (20/60)h × 1.2 = 0.6 kWh
+    iv = {"gap_minutes": 20, "tier": 2, "history_median_kw": 1.5}
+    out = pipeline.impute_refoss_gap(iv, mains_history_ratio=1.2)
+    assert out["imputed_kwh"] == pytest.approx(0.6, abs=1e-4)
+
+
+def test_impute_refoss_gap_tier3_comfortnet_derived():
+    # 60-min gap; cool 100%, heat 0%, blower 4500 cfm (full nameplate).
+    # comfortnet_kw uses 0..100 percentage scale.
+    # comfortnet_kw(100, 0, 4500) = 1.0*4.6 + 0 + (4500/4500)*0.6 = 5.2 kW; 1h → 5.2 kWh
+    iv = {"gap_minutes": 60, "tier": 3}
+    cn = {"cool_actual_pct": 100, "heat_actual_pct": 0, "blower_cfm": 4500.0}
+    out = pipeline.impute_refoss_gap(iv, comfortnet_sample=cn)
+    assert out["imputed_kwh"] == pytest.approx(5.2, abs=1e-3)
+
+
+def test_impute_refoss_gap_tier4_no_imputation():
+    iv = {"gap_minutes": 200, "tier": 4}
+    out = pipeline.impute_refoss_gap(iv)
+    assert out["imputed_kwh"] == 0.0
+
+
+def test_rule1_refoss_apply_no_gaps_passes():
+    out = pipeline.rule1_refoss_apply(weekly_hvac_kwh=100.0, imputed_intervals=[])
+    assert out.passes is True
+    assert out.contributes["imputed_hvac_kwh_pct"] == 0.0
+
+
+def test_rule1_refoss_apply_below_10pct_cap_passes():
+    intervals = [
+        {"tier": 1, "imputed_kwh": 3.0,
+         "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 10, 3)},
+        {"tier": 2, "imputed_kwh": 4.0,
+         "start_ts": datetime.datetime(2026, 6, 10, 14, 0),
+         "end_ts": datetime.datetime(2026, 6, 10, 14, 20)},
+    ]
+    out = pipeline.rule1_refoss_apply(
+        weekly_hvac_kwh=100.0, imputed_intervals=intervals,
+    )
+    assert out.passes is True
+    assert out.contributes["imputed_hvac_kwh_pct"] == pytest.approx(0.07)
+
+
+def test_rule1_refoss_apply_at_10pct_cap_excludes():
+    # Spec: ≥10% of total weekly HVAC kWh → week dropped
+    intervals = [{"tier": 1, "imputed_kwh": 10.0,
+                  "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+                  "end_ts": datetime.datetime(2026, 6, 9, 10, 4)}]
+    out = pipeline.rule1_refoss_apply(
+        weekly_hvac_kwh=100.0, imputed_intervals=intervals,
+    )
+    assert out.passes is False
+    assert out.exclusion_reason == "refoss_imputation_too_high"
+    assert out.contributes["imputed_hvac_kwh_pct"] == pytest.approx(0.10)
+
+
+def test_rule1_refoss_apply_tier4_intervals_recorded_in_log():
+    # Tier 4 contributes 0 imputed kWh but is logged for the day-flag.
+    iv = {"tier": 4, "imputed_kwh": 0.0,
+          "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+          "end_ts": datetime.datetime(2026, 6, 9, 13, 30)}
+    out = pipeline.rule1_refoss_apply(
+        weekly_hvac_kwh=100.0, imputed_intervals=[iv],
+    )
+    assert out.passes is True
+    assert len(out.intervals_log) == 1
+    assert out.intervals_log[0]["tier"] == 4
+
+
+def test_rule1_refoss_apply_zero_weekly_kwh_no_division_error():
+    # A week with no HVAC usage at all (cooling-irrelevant) shouldn't crash.
+    out = pipeline.rule1_refoss_apply(weekly_hvac_kwh=0.0, imputed_intervals=[])
+    assert out.passes is True
+    assert out.contributes["imputed_hvac_kwh_pct"] == 0.0
+
+
+# -- Rule 8: Pi outages + <5 qualifying-days combiner ----------------------
+
+
+def test_rule8_pi_apply_all_seven_days_qualify():
+    out = pipeline.rule8_pi_apply(
+        week_start_ct=datetime.date(2026, 6, 8),
+        rule1_tier4_days=set(),
+        rule7_outage_days=set(),
+        rule9_vacation_days=set(),
+    )
+    assert out.passes is True
+    assert out.contributes["qualifying_days"] == 7
+
+
+def test_rule8_pi_apply_two_excluded_meets_five_threshold():
+    out = pipeline.rule8_pi_apply(
+        week_start_ct=datetime.date(2026, 6, 8),
+        rule1_tier4_days={datetime.date(2026, 6, 9)},
+        rule7_outage_days={datetime.date(2026, 6, 10)},
+        rule9_vacation_days=set(),
+    )
+    assert out.passes is True
+    assert out.contributes["qualifying_days"] == 5
+
+
+def test_rule8_pi_apply_three_excluded_falls_below_five():
+    out = pipeline.rule8_pi_apply(
+        week_start_ct=datetime.date(2026, 6, 8),
+        rule1_tier4_days={datetime.date(2026, 6, 9)},
+        rule7_outage_days={datetime.date(2026, 6, 10)},
+        rule9_vacation_days={datetime.date(2026, 6, 11)},
+    )
+    assert out.passes is False
+    assert out.exclusion_reason == "insufficient_qualifying_days"
+    assert out.contributes["qualifying_days"] == 4
+
+
+def test_rule8_pi_apply_dedups_overlapping_pi_outage_days():
+    # Pi outage manifests in both rule 1 + rule 7 simultaneously by spec —
+    # only counts once.
+    same_day = datetime.date(2026, 6, 9)
+    out = pipeline.rule8_pi_apply(
+        week_start_ct=datetime.date(2026, 6, 8),
+        rule1_tier4_days={same_day, datetime.date(2026, 6, 10)},
+        rule7_outage_days={same_day},
+        rule9_vacation_days=set(),
+    )
+    assert out.passes is True
+    assert out.contributes["qualifying_days"] == 5
+    assert out.contributes["excluded_days"] == 2
+
+
+def test_rule8_pi_apply_ignores_days_outside_the_week():
+    # An exclusion-day timestamp that falls outside the 7-day window
+    # shouldn't reduce the qualifying count.
+    out = pipeline.rule8_pi_apply(
+        week_start_ct=datetime.date(2026, 6, 8),
+        rule1_tier4_days={datetime.date(2026, 6, 1)},  # prior week
+        rule7_outage_days=set(),
+        rule9_vacation_days=set(),
+    )
+    assert out.passes is True
+    assert out.contributes["qualifying_days"] == 7
+
+
 # -- Math primitives --------------------------------------------------------
 
 
