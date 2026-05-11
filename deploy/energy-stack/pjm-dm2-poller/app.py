@@ -98,6 +98,18 @@ COMED_METERED_ZONE = "CE"
 COMED_INST_AREA = "COMED"
 COMED_NSPL_ZONE = "COMED"
 
+# PJM's `_ept` timestamp fields are always Eastern Prevailing Time, which
+# follows DST identically to America/New_York (EST in winter, EDT in
+# summer). The scheduler's operator-local tz (``cfg.tz``, default Chicago)
+# is only relevant to wake-loop scheduling and per-feed dispatch -- NOT
+# to parsing PJM timestamps. Conflating the two is a 1-hour summer offset
+# bug that misaligns every PJM-written row.
+#
+# Backfill script ``scripts/backfill_pjm.py`` already uses this constant
+# correctly (line 74); this constant unifies the live poller with that
+# convention. See PJM Data Miner 2 spec for the EPT field definition.
+EPT = ZoneInfo("America/New_York")
+
 # PJM RTO-wide codes (P1.1). PJM 5CPs are RTO-wide, not zonal -- the
 # residential capacity charge depends on the household's metered demand
 # during the 5 highest hourly demand hours of the *entire* PJM
@@ -275,15 +287,24 @@ class PJMClient:
 # ---------------------------------------------------------------------------
 
 
-def _parse_ept(s: str, tz: ZoneInfo) -> datetime:
-    """Parse a PJM EPT timestamp like '2026-05-05T13:00:00' as tz-local."""
-    return datetime.fromisoformat(s).replace(tzinfo=tz)
+def _parse_ept(s: str) -> datetime:
+    """Parse a PJM EPT timestamp like '2026-05-05T13:00:00' as
+    Eastern Prevailing Time.
+
+    EPT is the timezone PJM uses for the ``_ept`` field suffix across
+    every Data Miner 2 endpoint. It is NOT the operator's local time:
+    Chicago-based operators must still parse with America/New_York to
+    avoid a 1-hour summer (EDT vs CDT) offset. Pre-2026-05 the live
+    poller had ``_parse_ept(s, tz=cfg.tz)`` which Chicago-defaulted to
+    CDT in summer and wrote every PJM-derived row an hour late.
+    """
+    return datetime.fromisoformat(s).replace(tzinfo=EPT)
 
 
-def build_da_lmp_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_da_lmp_points(items: list[dict]) -> list[Point]:
     out: list[Point] = []
     for it in items:
-        ts_utc = _parse_ept(it["datetime_beginning_ept"], tz).astimezone(timezone.utc)
+        ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
             Point("pjm.lmp_da_hourly")
             .tag("pnode_id", str(it.get("pnode_id", "")))
@@ -299,11 +320,11 @@ def build_da_lmp_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     return out
 
 
-def build_load_forecast_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_load_forecast_points(items: list[dict]) -> list[Point]:
     out: list[Point] = []
     for it in items:
-        target_utc = _parse_ept(it["forecast_datetime_beginning_ept"], tz).astimezone(timezone.utc)
-        evaluated_utc = _parse_ept(it["evaluated_at_datetime_ept"], tz).astimezone(timezone.utc)
+        target_utc = _parse_ept(it["forecast_datetime_beginning_ept"]).astimezone(timezone.utc)
+        evaluated_utc = _parse_ept(it["evaluated_at_datetime_ept"]).astimezone(timezone.utc)
         horizon_hours = int((target_utc - evaluated_utc).total_seconds() // 3600)
         p = (
             Point("pjm.load_forecast")
@@ -317,7 +338,7 @@ def build_load_forecast_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     return out
 
 
-def build_inst_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_inst_load_points(items: list[dict]) -> list[Point]:
     """Convert ``inst_load`` items to ``pjm.inst_load`` points. One point
     per posted observation (PJM publishes throughout the operating day at
     irregular sub-hour intervals); tagged by ``area``. The ``mw`` field
@@ -325,7 +346,7 @@ def build_inst_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     feeds without renaming downstream queries."""
     out: list[Point] = []
     for it in items:
-        ts_utc = _parse_ept(it["datetime_beginning_ept"], tz).astimezone(timezone.utc)
+        ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         out.append(
             Point("pjm.inst_load")
             .tag("area", it.get("area", "") or "")
@@ -335,12 +356,12 @@ def build_inst_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     return out
 
 
-def build_metered_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_metered_load_points(items: list[dict]) -> list[Point]:
     """Convert hrl_load_metered items to `pjm.metered_load` points.
     One point per hour; tagged by zone (`CE` for ComEd) and is_verified."""
     out: list[Point] = []
     for it in items:
-        ts_utc = _parse_ept(it["datetime_beginning_ept"], tz).astimezone(timezone.utc)
+        ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
             Point("pjm.metered_load")
             .tag("zone", it.get("zone", "") or "")
@@ -353,14 +374,14 @@ def build_metered_load_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     return out
 
 
-def build_peak_forecast_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_peak_forecast_points(items: list[dict]) -> list[Point]:
     """Convert ops_sum_frcst_peak_rto items to `pjm.peak_forecast_rto` points.
     Timestamp is `generated_at_ept` (when PJM published the forecast); the
     projected-peak datetime is stored as a string field for downstream
     parsing. Multiple revisions per day are kept separate by the timestamp."""
     out: list[Point] = []
     for it in items:
-        ts_utc = _parse_ept(it["generated_at_ept"], tz).astimezone(timezone.utc)
+        ts_utc = _parse_ept(it["generated_at_ept"]).astimezone(timezone.utc)
         projected_local = it.get("projected_peak_datetime_ept", "") or ""
         p = (
             Point("pjm.peak_forecast_rto")
@@ -378,14 +399,14 @@ def build_peak_forecast_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
     return out
 
 
-def build_nspl_points(items: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_nspl_points(items: list[dict]) -> list[Point]:
     """Convert annual_zonal_nspl items to `pjm.nspl_zonal` points.
     Timestamp is the actual peak hour from the prior summer (which is the
     underlying load coincidence that determined this NSPL). Tagged by
     zone and effective billing year."""
     out: list[Point] = []
     for it in items:
-        ts_utc = _parse_ept(it["datetime_beginning_ept"], tz).astimezone(timezone.utc)
+        ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
             Point("pjm.nspl_zonal")
             .tag("zone", it.get("zone", "") or "")
@@ -424,7 +445,7 @@ async def fetch_da_lmp_for_tomorrow(client: PJMClient, cfg: Config, now_local: d
             "startRow": 1,
         },
     )
-    return build_da_lmp_points(items, cfg.tz)
+    return build_da_lmp_points(items)
 
 
 async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -437,7 +458,7 @@ async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetim
             "startRow": 1,
         },
     )
-    return build_load_forecast_points(items, cfg.tz)
+    return build_load_forecast_points(items)
 
 
 def _check_rto_metered_load_rows_per_hour(items: list[dict]) -> None:
@@ -498,7 +519,7 @@ async def _fetch_metered_load_recent_for_zone(
     )
     if zone == RTO_METERED_ZONE:
         _check_rto_metered_load_rows_per_hour(items)
-    return build_metered_load_points(items, cfg.tz)
+    return build_metered_load_points(items)
 
 
 async def fetch_metered_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -546,7 +567,7 @@ async def _fetch_inst_load_recent_for_area(
             "startRow": 1,
         },
     )
-    return build_inst_load_points(items, cfg.tz)
+    return build_inst_load_points(items)
 
 
 async def fetch_inst_load_recent(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -581,7 +602,7 @@ async def fetch_peak_forecast_rto(client: PJMClient, cfg: Config, now_local: dat
             "startRow": 1,
         },
     )
-    return build_peak_forecast_points(items, cfg.tz)
+    return build_peak_forecast_points(items)
 
 
 async def fetch_annual_nspl(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -596,7 +617,7 @@ async def fetch_annual_nspl(client: PJMClient, cfg: Config, now_local: datetime)
             "startRow": 1,
         },
     )
-    return build_nspl_points(items, cfg.tz)
+    return build_nspl_points(items)
 
 
 # Dispatch table: schedule keys map to fetcher coroutines.
