@@ -59,7 +59,7 @@ The CTK04AE installer-menu safety supervisor in Arm B clamps any pushed setpoint
 
 ## 3. Arms / conditions
 
-Both arms run on identical equipment (Amana ASXC160481BE 2-stage AC + AMVM971005CN modulating gas furnace + ECM blower, Amana CTK04AE thermostat, Control4 EA-5 bridge), same household, same ComEd RRTP supply rate, same Refoss/EAGLE/HAVEN/Ecowitt instrumentation. The arm difference is the active control logic.
+Both arms run on identical equipment (Amana ASXC160481BE 2-stage AC + AMVM971005CN modulating gas furnace + ECM blower, Amana CTK04AE thermostat, Control4 EA-5 bridge), same household, same ComEd RRTP supply rate, same Refoss/EAGLE/Ecowitt/ComfortNet instrumentation. The arm difference is the active control logic.
 
 ### Arm A — Consumer-grade programmable with smart recovery
 
@@ -88,7 +88,7 @@ This represents what a Chicago Hourly Pricing customer running a Nest, Ecobee, H
 
 **What Arm B does:**
 
-1. **Forecast-driven day-type classification at 21:00 the night before.** NWS forecast → MILD / NORMAL / HOT / HOT_STREAK_DAY1, with day-after lookahead. Day-type thresholds (recalibrated against 2025 ComEd RTP price-spike distribution): **HOT** at forecast max ≥85°F OR forecast apparent temp ≥90°F; **NORMAL** at 75-85°F max; **MILD** below 75°F max. Captures roughly 52% of historical price-spike days and 65% of scarcity days; the remaining 40% of spike days are grid-event-driven (not temperature-correlated) and are addressed by the price-reactivity layer below.
+1. **Forecast-driven day-type classification at 21:00 the night before.** NWS forecast → MILD / NORMAL / HOT / HOT_STREAK_DAY1, with day-after lookahead. Day-type thresholds (recalibrated against 2025 ComEd RTP price-spike distribution): **HOT** at forecast max ≥85°F OR forecast apparent temp ≥90°F; **NORMAL** at 75-85°F max; **MILD** below 75°F max. Captures 54% of historical price-spike days and 71% of scarcity days (reproduced by [`tools/comed_2025_analysis/verify_appendix_a.py`](../tools/comed_2025_analysis/verify_appendix_a.py)); the remaining 46% of spike days are grid-event-driven (not temperature-correlated) and are addressed by the price-reactivity layer below.
 2. **Intra-day forecast revisit at 06:00 and 11:00.** Reclassifies if the forecast has shifted; future schedule actions execute against the revised classification.
 3. **Day-type-specific schedules** with pre-cool / coast / recover / sleep periods. See [HVAC_LOGIC.md§Schedules](HVAC_LOGIC.md#schedules).
 4. **Humid override.** When forecast dewpoint exceeds 65°F, alternate cool setpoint substitutes during COAST periods to maintain dehumidification duty.
@@ -252,7 +252,7 @@ Same matched pairs, same outcome. Under the null hypothesis of no controller dif
 
 ### Forecast-correlated vs grid-event decomposition (committed analysis)
 
-Pre-2025 ComEd RTP data analysis (May-Sep 2025, 122 summer days) shows that approximately 60% of price-spike days (≥10¢/kWh peak) and 65% of scarcity days (≥20¢/kWh peak) are temperature-correlated (max temp ≥85°F or apparent temp ≥90°F), and approximately 40% of spike days and 35% of scarcity days are grid-event-driven (occur on weather-mild days, including September shoulder-season events at max temp 66-71°F). This split has structural implications: forecast-based pre-cool addresses only the temperature-correlated subset; real-time price reactivity is the only defense against the grid-event subset.
+2025 ComEd RTP data analysis (May-Sep 2025, 122 summer days, 54 spike days, 17 scarcity days) shows that 54% of price-spike days (≥10¢/kWh peak) and 71% of scarcity days (≥20¢/kWh peak) are temperature-correlated (max temp ≥85°F OR apparent temp ≥90°F), and 46% of spike days and 29% of scarcity days are grid-event-driven (occur on weather-mild days; September shoulder-season events span max temp 65-85°F, with one Sep 4 scarcity event at max temp 65°F). This split has structural implications: forecast-based pre-cool addresses only the temperature-correlated subset; real-time price reactivity is the only defense against the grid-event subset. (Numbers reproduced by [`tools/comed_2025_analysis/verify_appendix_a.py`](../tools/comed_2025_analysis/verify_appendix_a.py); full per-day weather × price table in [`tools/comed_2025_analysis/expected_output.md`](../tools/comed_2025_analysis/expected_output.md).)
 
 **Committed decomposition output:**
 
@@ -268,7 +268,7 @@ Report Arm B vs Arm A cost differences separately for each category. Specificall
 - **Magnitude attribution:** what fraction of total observed savings (or additional costs) came from forecast-correlated days vs grid-event days.
 - **Layer attribution (descriptive):** for grid-event days specifically, log Arm B's response patterns — which layer triggered (price-spike reactivity vs 5CP detection vs neither), at what time, and what indoor temperature resulted.
 
-This decomposition directly addresses an unmeasured question in the residential MPC literature: how much of the savings from a "fully aware" controller comes from forecast-driven control (which all published residential MPC field studies use) vs real-time price reactivity (which essentially none cleanly isolates). The 60/40 split observed in 2025 ComEd data suggests this is a non-trivial structural feature of the load-shifting opportunity, not a refinement.
+This decomposition directly addresses an unmeasured question in the residential MPC literature: how much of the savings from a "fully aware" controller comes from forecast-driven control (which all published residential MPC field studies use) vs real-time price reactivity (which essentially none cleanly isolates). The 54/46 forecast-correlated vs grid-event split observed in 2025 ComEd data suggests this is a non-trivial structural feature of the load-shifting opportunity, not a refinement.
 
 ### Sensitivity analyses (all pre-committed)
 
@@ -425,7 +425,7 @@ Changes after pre-registration require an amendment posted to OSF with explicit 
 
 ## Appendix A: locked threshold values (data-grounded)
 
-Threshold values for the Arm B logic, locked to 2025 ComEd RTP and Chicago weather data analysis (May-September 2025, n=3,663 hourly observations, n=122 summer days). The full distribution analysis, hour-of-day patterns, threshold-frequency tables, scarcity-event days, and weather correlation results are documented in the project's analysis scripts at `tools/comed_2025_analysis.py` (committed alongside the OSF filing). Headline observations driving these thresholds: P95 of summer 2025 hourly prices = 9.53¢/kWh; P99 = 20.47¢/kWh; peak hour was 18:00 CT (mean 11.03¢, max 161.29¢); 8 of 17 scarcity days had max temp <87°F (motivating real-time price reactivity rather than pure forecast-driven control); 18:00 CT had 23.8% of hours above 10¢ (the highest fraction of any hour, falling outside the original 14-18 CT scheduler shutoff window). All values pre-committed before OSF filing and frozen at the OSF commit hash.
+Threshold values for the Arm B logic, locked to 2025 ComEd RTP and Plainfield-IL weather data analysis (May-September 2025, n=3,663 hourly observations, n=122 summer days). The full distribution analysis, hour-of-day patterns, threshold-frequency tables, scarcity-event days, and weather correlation results are reproduced by the frozen analysis bundle at [`tools/comed_2025_analysis/`](../tools/comed_2025_analysis/) (committed alongside the OSF filing; see [`tools/comed_2025_analysis/README.md`](../tools/comed_2025_analysis/README.md) for a claim-by-script mapping and [`tools/comed_2025_analysis/expected_output.md`](../tools/comed_2025_analysis/expected_output.md) for frozen expected output). Headline observations driving these thresholds: P95 of summer 2025 hourly prices = 9.53¢/kWh; P99 = 20.47¢/kWh; peak hour was 18:00 CT (mean 11.03¢, max 161.29¢); 8 of 17 scarcity days had max temp <87°F (motivating real-time price reactivity rather than pure forecast-driven control); 18:00 CT had 23.8% of hours above 10¢ (the highest fraction of any hour, falling outside the original 14-18 CT scheduler shutoff window). All values pre-committed before OSF filing and frozen at the OSF commit hash.
 
 ### Day-type classification (recalibrated)
 
@@ -436,7 +436,7 @@ Threshold values for the Arm B logic, locked to 2025 ComEd RTP and Chicago weath
 | HOT | ≥85°F max OR apparent ≥90°F | Aggressive pre-cool, shutoff during scarcity-risk hours |
 | HOT_STREAK_DAY1 | HOT today AND HOT tomorrow | Deeper / earlier pre-cool to bank multi-day mass |
 
-Recalibration captures 52% of historical price-spike days and 65% of scarcity days. The remaining ~40% of spike days are grid-event-driven and addressed by real-time price reactivity.
+Recalibration captures 54% of historical price-spike days and 71% of scarcity days. The remaining 46% of spike days are grid-event-driven and addressed by real-time price reactivity. (Both figures reproduced by [`tools/comed_2025_analysis/verify_appendix_a.py`](../tools/comed_2025_analysis/verify_appendix_a.py).)
 
 ### Real-time RTP price-spike reactivity
 

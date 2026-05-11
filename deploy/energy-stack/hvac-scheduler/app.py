@@ -137,7 +137,7 @@ class ScheduleAction:
     release_hold: bool = False
 
 
-# NORMAL day: 82-94F forecast. Pre-cool, coast, recover, sleep.
+# NORMAL day: 75-85F forecast (and apparent <90F). Pre-cool, coast, recover, sleep.
 # Sleep at 21:00 captures full DTOD overnight cheap window (9 PM-6 AM, 2.984c/kWh).
 # Coast humid override drops 79->75 when dewpoint >65F to keep low-stage AC running
 # for latent removal (per PNNL-26478, ASHRAE 55 humidity comfort).
@@ -195,7 +195,7 @@ HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(21, 0, "SLEEP",            cool_setpoint_f=73),
 ]
 
-# MILD day: forecast <82F. No active scheduling; thermostat baseline handles
+# MILD day: forecast <75F. No active scheduling; thermostat baseline handles
 # it — but a single 00:05 release-hold action clears any Permanent hold left
 # over from yesterday (e.g. SLEEP=73 from a NORMAL day's last action). Without
 # this, the thermostat would stay pinned to the previous day's last setpoint
@@ -464,8 +464,8 @@ def fetch_rto_peak_forecast_today(query_api, bucket: str) -> float | None:
 # Day-type thresholds (locked per EXPERIMENT_DESIGN.md Appendix A; recalibrated
 # May 2026 against the 2025 ComEd RTP price-spike distribution). The earlier
 # >=95F HOT threshold reflected absolute heat severity; the new threshold is
-# tuned to capture price-spike risk: ~52% of 2025 spike days had max temp
-# >=85F or apparent >=90F. The remaining ~40% of spikes are grid-event-driven
+# tuned to capture price-spike risk: 54% of 2025 spike days had max temp
+# >=85F or apparent >=90F. The remaining 46% of spikes are grid-event-driven
 # (forecast-mild but PJM-stressed) and are addressed by the price-overlay
 # layer (§2) and 5CP detector (§3), not by day-type classification.
 HOT_TEMP_THRESHOLD_F = 85
