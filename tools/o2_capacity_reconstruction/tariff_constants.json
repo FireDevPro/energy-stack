@@ -1,0 +1,27 @@
+{
+  "PLACEHOLDER": true,
+  "_comment": "Placeholder values so the pipeline runs end-to-end in CI. Replace with real values from the ComEd Schedule of Rates before OSF filing. See README.md and tariff_snapshot.md.",
+  "tariff_source": {
+    "title": "TBD",
+    "icc_docket": "TBD",
+    "effective_date": null,
+    "page": "TBD",
+    "url": "TBD"
+  },
+  "ComEdNPL_mw_by_year": {
+    "2026": 22000.0,
+    "2027": 22000.0
+  },
+  "AComEdCPL_mw_by_year": {
+    "2026": 18500.0,
+    "2027": 18500.0
+  },
+  "portfolio_sum_mw_by_year": {
+    "2026": 3500.0,
+    "2027": 3500.0
+  },
+  "capacity_rate_dollars_per_kw_month_by_year": {
+    "2026": 2.50,
+    "2027": 2.50
+  }
+}

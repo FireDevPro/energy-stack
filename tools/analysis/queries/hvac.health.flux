@@ -1,0 +1,5 @@
+from(bucket: $bucket)
+  |> range(start: $start, stop: $end)
+  |> filter(fn: (r) => r._measurement == "hvac.health")
+  |> filter(fn: (r) => r._field == "heartbeat")
+  |> yield(name: "hvac_health")
