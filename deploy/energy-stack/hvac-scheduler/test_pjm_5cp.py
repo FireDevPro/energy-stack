@@ -678,9 +678,11 @@ def test_evaluate_for_scope_rto_log_fields_carry_rto_metadata(monkeypatch):
 
 def test_evaluate_for_scope_carries_state_on_missing_snapshot(monkeypatch):
     """When pjm.inst_load returns no rows (cold-start container or feed
-    outage), the evaluator carries the prior state.is_active rather than
-    treating missing data as zero load (which would falsely release a
-    triggered scope mid-event)."""
+    outage) AND the active hold is still inside its 30-min tail window,
+    the evaluator carries the prior state.is_active rather than treating
+    missing data as zero load (which would falsely release a triggered
+    scope mid-event). The trigger was at T-10min; hold_end =
+    end-of-hour + 30min, so we're well inside the hold window."""
     prior_state = FiveCPState(
         is_active=True,
         triggered_at_utc=T_AT_1430_CT - timedelta(minutes=10),
@@ -694,6 +696,101 @@ def test_evaluate_for_scope_carries_state_on_missing_snapshot(monkeypatch):
     assert ev.is_active is True
     assert ev.new_state == prior_state
     assert ev.log_fields["data_status"] == "no_snapshot"
+
+
+def test_evaluate_for_scope_forces_release_when_hold_elapsed_without_data(monkeypatch):
+    """P1.4 (reviewer-flagged 2026-05-11): if data has disappeared AND
+    the hold-end is already in the past, force release rather than
+    pin the shutoff layer indefinitely.
+
+    Without this, a feed/Influx outage that begins shortly after a
+    trigger would hold the §3 layer at its 85F shutoff setpoint for
+    the rest of the day -- the carry-state branch had no exit. With
+    the force-release: past hold-end, missing data releases; the
+    detector will re-trigger on the next tick if data returns and
+    conditions warrant.
+
+    Setup: trigger fired at 13:00 CT, hold_end = 14:30 UTC (end of
+    13:00 EPT hour, which is 18:00 UTC, +30min = 18:30 UTC). 'Now' is
+    20:00 UTC (15:00 CT, 90+ min past hold-end). Data is missing.
+    Expected: forced release."""
+    trigger_at = datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)  # 13:00 CT
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=trigger_at,
+        triggered_hour_ct=13,
+    )
+    well_past_hold_end = datetime(2026, 7, 15, 20, 0, tzinfo=timezone.utc)  # 15:00 CT
+    ev = _scope_evaluation_fixture(
+        snapshot=None,  # data missing
+        season_5th_mw=20375.0, forecast_peak=22000.0,
+        state=prior_state, now_utc=well_past_hold_end,
+        monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is False
+    assert ev.new_state == FiveCPState()   # reset, not the prior active hold
+    assert ev.log_fields["data_status"] == "no_snapshot"
+    assert ev.log_fields.get("forced_release") == "hold_elapsed_without_data"
+
+
+def test_evaluate_for_scope_forces_release_on_missing_forecast_past_hold_end(monkeypatch):
+    """Symmetric for the missing-forecast-peak case. Same release rule
+    applies regardless of which data side dropped out."""
+    trigger_at = datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=trigger_at,
+        triggered_hour_ct=13,
+    )
+    well_past_hold_end = datetime(2026, 7, 15, 20, 0, tzinfo=timezone.utc)
+    ev = _scope_evaluation_fixture(
+        snapshot=ZoneLoadSnapshot(15000.0, 100.0, well_past_hold_end),
+        season_5th_mw=20375.0,
+        forecast_peak=None,  # forecast missing
+        state=prior_state, now_utc=well_past_hold_end,
+        monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is False
+    assert ev.log_fields["data_status"] == "no_forecast_peak"
+    assert ev.log_fields.get("forced_release") == "hold_elapsed_without_data"
+
+
+def test_evaluate_for_scope_does_not_force_release_inside_hold_window(monkeypatch):
+    """The force-release only kicks in PAST hold-end. Inside the hold
+    window, missing data still carries the prior active state -- the
+    detector's design intent is that within hold the layer stays
+    active regardless of load conditions, and that semantic must
+    survive a brief data gap."""
+    trigger_at = T_AT_1430_CT - timedelta(minutes=5)  # 14:25 UTC
+    prior_state = FiveCPState(
+        is_active=True,
+        triggered_at_utc=trigger_at,
+        triggered_hour_ct=14,
+    )
+    # T_AT_1430_CT = 14:30 UTC; hold_end = 15:30 UTC; we're at 14:30 UTC,
+    # well inside the hold window.
+    ev = _scope_evaluation_fixture(
+        snapshot=None,
+        season_5th_mw=20375.0, forecast_peak=22000.0,
+        state=prior_state, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is True
+    assert ev.new_state == prior_state
+    assert "forced_release" not in ev.log_fields
+
+
+def test_evaluate_for_scope_missing_data_does_not_force_release_when_inactive(monkeypatch):
+    """If the prior state is inactive, missing data is a no-op: the
+    evaluator stays inactive. The force-release only applies to an
+    is_active state past its hold-end."""
+    inactive_state = FiveCPState()
+    ev = _scope_evaluation_fixture(
+        snapshot=None,
+        season_5th_mw=20375.0, forecast_peak=22000.0,
+        state=inactive_state, monkeypatch=monkeypatch,
+    )
+    assert ev.is_active is False
+    assert "forced_release" not in ev.log_fields
 
 
 def test_evaluate_for_scope_carries_state_on_missing_forecast_peak(monkeypatch):

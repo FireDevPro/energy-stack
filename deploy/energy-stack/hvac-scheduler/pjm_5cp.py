@@ -552,9 +552,27 @@ def evaluate_for_scope(
     (a hold that would have crossed Sep 30 -> Oct 1 is released).
     ``log_fields["data_status"]`` is ``"off_season"`` for these ticks.
 
-    When in-season but the snapshot or forecast peak is unavailable,
-    carries ``state.is_active`` (don't treat missing data as zero
-    load, which would prematurely release a triggered scope).
+    Missing-data semantics (in-season only):
+
+      * If ``state.is_active`` and the hold-end has NOT elapsed
+        (``now_utc < hold_end_time(triggered_at_utc)``): carry state.
+        Within the hold window, the locked rule says stay active
+        regardless of load conditions, so missing data doesn't change
+        anything.
+
+      * If ``state.is_active`` and the hold-end HAS elapsed: force
+        release. Past hold-end the active state would normally be
+        held only while release conditions (low ratio AND descending
+        load) are unmet; without data we can't observe those
+        conditions, so the safest move is to release rather than pin
+        the shutoff layer indefinitely. The detector can re-trigger
+        on the next tick if data returns and conditions warrant.
+        Pre-2026-05 this path carried state.is_active unconditionally,
+        which could pin HVAC at 85F shutoff for the rest of the day
+        on a sustained feed/Influx outage after a trigger.
+
+      * If ``not state.is_active``: stay inactive (default state).
+        Missing data can never start a new active state.
     """
     now_local = now_utc.astimezone(tz)
 
@@ -589,6 +607,21 @@ def evaluate_for_scope(
         log_fields["data_status"] = (
             "no_snapshot" if snapshot is None else "no_forecast_peak"
         )
+        # Missing-data path: carry state during the hold window, force
+        # release once hold-end has elapsed. See docstring for the
+        # rationale of why missing data past hold-end forces release
+        # rather than pinning the shutoff layer indefinitely.
+        if state.is_active and state.triggered_at_utc is not None:
+            hold_end = hold_end_time(state.triggered_at_utc)
+            if now_utc >= hold_end:
+                log_fields["forced_release"] = "hold_elapsed_without_data"
+                return ScopeEvaluation(
+                    is_active=False,
+                    new_state=FiveCPState(),
+                    season_5th_mw=season_5th_mw,
+                    snapshot=snapshot,
+                    log_fields=log_fields,
+                )
         return ScopeEvaluation(
             is_active=state.is_active,
             new_state=state,
