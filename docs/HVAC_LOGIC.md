@@ -310,7 +310,16 @@ ComEd Hourly Pricing capacity charges depend on the customer's demand during **t
   - 1 (June 25, 2025) hit 13:00-14:00 CDT.
 - **ComEd 5CP.** The 5 highest ComEd-zone demand hours of the year, set by ComEd. Historical window: **noon-18:00 weekdays** in summer per the ComEd Hourly Pricing FAQ. ComEd's zone peaks can land earlier in the day than PJM's RTO-wide peaks because metro-Chicago load shape differs from the broader RTO.
 
-For residential customers on Hourly Pricing + Delivery TOD, each kW shaved during *any* 5CP hour (PJM or ComEd) saves approximately **$240-480/yr in next-year capacity charges**. The math is the same regardless of which peak set the hour belongs to.
+For residential customers on Hourly Pricing + Delivery TOD, capacity-charge impact is computed via [PJM OATT Attachment M-2 (ComEd) §2](https://www.pjm.com/pjmfiles/directory/etariff/MasterTariffs/23TariffSections/18111.pdf):
+
+- A load reduction during one **PJM Five Peak** hour shifts the customer's `ACustCPL` (Average Customer Coincident Peak Load over the five PJM peaks) by roughly `kW / 5`.
+- A load reduction during one **ComEd Five Peak** hour shifts `ACustPL` (Average Customer Peak Load over the five ComEd peaks) by roughly `kW / 5`.
+- If a single physical hour is **both** a PJM and ComEd Five Peak, the reduction affects both averages.
+- The next-year `CPLC_(Y+1)` is then determined by Att. M-2's branching formula:
+  - If `ACustCPL >= ACustPL`: `CPLC = ACustCPL`.
+  - If `ACustCPL <  ACustPL`: `CPLC = ACustCPL + (ComEdNPL - AComEdCPL) * (ACustPL - ACustCPL) / Σ_5Pc(ACustPL - ACustCPL)` where `ComEdNPL` is ComEd's weather-normalized peak and `AComEdCPL` is the ComEd zone's average coincident peak at the PJM five peaks.
+
+Casual phrasings like "each kW = same full-year dollar value" gloss over this — a single-hour reduction is diluted through a five-hour average, and the dollar value depends on which Att. M-2 branch the customer's annual usage profile sits in. The scheduler still doesn't need to predict WHICH days are 5CP days (PJM/ComEd don't declare them until post-season); aggressive shedding on every HOT day is still the right operational strategy. See O2 in [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) for how this study models the dollar impact.
 
 The scheduler doesn't need to predict WHICH days are 5CP days (neither PJM nor ComEd declares them until after the season); it just needs to be aggressive on every HOT day.
 

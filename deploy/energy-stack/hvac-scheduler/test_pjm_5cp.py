@@ -16,6 +16,7 @@ from pjm_5cp import (
     LOAD_RATIO_RELEASE,
     LOAD_RATIO_TRIGGER,
     MIN_OBSERVATIONS_FOR_5TH,
+    SPARSE_DATA_THRESHOLD,
     DetectorScope,
     FiveCPState,
     ScopeEvaluation,
@@ -61,44 +62,98 @@ def test_comed_pre_season_fallback_is_zone_scaled():
 # ---- season_5th_highest_from_loads ---------------------------------------
 
 
-def test_pre_season_fallback_when_under_5_observations():
-    """First 4 hourly observations of the season -- the detector still
-    needs a comparison value, so we fall back to the caller-supplied
-    scope-scoped fallback rather than letting current_load / 0 explode."""
+def test_sparse_threshold_locked_at_200_hours():
+    """Sparse-data threshold pins the cold-start window to ~8 days of
+    cooling-season coverage. See pjm_5cp.SPARSE_DATA_THRESHOLD comment
+    for the sizing rationale. Pinned here so a quiet bump can't drift
+    the cold-start behaviour without an explicit test update."""
+    assert SPARSE_DATA_THRESHOLD == 200
+
+
+def test_sparse_data_returns_fallback_under_threshold():
+    """Below the sparse threshold the detector falls back to the
+    scope's prior-year value rather than trusting an unreliable
+    handful of observations. Covers the first ~8 days of season as
+    well as multi-day publish gaps later in the season."""
     assert season_5th_highest_from_loads(
         [], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
     ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
+    # Just below the threshold: still fall back.
+    almost_enough = [20000.0] * (SPARSE_DATA_THRESHOLD - 1)
     assert season_5th_highest_from_loads(
-        [100, 200, 300, 400], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+        almost_enough, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
     ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
 
 
-def test_pre_season_fallback_respects_caller_scope():
-    """The fallback comes from the caller, not a module constant -- so an
-    RTO-scoped caller using a 151,525 MW fallback gets back 151,525, not
-    the ComEd-scoped 20,375. This is the invariant that prevents the
-    2026-05 ComEd-scale-confusion regression from sneaking back in."""
+def test_sparse_data_fallback_respects_caller_scope():
+    """An RTO-scoped caller passing a 151,525 MW fallback gets it back
+    when data is sparse, not the ComEd 20,375. Prevents the 2026-05
+    scale-confusion regression."""
     assert season_5th_highest_from_loads([], fallback_mw=151525.0) == 151525.0
     assert season_5th_highest_from_loads(
-        [10, 20, 30], fallback_mw=151525.0,
+        [10.0, 20.0, 30.0], fallback_mw=151525.0,
     ) == 151525.0
 
 
-def test_5th_highest_from_exactly_5_observations():
-    """At exactly 5 observations the smallest one is the 5th highest."""
-    assert season_5th_highest_from_loads(
-        [100, 200, 300, 400, 500], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == 100
-
-
-def test_5th_highest_picks_correct_index_in_unsorted_input():
-    """Sort happens internally; caller doesn't need to sort first."""
-    loads = [12000, 14500, 11000, 13200, 14000, 13800, 14300]  # 7 hours
-    # Sorted desc: 14500, 14300, 14000, 13800, 13200, 12000, 11000
-    # 5th highest (index 4) = 13200
+def test_sufficient_data_uses_actual_5th_above_fallback():
+    """At or above the sparse threshold, return the actual 5th-highest
+    from the data. When the data's 5th exceeds the fallback (a normal
+    or hot summer), the fallback is inert."""
+    # 200 values, mostly at 18,000 MW, with 6 hotter hours: 25,000,
+    # 24,500, 23,800, 23,200, 22,900 (top 5), and 22,000 (6th).
+    # 5th-highest = 22,900.
+    loads = [18000.0] * 194 + [22000.0, 22900.0, 23200.0, 23800.0, 24500.0, 25000.0]
+    assert len(loads) == SPARSE_DATA_THRESHOLD
     assert season_5th_highest_from_loads(
         loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == 13200
+    ) == 22900.0
+
+
+def test_sufficient_data_uses_actual_5th_even_when_below_fallback():
+    """The critical invariant that distinguishes this design from a
+    permanent floor: when the current-year 5th-highest legitimately
+    lands BELOW the prior-year fallback (a cooler-than-prior summer),
+    the function returns the lower current-year value, NOT the
+    fallback. This lets the detector adapt to current conditions.
+
+    Concretely: 2026 cool-summer scenario with real ComEd-zone 5th of
+    18,500 MW vs 2025 fallback of 20,375 MW. A permanent floor would
+    suppress real 2026 5CP detection (ratio against 20,375 stays below
+    0.95 for real loads of 17,800+); the sparse-threshold design
+    returns 18,500 and lets the detector trigger correctly."""
+    # 200 values: 195 baseline at 16,000 + 5 hotter values whose smallest
+    # is 18,500. The 5th-highest is the 5th-from-top = 18,500.
+    loads = [16000.0] * 195 + [18500.0, 18800.0, 19000.0, 19200.0, 19500.0]
+    assert len(loads) == SPARSE_DATA_THRESHOLD
+    result = season_5th_highest_from_loads(
+        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    )
+    assert result == 18500.0
+    assert result < COMED_PRE_SEASON_FALLBACK_5TH_MW
+
+
+def test_sufficient_data_picks_correct_5th_in_unsorted_input():
+    """Sort happens internally; caller doesn't need to sort first.
+    Sized at the sparse threshold so the data path is exercised."""
+    # 200 values: 195 baseline + 5 distinct top values in random order.
+    loads = [18000.0] * 195 + [24500.0, 22200.0, 24000.0, 23800.0, 24300.0]
+    # Top 5 (desc): 24500, 24300, 24000, 23800, 22200 -> 5th = 22200
+    assert season_5th_highest_from_loads(
+        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+    ) == 22200.0
+
+
+def test_sparse_threshold_override_for_testing():
+    """``sparse_threshold`` is a kwarg with a default; tests that need
+    to exercise the sufficient-data path with small fixtures can
+    override it. Production code should always use the locked default."""
+    # 5 observations below the production threshold but above the
+    # override -- exercise the actual-data path with a small fixture.
+    assert season_5th_highest_from_loads(
+        [21000.0, 22000.0, 23000.0, 24000.0, 25000.0],
+        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
+        sparse_threshold=5,
+    ) == 21000.0
 
 
 # ---- hold_end_time --------------------------------------------------------
