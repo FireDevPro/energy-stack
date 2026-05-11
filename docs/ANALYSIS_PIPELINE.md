@@ -123,7 +123,7 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 
 **Logic:** For each qualifying week × arm, compute the per-outcome inputs:
 
-- **O1 numerator (`$_hvac`):** `Σ_h (em_2_kwh + em_8_kwh + em_9_kwh)_h × (comed_hourly_supply_c + delivery_c)` over the week. The hourly supply price uses `comed.prices period_type=hourly_avg` after Rule 3 imputation. The delivery rate is the ComEd Delivery TOD-rate for the time-of-day bucket the hour falls into (peak vs off-peak; see Appendix D for the 2026 rate values).
+- **O1 numerator (`$_hvac`):** `Σ_h (em_2_kwh + em_8_kwh + em_9_kwh)_h × (comed_hourly_supply_c + delivery_c)` over the week. The hourly supply price uses `comed.prices period_type=hourly_avg` after Rule 3 imputation. The delivery rate is the ComEd Delivery TOD-rate for the time-of-day bucket the hour falls into; the locked rate table (Morning / Mid-Day Peak / Evening / Overnight) lives in [`deploy/energy-stack/hvac-scheduler/precool.py`](../deploy/energy-stack/hvac-scheduler/precool.py) (`DTOD_PERIODS_CT` constant, sourced from the CUB March-2026 fact sheet for the Single-Family Non-Electric Heat delivery class).
 - **O1 denominator (`CDD`):** `Σ_d max(T_avg_d − 65, 0)` over the 7 days of the week. T_avg per day from Ecowitt (Rule 5 fallback handling already applied in Stage 2).
 - **O3:** `max_h (em_2_kwh + em_8_kwh + em_9_kwh)_h` — peak hourly HVAC kW of the week (kWh-per-hour = kW for hourly-summed data).
 - **O4 numerator:** same construction as O1 but on `em_1 + em_7` (mains).
