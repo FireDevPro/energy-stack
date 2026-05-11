@@ -25,13 +25,22 @@ repository can reproduce every cited number.
 
 | Item | Value |
 |---|---|
-| Python version | 3.11.x (`.python-version`) |
-| Locked dependencies | [`tools/analysis/requirements.txt`](../tools/analysis/requirements.txt) with full hash pins via `pip-compile --generate-hashes` |
+| Python version | `3.13` ([`.python-version`](../.python-version); matches the `python:3.13-slim` base image used by all production services) |
+| Loose pins (input) | [`tools/analysis/requirements.in`](../tools/analysis/requirements.in) |
+| Locked dependencies (hash-pinned) | [`tools/analysis/requirements.txt`](../tools/analysis/requirements.txt), generated via `pip-compile --generate-hashes tools/analysis/requirements.in -o tools/analysis/requirements.txt` |
 | PRNG seed (matching analyses + bootstrap) | `20260601` |
 | Timezone for all human-readable timestamps | `America/Chicago` (CT) |
 | Numeric timestamps | UTC (Unix epoch seconds) |
 
-A clean install (`pip install -r tools/analysis/requirements.txt --require-hashes`) followed by `pytest tools/analysis/tests/` is the bootstrap acceptance test.
+Bootstrap acceptance test (run from a clean checkout in an isolated venv):
+
+```bash
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install --require-hashes -r tools/analysis/requirements.txt
+.venv/Scripts/python.exe -m pytest tools/analysis/tests/
+```
+
+Replace `.venv/Scripts/python.exe` with `.venv/bin/python` on POSIX. Verified 2026-05-11 on Windows / Python 3.13.13 with 51 tests passing.
 
 ---
 
@@ -291,18 +300,13 @@ A pipeline run is reproducible if:
 
 Before OSF filing (target 2026-05-30):
 
-- [ ] All Stage scripts present and runnable on a 2025 replay dump
-- [ ] `pytest tools/analysis/tests/` green against synthetic fixtures
-- [ ] `spread_constants.json` populated from real 2023-2025 RTP and LMP data (not the placeholder shipped in this PR)
-- [ ] `tariff_constants.json` populated from the ComEd Schedule of Rates citation (not the placeholder shipped in this PR)
-- [ ] `baseline_cov.npz` produced from 2020-2025 ERA5 reanalysis at KORD coords, cooling-relevant weeks (CDD ≥ 5)
+- [x] All Stage scripts present and runnable on a 2025 replay dump
+- [x] `pytest tools/analysis/tests/` green against synthetic fixtures
+- [x] `spread_constants.json` locked (`PLACEHOLDER: false`, computed 2026-05-11 from 2024-2025 RTP+LMP data spanning 5,840 hours)
+- [x] `tariff_constants.json` locked (`PLACEHOLDER: false`, locked 2026-05-11; ComEdNPL, AComEdCPL, capacity rate from primary sources; portfolio_sum reported across three pre-registered named scenarios with FERC ER22-1520-001 anchor — see [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md))
+- [x] `baseline_cov.npz` produced from 2020-2025 ERA5 reanalysis at KORD coords, cooling-relevant weeks (CDD ≥ 5)
 
-The three "shipped placeholder" files in this PR are intentionally
-flagged and tested-against to guarantee the pipeline runs end-to-end
-in CI, but they MUST be replaced with real values before OSF lock.
-[`tools/analysis/check_constants_locked.py`](../tools/analysis/check_constants_locked.py) is the
-pre-filing gate that refuses to bless the OSF commit while any
-placeholder remains.
+[`tools/analysis/check_constants_locked.py`](../tools/analysis/check_constants_locked.py) is the pre-filing gate that refuses to bless the OSF commit while any placeholder remains. Currently returns 0 (all three constants files are locked).
 
 ---
 
@@ -311,6 +315,6 @@ placeholder remains.
 | Path | Purpose |
 |---|---|
 | [`tools/log_override.py`](../tools/log_override.py) | CLI to annotate manual setpoint overrides into `hvac.overrides`. Operational vs vacation classification per [`EXPERIMENT_DESIGN.md §4 Rule 9`](EXPERIMENT_DESIGN.md#data-quality-rules-and-missing-data-handling). |
-| [`tools/comed_price_imputation/`](../tools/comed_price_imputation/) | RTP-vs-day-ahead-LMP spread computation per §4 Rule 3. Ships with the 2025 RTP data (copied from the threshold bundle) and a placeholder spread constant; the OSF-lock procedure runs `compute_spread.py` against the real LMP data. |
-| [`tools/o2_capacity_reconstruction/`](../tools/o2_capacity_reconstruction/) | Layer 2 stipulated-constant lookup and Att. M-2 branch reconstruction. Ships with a placeholder portfolio constant and the cited tariff source. |
+| [`tools/comed_price_imputation/`](../tools/comed_price_imputation/) | RTP-vs-day-ahead-LMP spread computation per §4 Rule 3. Locked spread constants in `spread_constants.json` (median spread cents/kWh by summer month, computed from 2024-2025 RTP+LMP data). |
+| [`tools/o2_capacity_reconstruction/`](../tools/o2_capacity_reconstruction/) | Layer 2 scenario reconstruction and Att. M-2 branch computation. Locked tariff constants (ComEdNPL, AComEdCPL, capacity rate) plus three pre-registered portfolio-sum scenarios (`low` / `anchor_2021` / `high`). |
 | [`tools/analysis/`](../tools/analysis/) | The Stage 1-9 pipeline modules, the orchestrator (`pipeline.py`), the requirements file, and the test suite. |

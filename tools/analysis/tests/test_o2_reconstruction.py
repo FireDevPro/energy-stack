@@ -4,10 +4,11 @@ from __future__ import annotations
 import pytest
 
 from tools.o2_capacity_reconstruction.reconstruct import (
+    PORTFOLIO_SUM_SCENARIOS_MW,
     TariffConstants,
-    cplc_kw,
     annual_capacity_charge_dollars,
-    sensitivity_band,
+    cplc_kw,
+    scenarios,
 )
 
 
@@ -19,7 +20,7 @@ def cons() -> TariffConstants:
         a_comed_cpl_mw=18500.0,
         portfolio_sum_mw=3500.0,
         rate_dollars_per_kw_month=2.5,
-        is_placeholder=True,
+        is_placeholder=False,
     )
 
 
@@ -44,16 +45,32 @@ def test_dollar_conversion(cons):
     assert annual_capacity_charge_dollars(3.0, cons) == pytest.approx(37.5)
 
 
-def test_sensitivity_band_collapses_in_branch_1(cons):
-    band = sensitivity_band(3.0, 2.5, cons)
-    assert band["low"] == band["point"] == band["high"]
+def test_scenarios_collapse_in_branch_1(cons):
+    out = scenarios(3.0, 2.5, cons)
+    assert set(out.keys()) == {"low", "anchor_2021", "high"}
+    assert out["low"] == out["anchor_2021"] == out["high"] == 3.0
 
 
-def test_sensitivity_band_widens_with_portfolio(cons):
-    band = sensitivity_band(3.0, 3.5, cons, portfolio_pct=0.10)
-    assert band["low"] < band["point"] < band["high"]
-    # +10% portfolio shrinks the adjustment; -10% expands it.
-    # adjustment_high = 3.5e6 * 0.5 / (3.5e6 * 0.9) = 0.555...
-    # adjustment_low  = 3.5e6 * 0.5 / (3.5e6 * 1.1) = 0.454...
-    assert band["high"] == pytest.approx(3.0 + 0.5 / 0.9, abs=1e-4)
-    assert band["low"] == pytest.approx(3.0 + 0.5 / 1.1, abs=1e-4)
+def test_scenarios_use_locked_denominators(cons):
+    # gap = (22000 - 18500) * 1000 = 3.5e6 kW; customer gap = 0.5 kW
+    # adjustment(scenario) = 3.5e6 * 0.5 / (portfolio_mw * 1000)
+    out = scenarios(3.0, 3.5, cons)
+    for name, portfolio_mw in PORTFOLIO_SUM_SCENARIOS_MW.items():
+        expected = 3.0 + (3.5e6 * 0.5) / (portfolio_mw * 1000.0)
+        assert out[name] == pytest.approx(expected, abs=1e-6)
+    # Larger denominator → smaller adjustment → smaller CPLC.
+    assert out["low"] > out["anchor_2021"] > out["high"]
+
+
+def test_scenarios_accept_custom_denominators(cons):
+    out = scenarios(3.0, 3.5, cons, portfolio_sums_mw={"only": 3500.0})
+    # adjustment = 3.5e6 * 0.5 / 3.5e6 = 0.5 → CPLC = 3.5
+    assert out == {"only": pytest.approx(3.5)}
+
+
+def test_locked_scenarios_match_preregistration():
+    assert PORTFOLIO_SUM_SCENARIOS_MW == {
+        "low": 1500.0,
+        "anchor_2021": 2033.653,
+        "high": 3000.0,
+    }

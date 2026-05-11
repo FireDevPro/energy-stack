@@ -80,7 +80,7 @@ The scheduler classifies tomorrow's day-type (`MILD` / `NORMAL` / `HOT_5CP_RISK`
 Key constraints encoded in the schedules:
 - **Pre-cool 4-6am** at off-peak rates to bank thermal mass
 - **Coast 12-7pm** through ComEd peak pricing window
-- **Hard 5CP shutoff 14:00-18:00 CDT** on HOT days (PJM and ComEd peak avoidance — capacity-charge impact computed via PJM OATT Attachment M-2's CPLC formula; see [HVAC_LOGIC.md "Capacity peak context"](docs/HVAC_LOGIC.md#capacity-peak-context-pjm-5cp--comed-5cp))
+- **Dynamic 5CP shutoff** on HOT days driven by the real-time price-overlay and 5CP-detector layers (no fixed shutoff clock; see [HVAC_LOGIC.md HOT_5CP_RISK section](docs/HVAC_LOGIC.md#hot_5cp_risk--85f-max-or-apparent--90f-per-experiment_design-appendix-a)). PJM and ComEd peak avoidance with capacity-charge impact computed via PJM OATT Attachment M-2's CPLC formula; see [HVAC_LOGIC.md "Capacity peak context"](docs/HVAC_LOGIC.md#capacity-peak-context-pjm-5cp--comed-5cp).
 - **Auto-mode safe**: heat setpoint floor 65°F always paired with cool setpoint to satisfy Honeywell ISU 300 deadband
 - **Humid override**: dewpoint > 65°F drops the coast cool setpoint to keep low-stage AC running for latent removal
 
