@@ -30,11 +30,36 @@ computed from 2024-2025 Jun-Sep data (5,840 hour-pairs):
 | August | −0.0260 |
 | September | +0.0018 |
 
-The magnitudes are within ±0.05 ¢/kWh in every month — ComEd retail
-RTP closely tracks the PJM zonal DA LMP because the retail product
-passes wholesale clears through with a thin retail markup. The
-locked spread is therefore a small correction, not a structural
-adjustment.
+### What this constant is — and is not
+
+This is the **fallback imputation spread** used by §4 Rule 3 when an
+hourly RTP average is missing (fewer than 6 of 12 5-minute prints
+captured). Its only job is to convert a known DA LMP into a plausible
+RTP fill value:
+
+```
+imputed_rtp_cents = lmp_cents + median_spread_for_calendar_month
+```
+
+It is NOT a claim that RTP and DA LMP are functionally equivalent.
+RTP diverges sharply from DA LMP during real-time scarcity (the
+locked sample includes hours where hourly-average RTP cleared above
+100 ¢/kWh while the matching DA LMP was a tiny fraction of that).
+The MEDIAN spread is small because most hours are quiet hours where
+the two prices track the same balancing-area clear; the tail
+divergence is real but doesn't move the median estimator.
+
+If a missing RTP hour falls during a scarcity event the imputation
+under-estimates RTP. This is acceptable because:
+
+1. Per Rule 3, weeks with >20% imputed hours are excluded from
+   formal analysis; the imputation is for sparse single-hour gaps,
+   not for systematic outages during scarcity windows.
+2. A sustained outage during a real RTP spike would push the week
+   over the imputation cap and exclude it; the bias is bounded by
+   the cap.
+3. The locked downstream Arm B trigger values (10 ¢ / 20 ¢) are not
+   sensitive to a ≤0.05 ¢/kWh imputation bias in fill-in hours.
 
 ### Why 2024-2025 only (not 2023-2025 as the original spec text said)
 
@@ -78,20 +103,20 @@ git diff spread_constants.json
 For each calendar month in summer (June, July, August, September):
 
 1. Aggregate ComEd RTP 5-minute prints to hourly averages (matching
-   the production `comed.prices period_type=hourly_avg`).
-2. Pull PJM day-ahead LMP at the COMED zone aggregator for the same
-   hour-beginning timestamps.
-3. Compute `spread = RTP − LMP` hour by hour.
+   the production `comed.prices period_type=hourly_avg`; ≥6 of 12
+   prints required per §4 Rule 3).
+2. Pull PJM day-ahead LMP at the COMED zone aggregator
+   (`pnode_id=33092371`) for the same hour-beginning timestamps.
+3. Compute `spread = RTP − LMP` hour by hour, in matched units
+   (cents/kWh after the $/MWh → ¢/kWh conversion).
 4. Take the median spread across all hours of that calendar month
-   across the 2023-2025 sample.
+   pooled across the contributing summers (currently 2024-2025).
 
 The median (not the mean) is used because RTP has a heavy upper tail
-(scarcity hours of 50-100+ ¢/kWh) that would bias a mean-based
-estimator. The median represents typical conditions, which is what
-the imputation is filling in for.
-
-When the pipeline fills a missing RTP hour, it computes:
-`imputed_rtp_cents = lmp_cents_at_that_hour + median_spread_for_that_calendar_month`.
+(scarcity hours where hourly average exceeds 100 ¢/kWh) that would
+pull a mean-based estimator far from typical conditions. The
+imputation is filling in for missed single-hour quiet-hour prints,
+not modelling scarcity; median is the right estimator for that.
 
 ## Output schema
 
@@ -99,23 +124,19 @@ When the pipeline fills a missing RTP hour, it computes:
 
 ```json
 {
+  "PLACEHOLDER": false,
   "computed_at": "<ISO 8601 UTC>",
-  "input_years": [2023, 2024, 2025],
+  "input_years": [<years that actually contributed>],
+  "requested_years": [<years the run tried, including any skipped>],
   "input_hours_total": <int>,
   "median_spread_cents_per_kwh_by_month": {
     "6": <float>,
     "7": <float>,
     "8": <float>,
     "9": <float>
-  },
-  "p95_lookup_for_qa": {
-    "6": <float>,
-    "7": <float>,
-    "8": <float>,
-    "9": <float>
-  },
-  "PLACEHOLDER": false
+  }
 }
 ```
 
-`PLACEHOLDER: true` is the sentinel that prevents OSF lock; the shipped file in this PR has `PLACEHOLDER: true`.
+`PLACEHOLDER: true` is the sentinel that prevents OSF lock; the
+file shipped on `main` has `PLACEHOLDER: false` (see [PR #71](https://github.com/Promithius-DR/energy-stack/pull/71)).
