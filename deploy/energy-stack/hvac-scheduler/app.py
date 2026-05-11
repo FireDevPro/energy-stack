@@ -1659,6 +1659,21 @@ async def _push_layer_change_mid_period(
     Skipped silently when no schedule baseline has been established yet
     today (e.g., before the first non-release-hold action fires) since
     there's no schedule baseline to layer on top of.
+
+    Per-tick supervisor continuity (P1.2 reviewer-flagged 2026-05-11):
+    the safety supervisor's indoor-temperature emergency rule (indoor
+    >= 86F -> override cool to 74F) only fires when the supervisor
+    runs. Pre-fix the supervisor was bypassed when ``effective_cool``
+    matched the last-pushed guard, so during a sustained 85F shutoff
+    hold the supervisor never read the thermostat and an indoor
+    excursion past 86F went unobserved by the safety layer. Post-fix
+    the thermostat snapshot is read on EVERY mid-period tick (after
+    confirming a schedule baseline exists), the supervisor runs, and
+    the no-push short-circuit only applies when the supervisor
+    APPROVED the effective setpoint and that setpoint equals the
+    last-pushed guard. If the supervisor escalated to emergency or
+    clamped to a different value, we push regardless of whether the
+    raw effective changed.
     """
     if firing.last_schedule_cool_f is None:
         return  # no baseline to layer on top of
@@ -1671,8 +1686,29 @@ async def _push_layer_change_mid_period(
         price_override_f=layer_inputs.price_override_f,
         fivecp_active=layer_inputs.fivecp_active,
     )
-    if layer_resolution.effective_cool_f == firing.last_pushed_effective_cool_f:
-        return  # nothing changed; skip the push
+
+    # P1.2: read thermostat snapshot and run supervisor BEFORE deciding
+    # whether to push. The supervisor's emergency rule (indoor >= 86F)
+    # must fire even when the layer-resolved effective setpoint hasn't
+    # changed -- a sustained 85F shutoff hold where indoor crosses the
+    # threshold needs the supervisor's 74F override to kick in.
+    snapshot = await read_thermostat_snapshot(c4)
+    decision = validate_setpoints(
+        layer_resolution.effective_cool_f, HEAT_SETPOINT_FLOOR_F, snapshot,
+    )
+    sup_cool = decision.cool_setpoint_f
+    sup_heat = decision.heat_setpoint_f
+    sup_decision = decision.decision
+    sup_reason = decision.reason
+
+    # No-push short-circuit: skip the push only when the supervisor
+    # APPROVED the layer-resolved setpoint AND that approved value
+    # already equals the last-pushed guard. If the supervisor clamped
+    # or escalated to emergency, sup_cool != effective_cool_f and we
+    # must push the supervisor's chosen value.
+    if (sup_decision == "approved"
+            and sup_cool == firing.last_pushed_effective_cool_f):
+        return
 
     # Construct a synthetic action for execute_action / write_action / log.
     synthetic_action = ScheduleAction(
@@ -1683,14 +1719,6 @@ async def _push_layer_change_mid_period(
         fan_mode=None,  # leave fan mode alone mid-period
     )
 
-    snapshot = await read_thermostat_snapshot(c4)
-    decision = validate_setpoints(
-        layer_resolution.effective_cool_f, HEAT_SETPOINT_FLOOR_F, snapshot,
-    )
-    sup_cool = decision.cool_setpoint_f
-    sup_heat = decision.heat_setpoint_f
-    sup_decision = decision.decision
-    sup_reason = decision.reason
     if decision.needs_alert:
         level = "error" if decision.decision == "emergency" else "warn"
         log(level, "supervisor_intervention",
@@ -1722,18 +1750,19 @@ async def _push_layer_change_mid_period(
         override_note=override_note,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
-    # Update the mid-period tracking variable when the push succeeded
-    # (or in dry-run where the no-push is intentional). Pre-fix this
-    # was unconditional, so a failed live mid-period push would set
-    # the guard to the target value despite the thermostat NOT being
-    # updated -- subsequent ticks would think the value was already on
-    # the thermostat and skip re-pushing the actual failed value.
-    # Gating on (dry_run or error is None) keeps the guard reflective
-    # of what was last actually applied while still preventing the
-    # Arm-A-phantom-repush bug the prior gating chain was designed
-    # against.
+    # Update the guard to the supervisor-approved value (which may be
+    # the emergency 74F override, a clamped value, or the raw
+    # layer-resolved effective). Pre-P1.2 the guard tracked the RAW
+    # effective even when the supervisor clamped, which made the next
+    # tick's comparison ``sup_cool == last_pushed`` fail spuriously
+    # and re-push every minute during a clamp.
+    #
+    # Guard update is still gated on (dry_run or error is None): a
+    # failed live push must NOT update the guard, otherwise a later
+    # mid-period repush would think the value was already on the
+    # thermostat (P1.3).
     if cfg.dry_run or error is None:
-        firing.last_pushed_effective_cool_f = layer_resolution.effective_cool_f
+        firing.last_pushed_effective_cool_f = sup_cool
 
 
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,

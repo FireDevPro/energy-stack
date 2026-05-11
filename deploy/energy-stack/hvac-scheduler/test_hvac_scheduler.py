@@ -1851,3 +1851,201 @@ def test_dry_run_action_updates_pushed_guard(monkeypatch):
         dry_run=True,
     )
     assert firing.last_pushed_effective_cool_f == 75
+
+
+# ---- P1.2 (reviewer-flagged 2026-05-11): per-tick supervisor continuity ---
+
+
+async def test_emergency_supervisor_fires_during_sustained_hold(monkeypatch):
+    """P1.2 (reviewer-flagged 2026-05-11): the safety supervisor's
+    emergency rule (indoor >= 86F -> override cool to 74F) MUST fire
+    even when the layer-resolved effective setpoint hasn't changed.
+
+    Pre-fix the mid-period path skipped the thermostat read when
+    ``effective == last_pushed``, so during a sustained 85F shutoff
+    hold the supervisor never observed the indoor temp climbing past
+    the emergency threshold. House could sit at 85F effective with
+    indoor 87F+ for hours.
+
+    Post-fix: snapshot read happens every tick. Supervisor runs every
+    tick. If indoor >= 86F during a no-change tick, the supervisor
+    escalates to emergency 74F and we push the override.
+    """
+    from app import LayerInputs
+
+    # Stub read_thermostat_snapshot to return indoor=87 (emergency
+    # threshold = 86, so this triggers the override).
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 87.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 85,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    cfg.dry_run = False
+
+    c4, _climate = _mock_c4_client()
+    write_api = MagicMock()
+    firing = FiringState(
+        last_schedule_cool_f=80,           # HOT_COAST baseline
+        last_action_label="HOT_COAST",
+        last_pushed_effective_cool_f=85,    # scarcity tier active, last push was 85
+    )
+    # Scarcity tier still active -- layer-resolved effective stays at 85.
+    layer_inputs = LayerInputs(
+        price_tier_name="scarcity",
+        price_offset_f=0,
+        price_override_f=85,                # scarcity override
+        price_prev_tier="scarcity",
+        current_price_cents=25.0,
+        fivecp_active=False,
+        fivecp_scopes_fired=(),
+        fivecp_load_mw=0.0,
+        fivecp_derivative=0.0,
+        fivecp_forecast_peak=0.0,
+        fivecp_season_5th_mw=20375.0,
+        fivecp_data_available=True,
+    )
+    now_local = datetime(2026, 7, 15, 16, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local,
+    )
+
+    # The push MUST have fired: supervisor escalated to emergency 74F,
+    # which differs from the last_pushed guard (85), so the no-push
+    # short-circuit doesn't apply.
+    assert app.execute_action.await_count == 1   # type: ignore[attr-defined]
+    # The pushed value was the supervisor's emergency cool=74, not the
+    # raw layer-resolved 85.
+    push_call = app.execute_action.await_args   # type: ignore[attr-defined]
+    sup_cool_pushed = push_call.args[2]  # third positional arg
+    assert sup_cool_pushed == 74
+    # Guard tracks the supervisor's chosen value, not the raw effective.
+    assert firing.last_pushed_effective_cool_f == 74
+
+
+async def test_no_push_when_supervisor_approves_unchanged_layer(monkeypatch):
+    """Symmetric guard: the no-push short-circuit DOES apply when the
+    supervisor approves the layer-resolved effective AND it matches
+    the last-pushed value. P1.2 fix must not over-eagerly push every
+    tick during a normal sustained period."""
+    from app import LayerInputs
+
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 73.0,   # comfortable
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 79,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    cfg.dry_run = False
+
+    c4, _climate = _mock_c4_client()
+    write_api = MagicMock()
+    firing = FiringState(
+        last_schedule_cool_f=79,
+        last_action_label="COAST",
+        last_pushed_effective_cool_f=79,
+    )
+    layer_inputs = LayerInputs(
+        price_tier_name="normal",
+        price_offset_f=0,
+        price_override_f=None,
+        price_prev_tier="normal",
+        current_price_cents=5.0,
+        fivecp_active=False,
+        fivecp_scopes_fired=(),
+        fivecp_load_mw=0.0,
+        fivecp_derivative=0.0,
+        fivecp_forecast_peak=0.0,
+        fivecp_season_5th_mw=20375.0,
+        fivecp_data_available=True,
+    )
+    now_local = datetime(2026, 7, 15, 13, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local,
+    )
+
+    # Supervisor approved 79 (same as last_pushed), no push fired.
+    assert app.execute_action.await_count == 0   # type: ignore[attr-defined]
+    # Guard stays at 79.
+    assert firing.last_pushed_effective_cool_f == 79
+
+
+async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch):
+    """Belt-and-braces: the thermostat snapshot read MUST happen on
+    every mid-period tick (after the baseline-exists check), even
+    when the layer-resolved effective hasn't changed. Pre-fix the
+    read was conditional on a setpoint change and the emergency rule
+    could not observe indoor temperature during long shutoff holds."""
+    from app import LayerInputs
+
+    read_mock = AsyncMock(return_value={
+        "indoor_temp_f": 73.0,
+        "hvac_mode": "Cool",
+        "cool_setpoint_f": 79,
+        "heat_setpoint_f": 65,
+    })
+    monkeypatch.setattr(app, "read_thermostat_snapshot", read_mock)
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    cfg.dry_run = False
+
+    c4, _climate = _mock_c4_client()
+    write_api = MagicMock()
+    firing = FiringState(
+        last_schedule_cool_f=79,
+        last_action_label="COAST",
+        last_pushed_effective_cool_f=79,   # nothing will change this tick
+    )
+    layer_inputs = LayerInputs(
+        price_tier_name="normal",
+        price_offset_f=0,
+        price_override_f=None,
+        price_prev_tier="normal",
+        current_price_cents=5.0,
+        fivecp_active=False,
+        fivecp_scopes_fired=(),
+        fivecp_load_mw=0.0,
+        fivecp_derivative=0.0,
+        fivecp_forecast_peak=0.0,
+        fivecp_season_5th_mw=20375.0,
+        fivecp_data_available=True,
+    )
+    now_local = datetime(2026, 7, 15, 13, 30,
+                          tzinfo=ZoneInfo("America/Chicago"))
+
+    await _push_layer_change_mid_period(
+        cfg, c4, write_api, firing, "NORMAL",
+        layer_inputs, today_dewpoint_f=60.0, override_note="",
+        now_local=now_local,
+    )
+
+    # Even though no push happened, the thermostat snapshot WAS read.
+    # This is the supervisor-continuity invariant: the safety layer
+    # MUST observe the thermostat every tick to catch emergencies.
+    assert read_mock.await_count == 1
