@@ -201,6 +201,24 @@ services:
     volumes:
       - thermostat_poller_data:/data
 
+  ecowitt-ingest:
+    build: ./ecowitt-ingest
+    container_name: ecowitt-ingest
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    ports:
+      # Gateway pushes to http://<pi-lab-LAN-IP>:8088/data/report/.
+      # Bound on the host so the GW1200 on the LAN can reach it.
+      - "${ECOWITT_LISTEN_PORT:-8088}:8088"
+    environment:
+      ECOWITT_LISTEN_PORT: 8088
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+
   haven-ingest:
     build: ./haven-ingest
     container_name: haven-ingest

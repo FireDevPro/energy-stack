@@ -22,6 +22,7 @@ STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 services=(
     comed-poller
     eagle-poller
+    ecowitt-ingest
     haven-ingest
     hvac-scheduler
     nws-poller

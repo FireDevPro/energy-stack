@@ -20,6 +20,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes (with safety supervisor) | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
 | `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
 | `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
+| `ecowitt-ingest` | GW1200 push receiver (WN32 + WS90) → `ecowitt.weather`, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
@@ -129,6 +130,7 @@ Other services (eagle-poller, refoss-poller, comed-poller, haven-ingest) have no
 | 8086 | InfluxDB API + UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3000 | Grafana UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3100 | Loki (Grafana queries it via container network) | Pi-lab localhost only |
+| 8088 | ecowitt-ingest HTTP receiver | LAN — GW1200B pushes here every 60 s |
 
 No firewall changes required — existing "Allow Trusted to Homelab" ZBF rule covers the user-facing ports.
 
