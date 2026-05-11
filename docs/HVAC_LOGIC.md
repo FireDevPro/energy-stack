@@ -78,10 +78,10 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
                    ─► Write hvac.actions row
 ```
 
-`_classify_one_day` thresholds:
-- `MILD` if forecast high < 82°F
-- `NORMAL` if 82-94°F
-- `HOT` if ≥ 95°F **OR** active heat advisory
+`_classify_one_day` thresholds (recalibrated against 2025 ComEd RTP price-spike distribution — see [EXPERIMENT_DESIGN.md Appendix A](EXPERIMENT_DESIGN.md#appendix-a-locked-threshold-values-data-grounded)):
+- `MILD` if forecast high < 75°F
+- `NORMAL` if 75-85°F max (and apparent < 90°F)
+- `HOT` if forecast max ≥ 85°F **OR** apparent ≥ 90°F **OR** active heat advisory
 
 ---
 
@@ -89,9 +89,9 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 
 | Day type | Trigger | Schedule | Behavior |
 |---|---|---|---|
-| `MILD` | High < 82°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
-| `NORMAL` | 82-94°F | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
-| `HOT_5CP_RISK` | ≥ 95°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool, hard 5CP shutoff window |
+| `MILD` | High < 75°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
+| `NORMAL` | 75-85°F max (and apparent < 90°F) | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
+| `HOT_5CP_RISK` | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool, hard 5CP shutoff window |
 | `HOT_STREAK_DAY1` | HOT + day-after also HOT | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool to bank thermal mass for the multi-day event. Day 2 of the streak runs the regular `HOT_SCHEDULE` (the mass is already there). |
 
 ---
@@ -100,13 +100,13 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 
 All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65, fan_mode=None, cool_setpoint_humid_f=None)`. Heat is always paired so Auto mode works.
 
-### MILD — high < 82°F
+### MILD — high < 75°F
 
 | Time | Label | Action | Notes |
 |---|---|---|---|
 | 00:05 | `MILD_RELEASE_HOLD` | `release_hold=True` | Clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No setpoints pushed. |
 
-### NORMAL — typical 82-94°F day
+### NORMAL — typical 75-85°F day
 
 | Time | Label | Cool °F | Fan | Notes |
 |---|---|---|---|---|
