@@ -382,15 +382,18 @@ Continuing from price-overlay output:
 
 ```python
 # After price overlay, evaluate 5CP risk per scope (P1.1) and OR.
-forecast_peak = fetch_forecast_peak_today(query_api, bucket, tz=tz)
+# COMED and RTO feeds are independent in production; pass each scope
+# its own forecast peak to avoid a scale mismatch.
+comed_forecast_peak = fetch_forecast_peak_today(query_api, bucket, tz=tz)
+rto_forecast_peak = fetch_rto_peak_forecast_today(query_api, bucket)
 
 comed_eval = evaluate_for_scope(
     COMED_SCOPE, query_api, bucket, season_start_utc,
-    forecast_peak, fivecp_state_comed, now_utc,
+    comed_forecast_peak, fivecp_state_comed, now_utc,
 )
 rto_eval = evaluate_for_scope(
     RTO_SCOPE, query_api, bucket, season_start_utc,
-    forecast_peak, fivecp_state_rto, now_utc,
+    rto_forecast_peak, fivecp_state_rto, now_utc,
 )
 fivecp_state_comed = comed_eval.new_state
 fivecp_state_rto = rto_eval.new_state
