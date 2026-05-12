@@ -101,6 +101,29 @@ Small single-file changes skip this section.
 6. **Front-load full decomposition.** Plan all phases before executing any. If phase 1 surprises, revise later phases in place. Cheaper than designing each phase from cold.
 7. **Archive on merge.** Move to `docs/plans/archive/<feature>-plan.md` in the commit that closes the feature branch.
 
+## Multi-Phase Feature Workflow
+
+For multi-phase features, distinguish task completion from feature completion.
+
+A feature starts with a unified plan and an outside-in acceptance test that represents the whole feature. That test may be xfail/skip/scaffolded at first, but it remains the north star until the full feature is complete.
+
+Work may be split into task PRs. A task PR is a coherent reviewable slice of the larger feature and may merge independently if it improves the codebase. Merging a task PR does not mean the feature is complete.
+
+Each task PR should report both:
+
+- **Task status:** what this PR/phase completed, tests run, and what remains before this PR is ready.
+- **Feature status:** what remains in the unified feature plan, whether the feature-level acceptance test passes without scaffolding, and whether replay/validation gates are complete.
+
+Do not call a feature complete until:
+
+1. the feature-level outside-in test passes without replacing the real implementation under test,
+2. all planned phases are implemented or explicitly descoped,
+3. shape/behavior/oracle audit gaps are closed or documented as non-blocking,
+4. required real-shape replay or operational validation gates pass, or expected empties are reason-coded,
+5. docs and plan status are updated or archived.
+
+After each task PR is squash-merged, sync `main` and continue the same feature thread from a fresh branch/PR. Do not stack PRs.
+
 ## Branching policy
 
 1. **Never push directly to `main`.** Always branch.
