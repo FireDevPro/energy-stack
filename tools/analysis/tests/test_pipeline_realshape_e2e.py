@@ -32,6 +32,7 @@ from tools.analysis.tests.fixture_real_shape import (
     build_comed_prices_df,
     build_ecowitt_weather_df,
     build_hvac_thermostat_df,
+    build_nws_forecast_df,
     build_refoss_channel_df,
     write_bundle,
 )
@@ -74,6 +75,13 @@ def realshape_bundle(tmp_path):
         pressure_inhg_fn=lambda ts: 29.92,
     )
     thermostat = build_hvac_thermostat_df(start_utc, end_utc)
+    # nws.forecast: one D-1 21:00 issuance per day in the bundle window
+    # (Stage 8 Phase 2 requires this for spike classification).
+    forecast_days = [
+        datetime.date(2026, 6, 8) + datetime.timedelta(days=i)
+        for i in range(28)
+    ]
+    forecast = build_nws_forecast_df(forecast_days)
 
     stage1_dir = tmp_path / "stage1"
     write_bundle(
@@ -83,6 +91,7 @@ def realshape_bundle(tmp_path):
             "comed.prices": prices,
             "ecowitt.weather": weather,
             "hvac.thermostat": thermostat,
+            "nws.forecast": forecast,
         },
         window_start_ct="2026-06-08T00:00:00-05:00",
         window_end_ct="2026-07-06T00:00:00-05:00",

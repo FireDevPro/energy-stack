@@ -192,6 +192,62 @@ def build_hvac_thermostat_df(
     )
 
 
+def build_nws_forecast_df(
+    day_cts: list[datetime.date],
+    high_f_fn: callable = lambda day_ct: 80.0,
+    apparent_max_f_fn: callable = lambda day_ct: 85.0,
+) -> pd.DataFrame:
+    """nws.forecast issuances at D-1 21:00 CT for each listed CT day.
+
+    Production poller writes per-(time, for_period) rows split across
+    several fields. This fixture mirrors the post-Stage-1-split shape
+    (numeric fields in ``_value``, the ``period_date`` string field in
+    ``_value_text``).
+
+    By default the forecast values (80F high, 85F apparent_max) sit
+    below the classify_spike_day hot thresholds (85F / 90F) so a day
+    paired with no-spike prices classifies as ``no_spike``. Pass
+    custom callables to vary the values per day.
+    """
+    from zoneinfo import ZoneInfo
+    ct = ZoneInfo("America/Chicago")
+    rows: list[dict] = []
+    for day_ct in day_cts:
+        d_minus_1 = day_ct - datetime.timedelta(days=1)
+        issuance_ct = datetime.datetime(
+            d_minus_1.year, d_minus_1.month, d_minus_1.day,
+            21, 0, tzinfo=ct,
+        )
+        issuance_utc = pd.Timestamp(
+            issuance_ct.astimezone(datetime.timezone.utc)
+        )
+        rows.append({
+            "_time": issuance_utc,
+            "_measurement": "nws.forecast",
+            "_field": "high_f",
+            "_value": float(high_f_fn(day_ct)),
+            "_value_text": None,
+            "for_period": "tomorrow",
+        })
+        rows.append({
+            "_time": issuance_utc,
+            "_measurement": "nws.forecast",
+            "_field": "apparent_max_f",
+            "_value": float(apparent_max_f_fn(day_ct)),
+            "_value_text": None,
+            "for_period": "tomorrow",
+        })
+        rows.append({
+            "_time": issuance_utc,
+            "_measurement": "nws.forecast",
+            "_field": "period_date",
+            "_value": float("nan"),
+            "_value_text": day_ct.isoformat(),
+            "for_period": "tomorrow",
+        })
+    return pd.DataFrame(rows)
+
+
 def write_bundle(
     stage1_dir: Path,
     measurement_dataframes: dict[str, pd.DataFrame],

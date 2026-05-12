@@ -3707,6 +3707,130 @@ def _load_daily_hourly_records(
     ]
 
 
+def _hourly_prices_for_day_ct(
+    prices_df: "pd.DataFrame",
+    day_ct: datetime.date,
+) -> list[float]:
+    """24 hourly mean supply prices (cents/kWh) for one CT day.
+
+    Day-scoped version of ``_stage3_hourly_supply_prices``: mean of
+    ``period_type=5min`` ``comed.prices`` rows per hour. Hours with no
+    observations yield 0.0; Rule 3 imputation (sub-hourly missing) is
+    the caller's responsibility.
+
+    Used by Stage 8 Phase 2 to feed ``classify_spike_day`` per day.
+    """
+    if len(prices_df) == 0:
+        return [0.0] * 24
+    day_start_utc = _ct_date_to_utc(day_ct, 0)
+    day_end_utc = _ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    mask = (
+        (prices_df["_field"] == "price_cents_per_kwh")
+        & (prices_df["_time"] >= day_start_utc)
+        & (prices_df["_time"] < day_end_utc)
+    )
+    if "period_type" in prices_df.columns:
+        mask = mask & (prices_df["period_type"] == "5min")
+    sub = prices_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [0.0] * 24
+    sub["_hour_of_day"] = (
+        (sub["_time"] - day_start_utc).dt.total_seconds() // 3600
+    ).astype(int)
+    means = sub.groupby("_hour_of_day")["_value"].mean()
+    return [float(means.get(h, 0.0)) for h in range(24)]
+
+
+def _forecast_for_day_ct(
+    forecast_df: "pd.DataFrame",
+    day_ct: datetime.date,
+) -> dict | None:
+    """Find the ``nws.forecast`` issuance closest to D-1 21:00 CT and
+    return the analysis-vocabulary forecast values for day D.
+
+    Lookup logic (locked at Phase 2):
+      - Filter rows whose ``_time`` falls in [D-1 21:00 CT - 30 min,
+        D-1 21:00 CT + 30 min].
+      - Filter rows where ``for_period == "tomorrow"`` (since the
+        21:00 CT issuance the day before is the canonical
+        next-day forecast).
+      - When ``period_date`` is present in the bundle (newer Stage 1
+        exports include the string-field column ``_value_text``),
+        additionally require the issuance to have a ``period_date``
+        row whose ``_value_text`` matches ``day_ct.isoformat()``. This
+        cross-check defends against the loader matching an unrelated
+        ``tomorrow`` row whose ``period_date`` actually points at a
+        different calendar day (e.g. clock skew, mid-day reissuance).
+      - When ``period_date`` column is absent (older bundles), fall
+        back to ``for_period == "tomorrow"`` only. Phase 5 will
+        record this fallback to ``stage8/provenance.json`` so a
+        reviewer can see which days relied on the looser match.
+
+    When multiple ``for_period=tomorrow`` issuances fall inside the
+    window (cadence ~30 min puts this in scope routinely), the
+    helper picks the issuance whose ``_time`` is CLOSEST to D-1
+    21:00 CT, not the first row.
+
+    Returns a dict with two keys (the analysis-vocabulary names the
+    classifier consumes) or None if no qualifying issuance was found:
+      {"max_forecast_temp_f": float, "apparent_max_f": float}
+
+    Field-name mapping is explicit here: ``nws.forecast.high_f`` ->
+    ``max_forecast_temp_f``; ``apparent_max_f`` passes through.
+    """
+    import pandas as pd
+    if len(forecast_df) == 0:
+        return None
+
+    target_utc = _ct_date_to_utc(
+        day_ct - datetime.timedelta(days=1), 21,
+    )
+    target_pd = pd.Timestamp(target_utc)
+    window_start = target_pd - pd.Timedelta(minutes=30)
+    window_end = target_pd + pd.Timedelta(minutes=30)
+
+    in_window = forecast_df.loc[
+        (forecast_df["_time"] >= window_start)
+        & (forecast_df["_time"] <= window_end)
+        & (forecast_df["for_period"] == "tomorrow")
+    ]
+    if len(in_window) == 0:
+        return None
+
+    # period_date cross-check (skipped when the column is absent in
+    # older bundles).
+    if "_value_text" in forecast_df.columns:
+        period_date_rows = in_window[in_window["_field"] == "period_date"]
+        if len(period_date_rows) > 0:
+            matching = period_date_rows.loc[
+                period_date_rows["_value_text"] == day_ct.isoformat(),
+                "_time",
+            ].unique()
+            in_window = in_window[in_window["_time"].isin(matching)]
+            if len(in_window) == 0:
+                return None
+
+    # Pick the issuance _time closest to target.
+    candidate_times = pd.Series(in_window["_time"].unique())
+    candidate_times_pd = pd.to_datetime(candidate_times, utc=True)
+    diffs = (candidate_times_pd - target_pd).abs()
+    closest_idx = diffs.idxmin()
+    closest_time = candidate_times.iloc[closest_idx]
+
+    issuance = in_window[in_window["_time"] == closest_time]
+    high_f_rows = issuance[issuance["_field"] == "high_f"]
+    apparent_rows = issuance[issuance["_field"] == "apparent_max_f"]
+    if len(high_f_rows) == 0 or len(apparent_rows) == 0:
+        return None
+
+    return {
+        "max_forecast_temp_f": float(high_f_rows["_value"].iloc[0]),
+        "apparent_max_f": float(apparent_rows["_value"].iloc[0]),
+    }
+
+
 def _load_stage8_inputs(
     stage1_dir: Path, stage3_dir: Path,
 ) -> dict | None:
@@ -3738,13 +3862,19 @@ def _load_stage8_inputs(
     ``{"reason_code": ReasonCode.X}`` for per-output gating that emits
     a reason report instead of writing header-only.
 
-    Phase 1 implementation: joins Stage 2 ``qualifying_days.csv`` with
-    Stage 3 ``weekly.csv`` to get qualifying days; loads 24 hourly
-    Refoss + price records per day; computes only
-    ``o1_daily_hvac_dollars``. All days classified as ``no_spike``
-    (Phase 2 adds real classification). ``layer_attribution`` returns
-    None until Phase 4 reconstructs price-overlay state.
+    Phase 2 implementation: joins Stage 2 ``qualifying_days.csv`` with
+    Stage 3 ``weekly.csv`` to get qualifying days; per day, looks up
+    the D-1 21:00 CT prior forecast issuance and computes hourly
+    supply prices; classifies the day via ``classify_spike_day``;
+    computes only ``o1_daily_hvac_dollars``. ``layer_attribution``
+    returns None until Phase 4 reconstructs price-overlay state.
+
+    Days whose 21:00-prior issuance is missing are dropped from the
+    decomposition; the loader returns a ``dropped_days`` list in the
+    decomposition sub-dict so the orchestrator can emit one
+    ``NO_NWS_FORECAST_FOR_CLASSIFICATION`` reason per dropped day.
     """
+    from tools.analysis.replay.reason_codes import ReasonCode
     manifest_path = stage1_dir / "manifest.json"
     if not manifest_path.exists():
         return None
@@ -3756,9 +3886,29 @@ def _load_stage8_inputs(
         stage2_dir, stage3_dir,
     )
 
+    # Forecast + prices loaded once for the whole bundle. Per-day
+    # helpers slice them by CT date.
+    forecast_df = _load_concat_parquets(manifest, stage1_dir, "nws.forecast")
+    prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
+
     daily_records: list[dict] = []
+    dropped_days: list[dict] = []
     for day_row in qualifying_days:
         day_ct = day_row["date"]
+        forecast = _forecast_for_day_ct(forecast_df, day_ct)
+        if forecast is None:
+            dropped_days.append({
+                "date": day_ct,
+                "arm": day_row["arm"],
+                "reason_code": ReasonCode.NO_NWS_FORECAST_FOR_CLASSIFICATION,
+            })
+            continue
+        hourly_prices = _hourly_prices_for_day_ct(prices_df, day_ct)
+        category = classify_spike_day(
+            hourly_prices_cents_per_kwh=hourly_prices,
+            max_forecast_temp_f=forecast["max_forecast_temp_f"],
+            apparent_max_f=forecast["apparent_max_f"],
+        )
         hourly = _load_daily_hourly_records(
             manifest, stage1_dir, day_ct, HVAC_CHANNELS,
         )
@@ -3776,14 +3926,17 @@ def _load_stage8_inputs(
         daily_records.append({
             "date": day_ct,
             "arm": day_row["arm"],
-            "category": "no_spike",
+            "category": category,
             "outcomes": {
                 "o1_daily_hvac_dollars": o1,
             },
         })
 
     return {
-        "decomposition": {"data": daily_records},
+        "decomposition": {
+            "data": daily_records,
+            "dropped_days": dropped_days,
+        },
         "layer_attribution": None,
     }
 
@@ -3815,6 +3968,19 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
 
     decomp_input = inputs.get("decomposition") if inputs else None
     layer_input = inputs.get("layer_attribution") if inputs else None
+
+    # Per-day reasons emitted by the loader (Phase 2: missing forecast
+    # drops the day from the decomposition and surfaces a per-day
+    # reason here).
+    if decomp_input is not None:
+        for dropped in decomp_input.get("dropped_days", []):
+            reason_reports.append(StageReasonReport(
+                stage="stage8",
+                output_file="decomposition.csv",
+                reason_code=dropped["reason_code"],
+                note=f"{dropped['date'].isoformat()} "
+                     f"({dropped['arm']}): day dropped from decomposition",
+            ))
 
     with open(stage_dir / "decomposition.csv", "w", newline="") as f:
         dw = csv.DictWriter(f, fieldnames=list(STAGE8_DECOMPOSITION_COLUMNS))
