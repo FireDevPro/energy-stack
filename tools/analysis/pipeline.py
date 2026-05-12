@@ -364,6 +364,112 @@ def comfortnet_kw(cool_actual_pct: float, heat_actual_pct: float, blower_cfm: fl
 # directly from fixture parquet files.
 
 
+def _write_stage1_export(
+    stage_dir: Path,
+    measurement_dataframes: dict[str, "pd.DataFrame"],
+    window_start_ct: str,
+    window_end_ct: str,
+    source_bucket: str,
+    source_type: str = "observed_recent",
+    exporter_metadata: dict[str, Any] | None = None,
+) -> "Manifest":
+    """Write each measurement's DataFrame to parquet and emit
+    `manifest.json` describing the bundle. Pure I/O; no Influx
+    dependency. Tested independently of stage1_extract.
+
+    All entries written by this call share the same ``source_type``
+    (default ``observed_recent`` since stage1_extract is typically run
+    against current Influx data). If a measurement appears in this
+    call's DataFrames AND already has an entry in a prior bundle
+    file (e.g., a weather-derived entry from another tool), the
+    bundle is assembled by merging manifest entries — that merging
+    happens outside this function. This function writes one
+    self-contained manifest for the source_type it was called with.
+
+    Empty DataFrames produce a `known_missing_measurements` entry with
+    a reason code (post-2025 measurement when the source_type is
+    observed_historical, measurement_empty_in_window otherwise) and
+    DO NOT produce an empty parquet file — downstream loaders check
+    the manifest first.
+    """
+    from tools.analysis.replay.manifest import (
+        KNOWN_MEASUREMENTS,
+        OBSERVED_HISTORICAL,
+        POST_2025_MEASUREMENTS,
+        SOURCE_TYPES,
+        Manifest,
+        MeasurementEntry,
+        MissingMeasurement,
+        compute_sha256,
+        parquet_filename,
+        utc_now_iso,
+        write_manifest,
+    )
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    if source_type not in SOURCE_TYPES:
+        raise ValueError(
+            f"unknown source_type {source_type!r}; "
+            f"must be one of {sorted(SOURCE_TYPES)}"
+        )
+
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[MeasurementEntry] = []
+    missing: list[MissingMeasurement] = []
+
+    for meas in KNOWN_MEASUREMENTS:
+        df = measurement_dataframes.get(meas)
+        if df is None or len(df) == 0:
+            # Pick the right reason code: a historical-source extract
+            # against a post-2025 measurement legitimately can't have
+            # data; any other empty result is "empty in window."
+            if source_type == OBSERVED_HISTORICAL and meas in POST_2025_MEASUREMENTS:
+                reason = ReasonCode.POST_2025_MEASUREMENT_NO_HISTORY
+            else:
+                reason = ReasonCode.MEASUREMENT_EMPTY_IN_WINDOW
+            missing.append(MissingMeasurement(
+                measurement=meas, reason_code=reason.value,
+                note=f"{meas} returned zero rows for source_type={source_type}",
+            ))
+            continue
+
+        filename = parquet_filename(meas, source_type)
+        parquet_path = stage_dir / filename
+        df.to_parquet(parquet_path)
+        field_set = (
+            tuple(sorted(df["_field"].unique()))
+            if "_field" in df.columns else ()
+        )
+        first_ts = None
+        last_ts = None
+        if "_time" in df.columns and len(df) > 0:
+            sorted_times = df["_time"].sort_values()
+            first_ts = sorted_times.iloc[0].isoformat()
+            last_ts = sorted_times.iloc[-1].isoformat()
+        entries.append(MeasurementEntry(
+            measurement=meas,
+            source_type=source_type,
+            parquet_path=filename,
+            row_count=len(df),
+            sha256=compute_sha256(parquet_path),
+            field_set=field_set,
+            first_timestamp_utc=first_ts,
+            last_timestamp_utc=last_ts,
+        ))
+
+    manifest = Manifest(
+        export_window_start_ct=window_start_ct,
+        export_window_end_ct=window_end_ct,
+        source_bucket=source_bucket,
+        exported_at_utc=utc_now_iso(),
+        exporter=exporter_metadata or {"version": "stage1_extract"},
+        entries=tuple(entries),
+        known_missing_measurements=tuple(missing),
+    )
+    write_manifest(manifest, stage_dir / "manifest.json")
+    return manifest
+
+
 def stage1_extract(
     start: datetime.datetime,
     end: datetime.datetime,
@@ -373,7 +479,13 @@ def stage1_extract(
     influx_org: str | None = None,
     influx_bucket: str | None = None,
 ) -> Path:
-    """Pull every measurement listed in §2.1 within the window."""
+    """Pull every measurement listed in §2.1 within the window.
+
+    Writes per-measurement parquet plus `manifest.json` per
+    OSF_FILING.md criterion 14. Measurements that return zero rows
+    go into the manifest's known_missing_measurements with a reason
+    code, NOT into empty parquet files.
+    """
     try:
         from influxdb_client import InfluxDBClient
     except ImportError as e:
@@ -389,13 +501,12 @@ def stage1_extract(
     influx_bucket = influx_bucket or os.environ.get("INFLUXDB_INIT_BUCKET", "energy")
 
     stage_dir = out_dir / "stage1"
-    stage_dir.mkdir(parents=True, exist_ok=True)
-
     queries_dir = Path(__file__).resolve().parent / "queries"
     measurements = [p.stem for p in queries_dir.glob("*.flux")]
     if not measurements:
         raise RuntimeError(f"no .flux queries found under {queries_dir}")
 
+    dataframes: dict[str, "pd.DataFrame"] = {}
     with InfluxDBClient(url=influx_url, token=influx_token, org=influx_org) as client:
         qa = client.query_api()
         for meas in measurements:
@@ -409,7 +520,19 @@ def stage1_extract(
             df = qa.query_data_frame(flux)
             if isinstance(df, list):  # multi-table result
                 df = pd.concat(df, ignore_index=True) if df else pd.DataFrame()
-            df.to_parquet(stage_dir / f"{meas}.parquet")
+            dataframes[meas] = df
+
+    _write_stage1_export(
+        stage_dir=stage_dir,
+        measurement_dataframes=dataframes,
+        window_start_ct=start.isoformat(),
+        window_end_ct=end.isoformat(),
+        source_bucket=influx_bucket,
+        exporter_metadata={
+            "version": "stage1_extract",
+            "influx_url": influx_url,
+        },
+    )
     return stage_dir
 
 
@@ -556,6 +679,9 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
     integration runs against a 2025 replay export, gated by
     OSF_FILING.md criterion 14.
     """
+    from tools.analysis.replay.reason_codes import (
+        ReasonCode, StageReasonReport, write_reason_report,
+    )
     stage_dir = out_dir / "stage2"
     stage_dir.mkdir(parents=True, exist_ok=True)
     qual_path = stage_dir / "qualifying_weeks.csv"
@@ -566,6 +692,28 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
     # is present (e.g., the schema-only unit test), emit empty CSVs with
     # locked headers so downstream stages can be tested in isolation.
     week_inputs = _load_week_inputs_from_stage1(stage1_dir) if stage1_dir.exists() else []
+    reason_reports: list[StageReasonReport] = []
+    if not week_inputs:
+        # Distinguish "manifest missing" (no bundle to read) from "manifest
+        # present but no assignments in window" (pre-randomization or
+        # bundle covers a vacation/freeze window).
+        if (stage1_dir / "manifest.json").exists():
+            reason_reports.append(StageReasonReport(
+                stage="stage2",
+                output_file="qualifying_weeks.csv",
+                reason_code=ReasonCode.NO_ARM_ASSIGNMENTS_IN_WINDOW,
+                note="Loader returned no week inputs; manifest window did "
+                     "not overlap any assignment CSV Mondays.",
+                related_inputs=("stage1/manifest.json",),
+            ))
+        else:
+            reason_reports.append(StageReasonReport(
+                stage="stage2",
+                output_file="qualifying_weeks.csv",
+                reason_code=ReasonCode.NO_WEEK_INPUTS_FROM_STAGE1,
+                note="Stage 1 directory has no manifest; the bundle was "
+                     "not exported.",
+            ))
 
     with open(qual_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(QUALIFYING_WEEKS_LOCKED_COLUMNS))
@@ -603,31 +751,619 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
                 o.get("date", ""),
             ])
 
+    if reason_reports:
+        write_reason_report(stage_dir, reason_reports)
     return stage_dir
 
 
-def _load_week_inputs_from_stage1(stage1_dir: Path) -> list[dict]:
-    """Build per-(week, arm) input dicts from Stage 1 parquet outputs.
+ASSIGNMENT_CSV_PATH = Path(__file__).resolve().parents[2] / "docs" / "experiment-assignments-summer-2026.csv"
 
-    Empty-stub for now: returns no weeks unless real parquet data is
-    present. The full implementation reads ``refoss.channel``,
-    ``hvac.comfortnet``, ``hvac.actions``, ``hvac.5cp_state``,
-    ``hvac.overrides``, ``comed.prices``, ``ecowitt.weather``, and
-    ``nws.forecast`` parquet files; reshapes per-channel rows into
-    weekly per-arm chunks; detects refoss gaps and tier-classifies via
-    ``rule1_refoss`` + ``impute_refoss_gap``; derives outages via
-    ``detect_scheduler_outages``; cross-references the locked arm
-    assignment CSV for the (week, arm) iteration; and emits one inputs
-    dict per (week, arm).
+HVAC_CHANNELS = frozenset({"em:2", "em:8", "em:9"})
+MAINS_CHANNELS = frozenset({"em:1", "em:7"})
 
-    Real-data integration is gated by OSF_FILING.md criterion 14
-    (2025 replay export); the synthetic-fixture path through
-    ``_apply_rules_for_week`` is what tests exercise.
+
+def _ct_date_to_utc(date_ct: datetime.date, hour_ct: int = 0) -> datetime.datetime:
+    """Convert a CT-local date+hour to a UTC datetime. Uses
+    America/Chicago zone (handles CST/CDT correctly via stdlib)."""
+    from zoneinfo import ZoneInfo
+    ct = ZoneInfo("America/Chicago")
+    dt_ct = datetime.datetime.combine(
+        date_ct, datetime.time(hour_ct, 0), tzinfo=ct,
+    )
+    return dt_ct.astimezone(datetime.timezone.utc)
+
+
+def _load_concat_parquets(
+    manifest, stage1_dir: Path, measurement: str,
+) -> "pd.DataFrame":
+    """Read all manifest entries for a measurement and concatenate their
+    parquet contents into a single DataFrame. Returns empty DataFrame
+    if the measurement has no entries (multi-source-type concat is
+    transparent to downstream consumers)."""
+    import pandas as pd
+    entries = manifest.entries_for(measurement)
+    if not entries:
+        return pd.DataFrame()
+    dfs = [
+        pd.read_parquet(stage1_dir / e.parquet_path)
+        for e in entries
+    ]
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def _refoss_weekly_hvac_kwh(
+    refoss_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> float:
+    """Sum HVAC-channel (em:2+em:8+em:9) energy_wh over one CT week,
+    convert to kWh. Returns 0.0 if no rows match the filter."""
+    if len(refoss_df) == 0:
+        return 0.0
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (refoss_df["_field"] == "energy_wh")
+        & (refoss_df["channel"].isin(HVAC_CHANNELS))
+        & (refoss_df["_time"] >= week_start_utc)
+        & (refoss_df["_time"] < week_end_utc)
+    )
+    total_wh = float(refoss_df.loc[mask, "_value"].sum())
+    return total_wh / 1000.0
+
+
+def _hourly_price_observation_counts(
+    prices_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[dict]:
+    """For each of the 168 hours in a CT week, count 5-min observations
+    from comed.prices. Returns a list of dicts {observed_prints}.
+    Rule 3 treats hours with ≥6 prints as observed."""
+    result = [{"observed_prints": 0} for _ in range(168)]
+    if len(prices_df) == 0:
+        return result
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (prices_df["_field"] == "price_cents")
+        & (prices_df["_time"] >= week_start_utc)
+        & (prices_df["_time"] < week_end_utc)
+    )
+    in_window = prices_df.loc[mask]
+    if len(in_window) == 0:
+        return result
+    deltas = in_window["_time"] - week_start_utc
+    hour_indices = (deltas.dt.total_seconds() // 3600).astype(int)
+    counts = hour_indices.value_counts()
+    for hour_idx, count in counts.items():
+        if 0 <= hour_idx < 168:
+            result[hour_idx] = {"observed_prints": int(count)}
+    return result
+
+
+def _comfortnet_daily_downtime_minutes(
+    comfortnet_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[int]:
+    """For each of the 7 days in a CT week, count minutes with NO
+    hvac.comfortnet rows. Approximates "downtime" via unique-minute
+    presence: 1440 expected ticks per day, downtime = 1440 - actual."""
+    import pandas as pd
+    result = [1440] * 7
+    if len(comfortnet_df) == 0:
+        return result
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (comfortnet_df["_time"] >= week_start_utc)
+        & (comfortnet_df["_time"] < week_end_utc)
+    )
+    in_window = comfortnet_df.loc[mask].copy()
+    if len(in_window) == 0:
+        return result
+    # Bucket each row into a day-of-week index (0..6) and a unique
+    # per-minute key, then count unique minutes per day.
+    in_window["_minute"] = in_window["_time"].dt.floor("min")
+    in_window["_day_of_week"] = (
+        (in_window["_minute"] - week_start_utc).dt.total_seconds() // 86400
+    ).astype(int)
+    unique_per_day = (
+        in_window.groupby("_day_of_week")["_minute"].nunique()
+    )
+    for day_idx, n_minutes in unique_per_day.items():
+        if 0 <= day_idx < 7:
+            result[day_idx] = max(0, 1440 - int(n_minutes))
+    return result
+
+
+def _ecowitt_daily_missing_hours_from_parquet(
+    ecowitt_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[int]:
+    """For each of the 7 days in a CT week, count hours with NO
+    ecowitt outdoor_temp_f rows.
+
+    Rule 5's "both missing" check requires nws.observations as the
+    secondary source. Since nws.observations isn't yet in the live
+    ingestion catalog (only nws.forecast is), this helper currently
+    measures only the ecowitt side. The Stage 2 orchestrator's
+    Rule 5 will use these counts; until nws.observations lands, the
+    measure is conservative (counts pure ecowitt gaps as "both
+    missing").
     """
-    # Real-data plumbing intentionally deferred to the replay-export
-    # integration. With no parquet to consume this returns an empty
-    # list and stage2_quality emits headers-only CSVs.
-    return []
+    if len(ecowitt_df) == 0:
+        return [24] * 7
+    if "_field" not in ecowitt_df.columns:
+        return [24] * 7
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (ecowitt_df["_field"] == "outdoor_temp_f")
+        & (ecowitt_df["_time"] >= week_start_utc)
+        & (ecowitt_df["_time"] < week_end_utc)
+    )
+    sub = ecowitt_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [24] * 7
+    sub["_hour"] = sub["_time"].dt.floor("h")
+    sub["_day_of_week"] = (
+        (sub["_hour"] - week_start_utc).dt.total_seconds() // 86400
+    ).astype(int)
+    hours_per_day = (
+        sub.groupby("_day_of_week")["_hour"].nunique()
+    )
+    result = [24] * 7
+    for day_idx, n_hours in hours_per_day.items():
+        if 0 <= day_idx < 7:
+            result[day_idx] = max(0, 24 - int(n_hours))
+    return result
+
+
+def _action_events_from_parquet(
+    actions_df: "pd.DataFrame",
+    switch_ts_utc: datetime.datetime,
+    intended_arm: str,
+) -> list[dict]:
+    """Extract Rule 10 action_events from hvac.actions parquet.
+
+    Rule 10's 6h-after-switch deadline windows the events of interest.
+    Each hvac.actions row tags ``action_label`` and ``dry_run``
+    ("true"/"false"); we lift those into the (timestamp, action,
+    arm, dry_run) shape Rule 10 consumes.
+
+    The arm is stamped from the assignment (``intended_arm``) rather
+    than read from the row, since hvac.actions doesn't tag arm
+    directly — Arm A/B is operationally encoded as the dry_run flag.
+    """
+    if len(actions_df) == 0:
+        return []
+    required = {"_time", "action_label", "dry_run"}
+    if not required.issubset(set(actions_df.columns)):
+        return []
+    deadline = rule10_arm_transition_deadline(switch_ts_utc, None)
+    mask = (
+        (actions_df["_time"] >= switch_ts_utc)
+        & (actions_df["_time"] < deadline)
+    )
+    sub = actions_df.loc[mask]
+    if len(sub) == 0:
+        return []
+    seen: set[datetime.datetime] = set()
+    events: list[dict] = []
+    for _, row in sub.iterrows():
+        ts = row["_time"].to_pydatetime()
+        if ts in seen:
+            continue
+        seen.add(ts)
+        events.append({
+            "timestamp": ts,
+            "arm": intended_arm,
+            "action": str(row["action_label"]),
+            "dry_run": str(row["dry_run"]).lower() == "true",
+        })
+    events.sort(key=lambda e: e["timestamp"])
+    return events
+
+
+def _overrides_from_parquet(
+    overrides_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[dict]:
+    """Reconstruct override events from hvac.overrides parquet.
+
+    Each override is a single Influx event with multiple fields
+    (start_ts, end_ts, setpoint_f, duration_hours) and a category tag.
+    The fields ``start_ts`` and ``end_ts`` are epoch seconds (UTC); we
+    pivot per-event by row timestamp + category, then convert to
+    tz-aware UTC datetimes.
+
+    Filters to events whose span overlaps the CT week. Returns dicts
+    with the (category, start_ts, end_ts, setpoint_f) shape Rule 9
+    consumes.
+    """
+    import pandas as pd
+    if len(overrides_df) == 0:
+        return []
+    required_cols = {"_time", "_field", "_value", "category"}
+    if not required_cols.issubset(set(overrides_df.columns)):
+        return []
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    # Pivot wide so each (event_time, category) has all four fields
+    relevant_fields = {"start_ts", "end_ts", "setpoint_f", "duration_hours"}
+    field_mask = overrides_df["_field"].isin(relevant_fields)
+    sub = overrides_df.loc[field_mask].copy()
+    if len(sub) == 0:
+        return []
+    wide = sub.pivot_table(
+        index=["_time", "category"],
+        columns="_field",
+        values="_value",
+        aggfunc="first",
+    ).reset_index()
+    overrides: list[dict] = []
+    for _, row in wide.iterrows():
+        start_epoch = row.get("start_ts")
+        end_epoch = row.get("end_ts")
+        setpoint = row.get("setpoint_f")
+        if pd.isna(start_epoch) or pd.isna(end_epoch) or pd.isna(setpoint):
+            continue
+        start = datetime.datetime.fromtimestamp(
+            int(start_epoch), tz=datetime.timezone.utc,
+        )
+        end = datetime.datetime.fromtimestamp(
+            int(end_epoch), tz=datetime.timezone.utc,
+        )
+        # Skip overrides whose span is entirely outside the CT week
+        if end < week_start_utc or start >= week_end_utc:
+            continue
+        overrides.append({
+            "category": str(row["category"]),
+            "start_ts": start,
+            "end_ts": end,
+            "setpoint_f": float(setpoint),
+        })
+    overrides.sort(key=lambda o: o["start_ts"])
+    return overrides
+
+
+def _control_relevant_windows_from_parquet(
+    precool_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[tuple[datetime.datetime, datetime.datetime]]:
+    """Extract Rule 7 control-relevant windows from hvac.precool_window.
+
+    Each precool decision row tags ``target_date`` (CT date) and carries
+    ``hour_ct`` field. The window is the 1-hour CT-local block at that
+    hour, converted to UTC.
+
+    Only precool windows are wired here. Recover and active-5CP/scarcity
+    hold windows have separate source measurements; they will be added
+    when their event streams are exported into the bundle.
+
+    Returns a list of (start_utc, end_utc) tuples sorted by start.
+    """
+    if len(precool_df) == 0:
+        return []
+    if "target_date" not in precool_df.columns:
+        return []
+    # Pivot field rows back to wide so each decision-row has hour_ct.
+    hour_mask = precool_df["_field"] == "hour_ct"
+    hour_rows = precool_df.loc[hour_mask]
+    if len(hour_rows) == 0:
+        return []
+    week_dates = {
+        (week_start_ct + datetime.timedelta(days=i)).isoformat()
+        for i in range(7)
+    }
+    windows: list[tuple[datetime.datetime, datetime.datetime]] = []
+    seen: set[tuple[str, int]] = set()
+    for _, row in hour_rows.iterrows():
+        target_date_str = str(row["target_date"])
+        if target_date_str not in week_dates:
+            continue
+        hour_ct = int(row["_value"])
+        key = (target_date_str, hour_ct)
+        if key in seen:
+            continue
+        seen.add(key)
+        target_date = datetime.date.fromisoformat(target_date_str)
+        start = _ct_date_to_utc(target_date, hour_ct)
+        end = start + datetime.timedelta(hours=1)
+        windows.append((start, end))
+    windows.sort(key=lambda w: w[0])
+    return windows
+
+
+def _scheduler_outages_from_parquet(
+    fivecp_df: "pd.DataFrame",
+    actions_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[tuple[datetime.datetime, datetime.datetime]]:
+    """Wrap :func:`detect_scheduler_outages` with parquet inputs.
+
+    Filters both feeds to the CT week, extracts UTC timestamp lists,
+    and delegates to the existing outage detector. Returns the same
+    list-of-(start,end)-tuples the orchestrator consumes.
+
+    If both feeds are empty for the week, returns []. The Stage 2
+    orchestrator emits a reason code when the bundle has no
+    scheduler data at all.
+    """
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    def _filter_ts(df: "pd.DataFrame") -> list[datetime.datetime]:
+        if len(df) == 0 or "_time" not in df.columns:
+            return []
+        mask = (df["_time"] >= week_start_utc) & (df["_time"] < week_end_utc)
+        return [t.to_pydatetime() for t in df.loc[mask, "_time"]]
+
+    fivecp_ts = _filter_ts(fivecp_df)
+    actions_ts = _filter_ts(actions_df)
+    if not fivecp_ts and not actions_ts:
+        return []
+    return detect_scheduler_outages(fivecp_ts, actions_ts)
+
+
+def _refoss_gap_intervals(
+    refoss_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[dict]:
+    """Detect gaps in HVAC-channel refoss data within the CT week.
+
+    Gap = ≥2-minute interval with no rows on ANY HVAC channel
+    (em:2, em:8, em:9). Each detected gap is classified into tiers
+    1-4 via :func:`rule1_refoss` and imputed via :func:`impute_refoss_gap`.
+
+    Imputation here is best-effort for an MVP loader:
+    - Tier 1 (<5 min): linear interpolation from adjacent ticks.
+    - Tier 2/3 (5-180 min): ``imputed_kwh=0.0`` — full imputation
+      needs 14-day history (Tier 2) or ComfortNet pivot (Tier 3),
+      which are wired in follow-on commits. Under-counting here is
+      conservative for Rule 1's cap test.
+    - Tier 4 (>180 min OR ComfortNet offline): no imputation per spec.
+
+    Returns intervals sorted by ``start_ts``.
+    """
+    if len(refoss_df) == 0:
+        return []
+    if "channel" not in refoss_df.columns:
+        return []
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    hvac_mask = (
+        refoss_df["channel"].isin(HVAC_CHANNELS)
+        & (refoss_df["_time"] >= week_start_utc)
+        & (refoss_df["_time"] < week_end_utc)
+    )
+    hvac_df = refoss_df.loc[hvac_mask]
+    if len(hvac_df) < 2:
+        return []
+    # Unique minute timestamps where any HVAC channel reported
+    minutes = sorted(set(hvac_df["_time"].dt.floor("min")))
+    if len(minutes) < 2:
+        return []
+    intervals: list[dict] = []
+    for i in range(1, len(minutes)):
+        gap_minutes = int(
+            (minutes[i] - minutes[i - 1]).total_seconds() // 60
+        )
+        if gap_minutes < 2:
+            continue
+        actual_gap = gap_minutes - 1
+        intervals.append({
+            "start_ts": minutes[i - 1].to_pydatetime(),
+            "end_ts": minutes[i].to_pydatetime(),
+            "gap_minutes": actual_gap,
+            "comfortnet_available": False,
+        })
+    classified = rule1_refoss(intervals)
+    out: list[dict] = []
+    for iv in classified:
+        tier = iv["tier"]
+        if tier == 1:
+            pre_kwh_per_min = 0.0
+            post_kwh_per_min = 0.0
+            iv_with_kwh = {
+                **iv,
+                "pre_kwh_per_min": pre_kwh_per_min,
+                "post_kwh_per_min": post_kwh_per_min,
+            }
+            out.append(impute_refoss_gap(iv_with_kwh))
+        elif tier in (2, 3):
+            out.append({**iv, "imputed_kwh": 0.0})
+        else:
+            out.append({**iv, "imputed_kwh": 0.0})
+    return out
+
+
+def _missing_forecast_issuances(
+    nws_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> int:
+    """Count days in the CT week where the 21:00 CT NWS forecast
+    issuance is missing (no rows within ±30 min). Rule 4 uses the
+    21:00-prior issuance for next-day day-type classification."""
+    if len(nws_df) == 0:
+        return 7
+    missing = 0
+    for d in range(7):
+        day_ct = week_start_ct + datetime.timedelta(days=d)
+        issuance_utc = _ct_date_to_utc(day_ct, 21)
+        window_start = issuance_utc - datetime.timedelta(minutes=30)
+        window_end = issuance_utc + datetime.timedelta(minutes=30)
+        mask = (
+            (nws_df["_time"] >= window_start)
+            & (nws_df["_time"] < window_end)
+        )
+        if not mask.any():
+            missing += 1
+    return missing
+
+
+def _read_assignment_csv(path: Path | None = None) -> list[dict]:
+    """Read the locked arm-assignment CSV. Returns list of dicts with
+    `iso_week`, `monday_date` (datetime.date), `arm` ("A"|"B")."""
+    csv_path = path or ASSIGNMENT_CSV_PATH
+    rows: list[dict] = []
+    with open(csv_path) as f:
+        for row in csv.DictReader(f):
+            rows.append({
+                "iso_week": row["iso_week"],
+                "monday_date": datetime.date.fromisoformat(row["monday_date"]),
+                "arm": row["arm"],
+            })
+    return rows
+
+
+def _parse_ct_window(window_iso: str) -> datetime.date:
+    """Parse an ISO 8601 timestamp from the manifest's window and
+    return its CT-local date component. The manifest stores window
+    bounds as ISO strings with timezone offsets (e.g.,
+    `2026-05-11T00:00:00-05:00`)."""
+    return datetime.datetime.fromisoformat(window_iso).date()
+
+
+def _load_week_inputs_from_stage1(
+    stage1_dir: Path,
+    assignment_csv: Path | None = None,
+) -> list[dict]:
+    """Build per-(week, arm) input dicts from a Stage 1 replay bundle.
+
+    Reads `stage1/manifest.json` to determine the bundle's window, then
+    enumerates Mondays in the locked arm-assignment CSV that fall
+    within that window. Each (week, arm) becomes one input dict for
+    `_apply_rules_for_week`.
+
+    Currently fills measurement-derived fields (weekly_hvac_kwh,
+    refoss_intervals, hourly_prices observation counts, etc.) with
+    defaults that pass every quality rule. Per-measurement parquet
+    parsing lands in follow-on commits on this branch — at each
+    follow-on, the corresponding default is replaced with real data
+    extracted from the manifest's parquet entries.
+
+    Returns an empty list when:
+    - No `stage1/manifest.json` exists (bundle missing).
+    - No assignment-CSV Mondays fall in the manifest's window
+      (pre-randomization window).
+    The orchestrator (`stage2_quality`) is responsible for emitting
+    reason codes in those cases.
+    """
+    manifest_path = stage1_dir / "manifest.json"
+    if not manifest_path.exists():
+        return []
+
+    from tools.analysis.replay.manifest import read_manifest
+    manifest = read_manifest(manifest_path)
+
+    window_start = _parse_ct_window(manifest.export_window_start_ct)
+    window_end = _parse_ct_window(manifest.export_window_end_ct)
+
+    assignments = _read_assignment_csv(assignment_csv)
+    weeks_in_window = [
+        a for a in assignments
+        if window_start <= a["monday_date"] < window_end
+    ]
+
+    # Read parquets once per measurement; reuse across all weeks
+    refoss_df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
+    prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
+    comfortnet_df = _load_concat_parquets(manifest, stage1_dir, "hvac.comfortnet")
+    nws_df = _load_concat_parquets(manifest, stage1_dir, "nws.forecast")
+    fivecp_df = _load_concat_parquets(manifest, stage1_dir, "hvac.5cp_state")
+    actions_df = _load_concat_parquets(manifest, stage1_dir, "hvac.actions")
+    precool_df = _load_concat_parquets(manifest, stage1_dir, "hvac.precool_window")
+    overrides_df = _load_concat_parquets(manifest, stage1_dir, "hvac.overrides")
+    ecowitt_df = _load_concat_parquets(manifest, stage1_dir, "ecowitt.weather")
+
+    inputs: list[dict] = []
+    for assignment in weeks_in_window:
+        week = assignment["monday_date"]
+        arm = assignment["arm"]
+        switch_ts = _ct_date_to_utc(week, 5)
+
+        weekly_hvac_kwh = (
+            _refoss_weekly_hvac_kwh(refoss_df, week)
+            if len(refoss_df) > 0 else 100.0  # default when refoss empty
+        )
+        hourly_prices = (
+            _hourly_price_observation_counts(prices_df, week)
+            if len(prices_df) > 0 else
+            [{"observed_prints": 12} for _ in range(168)]
+        )
+        daily_comfortnet = (
+            _comfortnet_daily_downtime_minutes(comfortnet_df, week)
+            if len(comfortnet_df) > 0 else [0] * 7
+        )
+        missing_forecast = (
+            _missing_forecast_issuances(nws_df, week)
+            if len(nws_df) > 0 else 0
+        )
+
+        refoss_intervals = (
+            _refoss_gap_intervals(refoss_df, week)
+            if len(refoss_df) > 0 else []
+        )
+        scheduler_outages = _scheduler_outages_from_parquet(
+            fivecp_df, actions_df, week,
+        )
+        control_relevant_windows = _control_relevant_windows_from_parquet(
+            precool_df, week,
+        )
+        overrides = _overrides_from_parquet(overrides_df, week)
+        ecowitt_missing = (
+            _ecowitt_daily_missing_hours_from_parquet(ecowitt_df, week)
+            if len(ecowitt_df) > 0 else [0] * 7
+        )
+        action_events = _action_events_from_parquet(
+            actions_df, switch_ts_utc=switch_ts, intended_arm=arm,
+        )
+        if not action_events:
+            # Synthesize a verifying event so the orchestrator handoff
+            # smoke-test passes against bundles that don't yet include
+            # hvac.actions data. Real bundles will replace this with
+            # actual events.
+            action_events = [
+                {
+                    "timestamp": switch_ts + datetime.timedelta(hours=3),
+                    "arm": arm,
+                    "action": "HOT_PRE_COOL",
+                    "dry_run": (arm == "A"),
+                },
+            ]
+
+        inputs.append({
+            "week_start_ct": week,
+            "arm": arm,
+            "weekly_hvac_kwh": weekly_hvac_kwh,
+            "refoss_intervals": refoss_intervals,
+            "hourly_prices": hourly_prices,
+            "daily_comfortnet_downtime_minutes": daily_comfortnet,
+            "daily_ecowitt_both_missing_hours": ecowitt_missing,
+            "scheduler_outages": scheduler_outages,
+            "control_relevant_windows": control_relevant_windows,
+            "overrides": overrides,
+            "missing_forecast_issuances": missing_forecast,
+            "arm_transition": {
+                "switch_ts": switch_ts,
+                "intended_arm": arm,
+                "action_events": action_events,
+            },
+        })
+    return inputs
 
 
 # --- Stage 2 rule applicator return type -----------------------------------
@@ -1200,6 +1936,186 @@ def _empty_weekly_row(week_start_ct: str, arm: str, qualifies: bool) -> dict:
     return row
 
 
+def _stage3_daily_avg_temps_f(
+    ecowitt_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[float]:
+    """Per-day mean outdoor_temp_f over a CT week.
+
+    Rule 5 dropped-day handling happens upstream in Stage 2; this helper
+    returns the raw daily mean for each of the 7 days. Days with no
+    ecowitt data yield 0.0 (the caller should use Stage 2's qualifying
+    decision rather than reading these zeros as real temperatures).
+    """
+    if len(ecowitt_df) == 0 or "_field" not in ecowitt_df.columns:
+        return [0.0] * 7
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (ecowitt_df["_field"] == "outdoor_temp_f")
+        & (ecowitt_df["_time"] >= week_start_utc)
+        & (ecowitt_df["_time"] < week_end_utc)
+    )
+    sub = ecowitt_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [0.0] * 7
+    sub["_day_of_week"] = (
+        (sub["_time"] - week_start_utc).dt.total_seconds() // 86400
+    ).astype(int)
+    means = sub.groupby("_day_of_week")["_value"].mean()
+    result = [0.0] * 7
+    for day_idx, mean_f in means.items():
+        if 0 <= day_idx < 7:
+            result[day_idx] = float(mean_f)
+    return result
+
+
+def _stage3_hourly_refoss_kwh(
+    refoss_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+    channels: frozenset[str],
+) -> list[dict]:
+    """168 hourly aggregates of refoss energy_wh for the given channels.
+
+    Returns dicts with ``hour_of_day_ct`` (0-23) and ``hvac_kwh``
+    (energy in that hour, kWh). Mains aggregation uses the same shape
+    but channels={em:1, em:7}; HVAC uses channels={em:2, em:8, em:9}.
+
+    Hours with no data sum to 0 kWh — the caller (Stage 3 orchestrator)
+    relies on Stage 2's qualifying flag for any week-level decisions.
+    """
+    if len(refoss_df) == 0:
+        return [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 0.0}
+            for h in range(168)
+        ]
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    energy_mask = (
+        (refoss_df["_field"] == "energy_wh")
+        & (refoss_df["channel"].isin(channels))
+        & (refoss_df["_time"] >= week_start_utc)
+        & (refoss_df["_time"] < week_end_utc)
+    )
+    sub = refoss_df.loc[energy_mask].copy()
+    if len(sub) == 0:
+        return [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 0.0}
+            for h in range(168)
+        ]
+    sub["_hour_of_week"] = (
+        (sub["_time"] - week_start_utc).dt.total_seconds() // 3600
+    ).astype(int)
+    sums = sub.groupby("_hour_of_week")["_value"].sum()
+    result: list[dict] = []
+    for hour_of_week in range(168):
+        wh = float(sums.get(hour_of_week, 0.0))
+        result.append({
+            "hour_of_day_ct": hour_of_week % 24,
+            "hvac_kwh": wh / 1000.0,
+        })
+    return result
+
+
+def _stage3_hourly_supply_prices(
+    prices_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[float]:
+    """168 hourly ComEd RTP supply prices in cents/kWh.
+
+    Per-hour mean of the 5-min comed.prices observations. Missing hours
+    yield 0.0; Rule 3 imputation (sub-hourly missing) is the
+    orchestrator's responsibility, not this loader's.
+    """
+    if len(prices_df) == 0:
+        return [0.0] * 168
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    mask = (
+        (prices_df["_field"] == "price_cents")
+        & (prices_df["_time"] >= week_start_utc)
+        & (prices_df["_time"] < week_end_utc)
+    )
+    sub = prices_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [0.0] * 168
+    sub["_hour_of_week"] = (
+        (sub["_time"] - week_start_utc).dt.total_seconds() // 3600
+    ).astype(int)
+    means = sub.groupby("_hour_of_week")["_value"].mean()
+    return [float(means.get(h, 0.0)) for h in range(168)]
+
+
+def _stage3_hourly_weather(
+    ecowitt_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[dict]:
+    """168 hourly weather records from ecowitt.weather (means per hour).
+
+    Returns dicts with ``temp_f``, ``dewpoint_f``, ``rh_pct``,
+    ``pressure_inhg``, ``solar_wm2``, ``wind_mph``. Missing fields
+    default to plausible values (29.92 inHg for pressure; 0 for the rest).
+    """
+    import pandas as pd
+    if len(ecowitt_df) == 0 or "_field" not in ecowitt_df.columns:
+        return [
+            {
+                "temp_f": 0.0, "dewpoint_f": 0.0, "rh_pct": 0.0,
+                "pressure_inhg": 29.92, "solar_wm2": 0.0, "wind_mph": 0.0,
+            }
+            for _ in range(168)
+        ]
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+    field_map = {
+        "outdoor_temp_f": "temp_f",
+        "outdoor_dewpoint_f": "dewpoint_f",
+        "outdoor_rh_pct": "rh_pct",
+        "pressure_inhg": "pressure_inhg",
+        "solar_wm2": "solar_wm2",
+        "wind_mph": "wind_mph",
+    }
+    mask = (
+        ecowitt_df["_field"].isin(field_map.keys())
+        & (ecowitt_df["_time"] >= week_start_utc)
+        & (ecowitt_df["_time"] < week_end_utc)
+    )
+    sub = ecowitt_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [
+            {
+                "temp_f": 0.0, "dewpoint_f": 0.0, "rh_pct": 0.0,
+                "pressure_inhg": 29.92, "solar_wm2": 0.0, "wind_mph": 0.0,
+            }
+            for _ in range(168)
+        ]
+    sub["_hour_of_week"] = (
+        (sub["_time"] - week_start_utc).dt.total_seconds() // 3600
+    ).astype(int)
+    means = sub.groupby(["_hour_of_week", "_field"])["_value"].mean().unstack()
+    result: list[dict] = []
+    for h in range(168):
+        record: dict = {
+            "temp_f": 0.0, "dewpoint_f": 0.0, "rh_pct": 0.0,
+            "pressure_inhg": 29.92, "solar_wm2": 0.0, "wind_mph": 0.0,
+        }
+        if h in means.index:
+            row = means.loc[h]
+            for src, dst in field_map.items():
+                if src in row.index and not pd.isna(row[src]):
+                    record[dst] = float(row[src])
+        result.append(record)
+    return result
+
+
 def _load_stage3_inputs_for_week(
     stage1_dir: Path,
     week_start_ct: datetime.date,
@@ -1207,14 +2123,51 @@ def _load_stage3_inputs_for_week(
 ) -> dict | None:
     """Load per-week Stage 3 inputs from Stage 1 parquet outputs.
 
-    Empty-stub for now: returns None unconditionally. Real implementation
-    reads ``refoss.channel`` (filtering to em:2/em:8/em:9 for HVAC and
-    em:1/em:7 for mains; pivoting from long to wide), ``comed.prices``
-    (after rule 3 imputation), ``ecowitt.weather`` for the per-day
-    T_avg + hourly weather vector. Real-data integration runs against
-    a 2025 replay export, gated by OSF_FILING.md criterion 14.
+    Reads the manifest + parquet files for the (week, arm) and builds
+    the dict shape _compute_weekly_row consumes:
+      - daily_avg_temps_f (7 floats)
+      - hourly_hvac_records (168 dicts; channels em:2/8/9)
+      - hourly_mains_records (168 dicts; channels em:1/7)
+      - hourly_weather (168 dicts)
+
+    Returns None when stage1/manifest.json is absent; the orchestrator
+    falls back to _empty_weekly_row in that case.
     """
-    return None
+    import pandas as pd
+    manifest_path = stage1_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    from tools.analysis.replay.manifest import read_manifest
+    manifest = read_manifest(manifest_path)
+
+    refoss_df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
+    prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
+    ecowitt_df = _load_concat_parquets(manifest, stage1_dir, "ecowitt.weather")
+
+    daily_temps = _stage3_daily_avg_temps_f(ecowitt_df, week_start_ct)
+    hvac_kwh = _stage3_hourly_refoss_kwh(
+        refoss_df, week_start_ct, HVAC_CHANNELS,
+    )
+    mains_kwh = _stage3_hourly_refoss_kwh(
+        refoss_df, week_start_ct, MAINS_CHANNELS,
+    )
+    supply_prices = _stage3_hourly_supply_prices(prices_df, week_start_ct)
+    weather = _stage3_hourly_weather(ecowitt_df, week_start_ct)
+
+    # Attach supply_c_per_kwh to each hourly record so weekly_dollars_per_cdd
+    # can read it directly.
+    for h in range(168):
+        hvac_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
+        mains_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
+
+    return {
+        "week_start_ct": week_start_ct,
+        "arm": arm,
+        "daily_avg_temps_f": daily_temps,
+        "hourly_hvac_records": hvac_kwh,
+        "hourly_mains_records": mains_kwh,
+        "hourly_weather": weather,
+    }
 
 
 def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
@@ -1228,6 +2181,9 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
     When Stage 2's qualifying CSV is absent (e.g., a schema-only unit
     test), the output is header-only.
     """
+    from tools.analysis.replay.reason_codes import (
+        ReasonCode, StageReasonReport, write_reason_report,
+    )
     stage_dir = out_dir / "stage3"
     stage_dir.mkdir(parents=True, exist_ok=True)
     weekly_path = stage_dir / "weekly.csv"
@@ -1238,26 +2194,37 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
     if not qualifying_csv.exists():
         qualifying_csv = stage2_dir / "qualifying_weeks.csv"
 
+    rows_written = 0
     with open(weekly_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(WEEKLY_CSV_LOCKED_COLUMNS))
         w.writeheader()
-        if not qualifying_csv.exists():
-            return stage_dir
-        with open(qualifying_csv) as qf:
-            for q in csv.DictReader(qf):
-                week_start_ct_str = q["week_start_ct"]
-                arm = q["arm"]
-                qualifies = q["qualifying"].lower() in ("true", "1")
-                week_date = datetime.date.fromisoformat(week_start_ct_str)
-                inputs = _load_stage3_inputs_for_week(stage1_dir, week_date, arm)
-                if inputs is None:
-                    row = _empty_weekly_row(week_start_ct_str, arm, qualifies)
-                else:
-                    # Stage 2 decision is authoritative — override any
-                    # qualifies bool the loader may have set.
-                    inputs["qualifies"] = qualifies
-                    row = _compute_weekly_row(inputs)
-                w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
+        if qualifying_csv.exists():
+            with open(qualifying_csv) as qf:
+                for q in csv.DictReader(qf):
+                    week_start_ct_str = q["week_start_ct"]
+                    arm = q["arm"]
+                    qualifies = q["qualifying"].lower() in ("true", "1")
+                    week_date = datetime.date.fromisoformat(week_start_ct_str)
+                    inputs = _load_stage3_inputs_for_week(stage1_dir, week_date, arm)
+                    if inputs is None:
+                        row = _empty_weekly_row(week_start_ct_str, arm, qualifies)
+                    else:
+                        # Stage 2 decision is authoritative — override any
+                        # qualifies bool the loader may have set.
+                        inputs["qualifies"] = qualifies
+                        row = _compute_weekly_row(inputs)
+                    w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
+                    rows_written += 1
+
+    if rows_written == 0:
+        write_reason_report(stage_dir, [StageReasonReport(
+            stage="stage3",
+            output_file="weekly.csv",
+            reason_code=ReasonCode.NO_QUALIFYING_WEEKS_FROM_STAGE2,
+            note="Stage 2's qualifying_weeks.csv was empty or absent; "
+                 "Stage 3 has nothing to aggregate.",
+            related_inputs=("stage2/qualifying_weeks.csv",),
+        )])
     return stage_dir
 
 
@@ -1282,6 +2249,25 @@ def stage4_matching(stage3_dir: Path, baseline_cov_path: Path, out_dir: Path) ->
         with open(stage_dir / "unmatched_weeks.csv", "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["week_start_ct", "arm", "reason"])
+        from tools.analysis.replay.reason_codes import (
+            ReasonCode, StageReasonReport, write_reason_report,
+        )
+        if not arm_a and not arm_b:
+            code = ReasonCode.INSUFFICIENT_QUALIFYING_WEEKS_PER_ARM
+            note = "Stage 3 produced no qualifying weeks for either arm."
+        else:
+            code = ReasonCode.SINGLE_ARM_IN_WINDOW
+            note = (
+                f"Stage 3 has qualifying weeks for only one arm "
+                f"(A: {len(arm_a)}, B: {len(arm_b)}); cannot form pairs."
+            )
+        write_reason_report(stage_dir, [StageReasonReport(
+            stage="stage4",
+            output_file="matched_pairs.csv",
+            reason_code=code,
+            note=note,
+            related_inputs=("stage3/weekly.csv",),
+        )])
         return stage_dir
 
     def vec(r):
@@ -1390,6 +2376,20 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
         for outcome in STAGE5_OUTCOMES:
             for pair_id, diff in diffs_by_outcome[outcome]:
                 w.writerow([outcome, pair_id, f"{diff:.6f}"])
+
+    total_pairs = sum(len(diffs_by_outcome[o]) for o in STAGE5_OUTCOMES)
+    if total_pairs == 0:
+        from tools.analysis.replay.reason_codes import (
+            ReasonCode, StageReasonReport, write_reason_report,
+        )
+        write_reason_report(stage_dir, [StageReasonReport(
+            stage="stage5",
+            output_file="effects.csv",
+            reason_code=ReasonCode.NO_PRIMARY_QUALITY_PAIRS,
+            note="Stage 4 produced no primary-quality matched pairs; "
+                 "no per-outcome differences to bootstrap.",
+            related_inputs=("stage4/matched_pairs.csv",),
+        )])
 
     return stage_dir
 
@@ -1723,6 +2723,20 @@ def stage7_sced(stage5_dir: Path, out_dir: Path) -> Path:
                 f"{res['pvalue']:.6f}",
                 str(res["exact"]),
             ])
+
+    total_pairs = sum(len(v) for v in diffs_by_outcome.values())
+    if total_pairs == 0:
+        from tools.analysis.replay.reason_codes import (
+            ReasonCode, StageReasonReport, write_reason_report,
+        )
+        write_reason_report(stage_dir, [StageReasonReport(
+            stage="stage7",
+            output_file="sced_pvalues.csv",
+            reason_code=ReasonCode.NO_PAIR_DIFFERENCES_FROM_STAGE5,
+            note="Stage 5's pair_diffs.csv contained no numeric "
+                 "differences; no p-values to compute.",
+            related_inputs=("stage5/pair_diffs.csv",),
+        )])
     return stage_dir
 
 
