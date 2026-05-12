@@ -18,10 +18,24 @@ without operator intervention.
 
 ### Production-stack gates
 
-  1. ✅ All unit tests passing across hvac-scheduler, nws-poller,
-     pjm-dm2-poller, scripts. See: `pytest deploy/energy-stack/`.
-  2. ✅ All integration tests passing on replay data
-     (`test_integration_2025_replay.py` + the §3 PJM replay).
+  1. ✅ All unit tests passing across the energy-stack services.
+     Per-service invocation is required (the services share module
+     names like `app.py` and `poller.py`; a single
+     `pytest deploy/energy-stack/` invocation fails with collection
+     errors). Use:
+     ```bash
+     for svc in hvac-scheduler nws-poller pjm-dm2-poller comed-poller \
+                refoss-poller thermostat-poller eagle-poller \
+                haven-ingest telegram-notifier ecowitt-ingest; do
+       pytest "deploy/energy-stack/$svc/" -q || exit 1
+     done
+     ```
+  2. ✅ Replay/integration tests passing on historical fixtures:
+       - `deploy/energy-stack/hvac-scheduler/test_integration_2025_replay.py`
+         (May-Sep 2025 ComEd RTP through the price-overlay state machine)
+       - `deploy/energy-stack/hvac-scheduler/test_pjm_5cp.py` (PJM 5CP
+         detector logic against synthetic inst_load / metered_load
+         fixtures)
   3. ✅ 24-hour dry-run validation completed successfully per
      [`DRY_RUN_VALIDATION.md`](DRY_RUN_VALIDATION.md).
   4. ✅ AIR toggling procedure documented and tested at least once
@@ -35,6 +49,11 @@ without operator intervention.
   6. ✅ Two-week shakedown period completed without unresolved issues.
   7. ✅ Assignment CSV regenerated with the locked seed and committed
      ([`docs/experiment-assignments-summer-2026.csv`](experiment-assignments-summer-2026.csv)).
+     Verification command (line-ending tolerant):
+     ```bash
+     python deploy/energy-stack/scripts/randomize_arms.py --output /tmp/regen.csv
+     python -c "import sys; a=open('/tmp/regen.csv', 'rb').read().replace(b'\r\n', b'\n'); b=open('docs/experiment-assignments-summer-2026.csv', 'rb').read().replace(b'\r\n', b'\n'); sys.exit(0 if a == b else 1)"
+     ```
   8. ✅ EXPERIMENT_DESIGN.md frozen at the OSF-referenced commit hash.
 
 ### Analysis-bundle gates
@@ -62,18 +81,45 @@ without operator intervention.
       `wind_mph`, `solar_wm2`, `pressure_inhg`. Spot-check one
       24-hour window for cadence and completeness.
   13. ✅ Filing bundle assembled: `tools/analysis/pipeline.py` runs
-      end-to-end on a 2025 replay dump under the frozen env without
-      operator intervention, producing the Stage 1-9 output tree
-      that is tar'd into the OSF attachment.
-  14. ✅ 2025 replay export exists at a recorded path with a SHA-256
-      manifest checksum committed to the filing bundle. If no such
-      export has been produced by 2026-05-30, the prereg text must
-      be amended to drop the "executable on 2025 replay" claim
-      before filing. Synthetic-fixture-only execution is not
-      sufficient to satisfy this gate; the gate exists because
-      the locked spec [ANALYSIS_PIPELINE.md §6](ANALYSIS_PIPELINE.md)
-      lists "all Stage scripts present and runnable on a 2025 replay
-      dump" as an acceptance criterion.
+      end-to-end on the real-shape replay export (criterion 14) under
+      the frozen env without operator intervention, producing the
+      Stage 1-9 output tree that is tar'd into the OSF attachment.
+  14. ✅ **Real-data replay validation** — three coordinated sub-gates
+      that together satisfy what was previously phrased as "2025
+      replay." That earlier phrasing over-promised: measurements
+      introduced after summer 2025 (`hvac.5cp_state`,
+      `hvac.price_overlay`, `hvac.arm_transitions`, `ecowitt.weather`)
+      have no 2025 history and cannot be retroactively replayed.
+
+      a. **Real-shape replay**: a recent (last 2-4 weeks) live Influx
+         export exists at a recorded path with SHA-256 manifest. Proves
+         the analysis loaders handle actual measurement names, tags,
+         null patterns, cadence, and parquet shape on data the system
+         is actively writing. Pre-randomization-start dates are
+         acceptable for this gate; the experimental layer hasn't
+         cycled yet but the production schemas have.
+
+      b. **Historical replay (partial)**: where 2025-era source data
+         exists in the repo (ComEd RTP prices at
+         `tools/comed_2025_analysis/data/*`, NWS forecasts archived
+         alongside) the corresponding pipeline-stage loaders process
+         it without error. Post-2025-only measurements are exempt;
+         their loader validation comes from sub-gate (a).
+
+      c. **Filing gate (end-to-end execution)**: Stage 1-9 pipeline
+         runs end-to-end on the real-shape replay export. Every stage
+         writes its declared schema. Loader-derived stages contain
+         non-empty rows where the exported data include the required
+         source measurements. Any empty downstream outcome tables
+         (e.g., Stage 7 sced_pvalues when the export window contains
+         no arm cycling) MUST include a machine-readable reason code
+         identifying which input was missing or insufficient.
+         Synthetic-fixture-only execution does not satisfy this gate.
+
+      Companion edit: ANALYSIS_PIPELINE.md §6 originally listed
+      "all Stage scripts present and runnable on a 2025 replay dump"
+      as an acceptance criterion; that phrasing has been updated to
+      match the three-sub-gate framing here.
 
 If any of these is incomplete by 2026-05-30, OSF filing slips and
 randomization start date moves accordingly.
@@ -87,8 +133,16 @@ randomization start date moves accordingly.
 ```bash
 git checkout main && git pull --ff-only
 
-# Production-stack tests:
-pytest deploy/energy-stack/   # everything green
+# Production-stack tests (per-service iteration; criterion 1):
+for svc in hvac-scheduler nws-poller pjm-dm2-poller comed-poller \
+           refoss-poller thermostat-poller eagle-poller \
+           haven-ingest telegram-notifier ecowitt-ingest; do
+  pytest "deploy/energy-stack/$svc/" -q || exit 1
+done
+
+# Replay/integration tests (criterion 2):
+pytest deploy/energy-stack/hvac-scheduler/test_integration_2025_replay.py \
+       deploy/energy-stack/hvac-scheduler/test_pjm_5cp.py
 
 # Analysis-bundle gates (criteria 9-11):
 python tools/analysis/check_constants_locked.py
@@ -97,11 +151,11 @@ python -m venv .venv
     -r tools/analysis/requirements.txt
 .venv/Scripts/python.exe -m pytest tools/analysis/tests/
 
-# Verify the assignment CSV is the current locked output:
+# Verify the assignment CSV is the current locked output (criterion 7,
+# line-ending tolerant — both LF and CRLF accepted):
 python deploy/energy-stack/scripts/randomize_arms.py \
     --output /tmp/regenerated.csv
-diff /tmp/regenerated.csv docs/experiment-assignments-summer-2026.csv
-# (no differences expected)
+python -c "import sys; a=open('/tmp/regenerated.csv','rb').read().replace(b'\r\n',b'\n'); b=open('docs/experiment-assignments-summer-2026.csv','rb').read().replace(b'\r\n',b'\n'); sys.exit(0 if a == b else 1)"
 
 # Snapshot the OSF-pinned commit:
 COMMIT_HASH=$(git rev-parse HEAD)
