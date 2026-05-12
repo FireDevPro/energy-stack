@@ -181,9 +181,9 @@ Outage detection (post-hoc, from Influx): the scheduler writes one `hvac.5cp_sta
 
 **8. Pi-lab / data-collection power outages.** Treated as scheduler-service outages (rule 7) AND as Refoss outages (rule 1) — the Pi hosts both the scheduler and the Refoss/ComfortNet loggers. If the resulting affected-day exclusions leave a week with <5 qualifying days, the week is excluded.
 
-**9. Manual setpoint overrides.** Two categories with different handling:
+**9. Manual setpoint overrides.** Operational overrides only are expected in this experiment.
 - **Operational overrides** (occupant briefly bumps the setpoint for comfort, e.g., +1°F during work-from-home stretches): kept in formal analysis with an `override=operational` flag. Reported descriptively as count and total-degree-hours per week.
-- **Vacation overrides** (occupant departs; thermostat held at 82°F absolute with no active scheduling): exclude the affected calendar-day(s). If the resulting week has <5 qualifying days, exclude the week.
+- **Vacation overrides (not expected).** The occupant is home with dogs throughout summer 2026 and has never used a vacation override in 20 years in this home. Vacation classification + day-level exclusion logic is retained defensively for the never-fire case (rule9 reclassifies an obviously-mistagged 18h+ ≥81°F operational override and feeds vacation days into rule 8's <5-qualifying-days threshold), but vacation is not part of the expected-conditions framing or any pre-registered scenario.
 
 Source: `hvac.actions` rows with `source != scheduler` (manual API calls or thermostat-local overrides) annotated by the occupant via `tools/log_override.py` (to be added under PR-C) at the time of the override. Annotation requirement holds for both categories; absence of annotation at week-close defaults the override to "operational" with a flag.
 
