@@ -205,7 +205,7 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
    - Bootstrap CI: resample over the (typically 1-3) PJM Five Peak hours falling in each arm; if an arm has fewer than 2 peaks, report point estimate without CI and flag.
 4. **Layer 2 — full CPLC reconstruction:**
    - Compute both Att. M-2 branches with `ACustPL_Y` (ComEd Five Peaks) and `ACustCPL_Y` (PJM Five Peaks).
-   - Use stipulated portfolio constant `Σ_5Pc(ACustPL − ACustCPL)` from `tariff_constants.json`. Report point estimate plus ±10% sensitivity.
+   - Use the pre-registered portfolio-sum scenarios (`low` = 1,500 MW, `anchor_2021` = 2,033.653 MW from FERC ER22-1520-001, `high` = 3,000 MW) from `tariff_constants.json`. Report one CPLC reconstruction per scenario via `tools.o2_capacity_reconstruction.reconstruct.scenarios()`. Layer 2 is descriptive only; see EXPERIMENT_DESIGN.md §6 and `tools/o2_capacity_reconstruction/tariff_snapshot.md` §4.
 5. **Layer 3 — bill reconciliation:**
    - Sum `comed.bill capacity_charge_dollars` for the Y+1 May-Sep months.
    - Report ratio `(Layer 2 reconstructed $) / (Layer 3 observed $)` as tariff-reconstruction fidelity.

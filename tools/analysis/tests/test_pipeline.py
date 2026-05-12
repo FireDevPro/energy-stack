@@ -727,6 +727,613 @@ def test_stage2_quality_writes_locked_csv_schema_for_no_weeks(tmp_path):
     ]
 
 
+# -- Stage 3: DTOD rates synced with production scheduler ------------------
+
+
+def test_dtod_periods_synced_with_precool_module():
+    """The Stage 3 dollar-cost computation uses the ComEd DTOD delivery
+    rate, which is also used live by the scheduler in
+    deploy/energy-stack/hvac-scheduler/precool.py. The two must stay
+    aligned; this test loads precool by file path and asserts the
+    rate schedule is identical.
+    """
+    import importlib.util
+    from pathlib import Path
+    precool_path = (
+        Path(__file__).resolve().parents[3]
+        / "deploy" / "energy-stack" / "hvac-scheduler" / "precool.py"
+    )
+    spec = importlib.util.spec_from_file_location("precool", precool_path)
+    precool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(precool)
+    assert pipeline.DTOD_PERIODS_CT == precool.DTOD_PERIODS_CT
+    # Helpers agree for every hour
+    for h in range(24):
+        assert (
+            pipeline.dtod_delivery_rate_for_hour_ct(h)
+            == precool.dtod_delivery_rate_for_hour(h)
+        )
+
+
+def test_dtod_delivery_rate_for_hour_ct_known_buckets():
+    # Locked rate schedule per CUB March 2026 fact sheet
+    assert pipeline.dtod_delivery_rate_for_hour_ct(7) == 4.009    # Morning
+    assert pipeline.dtod_delivery_rate_for_hour_ct(15) == 10.712  # Mid-Day Peak
+    assert pipeline.dtod_delivery_rate_for_hour_ct(20) == 3.747   # Evening
+    assert pipeline.dtod_delivery_rate_for_hour_ct(3) == 2.984    # Overnight
+
+
+def test_dtod_delivery_rate_for_hour_ct_rejects_out_of_range():
+    with pytest.raises(ValueError):
+        pipeline.dtod_delivery_rate_for_hour_ct(24)
+    with pytest.raises(ValueError):
+        pipeline.dtod_delivery_rate_for_hour_ct(-1)
+
+
+# -- Stage 3: weekly_cdd ----------------------------------------------------
+
+
+def test_weekly_cdd_no_cooling_days():
+    # All daily T_avg ≤ 65°F → 0 CDD contribution
+    assert pipeline.weekly_cdd([60.0, 62.0, 65.0, 64.0, 50.0, 55.0, 65.0]) == 0.0
+
+
+def test_weekly_cdd_uniform_hot_week():
+    # 7 days at 75°F → 7 × (75-65) = 70 CDD
+    assert pipeline.weekly_cdd([75.0] * 7) == 70.0
+
+
+def test_weekly_cdd_mixed_temps():
+    # 70, 80, 65, 90, 60, 75, 85 → 5+15+0+25+0+10+20 = 75
+    assert pipeline.weekly_cdd([70, 80, 65, 90, 60, 75, 85]) == 75.0
+
+
+def test_weekly_cdd_handles_short_week_after_day_drops():
+    # Spec rule 5: some days may be dropped from CDD numerator/denominator.
+    # Sum is over whatever days are present.
+    assert pipeline.weekly_cdd([75.0, 80.0]) == (10.0 + 15.0)
+
+
+# -- Stage 3: weekly_mean_enthalpy_btu_lb ----------------------------------
+
+
+def test_weekly_mean_enthalpy_btu_lb_constant_hours_equals_point_value():
+    # Three identical hours → mean equals the point enthalpy
+    rec = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    expected = pipeline.enthalpy_btu_per_lb(85.0, 70.0)
+    out = pipeline.weekly_mean_enthalpy_btu_lb([rec, rec, rec])
+    assert out == pytest.approx(expected)
+
+
+def test_weekly_mean_enthalpy_btu_lb_averages_across_hours():
+    # Two distinct hourly enthalpies — output is the mean
+    r1 = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    r2 = {"temp_f": 75.0, "dewpoint_f": 60.0}
+    expected = (
+        pipeline.enthalpy_btu_per_lb(85.0, 70.0)
+        + pipeline.enthalpy_btu_per_lb(75.0, 60.0)
+    ) / 2.0
+    out = pipeline.weekly_mean_enthalpy_btu_lb([r1, r2])
+    assert out == pytest.approx(expected)
+
+
+def test_weekly_mean_enthalpy_btu_lb_uses_per_record_pressure_when_given():
+    # If pressure_inhg is on the record, it overrides the default 29.92
+    rec_high = {"temp_f": 85.0, "dewpoint_f": 70.0, "pressure_inhg": 30.5}
+    rec_default = {"temp_f": 85.0, "dewpoint_f": 70.0}
+    h_high = pipeline.weekly_mean_enthalpy_btu_lb([rec_high])
+    h_default = pipeline.weekly_mean_enthalpy_btu_lb([rec_default])
+    # Higher pressure → slightly lower humidity ratio → slightly lower enthalpy
+    assert h_high < h_default
+
+
+def test_weekly_mean_enthalpy_btu_lb_empty_returns_zero():
+    assert pipeline.weekly_mean_enthalpy_btu_lb([]) == 0.0
+
+
+# -- Stage 3: weekly_dollars_per_cdd ---------------------------------------
+
+
+def test_weekly_dollars_per_cdd_single_hour_mid_day_peak():
+    # 1 kWh consumed at hour=15 (Mid-Day Peak: 10.712¢/kWh delivery)
+    # supply = 10.0¢/kWh; total = 20.712¢ = $0.20712
+    # CDD = 1.0 → $/CDD = 0.20712
+    hourly = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 10.0}]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=1.0)
+    assert out == pytest.approx(0.20712, abs=1e-5)
+
+
+def test_weekly_dollars_per_cdd_zero_cdd_returns_zero_no_division():
+    hourly = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 10.0}]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=0.0)
+    assert out == 0.0
+
+
+def test_weekly_dollars_per_cdd_mixed_periods():
+    # Hour 4 (Overnight, 2.984¢) and hour 15 (Mid-Day Peak, 10.712¢)
+    # supply 5¢ both hours; 1 kWh each.
+    # cents = (5 + 2.984)*1 + (5 + 10.712)*1 = 7.984 + 15.712 = 23.696¢ = $0.23696
+    # CDD = 2 → $/CDD = 0.11848
+    hourly = [
+        {"hour_of_day_ct": 4, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0},
+        {"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0},
+    ]
+    out = pipeline.weekly_dollars_per_cdd(hourly_records=hourly, weekly_cdd=2.0)
+    assert out == pytest.approx(0.11848, abs=1e-5)
+
+
+def test_weekly_dollars_per_cdd_higher_in_peak_hours_than_overnight():
+    # Same kWh consumed in peak vs overnight → peak hour costs more per CDD
+    peak = [{"hour_of_day_ct": 15, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0}]
+    overnight = [{"hour_of_day_ct": 4, "hvac_kwh": 1.0, "supply_c_per_kwh": 5.0}]
+    peak_cost = pipeline.weekly_dollars_per_cdd(peak, weekly_cdd=1.0)
+    overnight_cost = pipeline.weekly_dollars_per_cdd(overnight, weekly_cdd=1.0)
+    assert peak_cost > overnight_cost
+
+
+# -- Stage 3: _compute_weekly_row orchestrator -----------------------------
+
+
+def _happy_stage3_inputs(arm: str = "A", qualifies: bool = True) -> dict:
+    """Synthetic happy-path Stage 3 input: hot week, no missing data."""
+    return {
+        "week_start_ct": datetime.date(2026, 6, 8),
+        "arm": arm,
+        "qualifies": qualifies,
+        "daily_avg_temps_f": [75.0] * 7,
+        "hourly_hvac_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 0.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        "hourly_mains_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 1.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        "hourly_weather": [
+            {"temp_f": 85.0, "dewpoint_f": 70.0, "pressure_inhg": 29.92,
+             "solar_wm2": 100.0, "wind_mph": 5.0}
+            for _ in range(168)
+        ],
+    }
+
+
+def test_stage3_compute_weekly_row_populates_all_locked_columns():
+    out = pipeline._compute_weekly_row(_happy_stage3_inputs())
+    expected_columns = (
+        "week_start_ct", "arm", "qualifies",
+        "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+        "o4_dollars_per_cdd_whole_home",
+    ) + pipeline.WEATHER_VECTOR_COMPONENTS
+    for col in expected_columns:
+        assert col in out, f"missing column: {col}"
+    assert out["week_start_ct"] == "2026-06-08"
+    assert out["arm"] == "A"
+    assert out["qualifies"] is True
+    # 7 days × (75-65) = 70 CDD
+    assert out["weekly_cdd"] == 70.0
+    # Every hour is 0.5 kWh → 0.5 kW peak
+    assert out["o3_peak_hvac_kw"] == 0.5
+    # Max temp/dewpoint from constant 85/70 hours
+    assert out["max_temp_f"] == 85.0
+    assert out["max_dewpoint_f"] == 70.0
+    # Mean wind/total solar
+    assert out["mean_wind_mph"] == pytest.approx(5.0)
+    assert out["total_solar_wh_m2"] == 168 * 100.0
+
+
+def test_stage3_compute_weekly_row_qualifies_comes_from_stage2_verbatim():
+    """Boundary rule: Stage 3 ECHOES Stage 2's qualifying decision; it
+    does not re-derive quality logic from Stage 1 inputs. Test that a
+    pristine Stage 1 dataset still gets qualifies=False when Stage 2
+    marked the week excluded."""
+    inputs = _happy_stage3_inputs(qualifies=False)
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["qualifies"] is False
+
+
+def test_stage3_compute_weekly_row_zero_cdd_week_handles_division():
+    # Cool week with all daily T_avg below 65 → CDD = 0; $/CDD must be 0
+    # (not NaN/inf) so the row writes cleanly.
+    inputs = _happy_stage3_inputs()
+    inputs["daily_avg_temps_f"] = [60.0] * 7
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["weekly_cdd"] == 0.0
+    assert out["o1_dollars_per_cdd"] == 0.0
+    assert out["o4_dollars_per_cdd_whole_home"] == 0.0
+
+
+def test_stage3_compute_weekly_row_mains_o4_uses_mains_records_not_hvac():
+    # Use distinct hvac vs mains hourly kWh values; verify each routes
+    # to the right column.
+    inputs = _happy_stage3_inputs()
+    for r in inputs["hourly_hvac_records"]:
+        r["hvac_kwh"] = 0.1
+    for r in inputs["hourly_mains_records"]:
+        r["hvac_kwh"] = 1.0  # mains 10x hvac
+    out = pipeline._compute_weekly_row(inputs)
+    # O4 should be ~10x O1 because mains uses 1.0 kWh vs hvac 0.1 kWh
+    assert out["o4_dollars_per_cdd_whole_home"] == pytest.approx(
+        10.0 * out["o1_dollars_per_cdd"], rel=1e-9,
+    )
+
+
+def test_stage3_compute_weekly_row_o3_uses_max_not_mean():
+    # Most hours 0.3 kWh, one hour 2.5 kWh → O3 = 2.5 kW (the peak)
+    inputs = _happy_stage3_inputs()
+    for r in inputs["hourly_hvac_records"]:
+        r["hvac_kwh"] = 0.3
+    inputs["hourly_hvac_records"][50]["hvac_kwh"] = 2.5
+    out = pipeline._compute_weekly_row(inputs)
+    assert out["o3_peak_hvac_kw"] == 2.5
+
+
+# -- Stage 3: stage3_weekly orchestrator (parquet + Stage 2 CSV reader) ----
+
+
+def _write_stage2_qualifying_weeks(stage2_dir: Path, rows: list[dict]) -> None:
+    stage2_dir.mkdir(parents=True, exist_ok=True)
+    with open(stage2_dir / "qualifying_weeks.csv", "w", newline="") as f:
+        w = csv.DictWriter(
+            f, fieldnames=list(pipeline.QUALIFYING_WEEKS_LOCKED_COLUMNS),
+        )
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def test_stage3_weekly_writes_locked_schema_header(tmp_path):
+    """Existing schema test, preserved: weekly.csv has the locked columns."""
+    pipeline.stage3_weekly(
+        stage1_dir=tmp_path, stage2_dir=tmp_path, out_dir=tmp_path,
+    )
+    weekly = tmp_path / "stage3" / "weekly.csv"
+    assert weekly.exists()
+    with open(weekly) as f:
+        header = next(csv.reader(f))
+        data_rows = list(csv.reader(f))
+    assert header == [
+        "week_start_ct", "arm", "qualifies",
+        "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+        "o4_dollars_per_cdd_whole_home",
+        *pipeline.WEATHER_VECTOR_COMPONENTS,
+    ]
+    # Header-only when no Stage 2 / Stage 1 input is wired
+    assert data_rows == []
+
+
+def test_stage3_weekly_reads_stage2_qualifying_csv(monkeypatch, tmp_path):
+    """Stage 3 reads Stage 2's qualifying decision via the
+    qualifying_weeks.csv contract — does not re-derive it.
+    """
+    # Stage 2 says week 2026-06-08 / A passes, but 2026-06-15 / B is excluded.
+    _write_stage2_qualifying_weeks(tmp_path / "stage2", [
+        {"week_start_ct": "2026-06-08", "arm": "A", "qualifying": "True",
+         "exclusion_reason": "",
+         "imputed_hvac_kwh_pct": 0.0, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+        {"week_start_ct": "2026-06-15", "arm": "B", "qualifying": "False",
+         "exclusion_reason": "refoss_imputation_too_high",
+         "imputed_hvac_kwh_pct": 0.12, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+    ])
+
+    def fake_loader(stage1_dir, week_start_ct, arm):
+        # Same fixture for both weeks; differing qualifies bool below.
+        base = _happy_stage3_inputs(arm=arm)
+        base["week_start_ct"] = week_start_ct
+        # Note: qualifies is OVERWRITTEN by stage3_weekly with the
+        # Stage 2 CSV value, NOT this fixture's value.
+        base["qualifies"] = True  # try to lie about it — should be ignored
+        return base
+
+    monkeypatch.setattr(
+        pipeline, "_load_stage3_inputs_for_week", fake_loader,
+    )
+
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage3_weekly(stage1, tmp_path, tmp_path)
+
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    week_a = next(r for r in rows if r["arm"] == "A")
+    week_b = next(r for r in rows if r["arm"] == "B")
+    assert week_a["qualifies"] == "True"
+    # Stage 3 took Stage 2's False even though the fixture said True
+    assert week_b["qualifies"] == "False"
+
+
+def test_stage3_weekly_skips_weeks_without_stage1_inputs(monkeypatch, tmp_path):
+    """If the Stage 1 loader returns None for a week (no parquet data),
+    Stage 3 emits a row with qualifies and zero outcome values rather
+    than crashing.
+    """
+    _write_stage2_qualifying_weeks(tmp_path / "stage2", [
+        {"week_start_ct": "2026-06-08", "arm": "A", "qualifying": "True",
+         "exclusion_reason": "",
+         "imputed_hvac_kwh_pct": 0.0, "imputed_price_hours_pct": 0.0,
+         "override_operational_count": 0, "override_vacation_days": 0},
+    ])
+    monkeypatch.setattr(
+        pipeline, "_load_stage3_inputs_for_week",
+        lambda *args, **kwargs: None,
+    )
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage3_weekly(stage1, tmp_path, tmp_path)
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["week_start_ct"] == "2026-06-08"
+    assert rows[0]["qualifies"] == "True"
+    # Outcome values default to 0 when stage1 input is absent
+    assert float(rows[0]["o1_dollars_per_cdd"]) == 0.0
+
+
+# -- Stage 6: O2 Layer 1 (observed ACustCPL difference) --------------------
+
+
+def _pjm_5cp_2025():
+    return [
+        datetime.datetime(2025, 6, 24, 17),
+        datetime.datetime(2025, 7, 22, 17),
+        datetime.datetime(2025, 7, 23, 18),
+        datetime.datetime(2025, 8, 12, 17),
+        datetime.datetime(2025, 8, 26, 18),
+    ]
+
+
+def test_compute_a_cust_cpl_kw_uniform_load():
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks}
+    assert pipeline.compute_a_cust_cpl_kw(peaks, hourly_kw) == 3.0
+
+
+def test_compute_a_cust_cpl_kw_skips_missing_hours():
+    # Two of five peaks have no household data → mean over the three present
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {peaks[0]: 2.0, peaks[1]: 4.0, peaks[2]: 6.0}
+    assert pipeline.compute_a_cust_cpl_kw(peaks, hourly_kw) == 4.0
+
+
+def test_compute_a_cust_cpl_kw_returns_zero_when_no_data():
+    out = pipeline.compute_a_cust_cpl_kw(_pjm_5cp_2025(), {})
+    assert out == 0.0
+
+
+def test_compute_a_cust_cpl_kw_empty_peak_list_is_zero():
+    assert pipeline.compute_a_cust_cpl_kw([], {}) == 0.0
+
+
+def test_compute_layer1_arm_delta_arm_b_lower_means_negative_delta():
+    # Arm A: 3 peaks at 4 kW → mean 4. Arm B: 2 peaks at 3 kW → mean 3.
+    # delta = -1 kW. At $10.13567/kW-mo × 5 months → -$50.67835.
+    peaks = _pjm_5cp_2025()
+    peaks_a, peaks_b = peaks[:3], peaks[3:]
+    hourly_kw = {p: 4.0 for p in peaks_a} | {p: 3.0 for p in peaks_b}
+    out = pipeline.compute_layer1_arm_delta(
+        pjm_peak_hours_by_arm={"A": peaks_a, "B": peaks_b},
+        hourly_mains_kw=hourly_kw,
+        capacity_rate_dollars_per_kw_month=10.13567,
+    )
+    assert out["a_cust_cpl_kw_arm_a"] == 4.0
+    assert out["a_cust_cpl_kw_arm_b"] == 3.0
+    assert out["n_peaks_arm_a"] == 3
+    assert out["n_peaks_arm_b"] == 2
+    assert out["delta_kw"] == -1.0
+    assert out["delta_dollars_total"] == pytest.approx(-50.67835, abs=1e-4)
+
+
+def test_compute_layer1_arm_delta_zero_when_arms_identical():
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.5 for p in peaks}
+    out = pipeline.compute_layer1_arm_delta(
+        pjm_peak_hours_by_arm={"A": peaks[:3], "B": peaks[3:]},
+        hourly_mains_kw=hourly_kw,
+        capacity_rate_dollars_per_kw_month=10.13567,
+    )
+    assert out["delta_kw"] == 0.0
+    assert out["delta_dollars_total"] == 0.0
+
+
+# -- Stage 6: O2 Layer 2 (CPLC scenarios) ----------------------------------
+
+
+def _layer2_constants():
+    from tools.o2_capacity_reconstruction.reconstruct import TariffConstants
+    return TariffConstants(
+        year=2025,
+        comed_npl_mw=20736.0,
+        a_comed_cpl_mw=19138.22,
+        portfolio_sum_mw=1500.0,
+        rate_dollars_per_kw_month=10.13567,
+        is_placeholder=False,
+    )
+
+
+def test_compute_layer2_scenarios_emits_three_named_scenarios():
+    peaks_pjm = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks_pjm}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        comed_peak_hours_by_arm={"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    names = {r["scenario"] for r in out}
+    assert names == {"low", "anchor_2021", "high"}
+
+
+def test_compute_layer2_scenarios_branch1_collapses_when_pl_le_cpl():
+    # ComEd peaks coincide with PJM peaks; identical kW → branch 1
+    peaks = _pjm_5cp_2025()
+    hourly_kw = {p: 3.0 for p in peaks}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks, "B": []},
+        comed_peak_hours_by_arm={"A": peaks, "B": []},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    cplc_arm_a = {r["cplc_kw_arm_a"] for r in out}
+    # Branch 1 collapses CPLC = ACustCPL regardless of scenario
+    assert cplc_arm_a == {3.0}
+
+
+def test_compute_layer2_scenarios_branch2_widens_with_smaller_denominator():
+    # ACustPL > ACustCPL → branch 2; smaller portfolio_sum → bigger adjustment
+    peaks_pjm = _pjm_5cp_2025()
+    peaks_comed = [datetime.datetime(2025, 7, 20, 15)]
+    hourly_kw = {p: 2.0 for p in peaks_pjm} | {peaks_comed[0]: 6.0}
+    out = pipeline.compute_layer2_scenarios(
+        pjm_peak_hours_by_arm={"A": peaks_pjm, "B": []},
+        comed_peak_hours_by_arm={"A": peaks_comed, "B": []},
+        hourly_mains_kw=hourly_kw,
+        tariff_constants=_layer2_constants(),
+    )
+    rows = {r["scenario"]: r["cplc_kw_arm_a"] for r in out}
+    # low denominator (1500) → biggest adjustment; high (3000) → smallest
+    assert rows["low"] > rows["anchor_2021"] > rows["high"]
+
+
+# -- Stage 6: O2 Layer 3 (bill reconciliation) -----------------------------
+
+
+def test_compute_layer3_bill_capacity_dollars_sums_may_through_sep_only():
+    bills = [
+        {"year": 2026, "month": 4, "capacity_charge_dollars": 5.0},   # excluded
+        {"year": 2026, "month": 5, "capacity_charge_dollars": 30.0},  # May
+        {"year": 2026, "month": 6, "capacity_charge_dollars": 50.0},  # Jun
+        {"year": 2026, "month": 9, "capacity_charge_dollars": 35.0},  # Sep
+        {"year": 2026, "month": 10, "capacity_charge_dollars": 5.0},  # excluded
+        {"year": 2027, "month": 6, "capacity_charge_dollars": 99.0},  # wrong year
+    ]
+    out = pipeline.compute_layer3_bill_capacity_dollars(bills, year_y_plus_1=2026)
+    assert out["year"] == 2026
+    assert out["months_summed"] == 3
+    assert out["total_capacity_charge_dollars"] == pytest.approx(115.0)
+
+
+def test_compute_layer3_bill_capacity_dollars_handles_missing_months():
+    bills = [{"year": 2026, "month": 7, "capacity_charge_dollars": 42.0}]
+    out = pipeline.compute_layer3_bill_capacity_dollars(bills, year_y_plus_1=2026)
+    assert out["months_summed"] == 1
+    assert out["total_capacity_charge_dollars"] == 42.0
+
+
+# -- Stage 6: Detector accuracy --------------------------------------------
+
+
+def test_compute_detector_accuracy_perfect_detector():
+    peaks = _pjm_5cp_2025()
+    other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
+    all_summer = peaks + other_hours
+    state = {h: ("holding" if h in peaks else "off") for h in all_summer}
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=peaks,
+        summer_hours=all_summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tp"] == 5
+    assert out["fn"] == 0
+    assert out["fp"] == 0
+    assert out["tn"] == 24
+    assert out["tpr"] == 1.0
+    assert out["fpr"] == 0.0
+
+
+def test_compute_detector_accuracy_one_miss_and_one_false_alarm():
+    peaks = _pjm_5cp_2025()
+    other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
+    all_summer = peaks + other_hours
+    state = {h: "off" for h in all_summer}
+    for p in peaks[1:]:  # miss peaks[0]
+        state[p] = "holding"
+    state[datetime.datetime(2025, 7, 10, 14)] = "holding"  # false alarm
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=peaks,
+        summer_hours=all_summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tp"] == 4
+    assert out["fn"] == 1
+    assert out["fp"] == 1
+    assert out["tpr"] == pytest.approx(0.8)
+    assert out["fnr"] == pytest.approx(0.2)
+
+
+def test_compute_detector_accuracy_empty_truth_returns_zero_rates():
+    summer = [datetime.datetime(2025, 7, 10, h) for h in range(3)]
+    state = {h: "off" for h in summer}
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours=[],
+        summer_hours=summer,
+        fivecp_state_by_hour=state,
+    )
+    assert out["tpr"] == 0.0
+    assert out["fnr"] == 0.0
+    assert out["tn"] == 3
+
+
+# -- Stage 6: stage6_o2 orchestrator ---------------------------------------
+
+
+def test_stage6_o2_writes_four_csvs_header_only_when_no_inputs(tmp_path):
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage6_o2(stage1, tmp_path)
+    stage6 = tmp_path / "stage6"
+    for name in ("o2_layer1.csv", "o2_layer2.csv",
+                 "o2_layer3.csv", "detector_accuracy.csv"):
+        assert (stage6 / name).exists()
+
+
+def test_stage6_o2_with_synthetic_loader_populates_layer1_layer2(
+    monkeypatch, tmp_path,
+):
+    peaks_pjm = _pjm_5cp_2025()
+    peaks_comed = peaks_pjm  # identical for this fixture; branch 1 case
+    hourly_kw = {p: 3.0 for p in peaks_pjm}
+    fake_inputs = {
+        "pjm_peak_hours_by_arm": {"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
+        "comed_peak_hours_by_arm": {"A": peaks_comed[:3], "B": peaks_comed[3:]},
+        "hourly_mains_kw": hourly_kw,
+        "tariff_constants": _layer2_constants(),
+        "summer_year": 2025,
+        "comed_bills": [
+            {"year": 2026, "month": 6, "capacity_charge_dollars": 20.0},
+        ],
+        "summer_hours": peaks_pjm,
+        "fivecp_state_by_hour": {h: "holding" for h in peaks_pjm},
+    }
+    monkeypatch.setattr(
+        pipeline, "_load_stage6_inputs", lambda _: fake_inputs,
+    )
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage6_o2(stage1, tmp_path)
+    # Layer 1: one row
+    with open(tmp_path / "stage6" / "o2_layer1.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert float(rows[0]["a_cust_cpl_kw_arm_a"]) == 3.0
+    assert float(rows[0]["a_cust_cpl_kw_arm_b"]) == 3.0
+    # Layer 2: three rows (one per scenario)
+    with open(tmp_path / "stage6" / "o2_layer2.csv") as f:
+        rows2 = list(csv.DictReader(f))
+    assert {r["scenario"] for r in rows2} == {"low", "anchor_2021", "high"}
+    # Layer 3: one row summing bills
+    with open(tmp_path / "stage6" / "o2_layer3.csv") as f:
+        rows3 = list(csv.DictReader(f))
+    assert len(rows3) == 1
+    assert float(rows3[0]["total_capacity_charge_dollars"]) == 20.0
+    # Detector accuracy: one row
+    with open(tmp_path / "stage6" / "detector_accuracy.csv") as f:
+        rows4 = list(csv.DictReader(f))
+    assert len(rows4) == 1
+    assert int(rows4[0]["tp"]) == 5
+
+
 # -- Math primitives --------------------------------------------------------
 
 
