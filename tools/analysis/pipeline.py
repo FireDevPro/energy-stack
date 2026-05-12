@@ -3707,6 +3707,62 @@ def _load_daily_hourly_records(
     ]
 
 
+def _daily_outcome_values(
+    manifest,
+    stage1_dir: Path,
+    day_ct: datetime.date,
+) -> dict:
+    """Compute all three Stage 8 daily outcomes for one CT day.
+
+    Returns a dict with the three locked outcome keys:
+      - ``o1_daily_hvac_dollars`` (dollars):
+          sum_h (hvac_kwh[h] * (supply_c[h] + DTOD(h))) / 100
+          where hvac_kwh is the per-hour sum over HVAC_CHANNELS
+          (em:2 + em:8 + em:9).
+      - ``o3_daily_peak_hvac_kw`` (kw):
+          max(hvac_kwh per hour). Hourly kWh over a one-hour bucket
+          numerically equals the average kW for that hour, so the
+          unit is kw not dollars.
+      - ``o4_daily_mains_dollars`` (dollars):
+          same formula as o1 but over MAINS_CHANNELS (em:1 + em:7).
+
+    The ``_load_daily_hourly_records`` helper is invoked twice (once
+    per channel set). Note that the inner ``hvac_kwh`` field is named
+    for its primary use; for the mains call it carries the mains-side
+    hourly kWh.
+    """
+    hvac_hourly = _load_daily_hourly_records(
+        manifest, stage1_dir, day_ct, HVAC_CHANNELS,
+    )
+    mains_hourly = _load_daily_hourly_records(
+        manifest, stage1_dir, day_ct, MAINS_CHANNELS,
+    )
+
+    o1 = sum(
+        h["hvac_kwh"] * (
+            h["supply_c_per_kwh"]
+            + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+        )
+        for h in hvac_hourly
+    ) / 100.0
+
+    o3 = max((h["hvac_kwh"] for h in hvac_hourly), default=0.0)
+
+    o4 = sum(
+        h["hvac_kwh"] * (
+            h["supply_c_per_kwh"]
+            + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+        )
+        for h in mains_hourly
+    ) / 100.0
+
+    return {
+        "o1_daily_hvac_dollars": o1,
+        "o3_daily_peak_hvac_kw": o3,
+        "o4_daily_mains_dollars": o4,
+    }
+
+
 def _hourly_prices_for_day_ct(
     prices_df: "pd.DataFrame",
     day_ct: datetime.date,
@@ -3909,27 +3965,16 @@ def _load_stage8_inputs(
             max_forecast_temp_f=forecast["max_forecast_temp_f"],
             apparent_max_f=forecast["apparent_max_f"],
         )
-        hourly = _load_daily_hourly_records(
-            manifest, stage1_dir, day_ct, HVAC_CHANNELS,
-        )
-        # o1 = sum_h (hvac_kwh × (supply_c + DTOD(h))) / 100
-        # Locked formula per docs/EXPERIMENT_DESIGN.md Stage 8 + plan
-        # decision table. DOLLARS not $/CDD (Phase 0 decision); zero-CDD
-        # days remain in the decomposition.
-        o1 = sum(
-            h["hvac_kwh"] * (
-                h["supply_c_per_kwh"]
-                + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
-            )
-            for h in hourly
-        ) / 100.0
+        # Phase 3 contract: populate all three Stage 8 outcomes per day.
+        # DOLLARS not $/CDD (Phase 0 decision); zero-CDD days remain.
+        # Outcomes that cannot be computed are omitted from the dict;
+        # placeholder zeros would lie.
+        outcomes = _daily_outcome_values(manifest, stage1_dir, day_ct)
         daily_records.append({
             "date": day_ct,
             "arm": day_row["arm"],
             "category": category,
-            "outcomes": {
-                "o1_daily_hvac_dollars": o1,
-            },
+            "outcomes": outcomes,
         })
 
     return {

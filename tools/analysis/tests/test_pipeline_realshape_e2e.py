@@ -233,22 +233,31 @@ def test_full_pipeline_runs_against_realshape_bundle(
         layer1_rows = list(csv.DictReader(f))
     assert layer1_rows == []  # header-only by design
 
-    # Stage 8: Phase 1 (tracer) populates decomposition with the o1
-    # outcome only. All days classified as no_spike (Phase 2 adds real
-    # classification). o3 and o4 stay absent from `outcomes` per day
-    # (Phase 3 fills them), so the orchestrator's
-    # `outcome in d["outcomes"]` filter keeps them out of the CSV (no
-    # placeholder zeros).
+    # Stage 8: Phase 3 wires per-day outcome arithmetic, so the
+    # decomposition emits rows for all three outcomes (o1, o3, o4)
+    # per category. Bundle prices are flat 4.5c (no_spike) and
+    # forecast values are below the hot threshold, so all days
+    # classify as no_spike.
     decomp_csv = tmp_path / "stage8" / "decomposition.csv"
     assert decomp_csv.exists()
     with open(decomp_csv) as f:
         decomp_rows = list(csv.DictReader(f))
-    assert decomp_rows, "Phase 1 wires the real loader; CSV should have rows"
+    assert decomp_rows, "Phase 3 wires the real loader; CSV should have rows"
+    outcomes_seen = {r["outcome"] for r in decomp_rows}
+    assert outcomes_seen == {
+        "o1_daily_hvac_dollars",
+        "o3_daily_peak_hvac_kw",
+        "o4_daily_mains_dollars",
+    }, (
+        f"Phase 3 emits all three Stage 8 outcomes; got {outcomes_seen}"
+    )
+    expected_unit = {
+        "o1_daily_hvac_dollars": "dollars",
+        "o3_daily_peak_hvac_kw": "kw",
+        "o4_daily_mains_dollars": "dollars",
+    }
     for r in decomp_rows:
-        assert r["outcome"] == "o1_daily_hvac_dollars", (
-            "Phase 1 emits only o1; o3/o4 are Phase 3 work"
-        )
+        assert r["unit"] == expected_unit[r["outcome"]]
         assert r["category"] == "no_spike", (
-            "Phase 1 hardcodes no_spike; Phase 2 adds spike classification"
+            "Bundle uses flat sub-spike prices + below-hot forecast"
         )
-        assert r["unit"] == "dollars"

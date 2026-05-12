@@ -209,18 +209,20 @@ def test_stage8_phase1_tracer_one_no_spike_day_oracle(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Phase 1 contract: exactly ONE row.
-    # - 1 qualifying day in 1 qualifying week, Arm A only -> 1 outcome
-    #   (o1) populated, 1 category (no_spike), quiet-zero on Arm B.
-    # - o3 and o4 absent from `outcomes` dict -> no rows emitted for
-    #   them (Phase 1 doesn't fake-populate them with zeros).
-    assert len(rows) == 1, (
-        f"Phase 1 should emit exactly 1 row "
-        f"(o1, no_spike); got {len(rows)}: {rows}"
+    # Phase 3 contract change: o1, o3, o4 each emit one row for this
+    # no_spike day. Phase 1's "exactly one row" expectation widened to
+    # three (one per Stage 8 outcome). The o1 oracle below is unchanged.
+    assert len(rows) == 3, (
+        f"Phase 3 emits 3 rows (o1, o3, o4) for one (day, category); "
+        f"got {len(rows)}: {rows}"
     )
-
-    r = rows[0]
-    assert r["outcome"] == "o1_daily_hvac_dollars"
+    by_outcome = {r["outcome"]: r for r in rows}
+    assert set(by_outcome.keys()) == {
+        "o1_daily_hvac_dollars",
+        "o3_daily_peak_hvac_kw",
+        "o4_daily_mains_dollars",
+    }
+    r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
     assert r["unit"] == "dollars"
 
@@ -234,7 +236,7 @@ def test_stage8_phase1_tracer_one_no_spike_day_oracle(tmp_path):
         expected_o1, abs=1e-6,
     )
 
-    # Arm B has zero days -> quiet-zero guard fires.
+    # Arm B has zero days -> quiet-zero guard fires for each outcome row.
     assert int(r["arm_b_n_days"]) == 0
     assert r["arm_b_median_value"] == ""
     assert r["delta_median_value"] == ""
@@ -253,9 +255,15 @@ def test_stage8_phase1_tracer_one_no_spike_day_oracle(tmp_path):
         if e["reason_code"]
         == ReasonCode.INSUFFICIENT_ARM_DAYS_FOR_CATEGORY.value
     ]
-    assert len(guard_entries) == 1
-    assert "o1_daily_hvac_dollars" in (guard_entries[0].get("note") or "")
-    assert "no_spike" in (guard_entries[0].get("note") or "")
+    # Phase 3 contract change: 3 outcomes (o1, o3, o4) each emit a row
+    # for (no_spike), so 3 quiet-zero entries fire for Arm B (one per
+    # outcome). Phase 0/1 had 1 entry (o1 only).
+    assert len(guard_entries) == 3
+    notes = " ".join(e.get("note") or "" for e in guard_entries)
+    assert "o1_daily_hvac_dollars" in notes
+    assert "o3_daily_peak_hvac_kw" in notes
+    assert "o4_daily_mains_dollars" in notes
+    assert "no_spike" in notes
 
     # layer_attribution.csv is header-only (Phase 4 populates).
     with open(stage8_dir / "layer_attribution.csv") as f:
@@ -383,10 +391,11 @@ def test_stage8_phase1_tracer_multi_day_multi_channel_oracle(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # One row: (o1, no_spike) with quiet-zero on Arm B.
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["outcome"] == "o1_daily_hvac_dollars"
+    # Phase 3 contract: 3 rows (one per outcome × no_spike) with
+    # quiet-zero on Arm B. The o1 oracle below is unchanged.
+    assert len(rows) == 3
+    by_outcome = {r["outcome"]: r for r in rows}
+    r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
     assert int(r["arm_a_n_days"]) == 2, (
         "Day-loop must process both included days"
@@ -517,9 +526,11 @@ def test_stage8_phase1_tracer_both_arms_real_loader_delta(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["outcome"] == "o1_daily_hvac_dollars"
+    # Phase 3 contract: 3 rows (one per outcome × no_spike). The o1
+    # delta oracle below is unchanged.
+    assert len(rows) == 3
+    by_outcome = {r["outcome"]: r for r in rows}
+    r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
     assert int(r["arm_a_n_days"]) == 1
     assert int(r["arm_b_n_days"]) == 1
@@ -859,15 +870,28 @@ def test_phase2_three_category_fixture_via_real_loader(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Three rows, one per (o1, category). All Arm A only -> quiet-zero on B.
+    # Phase 3 contract change: 9 rows = 3 outcomes (o1, o3, o4) × 3
+    # categories (no_spike, forecast_correlated_spike, grid_event_spike).
+    # All Arm A only -> quiet-zero on B for every cell.
+    assert len(rows) == 9
     categories = {r["category"] for r in rows}
     assert categories == {"no_spike", "forecast_correlated_spike",
                           "grid_event_spike"}, (
         f"expected all 3 categories, got {categories}"
     )
+    outcomes_seen = {r["outcome"] for r in rows}
+    assert outcomes_seen == {
+        "o1_daily_hvac_dollars",
+        "o3_daily_peak_hvac_kw",
+        "o4_daily_mains_dollars",
+    }
+    expected_unit = {
+        "o1_daily_hvac_dollars": "dollars",
+        "o3_daily_peak_hvac_kw": "kw",
+        "o4_daily_mains_dollars": "dollars",
+    }
     for r in rows:
-        assert r["outcome"] == "o1_daily_hvac_dollars"
-        assert r["unit"] == "dollars"
+        assert r["unit"] == expected_unit[r["outcome"]]
         assert int(r["arm_a_n_days"]) == 1
         assert int(r["arm_b_n_days"]) == 0
 
@@ -981,3 +1005,418 @@ def test_phase2_missing_21_00_issuance_drops_day_and_emits_reason(tmp_path):
     assert any(
         day_ct.isoformat() in (e.get("note") or "") for e in nws_entries
     ), "missing-forecast reason should name the dropped date"
+
+
+# -- Phase 3: per-day outcome arithmetic (o1, o3, o4) -----------------------
+
+
+# Locked DTOD per-hour values (cents/kWh) for a non-DST cooling-season
+# day, mirroring pipeline.DTOD_PERIODS_CT. Used by Phase 3 oracles so
+# the hand-computation in the test does not import any production code.
+DTOD_PER_HOUR_CENTS = (
+    [2.984] * 6      # hours 0-5  (Overnight post-midnight)
+    + [4.009] * 7    # hours 6-12 (Morning)
+    + [10.712] * 6   # hours 13-18 (Mid-Day Peak)
+    + [3.747] * 2    # hours 19-20 (Evening)
+    + [2.984] * 3    # hours 21-23 (Overnight pre-midnight)
+)
+assert len(DTOD_PER_HOUR_CENTS) == 24
+
+
+def _per_channel_refoss_constant_for_band(
+    day_ct: datetime.date,
+    hours_range,
+    power_w_by_channel: dict[str, float],
+) -> pd.DataFrame:
+    """Build refoss.channel rows for a contiguous hour-of-day range
+    inside one CT day. Each channel writes power_w constant across
+    the band at 30-second cadence (matches prod refoss).
+    """
+    band_start_utc = pipeline._ct_date_to_utc(day_ct, min(hours_range))
+    # Stop at the start of the hour AFTER the last hour in the band.
+    band_stop_utc = pipeline._ct_date_to_utc(
+        day_ct, max(hours_range),
+    ) + datetime.timedelta(hours=1)
+    times = pd.date_range(
+        band_start_utc, band_stop_utc, freq="30s", inclusive="left",
+    )
+    frames = []
+    for channel, watts in power_w_by_channel.items():
+        frames.append(pd.DataFrame({
+            "_time": times,
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": float(watts),
+            "channel": channel,
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
+def _supply_prices_for_band(
+    day_ct: datetime.date,
+    hours_range,
+    cents_per_kwh: float,
+) -> pd.DataFrame:
+    """5-minute supply-price rows for a contiguous hour-of-day band."""
+    band_start_utc = pipeline._ct_date_to_utc(day_ct, min(hours_range))
+    band_stop_utc = pipeline._ct_date_to_utc(
+        day_ct, max(hours_range),
+    ) + datetime.timedelta(hours=1)
+    times = pd.date_range(
+        band_start_utc, band_stop_utc, freq="5min", inclusive="left",
+    )
+    return pd.DataFrame({
+        "_time": times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": cents_per_kwh,
+        "period_type": "5min",
+    })
+
+
+def test_stage8_phase3_asymmetric_o1_o4_distinct_and_exact(tmp_path):
+    """Phase 3 acceptance: asymmetric hourly fixture pins exact daily
+    dollar values for o1 (HVAC) and o4 (mains) and proves the channel
+    split is not mixed up.
+
+    Per Chris's audit requirements:
+      - HVAC and mains channels carry DIFFERENT power, mains much larger,
+        so a channel mix-up cannot pass.
+      - Non-uniform kWh AND non-uniform supply prices, so neither a
+        "multiply after summing" mistake nor sum-vs-mean confusion can
+        pass silently.
+
+    Hand-computed oracles (no production code referenced in the
+    expectation derivation; DTOD_PER_HOUR_CENTS is a test-side constant
+    mirroring DTOD_PERIODS_CT):
+
+      Three power bands aligned with DTOD periods:
+        Hours 0-5 / 21-23 (Overnight, 9 hrs total):
+          HVAC = em:2+em:8+em:9 = 100+150+50 = 300 W   -> 0.3 kWh/hr
+          mains = em:1+em:7     = 1000+500   = 1500 W  -> 1.5 kWh/hr
+          supply = 4.0 c/kWh
+
+        Hours 6-12, 19-20 (Morning + Evening, 9 hrs total):
+          HVAC = em:2+em:8+em:9 = 250+250+100 = 600 W  -> 0.6 kWh/hr
+          mains = em:1+em:7     = 1200+800    = 2000 W -> 2.0 kWh/hr
+          supply = 6.0 c/kWh
+
+        Hours 13-18 (Mid-Day, 6 hrs total):
+          HVAC = em:2+em:8+em:9 = 600+400+200 = 1200 W -> 1.2 kWh/hr
+          mains = em:1+em:7     = 1500+1000   = 2500 W -> 2.5 kWh/hr
+          supply = 9.0 c/kWh (high but < 10 -> classify as no_spike)
+
+    Catches:
+      - Channel mix-up (o1 would use mains values or vice versa).
+      - Multiply-after-summing mistake (the band-aligned correlation
+        between high kWh and high supply prices makes the wrong
+        formula numerically distinct).
+      - Sum-vs-mean confusion in o1/o4 (24-hour sum is well-defined;
+        mean would yield much smaller numbers).
+      - Wrong DTOD rate lookup.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+
+    # (hours, hvac_per_channel_W, mains_per_channel_W, supply_c)
+    BANDS = [
+        (range(0, 6),   {"em:2": 100.0, "em:8": 150.0, "em:9":  50.0},
+                        {"em:1": 1000.0, "em:7": 500.0},   4.0),
+        (range(6, 13),  {"em:2": 250.0, "em:8": 250.0, "em:9": 100.0},
+                        {"em:1": 1200.0, "em:7": 800.0},   6.0),
+        (range(13, 19), {"em:2": 600.0, "em:8": 400.0, "em:9": 200.0},
+                        {"em:1": 1500.0, "em:7": 1000.0},  9.0),
+        (range(19, 21), {"em:2": 250.0, "em:8": 250.0, "em:9": 100.0},
+                        {"em:1": 1200.0, "em:7": 800.0},   6.0),
+        (range(21, 24), {"em:2": 100.0, "em:8": 150.0, "em:9":  50.0},
+                        {"em:1": 1000.0, "em:7": 500.0},   4.0),
+    ]
+
+    refoss_frames = []
+    prices_frames = []
+    for hours, hvac_pwr, mains_pwr, supply_c in BANDS:
+        all_pwr = {**hvac_pwr, **mains_pwr}
+        refoss_frames.append(
+            _per_channel_refoss_constant_for_band(day_ct, hours, all_pwr)
+        )
+        prices_frames.append(
+            _supply_prices_for_band(day_ct, hours, supply_c)
+        )
+    refoss_df = pd.concat(refoss_frames, ignore_index=True)
+    prices_df = pd.concat(prices_frames, ignore_index=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # Hand-derive expected o1 + o4 from the same band definitions used
+    # to build the fixture. The derivation calls no production code.
+    expected_o1_cents = 0.0
+    expected_o4_cents = 0.0
+    for hours, hvac_pwr, mains_pwr, supply_c in BANDS:
+        hvac_kwh_per_hour = sum(hvac_pwr.values()) / 1000.0
+        mains_kwh_per_hour = sum(mains_pwr.values()) / 1000.0
+        for h in hours:
+            tariff_c = supply_c + DTOD_PER_HOUR_CENTS[h]
+            expected_o1_cents += hvac_kwh_per_hour * tariff_c
+            expected_o4_cents += mains_kwh_per_hour * tariff_c
+    expected_o1 = expected_o1_cents / 100.0
+    expected_o4 = expected_o4_cents / 100.0
+
+    # Sanity: the two values must be distinct, else a channel mix-up
+    # could silently pass. (Hand-derivation already differs because
+    # mains carries much larger power than HVAC.)
+    assert abs(expected_o1 - expected_o4) > 1.0, (
+        "Test sanity: o1 and o4 must be distinct enough to prove "
+        "channel split"
+    )
+
+    by_outcome = {r["outcome"]: r for r in rows if r["category"] == "no_spike"}
+    assert "o1_daily_hvac_dollars" in by_outcome
+    assert "o4_daily_mains_dollars" in by_outcome
+    assert by_outcome["o1_daily_hvac_dollars"]["unit"] == "dollars"
+    assert by_outcome["o4_daily_mains_dollars"]["unit"] == "dollars"
+
+    o1_row = by_outcome["o1_daily_hvac_dollars"]
+    o4_row = by_outcome["o4_daily_mains_dollars"]
+    assert float(o1_row["arm_a_median_value"]) == pytest.approx(
+        expected_o1, abs=1e-4,
+    ), f"o1 mismatch: expected {expected_o1}, got {o1_row['arm_a_median_value']}"
+    assert float(o4_row["arm_a_median_value"]) == pytest.approx(
+        expected_o4, abs=1e-4,
+    ), f"o4 mismatch: expected {expected_o4}, got {o4_row['arm_a_median_value']}"
+
+
+def test_stage8_phase3_o3_is_max_hvac_kwh_not_mean(tmp_path):
+    """Phase 3 acceptance: o3_daily_peak_hvac_kw is max(hourly hvac_kwh),
+    not the day's mean. Fixture has one spiky hour at 2.0 kWh and 23
+    flat hours at 0.2 kWh, so max and mean are far apart:
+
+      max  = 2.0
+      mean = (23 * 0.2 + 2.0) / 24 = 6.6 / 24 = 0.275
+
+    Catches: an implementation that returned mean, sum, median, or
+    last-hour value.
+
+    Unit asserted as `kw` (not dollars) so the o3 row's unit column
+    is also pinned.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    refoss_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="30s", inclusive="left",
+    )
+    # Default em:2 = 200W -> 0.2 kWh/hr. Overwrite hour 14 (CT) -> 2000W.
+    refoss_df = pd.DataFrame({
+        "_time": refoss_times,
+        "_measurement": "refoss.channel",
+        "_field": "power_w",
+        "_value": 200.0,
+        "channel": "em:2",
+    })
+    spike_hour_start_utc = pipeline._ct_date_to_utc(day_ct, 14)
+    spike_hour_end_utc = pipeline._ct_date_to_utc(day_ct, 14) + (
+        datetime.timedelta(hours=1)
+    )
+    spike_mask = (
+        (refoss_df["_time"] >= spike_hour_start_utc)
+        & (refoss_df["_time"] < spike_hour_end_utc)
+    )
+    refoss_df.loc[spike_mask, "_value"] = 2000.0
+
+    # Constant 5c supply (below spike threshold -> no_spike).
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    o3_rows = [r for r in rows if r["outcome"] == "o3_daily_peak_hvac_kw"]
+    assert len(o3_rows) == 1, (
+        f"Phase 3 should emit one o3 row; got {len(o3_rows)}"
+    )
+    r = o3_rows[0]
+    assert r["category"] == "no_spike"
+    assert r["unit"] == "kw", (
+        "o3 unit must be kw (peak instantaneous power), not dollars"
+    )
+    assert float(r["arm_a_median_value"]) == pytest.approx(2.0, abs=1e-6), (
+        "o3 must be the spiky hour's kWh (2.0), not the mean (0.275) "
+        "or any other aggregate"
+    )
+
+
+def test_stage8_phase3_o3_multi_day_median_across_days(tmp_path):
+    """Phase 3 audit gap-closer: o3's per-arm-category value is the
+    MEDIAN of daily peak-hour kW values across the days in that
+    (outcome, category) cell — NOT max across the category, NOT mean
+    across days.
+
+    Three included days in one qualifying week (Arm A only). Each day
+    has em:2 constant at a different power so the per-day peak HVAC kW
+    is a distinct round number:
+
+      Day 1 peak hvac_kw = 1.0
+      Day 2 peak hvac_kw = 3.0
+      Day 3 peak hvac_kw = 9.0
+
+      median = 3.0
+      mean   = (1.0 + 3.0 + 9.0) / 3 = 4.333...
+      max    = 9.0
+      sum    = 13.0
+
+    Catches: mean-instead-of-median, max-instead-of-median,
+    sum-instead-of-median, first-day-only, last-day-only.
+    """
+    week_start = datetime.date(2026, 6, 8)
+    days = [week_start + datetime.timedelta(days=i) for i in range(3)]
+    peak_watts_by_day = {days[0]: 1000.0, days[1]: 3000.0, days[2]: 9000.0}
+
+    refoss_frames = []
+    prices_frames = []
+    for day_ct, watts in peak_watts_by_day.items():
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        refoss_times = pd.date_range(
+            day_start_utc, day_end_utc, freq="30s", inclusive="left",
+        )
+        refoss_frames.append(pd.DataFrame({
+            "_time": refoss_times,
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": watts,
+            "channel": "em:2",
+        }))
+        prices_times = pd.date_range(
+            day_start_utc, day_end_utc, freq="5min", inclusive="left",
+        )
+        prices_frames.append(pd.DataFrame({
+            "_time": prices_times,
+            "_measurement": "comed.prices",
+            "_field": "price_cents_per_kwh",
+            "_value": 5.0,
+            "period_type": "5min",
+        }))
+    refoss_df = pd.concat(refoss_frames, ignore_index=True)
+    prices_df = pd.concat(prices_frames, ignore_index=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df(days),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": week_start, "arm": "A",
+                "included_day_indexes": [0, 1, 2]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": week_start.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    o3_rows = [
+        r for r in rows
+        if r["outcome"] == "o3_daily_peak_hvac_kw"
+        and r["category"] == "no_spike"
+    ]
+    assert len(o3_rows) == 1
+    r = o3_rows[0]
+    assert int(r["arm_a_n_days"]) == 3
+    assert r["unit"] == "kw"
+
+    # Median of [1.0, 3.0, 9.0] = 3.0. Distinct from mean (4.333...),
+    # max (9.0), sum (13.0), first (1.0), last (9.0).
+    assert float(r["arm_a_median_value"]) == pytest.approx(3.0, abs=1e-6), (
+        "o3 per-arm-category must be median of daily peaks; got "
+        f"{r['arm_a_median_value']} for daily peaks [1.0, 3.0, 9.0]"
+    )
