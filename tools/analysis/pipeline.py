@@ -364,6 +364,46 @@ def comfortnet_kw(cool_actual_pct: float, heat_actual_pct: float, blower_cfm: fl
 # directly from fixture parquet files.
 
 
+def _split_value_column_by_type(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Coerce a long-format Influx DataFrame's ``_value`` column into a
+    clean numeric column plus a sibling ``_value_text`` column for any
+    string-valued rows.
+
+    Background: ``InfluxDBClient.query_data_frame()`` returns a single
+    ``_value`` column whose dtype is ``object`` when a measurement
+    interleaves numeric fields (``cool_setpoint_f`` etc.) with string
+    fields (``fan_mode="Auto"``, ``setpoint_reason="schedule"``).
+    pyarrow's parquet writer rejects mixed-type object columns. The
+    schemas of the Influx-side measurements are real and aren't going
+    to change, so the export layer rewrites the column pair-wise:
+
+      - ``_value``      → float64 (NaN for rows that were strings)
+      - ``_value_text`` → string  (None for rows that were numeric)
+
+    All rows are preserved — string fields like ``error``,
+    ``supervisor_reason``, ``hvac_mode_before`` carry audit signal
+    that explains failures and overrides even though no current
+    Stage 2-9 loader consumes them.
+
+    Idempotent: a DataFrame already in the split shape (with both
+    columns present) passes through unchanged.
+    """
+    import pandas as pd
+    if "_value" not in df.columns:
+        return df
+    # Idempotency check: already split.
+    if "_value_text" in df.columns:
+        return df
+    numeric = pd.to_numeric(df["_value"], errors="coerce")
+    was_string = numeric.isna() & df["_value"].notna()
+    out = df.copy()
+    out["_value"] = numeric.astype("float64")
+    if was_string.any():
+        # Preserve original strings where the numeric coercion failed.
+        out["_value_text"] = df["_value"].where(was_string, None).astype("object")
+    return out
+
+
 def _write_stage1_export(
     stage_dir: Path,
     measurement_dataframes: dict[str, "pd.DataFrame"],
@@ -435,6 +475,7 @@ def _write_stage1_export(
 
         filename = parquet_filename(meas, source_type)
         parquet_path = stage_dir / filename
+        df = _split_value_column_by_type(df)
         df.to_parquet(parquet_path)
         field_set = (
             tuple(sorted(df["_field"].unique()))
@@ -2788,10 +2829,14 @@ def _load_comed_bills_for_capacity_year(
     if "line_item" not in li_df.columns:
         return []
 
+    # service_from is a string field; Stage 1's exporter routes string
+    # _value into _value_text. Fall back to _value for older bundles
+    # that pre-date the split.
+    sf_value_col = "_value_text" if "_value_text" in bill_df.columns else "_value"
     sf_rows = bill_df.loc[
         bill_df["_field"] == "service_from",
-        ["_time", "account_no", "_value"],
-    ].rename(columns={"_value": "service_from"})
+        ["_time", "account_no", sf_value_col],
+    ].rename(columns={sf_value_col: "service_from"})
     if len(sf_rows) == 0:
         return []
 
