@@ -3580,6 +3580,133 @@ STAGE8_LAYER_ATTRIBUTION_COLUMNS = (
 )
 
 
+def _load_qualifying_days_from_stage2_stage3(
+    stage2_dir: Path,
+    stage3_dir: Path,
+) -> list[dict]:
+    """Join Stage 3's qualifying-weeks decision with Stage 2's
+    day-level inclusion data. Returns one record per
+    (qualifying week x included day-in-week) with keys
+    ``week_start_ct`` (date), ``arm`` (str), ``date`` (date).
+
+    Inputs:
+      - ``stage3_dir/weekly.csv``: rows with (week_start_ct, arm,
+        qualifies). Only rows where ``qualifies`` parses to True
+        contribute their (week_start_ct, arm) to the qualifying set.
+      - ``stage2_dir/qualifying_days.csv`` (Phase 0 output): rows with
+        (week_start_ct, arm, date, included, exclusion_source). Only
+        rows where ``included == "true"`` AND (week_start_ct, arm) is
+        in the qualifying set contribute.
+
+    Excluded days are dropped here so they never reach Stage 8's
+    decomposition. The ``exclusion_source`` on the dropped Stage 2
+    rows is the audit trail; Phase 5 will additionally log it to
+    ``stage8/provenance.json`` for reviewer-visible accounting.
+    """
+    weekly_path = stage3_dir / "weekly.csv"
+    days_path = stage2_dir / "qualifying_days.csv"
+    if not weekly_path.exists() or not days_path.exists():
+        return []
+
+    qualifying_weeks: set[tuple[str, str]] = set()
+    with open(weekly_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if str(row.get("qualifies", "")).strip().lower() in ("true", "1"):
+                qualifying_weeks.add((row["week_start_ct"], row["arm"]))
+
+    result: list[dict] = []
+    with open(days_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (row["week_start_ct"], row["arm"])
+            if key not in qualifying_weeks:
+                continue
+            if str(row.get("included", "")).strip().lower() != "true":
+                continue
+            result.append({
+                "week_start_ct": datetime.date.fromisoformat(
+                    row["week_start_ct"],
+                ),
+                "arm": row["arm"],
+                "date": datetime.date.fromisoformat(row["date"]),
+            })
+    return result
+
+
+def _load_daily_hourly_records(
+    manifest,
+    stage1_dir: Path,
+    day_ct: datetime.date,
+    channels: frozenset[str],
+) -> list[dict]:
+    """24 hourly records for one CT calendar day.
+
+    Day-scoped version of Stage 3's ``_stage3_hourly_refoss_kwh`` plus
+    ``_stage3_hourly_supply_prices``, returned joined so callers get
+    ``(hvac_kwh, supply_c_per_kwh)`` per hour in one list.
+
+    Returns 24 dicts with keys ``hour_of_day_ct`` (0-23),
+    ``hvac_kwh``, ``supply_c_per_kwh``. Hours with no Refoss / prices
+    data yield 0.0; the caller decides what to do with that.
+    """
+    refoss_df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
+    prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
+
+    day_start_utc = _ct_date_to_utc(day_ct, 0)
+    day_end_utc = _ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    hvac_kwh = [0.0] * 24
+    if len(refoss_df) > 0:
+        mask = (
+            (refoss_df["_field"] == "power_w")
+            & (refoss_df["channel"].isin(channels))
+            & (refoss_df["_time"] >= day_start_utc)
+            & (refoss_df["_time"] < day_end_utc)
+        )
+        sub = refoss_df.loc[mask].copy()
+        if len(sub) > 0:
+            sub["_hour_of_day"] = (
+                (sub["_time"] - day_start_utc).dt.total_seconds() // 3600
+            ).astype(int)
+            per_bucket_kwh = (
+                sub.groupby(["_hour_of_day", "channel"])["_value"].mean()
+                / 1000.0
+            )
+            hourly = per_bucket_kwh.groupby(level=0).sum()
+            for h in range(24):
+                hvac_kwh[h] = float(hourly.get(h, 0.0))
+
+    supply_c = [0.0] * 24
+    if len(prices_df) > 0:
+        mask = (
+            (prices_df["_field"] == "price_cents_per_kwh")
+            & (prices_df["_time"] >= day_start_utc)
+            & (prices_df["_time"] < day_end_utc)
+        )
+        if "period_type" in prices_df.columns:
+            mask = mask & (prices_df["period_type"] == "5min")
+        sub = prices_df.loc[mask].copy()
+        if len(sub) > 0:
+            sub["_hour_of_day"] = (
+                (sub["_time"] - day_start_utc).dt.total_seconds() // 3600
+            ).astype(int)
+            means = sub.groupby("_hour_of_day")["_value"].mean()
+            for h in range(24):
+                supply_c[h] = float(means.get(h, 0.0))
+
+    return [
+        {
+            "hour_of_day_ct": h,
+            "hvac_kwh": hvac_kwh[h],
+            "supply_c_per_kwh": supply_c[h],
+        }
+        for h in range(24)
+    ]
+
+
 def _load_stage8_inputs(
     stage1_dir: Path, stage3_dir: Path,
 ) -> dict | None:
@@ -3593,17 +3720,72 @@ def _load_stage8_inputs(
     ``hvac.price_overlay.tier`` + ``hvac.5cp_state.state``. Real-data
     integration runs against a 2025 replay export (OSF criterion 14).
 
-    Expected return dict shape:
+    Expected return dict shape (per-output sub-dicts; mirrors Stage 6):
       {
-        "daily_records": list of dicts with keys:
-          date, arm, category, outcomes (dict: Stage 8 outcome name ->
-          per-day value; see STAGE8_OUTCOMES / STAGE8_OUTCOME_UNITS for
-          the unit per outcome)
-        "layer_attribution": list of dicts with keys:
-          date, hour_ct, arm, layer_triggered, indoor_temp_f, action
+        "decomposition": {
+          "data": list of dicts with keys date, arm, category,
+            outcomes (dict: Stage 8 outcome name -> per-day value; see
+            STAGE8_OUTCOMES / STAGE8_OUTCOME_UNITS for the unit per
+            outcome),
+        } OR None to write header-only,
+        "layer_attribution": {
+          "data": list of dicts with keys date, hour_ct, arm,
+            layer_triggered, indoor_temp_f, action,
+        } OR None to write header-only,
       }
+
+    Phase 5 will extend each sub-dict to also accept
+    ``{"reason_code": ReasonCode.X}`` for per-output gating that emits
+    a reason report instead of writing header-only.
+
+    Phase 1 implementation: joins Stage 2 ``qualifying_days.csv`` with
+    Stage 3 ``weekly.csv`` to get qualifying days; loads 24 hourly
+    Refoss + price records per day; computes only
+    ``o1_daily_hvac_dollars``. All days classified as ``no_spike``
+    (Phase 2 adds real classification). ``layer_attribution`` returns
+    None until Phase 4 reconstructs price-overlay state.
     """
-    return None
+    manifest_path = stage1_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    from tools.analysis.replay.manifest import read_manifest
+    manifest = read_manifest(manifest_path)
+
+    stage2_dir = stage3_dir.parent / "stage2"
+    qualifying_days = _load_qualifying_days_from_stage2_stage3(
+        stage2_dir, stage3_dir,
+    )
+
+    daily_records: list[dict] = []
+    for day_row in qualifying_days:
+        day_ct = day_row["date"]
+        hourly = _load_daily_hourly_records(
+            manifest, stage1_dir, day_ct, HVAC_CHANNELS,
+        )
+        # o1 = sum_h (hvac_kwh × (supply_c + DTOD(h))) / 100
+        # Locked formula per docs/EXPERIMENT_DESIGN.md Stage 8 + plan
+        # decision table. DOLLARS not $/CDD (Phase 0 decision); zero-CDD
+        # days remain in the decomposition.
+        o1 = sum(
+            h["hvac_kwh"] * (
+                h["supply_c_per_kwh"]
+                + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+            )
+            for h in hourly
+        ) / 100.0
+        daily_records.append({
+            "date": day_ct,
+            "arm": day_row["arm"],
+            "category": "no_spike",
+            "outcomes": {
+                "o1_daily_hvac_dollars": o1,
+            },
+        })
+
+    return {
+        "decomposition": {"data": daily_records},
+        "layer_attribution": None,
+    }
 
 
 def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> Path:
@@ -3631,11 +3813,14 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
     inputs = _load_stage8_inputs(stage1_dir, stage3_dir)
     reason_reports: list[StageReasonReport] = []
 
+    decomp_input = inputs.get("decomposition") if inputs else None
+    layer_input = inputs.get("layer_attribution") if inputs else None
+
     with open(stage_dir / "decomposition.csv", "w", newline="") as f:
         dw = csv.DictWriter(f, fieldnames=list(STAGE8_DECOMPOSITION_COLUMNS))
         dw.writeheader()
-        if inputs is not None:
-            daily = inputs.get("daily_records", [])
+        if decomp_input is not None:
+            daily = decomp_input.get("data", [])
             for outcome in STAGE8_OUTCOMES:
                 for category in SPIKE_DAY_CATEGORIES:
                     a_values = [
@@ -3691,8 +3876,8 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
     with open(stage_dir / "layer_attribution.csv", "w", newline="") as f:
         lw = csv.DictWriter(f, fieldnames=list(STAGE8_LAYER_ATTRIBUTION_COLUMNS))
         lw.writeheader()
-        if inputs is not None:
-            for row in inputs.get("layer_attribution", []):
+        if layer_input is not None:
+            for row in layer_input.get("data", []):
                 lw.writerow({
                     col: row.get(col, "") for col in STAGE8_LAYER_ATTRIBUTION_COLUMNS
                 })

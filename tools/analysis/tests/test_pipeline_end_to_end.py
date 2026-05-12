@@ -149,8 +149,8 @@ def _stage8_inputs(weeks_a, weeks_b) -> dict:
             })
 
     return {
-        "daily_records": daily_records,
-        "layer_attribution": layer_attribution,
+        "decomposition": {"data": daily_records},
+        "layer_attribution": {"data": layer_attribution},
     }
 
 

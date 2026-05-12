@@ -1088,8 +1088,8 @@ def test_stage8_decomposition_both_arms_exact_delta_oracle(tmp_path, monkeypatch
     monkeypatch.setattr(
         pipeline, "_load_stage8_inputs",
         lambda s1, s3: {
-            "daily_records": daily_records,
-            "layer_attribution": [],
+            "decomposition": {"data": daily_records},
+            "layer_attribution": None,
         },
     )
 
@@ -1170,8 +1170,8 @@ def test_stage8_decomposition_quiet_zero_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipeline, "_load_stage8_inputs",
         lambda s1, s3: {
-            "daily_records": daily_records,
-            "layer_attribution": [],
+            "decomposition": {"data": daily_records},
+            "layer_attribution": None,
         },
     )
 
