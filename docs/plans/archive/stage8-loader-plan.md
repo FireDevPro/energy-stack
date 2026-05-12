@@ -1,7 +1,7 @@
 ---
 date: 2026-05-12
 owner: chris
-status: in-progress
+status: archived
 role-label: chris
 ---
 
@@ -104,12 +104,13 @@ End-to-end slice through every layer Stage 8 will eventually touch.
 
 This is the load-bearing accuracy phase. The previous plan's "hvac.actions tags in hour" approach was wrong: `hvac.actions` is written on schedule decision moments, not as a continuous state log.
 
-- New helpers:
-  - `_price_overlay_state_at_hour(price_overlay_df, hour_utc, lookback=datetime.timedelta(hours=24)) -> str` — walks `hvac.price_overlay` rows in reverse-chrono within `lookback` window; returns the `new_tier` value of the latest row with `_time ≤ hour_utc + 1h`. Returns `"normal"` (or `"unknown"`?) if no transitions found in the lookback. **Decide which** based on whether bundles routinely cover scheduler boot-time (where prior state is unknowable from the bundle alone).
+- New helpers (6 total; original plan listed 5, `_classify_layer_triggered` added during Phase 4 to encode the locked combinatorics mapping):
+  - `_price_overlay_state_at_hour(price_overlay_df, hour_utc, lookback=datetime.timedelta(hours=24)) -> str` — walks `hvac.price_overlay` rows in reverse-chrono within `lookback` window; returns the `new_tier` value of the latest row with `_time ≤ hour_utc + 1h`. Returns `"unknown"` if no transitions found in the lookback (resolved during Phase 4: never default to `"normal"` since prior state is unknowable from a bundle that doesn't include the transition).
   - `_fivecp_active_in_hour(fivecp_state_df, hour_utc) -> bool` — any `hvac.5cp_state` row in the hour with `is_active == "true"` (across both rto and comed_zone scopes).
-  - `_price_peak_hour_ct(prices_df, day_ct) -> int | None` — hour-of-day (0..23 CT) with max hourly supply price for that day.
+  - `_price_peak_hour_ct(prices_df, day_ct) -> int | None` — hour-of-day (0..23 CT) with max hourly supply price for that day. First-max tie-break (lower hour wins).
   - `_indoor_temp_at_hour(thermostat_df, hour_utc) -> float | None` — mean `indoor_temp_f` from `hvac.thermostat` rows within the hour.
-  - `_action_label_at_hour(actions_df, hour_utc) -> str | None` — most recent `action_label` tag in the hour. May be `None` if no action was logged in that hour (normal — `hvac.actions` isn't continuous).
+  - `_action_label_at_hour(actions_df, hour_utc) -> str | None` — most recent `action_label` tag in the hour. NO lookback (resolved during Phase 4: returning a prior-hour action would imply something that did not happen at the price-peak hour).
+  - `_classify_layer_triggered(price_state, fivecp_active) -> str` — pure function encoding the 6-case combinatorics mapping (split during Phase 4 audit: `unknown` overlay + active 5CP yields `"5cp_detection"`, NOT `"unknown"`; known 5CP is not hidden behind unknown overlay).
 - Build `layer_attribution` for each grid-event Arm B day:
   1. Find day's price-peak hour.
   2. Reconstruct price-layer state at the hour (state machine over `hvac.price_overlay`).
@@ -121,7 +122,7 @@ This is the load-bearing accuracy phase. The previous plan's "hvac.actions tags 
   - **Price-overlay state machine, single transition**: fixture has one `hvac.price_overlay` row at 14:00 with `new_tier="elevated"`. Price-peak hour is 17:00. Helper returns `"elevated"`. Catches the "use hvac.actions tags" regression.
   - **Price-overlay state machine, multiple transitions**: rows at 14:00 (`elevated`), 16:00 (`scarcity`), 18:00 (`normal`). Peak hour 17:00. Helper returns `"scarcity"` (latest `_time ≤ 17:59`).
   - **Price-overlay state machine, no transition in lookback**: zero rows. Helper returns sentinel `"unknown"` (NOT `"normal"`). The orchestrator translates that into `layer_triggered="unknown"` on the layer_attribution row + records the day in `provenance.price_overlay_state_unknown_days`.
-  - **`layer_triggered` combinatorics**: 5 fixtures (price-only / 5cp-only / both / neither / unknown). Each asserts the exact enum value. The `unknown` fixture has no `hvac.price_overlay` transitions in the lookback at all.
+  - **`layer_triggered` combinatorics**: 6 fixtures (price-only / 5cp-only / both / neither / unknown+5cp-inactive / unknown+5cp-active). Each asserts the exact enum value. Originally listed 5; split into 6 during Phase 4 audit so the amended mapping (unknown overlay + active 5CP -> `5cp_detection`, NOT `unknown`) is pinned directly.
   - **Price-peak hour identification**: asymmetric 24-hour price fixture; pin the exact peak hour selection.
   - **Action-row absence at peak hour does NOT force `layer_triggered="neither"`** — if price-overlay state machine says `elevated`, the row writes `price_spike_reactivity` even with no `hvac.actions` evidence. Action column writes empty.
 

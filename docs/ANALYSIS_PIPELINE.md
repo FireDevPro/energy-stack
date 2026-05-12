@@ -241,9 +241,25 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 
 Quiet-zero guard: when exactly one arm has zero days in a cell, the row is still written with the populated-arm median but with blank delta + blank empty-arm median, and an `INSUFFICIENT_ARM_DAYS_FOR_CATEGORY` entry lands in `stage8/reason_report.json`. Both-arms-zero cells are skipped entirely.
 
-Layer-attribution side-table for grid-event days: for each grid-event day in Arm B, log which Arm B layer triggered (`hvac.price_overlay` state-machine reconstruction with 24h lookback, `hvac.5cp_state.is_active` in-hour) and the timing. Five enum values for `layer_triggered`: `price_spike_reactivity`, `5cp_detection`, `both`, `neither`, `unknown` (the last for "no `hvac.price_overlay` transition in lookback").
+**No-placeholder-zero policy.** When an entire required measurement / channel set is absent from the bundle, the affected outcomes are OMITTED from `decomposition.csv` (no placeholder-zero rows). The reason is explained per output_file in `reason_report.json`. The policy is nuanced — only outcomes that require the missing input are dropped:
 
-**Output:** `out/<run>/stage8/decomposition.csv` + `out/<run>/stage8/layer_attribution.csv` + `out/<run>/stage8/reason_report.json` (when guards fire) + `out/<run>/stage8/provenance.json` (in Phase 5).
+- No HVAC channels (em:2 / em:8 / em:9) -> omit `o1_daily_hvac_dollars` + `o3_daily_peak_hvac_kw`. Reason: `NO_HVAC_CHANNELS_IN_WINDOW`.
+- No mains channels (em:1 / em:7) -> omit `o4_daily_mains_dollars`. Reason: `NO_MAINS_CHANNELS_IN_WINDOW`.
+- No price rows -> omit dollar outcomes (`o1_daily_hvac_dollars` + `o4_daily_mains_dollars`); `o3_daily_peak_hvac_kw` STILL emits because peak HVAC kW does not require prices. Reason: `NO_PRICE_DATA_IN_WINDOW`.
+
+Layer-attribution side-table for grid-event days: for each grid-event day in Arm B, log which Arm B layer triggered (`hvac.price_overlay` state-machine reconstruction with 24h lookback, `hvac.5cp_state.is_active` in-hour) and the timing. Five enum values for `layer_triggered`: `price_spike_reactivity`, `5cp_detection`, `both`, `neither`, `unknown`. `unknown` covers "no `hvac.price_overlay` transition in lookback" AND inactive 5CP; when 5CP IS active in the hour the layer is reported as `5cp_detection` rather than `unknown` (known 5CP is not hidden behind unknown overlay).
+
+**`stage8/provenance.json` sidecar** (seven sections, deterministic `sort_keys=True` output):
+
+- `spike_classification_summary`: per-arm × category counts of decomposed days.
+- `layer_attribution_summary`: counts per `layer_triggered` value (including `unknown` when present).
+- `missing_forecast_classification_days`: list of days dropped because the 21:00-prior NWS issuance was missing.
+- `price_overlay_state_unknown_days`: list of grid-event Arm B days whose overlay state was unknowable from the bundle.
+- `day_exclusions_summary`: counts of excluded days in qualifying weeks, bucketed by exact canonical `exclusion_source` string (multi-rule strings like `"rule7_scheduler_outage;rule9_vacation"` stay joined; not split).
+- `outcomes_summary`: per-arm × outcome counts (n_days emitting that outcome). Distinguishes "no o4 because no mains" from "o4 emitted but sparse per arm/category".
+- `bundle_window`: `start_ct` / `end_ct` from the manifest.
+
+**Output:** `out/<run>/stage8/decomposition.csv` + `out/<run>/stage8/layer_attribution.csv` + `out/<run>/stage8/reason_report.json` + `out/<run>/stage8/provenance.json`.
 
 ### Stage 9 — Sensitivity analyses
 

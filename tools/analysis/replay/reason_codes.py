@@ -66,6 +66,13 @@ class ReasonCode(str, enum.Enum):
     NO_QUALIFYING_DAYS_FROM_STAGE3 = "no_qualifying_days_from_stage3"
     NO_NWS_FORECAST_FOR_CLASSIFICATION = "no_nws_forecast_for_classification"
     INSUFFICIENT_ARM_DAYS_FOR_CATEGORY = "insufficient_arm_days_for_category"
+    # Phase 5 no-placeholder-zero gate: when an entire required
+    # measurement / channel set is absent from the bundle, the
+    # affected Stage 8 outcomes are omitted (no placeholder zeros)
+    # and one of these reasons explains why.
+    NO_HVAC_CHANNELS_IN_WINDOW = "no_hvac_channels_in_window"
+    NO_MAINS_CHANNELS_IN_WINDOW = "no_mains_channels_in_window"
+    NO_PRICE_DATA_IN_WINDOW = "no_price_data_in_window"
 
     # Stage 9 / sensitivities
     UPSTREAM_STAGES_EMPTY = "upstream_stages_empty"

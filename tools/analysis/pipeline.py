@@ -3606,7 +3606,7 @@ def _load_qualifying_days_from_stage2_stage3(
     weekly_path = stage3_dir / "weekly.csv"
     days_path = stage2_dir / "qualifying_days.csv"
     if not weekly_path.exists() or not days_path.exists():
-        return []
+        return [], {}
 
     qualifying_weeks: set[tuple[str, str]] = set()
     with open(weekly_path) as f:
@@ -3616,22 +3616,30 @@ def _load_qualifying_days_from_stage2_stage3(
                 qualifying_weeks.add((row["week_start_ct"], row["arm"]))
 
     result: list[dict] = []
+    # day_exclusions_summary: count excluded days in qualifying weeks
+    # by their EXACT canonical exclusion_source string (Phase 5
+    # provenance contract; multi-rule strings like
+    # "rule7_scheduler_outage;rule9_vacation" are NOT split).
+    exclusions_summary: dict[str, int] = {}
     with open(days_path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             key = (row["week_start_ct"], row["arm"])
             if key not in qualifying_weeks:
                 continue
-            if str(row.get("included", "")).strip().lower() != "true":
-                continue
-            result.append({
-                "week_start_ct": datetime.date.fromisoformat(
-                    row["week_start_ct"],
-                ),
-                "arm": row["arm"],
-                "date": datetime.date.fromisoformat(row["date"]),
-            })
-    return result
+            if str(row.get("included", "")).strip().lower() == "true":
+                result.append({
+                    "week_start_ct": datetime.date.fromisoformat(
+                        row["week_start_ct"],
+                    ),
+                    "arm": row["arm"],
+                    "date": datetime.date.fromisoformat(row["date"]),
+                })
+            else:
+                src = row.get("exclusion_source", "") or ""
+                if src:
+                    exclusions_summary[src] = exclusions_summary.get(src, 0) + 1
+    return result, exclusions_summary
 
 
 def _load_daily_hourly_records(
@@ -3711,56 +3719,60 @@ def _daily_outcome_values(
     manifest,
     stage1_dir: Path,
     day_ct: datetime.date,
+    *,
+    compute_o1: bool = True,
+    compute_o3: bool = True,
+    compute_o4: bool = True,
 ) -> dict:
-    """Compute all three Stage 8 daily outcomes for one CT day.
+    """Compute Stage 8 daily outcomes for one CT day.
 
-    Returns a dict with the three locked outcome keys:
-      - ``o1_daily_hvac_dollars`` (dollars):
-          sum_h (hvac_kwh[h] * (supply_c[h] + DTOD(h))) / 100
-          where hvac_kwh is the per-hour sum over HVAC_CHANNELS
-          (em:2 + em:8 + em:9).
-      - ``o3_daily_peak_hvac_kw`` (kw):
-          max(hvac_kwh per hour). Hourly kWh over a one-hour bucket
-          numerically equals the average kW for that hour, so the
-          unit is kw not dollars.
-      - ``o4_daily_mains_dollars`` (dollars):
-          same formula as o1 but over MAINS_CHANNELS (em:1 + em:7).
+    Returns only the outcomes the caller requests, so missing required
+    inputs at the bundle level are surfaced as KEY-ABSENT rather than
+    placeholder zeros (per Phase 5 no-placeholder-zero gate).
 
-    The ``_load_daily_hourly_records`` helper is invoked twice (once
-    per channel set). Note that the inner ``hvac_kwh`` field is named
-    for its primary use; for the mains call it carries the mains-side
-    hourly kWh.
+    Outcome contracts:
+      - ``o1_daily_hvac_dollars`` (dollars): requires HVAC channels +
+        price rows. ``sum_h (hvac_kwh[h] * (supply_c[h] + DTOD(h))) / 100``
+      - ``o3_daily_peak_hvac_kw`` (kw): requires HVAC channels (NOT
+        prices). ``max(hvac_kwh per hour)``. Hourly kWh over a 1-hour
+        bucket numerically equals the average kW for that hour.
+      - ``o4_daily_mains_dollars`` (dollars): requires mains channels +
+        price rows. Same formula as o1 but over ``MAINS_CHANNELS``.
+
+    Note: the inner ``hvac_kwh`` field name carries the kWh for
+    whatever channel set was passed to ``_load_daily_hourly_records``;
+    for the mains call it carries mains-side kWh.
     """
-    hvac_hourly = _load_daily_hourly_records(
-        manifest, stage1_dir, day_ct, HVAC_CHANNELS,
-    )
-    mains_hourly = _load_daily_hourly_records(
-        manifest, stage1_dir, day_ct, MAINS_CHANNELS,
-    )
-
-    o1 = sum(
-        h["hvac_kwh"] * (
-            h["supply_c_per_kwh"]
-            + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+    outcomes: dict = {}
+    if compute_o1 or compute_o3:
+        hvac_hourly = _load_daily_hourly_records(
+            manifest, stage1_dir, day_ct, HVAC_CHANNELS,
         )
-        for h in hvac_hourly
-    ) / 100.0
-
-    o3 = max((h["hvac_kwh"] for h in hvac_hourly), default=0.0)
-
-    o4 = sum(
-        h["hvac_kwh"] * (
-            h["supply_c_per_kwh"]
-            + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+    if compute_o1:
+        outcomes["o1_daily_hvac_dollars"] = sum(
+            h["hvac_kwh"] * (
+                h["supply_c_per_kwh"]
+                + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+            )
+            for h in hvac_hourly
+        ) / 100.0
+    if compute_o3:
+        outcomes["o3_daily_peak_hvac_kw"] = max(
+            (h["hvac_kwh"] for h in hvac_hourly),
+            default=0.0,
         )
-        for h in mains_hourly
-    ) / 100.0
-
-    return {
-        "o1_daily_hvac_dollars": o1,
-        "o3_daily_peak_hvac_kw": o3,
-        "o4_daily_mains_dollars": o4,
-    }
+    if compute_o4:
+        mains_hourly = _load_daily_hourly_records(
+            manifest, stage1_dir, day_ct, MAINS_CHANNELS,
+        )
+        outcomes["o4_daily_mains_dollars"] = sum(
+            h["hvac_kwh"] * (
+                h["supply_c_per_kwh"]
+                + dtod_delivery_rate_for_hour_ct(h["hour_of_day_ct"])
+            )
+            for h in mains_hourly
+        ) / 100.0
+    return outcomes
 
 
 def _hourly_prices_for_day_ct(
@@ -4097,14 +4109,68 @@ def _load_stage8_inputs(
     manifest = read_manifest(manifest_path)
 
     stage2_dir = stage3_dir.parent / "stage2"
-    qualifying_days = _load_qualifying_days_from_stage2_stage3(
-        stage2_dir, stage3_dir,
+    qualifying_days, day_exclusions_summary = (
+        _load_qualifying_days_from_stage2_stage3(stage2_dir, stage3_dir)
     )
 
-    # Forecast + prices loaded once for the whole bundle. Per-day
-    # helpers slice them by CT date.
+    # Forecast + prices + refoss loaded once for the whole bundle.
+    # Per-day helpers slice them by CT date.
     forecast_df = _load_concat_parquets(manifest, stage1_dir, "nws.forecast")
     prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
+    refoss_df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
+
+    # Phase 5 no-placeholder-zero gate: detect entirely-absent required
+    # inputs at the bundle level. Outcomes that cannot be computed are
+    # OMITTED from each day's outcomes dict; placeholder zeros would
+    # lie. Each missing-input case produces one reason explaining
+    # which outcomes were omitted and why.
+    has_hvac_channels = (
+        len(refoss_df) > 0
+        and "channel" in refoss_df.columns
+        and refoss_df["channel"].isin(HVAC_CHANNELS).any()
+    )
+    has_mains_channels = (
+        len(refoss_df) > 0
+        and "channel" in refoss_df.columns
+        and refoss_df["channel"].isin(MAINS_CHANNELS).any()
+    )
+    has_price_data = (
+        len(prices_df) > 0
+        and "_field" in prices_df.columns
+        and (prices_df["_field"] == "price_cents_per_kwh").any()
+    )
+    compute_o1 = has_hvac_channels and has_price_data
+    compute_o3 = has_hvac_channels
+    compute_o4 = has_mains_channels and has_price_data
+
+    dropped_outcomes: list[dict] = []
+    if not has_hvac_channels:
+        dropped_outcomes.append({
+            "reason_code": ReasonCode.NO_HVAC_CHANNELS_IN_WINDOW,
+            "note": (
+                "HVAC channels (em:2, em:8, em:9) absent from "
+                "refoss.channel; o1_daily_hvac_dollars and "
+                "o3_daily_peak_hvac_kw omitted"
+            ),
+        })
+    if not has_mains_channels:
+        dropped_outcomes.append({
+            "reason_code": ReasonCode.NO_MAINS_CHANNELS_IN_WINDOW,
+            "note": (
+                "Mains channels (em:1, em:7) absent from "
+                "refoss.channel; o4_daily_mains_dollars omitted"
+            ),
+        })
+    if not has_price_data:
+        dropped_outcomes.append({
+            "reason_code": ReasonCode.NO_PRICE_DATA_IN_WINDOW,
+            "note": (
+                "comed.prices has no rows; dollar outcomes "
+                "(o1_daily_hvac_dollars, o4_daily_mains_dollars) "
+                "omitted; o3_daily_peak_hvac_kw preserved (kW does "
+                "not depend on prices)"
+            ),
+        })
 
     daily_records: list[dict] = []
     dropped_days: list[dict] = []
@@ -4124,11 +4190,16 @@ def _load_stage8_inputs(
             max_forecast_temp_f=forecast["max_forecast_temp_f"],
             apparent_max_f=forecast["apparent_max_f"],
         )
-        # Phase 3 contract: populate all three Stage 8 outcomes per day.
-        # DOLLARS not $/CDD (Phase 0 decision); zero-CDD days remain.
-        # Outcomes that cannot be computed are omitted from the dict;
-        # placeholder zeros would lie.
-        outcomes = _daily_outcome_values(manifest, stage1_dir, day_ct)
+        # Phase 3 + 5 contract: populate only the outcomes whose
+        # required inputs are present at the bundle level. Outcomes
+        # missing required inputs are omitted (no placeholder zeros);
+        # the dropped_outcomes list above carries the explanations.
+        outcomes = _daily_outcome_values(
+            manifest, stage1_dir, day_ct,
+            compute_o1=compute_o1,
+            compute_o3=compute_o3,
+            compute_o4=compute_o4,
+        )
         daily_records.append({
             "date": day_ct,
             "arm": day_row["arm"],
@@ -4192,15 +4263,46 @@ def _load_stage8_inputs(
             "action": "" if action is None else action,
         })
 
+    decomp_sub: dict = {
+        "data": daily_records,
+        "dropped_days": dropped_days,
+        "dropped_outcomes": dropped_outcomes,
+    }
+    layer_sub: dict = {
+        "data": layer_rows,
+        "unknown_overlay_days": unknown_overlay_days,
+    }
+
+    # Phase 5 reason codes (per-output sub-dict signal):
+    # - NO_QUALIFYING_DAYS_FROM_STAGE3 fires on BOTH outputs when Stage
+    #   3 produces no qualifying days at all -- there is nothing to
+    #   decompose AND nothing to attribute.
+    # - NO_GRID_EVENT_DAYS_IN_WINDOW fires ONLY on layer_attribution
+    #   when decomposition still has rows but no Arm B grid-event days
+    #   exist (stage did useful work; only the attribution side-table
+    #   has nothing to emit).
+    if not qualifying_days:
+        decomp_sub["reason_code"] = ReasonCode.NO_QUALIFYING_DAYS_FROM_STAGE3
+        layer_sub["reason_code"] = ReasonCode.NO_QUALIFYING_DAYS_FROM_STAGE3
+    elif not layer_rows:
+        layer_sub["reason_code"] = ReasonCode.NO_GRID_EVENT_DAYS_IN_WINDOW
+
+    # Phase 5 Gate 2 provenance inputs the loader owns. Other
+    # provenance sections (spike/layer/outcomes summaries,
+    # missing-forecast list, unknown-overlay list) are computed by
+    # the orchestrator from data already in decomp_sub / layer_sub.
+    provenance_inputs: dict = {
+        "bundle_window": {
+            "start_ct": manifest.export_window_start_ct,
+            "end_ct": manifest.export_window_end_ct,
+        },
+        "day_exclusions_summary": day_exclusions_summary,
+    }
+
     return {
-        "decomposition": {
-            "data": daily_records,
-            "dropped_days": dropped_days,
-        },
-        "layer_attribution": {
-            "data": layer_rows,
-            "unknown_overlay_days": unknown_overlay_days,
-        },
+        "decomposition": decomp_sub,
+        "layer_attribution": layer_sub,
+        "provenance": provenance_inputs,
     }
 
 
@@ -4244,6 +4346,52 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
                 note=f"{dropped['date'].isoformat()} "
                      f"({dropped['arm']}): day dropped from decomposition",
             ))
+
+    # Phase 5 dropped outcomes: when an entire required measurement /
+    # channel set is absent from the bundle, the affected outcomes
+    # are omitted (no placeholder zeros) and one reason explains why.
+    if decomp_input is not None:
+        for omitted in decomp_input.get("dropped_outcomes", []):
+            reason_reports.append(StageReasonReport(
+                stage="stage8",
+                output_file="decomposition.csv",
+                reason_code=omitted["reason_code"],
+                note=omitted.get("note") or "Outcome(s) omitted: required input missing",
+            ))
+
+    # Phase 5 per-output reasons (top-level sub-dict signal):
+    # The loader sets ``reason_code`` on a sub-dict when the whole
+    # output is blocked for a stage-level reason (no qualifying days,
+    # no Arm B grid-event days, etc.). One reason report entry per
+    # output_file that carries one.
+    if decomp_input is not None and "reason_code" in decomp_input:
+        reason_reports.append(StageReasonReport(
+            stage="stage8",
+            output_file="decomposition.csv",
+            reason_code=decomp_input["reason_code"],
+            note="No qualifying days available from Stage 3 -> "
+                 "nothing to decompose",
+        ))
+    if layer_input is not None and "reason_code" in layer_input:
+        if (
+            layer_input["reason_code"]
+            == ReasonCode.NO_GRID_EVENT_DAYS_IN_WINDOW
+        ):
+            note = (
+                "Decomposition has rows but no grid-event days fell "
+                "in Arm B -> nothing to attribute"
+            )
+        else:
+            note = (
+                "No qualifying days available from Stage 3 -> "
+                "nothing to attribute"
+            )
+        reason_reports.append(StageReasonReport(
+            stage="stage8",
+            output_file="layer_attribution.csv",
+            reason_code=layer_input["reason_code"],
+            note=note,
+        ))
 
     with open(stage_dir / "decomposition.csv", "w", newline="") as f:
         dw = csv.DictWriter(f, fieldnames=list(STAGE8_DECOMPOSITION_COLUMNS))
@@ -4313,6 +4461,82 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
 
     if reason_reports:
         write_reason_report(stage_dir, reason_reports)
+
+    # Phase 5 Gate 2: stage8/provenance.json. Seven sections, five
+    # derived here from existing decomp/layer data; two
+    # (bundle_window, day_exclusions_summary) come from the loader's
+    # ``provenance`` sub-dict. Written with sort_keys=True so diffs
+    # across runs stay stable for humans.
+    if inputs is not None:
+        import json
+        decomp_data = (
+            decomp_input.get("data", []) if decomp_input else []
+        )
+        layer_data = (
+            layer_input.get("data", []) if layer_input else []
+        )
+        provenance_inputs = inputs.get("provenance", {}) or {}
+
+        spike_classification_summary: dict = {}
+        for d in decomp_data:
+            arm = d["arm"]
+            cat = d["category"]
+            spike_classification_summary.setdefault(arm, {})
+            spike_classification_summary[arm][cat] = (
+                spike_classification_summary[arm].get(cat, 0) + 1
+            )
+
+        layer_attribution_summary: dict = {}
+        for r in layer_data:
+            tag = r["layer_triggered"]
+            layer_attribution_summary[tag] = (
+                layer_attribution_summary.get(tag, 0) + 1
+            )
+
+        missing_forecast_classification_days: list = []
+        if decomp_input is not None:
+            for dropped in decomp_input.get("dropped_days", []):
+                if (
+                    dropped.get("reason_code")
+                    == ReasonCode.NO_NWS_FORECAST_FOR_CLASSIFICATION
+                ):
+                    missing_forecast_classification_days.append({
+                        "date": dropped["date"].isoformat(),
+                        "arm": dropped["arm"],
+                    })
+
+        price_overlay_state_unknown_days: list = []
+        if layer_input is not None:
+            for d in layer_input.get("unknown_overlay_days", []):
+                price_overlay_state_unknown_days.append({
+                    "date": d["date"].isoformat(),
+                    "arm": d["arm"],
+                })
+
+        outcomes_summary: dict = {}
+        for d in decomp_data:
+            arm = d["arm"]
+            outcomes_summary.setdefault(arm, {})
+            for outcome_key in d.get("outcomes", {}):
+                outcomes_summary[arm][outcome_key] = (
+                    outcomes_summary[arm].get(outcome_key, 0) + 1
+                )
+
+        provenance = {
+            "bundle_window": provenance_inputs.get("bundle_window"),
+            "day_exclusions_summary": provenance_inputs.get(
+                "day_exclusions_summary", {},
+            ),
+            "layer_attribution_summary": layer_attribution_summary,
+            "missing_forecast_classification_days":
+                missing_forecast_classification_days,
+            "outcomes_summary": outcomes_summary,
+            "price_overlay_state_unknown_days":
+                price_overlay_state_unknown_days,
+            "spike_classification_summary": spike_classification_summary,
+        }
+        with open(stage_dir / "provenance.json", "w") as f:
+            json.dump(provenance, f, indent=2, sort_keys=True)
 
     return stage_dir
 

@@ -1,0 +1,12 @@
+{
+  "bundle_window": {
+    "end_ct": "2026-05-12T22:00:00+00:00",
+    "start_ct": "2026-05-05T22:00:00+00:00"
+  },
+  "day_exclusions_summary": {},
+  "layer_attribution_summary": {},
+  "missing_forecast_classification_days": [],
+  "outcomes_summary": {},
+  "price_overlay_state_unknown_days": [],
+  "spike_classification_summary": {}
+}

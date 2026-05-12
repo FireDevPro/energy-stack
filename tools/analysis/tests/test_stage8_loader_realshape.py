@@ -209,18 +209,19 @@ def test_stage8_phase1_tracer_one_no_spike_day_oracle(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Phase 3 contract change: o1, o3, o4 each emit one row for this
-    # no_spike day. Phase 1's "exactly one row" expectation widened to
-    # three (one per Stage 8 outcome). The o1 oracle below is unchanged.
-    assert len(rows) == 3, (
-        f"Phase 3 emits 3 rows (o1, o3, o4) for one (day, category); "
+    # Phase 5 contract: o4 is honestly omitted because this fixture
+    # has em:2 only (no mains channels em:1/em:7). The Phase 3 "all
+    # three outcomes" expectation only holds when mains channels are
+    # also present in the bundle. o1 and o3 still emit because HVAC
+    # channels + prices are present. o1 oracle unchanged.
+    assert len(rows) == 2, (
+        f"Phase 5 emits 2 rows (o1, o3) when mains channels absent; "
         f"got {len(rows)}: {rows}"
     )
     by_outcome = {r["outcome"]: r for r in rows}
     assert set(by_outcome.keys()) == {
         "o1_daily_hvac_dollars",
         "o3_daily_peak_hvac_kw",
-        "o4_daily_mains_dollars",
     }
     r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
@@ -255,14 +256,13 @@ def test_stage8_phase1_tracer_one_no_spike_day_oracle(tmp_path):
         if e["reason_code"]
         == ReasonCode.INSUFFICIENT_ARM_DAYS_FOR_CATEGORY.value
     ]
-    # Phase 3 contract change: 3 outcomes (o1, o3, o4) each emit a row
-    # for (no_spike), so 3 quiet-zero entries fire for Arm B (one per
-    # outcome). Phase 0/1 had 1 entry (o1 only).
-    assert len(guard_entries) == 3
+    # Phase 5 contract: 2 quiet-zero entries (o1, o3 cells) since o4
+    # is honestly omitted (no mains channels in this fixture). Notes
+    # name only the emitted outcomes.
+    assert len(guard_entries) == 2
     notes = " ".join(e.get("note") or "" for e in guard_entries)
     assert "o1_daily_hvac_dollars" in notes
     assert "o3_daily_peak_hvac_kw" in notes
-    assert "o4_daily_mains_dollars" in notes
     assert "no_spike" in notes
 
     # layer_attribution.csv is header-only (Phase 4 populates).
@@ -391,9 +391,9 @@ def test_stage8_phase1_tracer_multi_day_multi_channel_oracle(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Phase 3 contract: 3 rows (one per outcome × no_spike) with
-    # quiet-zero on Arm B. The o1 oracle below is unchanged.
-    assert len(rows) == 3
+    # Phase 5 contract: o4 omitted (no mains channels in fixture);
+    # o1 + o3 emit. The o1 median oracle is unchanged.
+    assert len(rows) == 2
     by_outcome = {r["outcome"]: r for r in rows}
     r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
@@ -526,9 +526,9 @@ def test_stage8_phase1_tracer_both_arms_real_loader_delta(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Phase 3 contract: 3 rows (one per outcome × no_spike). The o1
-    # delta oracle below is unchanged.
-    assert len(rows) == 3
+    # Phase 5 contract: o4 omitted (no mains channels in fixture);
+    # o1 + o3 emit. The o1 delta oracle is unchanged.
+    assert len(rows) == 2
     by_outcome = {r["outcome"]: r for r in rows}
     r = by_outcome["o1_daily_hvac_dollars"]
     assert r["category"] == "no_spike"
@@ -552,10 +552,25 @@ def test_stage8_phase1_tracer_both_arms_real_loader_delta(tmp_path):
         expected_delta, abs=1e-6,
     )
 
-    # Both arms have data -> quiet-zero must NOT fire. No reason report.
-    assert not (stage8_dir / "reason_report.json").exists(), (
-        "Quiet-zero guard should not fire when both arms have data"
-    )
+    # Both arms have data -> quiet-zero must NOT fire. Phase 5 may
+    # still emit a reason for layer_attribution (no Arm B grid-event
+    # days in this no_spike fixture); that's fine. The specific
+    # assertion is: no INSUFFICIENT_ARM_DAYS_FOR_CATEGORY entry.
+    reason_path = stage8_dir / "reason_report.json"
+    if reason_path.exists():
+        import json
+        from tools.analysis.replay.reason_codes import ReasonCode
+        with open(reason_path) as f:
+            report = json.load(f)
+        quiet_zero_entries = [
+            e for e in report["entries"]
+            if e["reason_code"]
+            == ReasonCode.INSUFFICIENT_ARM_DAYS_FOR_CATEGORY.value
+        ]
+        assert not quiet_zero_entries, (
+            "Quiet-zero guard should not fire when both arms have data; "
+            f"got {len(quiet_zero_entries)} entries"
+        )
 
 
 # -- Phase 2: spike classification (nws.forecast 21:00-prior lookup) -------
@@ -870,10 +885,11 @@ def test_phase2_three_category_fixture_via_real_loader(tmp_path):
     with open(stage8_dir / "decomposition.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # Phase 3 contract change: 9 rows = 3 outcomes (o1, o3, o4) × 3
-    # categories (no_spike, forecast_correlated_spike, grid_event_spike).
-    # All Arm A only -> quiet-zero on B for every cell.
-    assert len(rows) == 9
+    # Phase 5 contract: o4 omitted (no mains channels in fixture);
+    # 6 rows = 2 outcomes (o1, o3) × 3 categories (no_spike,
+    # forecast_correlated_spike, grid_event_spike). All Arm A only ->
+    # quiet-zero on B for every cell.
+    assert len(rows) == 6
     categories = {r["category"] for r in rows}
     assert categories == {"no_spike", "forecast_correlated_spike",
                           "grid_event_spike"}, (
@@ -883,12 +899,10 @@ def test_phase2_three_category_fixture_via_real_loader(tmp_path):
     assert outcomes_seen == {
         "o1_daily_hvac_dollars",
         "o3_daily_peak_hvac_kw",
-        "o4_daily_mains_dollars",
     }
     expected_unit = {
         "o1_daily_hvac_dollars": "dollars",
         "o3_daily_peak_hvac_kw": "kw",
-        "o4_daily_mains_dollars": "dollars",
     }
     for r in rows:
         assert r["unit"] == expected_unit[r["outcome"]]
@@ -2359,3 +2373,825 @@ def test_phase4_multi_day_arm_b_grid_event_loops_all_days_with_distinct_attribut
             f"{expected_layer}); a same-day shortcut would yield "
             f"identical layer_triggered values across all 3 rows"
         )
+
+
+# -- Phase 5: orchestrator reason codes ------------------------------------
+
+
+def test_phase5_no_qualifying_days_from_stage3_blocks_both_outputs(tmp_path):
+    """Phase 5 acceptance: when Stage 3 has no qualifying weeks, both
+    Stage 8 outputs land header-only AND both emit
+    NO_QUALIFYING_DAYS_FROM_STAGE3 in reason_report.json (per output
+    file). There are no days to decompose AND no days to attribute, so
+    the reason applies to BOTH outputs equally.
+
+    Fixture: Stage 3 weekly.csv exists with one row that has
+    qualifies="False". Stage 2 qualifying_days.csv is consistent
+    (week not in qualifying set -> no day rows survive the join).
+    Stage 1 bundle is minimal (just enough for the loader to read).
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 8)
+    # Minimal bundle: empty refoss + empty prices is enough; the
+    # loader's day-walker has no qualifying days to iterate.
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": pd.DataFrame(columns=[
+                "_time", "_measurement", "_field", "_value", "channel",
+            ]),
+            "comed.prices": pd.DataFrame(columns=[
+                "_time", "_measurement", "_field", "_value", "period_type",
+            ]),
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    # Day row exists but the week is non-qualifying.
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "B",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "B", "qualifies": "False"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "decomposition.csv") as f:
+        decomp_rows = list(csv.DictReader(f))
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        layer_rows = list(csv.DictReader(f))
+    assert decomp_rows == [], (
+        "No qualifying days -> decomposition.csv must be header-only"
+    )
+    assert layer_rows == [], (
+        "No qualifying days -> layer_attribution.csv must be header-only"
+    )
+
+    # BOTH outputs carry the reason.
+    reason_path = stage8_dir / "reason_report.json"
+    assert reason_path.exists(), (
+        "Phase 5 must emit NO_QUALIFYING_DAYS_FROM_STAGE3 for both outputs"
+    )
+    with open(reason_path) as f:
+        report = json.load(f)
+    decomp_entries = [
+        e for e in report["entries"]
+        if e["output_file"] == "decomposition.csv"
+        and e["reason_code"] == ReasonCode.NO_QUALIFYING_DAYS_FROM_STAGE3.value
+    ]
+    layer_entries = [
+        e for e in report["entries"]
+        if e["output_file"] == "layer_attribution.csv"
+        and e["reason_code"] == ReasonCode.NO_QUALIFYING_DAYS_FROM_STAGE3.value
+    ]
+    assert len(decomp_entries) == 1, (
+        "decomposition.csv must carry NO_QUALIFYING_DAYS_FROM_STAGE3"
+    )
+    assert len(layer_entries) == 1, (
+        "layer_attribution.csv must carry NO_QUALIFYING_DAYS_FROM_STAGE3"
+    )
+
+
+def test_phase5_no_grid_event_arm_b_days_blocks_only_layer_attribution(tmp_path):
+    """Phase 5 acceptance: when decomposition.csv has rows but no
+    grid_event_spike day landed in Arm B, NO_GRID_EVENT_ARM_B_DAYS is
+    emitted ONLY for layer_attribution.csv. decomposition.csv did
+    useful work; only the attribution side-table has nothing to
+    populate, so the reason is per-output, not stage-level.
+
+    Fixture: one Arm A grid_event_spike day. decomposition.csv emits
+    rows. layer_attribution.csv is empty (arm filter rejects).
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    refoss_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="30s", inclusive="left",
+    )
+    refoss_df = pd.DataFrame({
+        "_time": refoss_times,
+        "_measurement": "refoss.channel",
+        "_field": "power_w",
+        "_value": 500.0,
+        "channel": "em:2",
+    })
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    h17_start = pipeline._ct_date_to_utc(day_ct, 17)
+    h17_end = pipeline._ct_date_to_utc(day_ct, 18)
+    prices_df.loc[
+        (prices_df["_time"] >= h17_start) & (prices_df["_time"] < h17_end),
+        "_value",
+    ] = 15.0
+    # Cool forecast -> grid_event_spike (not forecast_correlated).
+    forecast_df = build_nws_forecast_df(
+        [day_ct], high_f_fn=lambda d: 72.0,
+        apparent_max_f_fn=lambda d: 78.0,
+    )
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "decomposition.csv") as f:
+        decomp_rows = list(csv.DictReader(f))
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        layer_rows = list(csv.DictReader(f))
+    assert decomp_rows, (
+        "Arm A grid-event day must produce decomposition.csv rows; "
+        "stage8 did useful work"
+    )
+    assert layer_rows == [], (
+        "Arm A grid-event -> no Arm B grid-event -> layer_attribution "
+        "header-only"
+    )
+
+    # Per-output reason: layer_attribution.csv only.
+    reason_path = stage8_dir / "reason_report.json"
+    assert reason_path.exists()
+    with open(reason_path) as f:
+        report = json.load(f)
+    layer_entries = [
+        e for e in report["entries"]
+        if e["output_file"] == "layer_attribution.csv"
+        and e["reason_code"] == ReasonCode.NO_GRID_EVENT_DAYS_IN_WINDOW.value
+    ]
+    decomp_entries = [
+        e for e in report["entries"]
+        if e["output_file"] == "decomposition.csv"
+        and e["reason_code"] == ReasonCode.NO_GRID_EVENT_DAYS_IN_WINDOW.value
+    ]
+    assert len(layer_entries) == 1, (
+        "layer_attribution.csv must carry NO_GRID_EVENT_DAYS_IN_WINDOW"
+    )
+    assert len(decomp_entries) == 0, (
+        "decomposition.csv must NOT carry NO_GRID_EVENT_DAYS_IN_WINDOW; "
+        "the per-output reason is layer-attribution-specific"
+    )
+
+
+def _refoss_day_with_channels(
+    day_ct: datetime.date,
+    power_w_by_channel: dict[str, float],
+) -> pd.DataFrame:
+    """Build a 24h refoss.channel DataFrame with arbitrary channel
+    subset (used by no-placeholder-zero tests where HVAC or mains
+    channels are intentionally absent)."""
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    times = pd.date_range(
+        day_start_utc, day_end_utc, freq="30s", inclusive="left",
+    )
+    frames = []
+    for channel, watts in power_w_by_channel.items():
+        frames.append(pd.DataFrame({
+            "_time": times,
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": float(watts),
+            "channel": channel,
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_phase5_no_hvac_channels_omits_o1_and_o3_with_reason(tmp_path):
+    """Phase 5 Gate 3: when HVAC channels (em:2, em:8, em:9) are
+    entirely absent from refoss.channel, o1_daily_hvac_dollars and
+    o3_daily_peak_hvac_kw are OMITTED from decomposition.csv (no
+    placeholder-zero rows). reason_report.json explains the omission
+    via NO_HVAC_CHANNELS_IN_WINDOW.
+
+    Fixture: refoss.channel has only em:1 and em:7 (mains), no HVAC.
+    Prices + forecast normal. One qualifying Arm A day.
+
+    Expected:
+      - decomposition.csv has o4 rows only (no o1, no o3).
+      - reason_report.json carries NO_HVAC_CHANNELS_IN_WINDOW for
+        decomposition.csv.
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    refoss_df = _refoss_day_with_channels(day_ct, {
+        "em:1": 800.0,
+        "em:7": 400.0,
+    })
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+    outcomes_emitted = {r["outcome"] for r in rows}
+    assert "o1_daily_hvac_dollars" not in outcomes_emitted, (
+        "o1 must be omitted when HVAC channels absent (no placeholder zero)"
+    )
+    assert "o3_daily_peak_hvac_kw" not in outcomes_emitted, (
+        "o3 must be omitted when HVAC channels absent"
+    )
+    assert "o4_daily_mains_dollars" in outcomes_emitted, (
+        "o4 must still emit -- mains + prices both present"
+    )
+
+    reason_path = stage8_dir / "reason_report.json"
+    assert reason_path.exists()
+    with open(reason_path) as f:
+        report = json.load(f)
+    hvac_reasons = [
+        e for e in report["entries"]
+        if e["reason_code"] == ReasonCode.NO_HVAC_CHANNELS_IN_WINDOW.value
+        and e["output_file"] == "decomposition.csv"
+    ]
+    assert hvac_reasons, (
+        "decomposition.csv must carry NO_HVAC_CHANNELS_IN_WINDOW reason "
+        "explaining the omitted o1 + o3"
+    )
+
+
+def test_phase5_no_mains_channels_omits_o4_only_with_reason(tmp_path):
+    """Phase 5 Gate 3: when mains channels (em:1, em:7) are absent,
+    o4_daily_mains_dollars is OMITTED but o1 and o3 still emit.
+    NO_MAINS_CHANNELS_IN_WINDOW in reason_report.json.
+
+    Fixture: refoss.channel has only HVAC channels (em:2 + em:8 + em:9).
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    refoss_df = _refoss_day_with_channels(day_ct, {
+        "em:2": 200.0,
+        "em:8": 150.0,
+        "em:9": 100.0,
+    })
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+    outcomes_emitted = {r["outcome"] for r in rows}
+    assert "o4_daily_mains_dollars" not in outcomes_emitted, (
+        "o4 must be omitted when mains channels absent"
+    )
+    assert "o1_daily_hvac_dollars" in outcomes_emitted, (
+        "o1 must still emit -- HVAC + prices both present"
+    )
+    assert "o3_daily_peak_hvac_kw" in outcomes_emitted, (
+        "o3 must still emit -- HVAC present"
+    )
+
+    reason_path = stage8_dir / "reason_report.json"
+    assert reason_path.exists()
+    with open(reason_path) as f:
+        report = json.load(f)
+    mains_reasons = [
+        e for e in report["entries"]
+        if e["reason_code"] == ReasonCode.NO_MAINS_CHANNELS_IN_WINDOW.value
+        and e["output_file"] == "decomposition.csv"
+    ]
+    assert mains_reasons, (
+        "decomposition.csv must carry NO_MAINS_CHANNELS_IN_WINDOW reason"
+    )
+
+
+def test_phase5_no_prices_omits_dollar_outcomes_but_keeps_o3(tmp_path):
+    """Phase 5 Gate 3 (nuance pin): when comed.prices has no rows, the
+    DOLLAR outcomes (o1, o4) are omitted but o3 (kW) still emits.
+
+    This proves the no-placeholder-zero policy is nuanced: only
+    outcomes that REQUIRE prices are dropped. o3 = max hourly hvac_kwh
+    doesn't depend on prices at all, so it survives.
+
+    Fixture: refoss.channel has full HVAC + mains; comed.prices is
+    entirely empty; forecast normal (so days classify as no_spike
+    with no spike threshold ever hit by all-zero prices).
+
+    Expected:
+      - decomposition.csv has o3 rows only (no o1, no o4).
+      - reason_report.json carries NO_PRICE_DATA_IN_WINDOW for
+        decomposition.csv.
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 8)
+
+    refoss_df = _refoss_day_with_channels(day_ct, {
+        "em:1": 800.0,
+        "em:2": 200.0,
+        "em:7": 400.0,
+        "em:8": 150.0,
+        "em:9": 100.0,
+    })
+    # Empty prices DataFrame -- the loader sees zero rows.
+    prices_df = pd.DataFrame(columns=[
+        "_time", "_measurement", "_field", "_value", "period_type",
+    ])
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "A",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "A", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+    outcomes_emitted = {r["outcome"] for r in rows}
+    assert "o1_daily_hvac_dollars" not in outcomes_emitted, (
+        "o1 (dollars) must be omitted when prices absent"
+    )
+    assert "o4_daily_mains_dollars" not in outcomes_emitted, (
+        "o4 (dollars) must be omitted when prices absent"
+    )
+    assert "o3_daily_peak_hvac_kw" in outcomes_emitted, (
+        "o3 (kW) does NOT depend on prices and must still emit -- "
+        "this is the no-placeholder-zero policy nuance"
+    )
+
+    reason_path = stage8_dir / "reason_report.json"
+    assert reason_path.exists()
+    with open(reason_path) as f:
+        report = json.load(f)
+    price_reasons = [
+        e for e in report["entries"]
+        if e["reason_code"] == ReasonCode.NO_PRICE_DATA_IN_WINDOW.value
+        and e["output_file"] == "decomposition.csv"
+    ]
+    assert price_reasons, (
+        "decomposition.csv must carry NO_PRICE_DATA_IN_WINDOW reason "
+        "explaining the omitted o1 + o4 (while o3 survives)"
+    )
+
+
+# -- Phase 5 Gate 2: stage8/provenance.json sidecar ------------------------
+
+
+def test_phase5_provenance_json_seven_sections_populated(tmp_path):
+    """Phase 5 Gate 2: stage8/provenance.json contains the seven
+    locked sections, each populated from the loader's existing data.
+
+    Fixture (one Arm B qualifying week, 2026-06-15):
+      Mon 06-15: included, no_spike     (low prices, cool forecast)
+      Tue 06-16: included, grid_event   (price spike, cool forecast,
+                 hvac.price_overlay transition to elevated at Tue 14:00)
+      Wed 06-17: included, forecast_correlated (price spike, hot forecast)
+      Thu 06-18: excluded, rule9_vacation
+      Fri 06-19: excluded, rule5_weather_gap
+      Sat 06-20: excluded, rule7_scheduler_outage;rule9_vacation (multi)
+      Sun 06-21: excluded, rule1_tier4
+
+    Expected provenance.json sections:
+      - spike_classification_summary: per-arm counts by category.
+      - layer_attribution_summary: counts per layer_triggered.
+      - missing_forecast_classification_days: empty list (no day dropped).
+      - price_overlay_state_unknown_days: empty (Tue's transition known).
+      - day_exclusions_summary: counts of canonical exclusion_source
+        strings (4 distinct values).
+      - outcomes_summary: per-arm counts per outcome (n_days emitted).
+      - bundle_window: start/end strings from the manifest.
+    """
+    import json
+    from zoneinfo import ZoneInfo
+    ct = ZoneInfo("America/Chicago")
+
+    week_start = datetime.date(2026, 6, 15)
+    mon, tue, wed = week_start, week_start + datetime.timedelta(days=1), week_start + datetime.timedelta(days=2)
+
+    def _refoss_day(day_ct: datetime.date) -> pd.DataFrame:
+        return _refoss_day_with_channels(day_ct, {
+            "em:1": 800.0, "em:2": 200.0, "em:7": 400.0,
+            "em:8": 150.0, "em:9": 100.0,
+        })
+
+    def _prices_day(day_ct: datetime.date, spike: bool) -> pd.DataFrame:
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        times = pd.date_range(
+            day_start_utc, day_end_utc, freq="5min", inclusive="left",
+        )
+        df = pd.DataFrame({
+            "_time": times,
+            "_measurement": "comed.prices",
+            "_field": "price_cents_per_kwh",
+            "_value": 5.0,
+            "period_type": "5min",
+        })
+        if spike:
+            h17_start = pipeline._ct_date_to_utc(day_ct, 17)
+            h17_end = pipeline._ct_date_to_utc(day_ct, 18)
+            df.loc[
+                (df["_time"] >= h17_start) & (df["_time"] < h17_end),
+                "_value",
+            ] = 15.0
+        return df
+
+    refoss_df = pd.concat([
+        _refoss_day(mon), _refoss_day(tue), _refoss_day(wed),
+    ], ignore_index=True)
+    prices_df = pd.concat([
+        _prices_day(mon, spike=False),
+        _prices_day(tue, spike=True),
+        _prices_day(wed, spike=True),
+    ], ignore_index=True)
+    # Mon + Tue: cool forecast (no_spike / grid_event).
+    # Wed: hot forecast (forecast_correlated).
+    forecast_df = build_nws_forecast_df(
+        [mon, tue, wed],
+        high_f_fn=lambda d: 90.0 if d == wed else 72.0,
+        apparent_max_f_fn=lambda d: 95.0 if d == wed else 78.0,
+    )
+    # Tue overlay transition known at peak hour 17.
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(_ct_to_utc(2026, 6, 16, 14, 0), "elevated"),
+    ])
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+            "hvac.price_overlay": price_overlay_df,
+        },
+        window_start_ct="2026-06-15T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    # Custom Stage 2 qualifying_days.csv with mixed exclusion sources
+    # (including a semicolon-joined multi-rule day).
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    with open(stage2_dir / "qualifying_days.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["week_start_ct", "arm", "date", "included", "exclusion_source"])
+        rows = [
+            (week_start.isoformat(), "B", mon.isoformat(), "true", ""),
+            (week_start.isoformat(), "B", tue.isoformat(), "true", ""),
+            (week_start.isoformat(), "B", wed.isoformat(), "true", ""),
+            (week_start.isoformat(), "B", (week_start + datetime.timedelta(days=3)).isoformat(), "false", "rule9_vacation"),
+            (week_start.isoformat(), "B", (week_start + datetime.timedelta(days=4)).isoformat(), "false", "rule5_weather_gap"),
+            (week_start.isoformat(), "B", (week_start + datetime.timedelta(days=5)).isoformat(), "false", "rule7_scheduler_outage;rule9_vacation"),
+            (week_start.isoformat(), "B", (week_start + datetime.timedelta(days=6)).isoformat(), "false", "rule1_tier4"),
+        ]
+        for r in rows:
+            w.writerow(r)
+
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": week_start.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    prov_path = stage8_dir / "provenance.json"
+    assert prov_path.exists(), (
+        "Phase 5 Gate 2 must write stage8/provenance.json"
+    )
+    with open(prov_path) as f:
+        prov = json.load(f)
+
+    # Section 1: spike_classification_summary
+    assert "spike_classification_summary" in prov
+    sc = prov["spike_classification_summary"]
+    # Arm B has 1 no_spike + 1 grid_event + 1 forecast_correlated
+    assert sc.get("B", {}).get("no_spike") == 1
+    assert sc.get("B", {}).get("grid_event_spike") == 1
+    assert sc.get("B", {}).get("forecast_correlated_spike") == 1
+
+    # Section 2: layer_attribution_summary
+    assert "layer_attribution_summary" in prov
+    la = prov["layer_attribution_summary"]
+    # One grid-event day -> one row with layer_triggered=price_spike_reactivity
+    assert la.get("price_spike_reactivity") == 1
+
+    # Section 3: missing_forecast_classification_days
+    assert "missing_forecast_classification_days" in prov
+    assert prov["missing_forecast_classification_days"] == []
+
+    # Section 4: price_overlay_state_unknown_days
+    assert "price_overlay_state_unknown_days" in prov
+    assert prov["price_overlay_state_unknown_days"] == []
+
+    # Section 5: day_exclusions_summary -- canonical strings.
+    assert "day_exclusions_summary" in prov
+    excl = prov["day_exclusions_summary"]
+    assert excl.get("rule9_vacation") == 1
+    assert excl.get("rule5_weather_gap") == 1
+    assert excl.get("rule7_scheduler_outage;rule9_vacation") == 1
+    assert excl.get("rule1_tier4") == 1
+
+    # Section 6: outcomes_summary
+    assert "outcomes_summary" in prov
+    out_sum = prov["outcomes_summary"]
+    # Arm B emitted 3 days. o1 + o3 + o4 each fired on each emitted day.
+    assert out_sum.get("B", {}).get("o1_daily_hvac_dollars") == 3
+    assert out_sum.get("B", {}).get("o3_daily_peak_hvac_kw") == 3
+    assert out_sum.get("B", {}).get("o4_daily_mains_dollars") == 3
+
+    # Section 7: bundle_window (from manifest)
+    assert "bundle_window" in prov
+
+
+def test_phase5_provenance_day_exclusions_uses_canonical_strings(tmp_path):
+    """Phase 5 Gate 2: day_exclusions_summary buckets by EXACT
+    canonical exclusion_source strings (per Chris's amendment), NOT by
+    splitting semicolon-joined values into individual rules.
+
+    Two days both have exclusion_source = "rule7_scheduler_outage;rule9_vacation".
+    Expected bucket: {"rule7_scheduler_outage;rule9_vacation": 2}, NOT
+    {"rule7_scheduler_outage": 2, "rule9_vacation": 2}.
+    """
+    import json
+
+    week_start = datetime.date(2026, 6, 8)
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": _refoss_day_with_channels(
+                week_start, {"em:2": 200.0, "em:1": 800.0},
+            ),
+            "comed.prices": pd.DataFrame(columns=[
+                "_time", "_measurement", "_field", "_value", "period_type",
+            ]),
+            "nws.forecast": build_nws_forecast_df([week_start]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    with open(stage2_dir / "qualifying_days.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["week_start_ct", "arm", "date", "included", "exclusion_source"])
+        for i in range(7):
+            d = week_start + datetime.timedelta(days=i)
+            if i in (0, 1):
+                w.writerow([
+                    week_start.isoformat(), "B", d.isoformat(), "false",
+                    "rule7_scheduler_outage;rule9_vacation",
+                ])
+            else:
+                w.writerow([
+                    week_start.isoformat(), "B", d.isoformat(), "true", "",
+                ])
+
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": week_start.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "provenance.json") as f:
+        prov = json.load(f)
+    excl = prov["day_exclusions_summary"]
+    assert excl.get("rule7_scheduler_outage;rule9_vacation") == 2, (
+        "day_exclusions_summary must bucket by the EXACT canonical "
+        "exclusion_source string, not by splitting into individual rules"
+    )
+    # Must NOT split into individual rule keys.
+    assert "rule7_scheduler_outage" not in excl, (
+        "Multi-rule strings must remain joined; do not split"
+    )
+    assert "rule9_vacation" not in excl
+
+
+def test_phase5_provenance_json_output_is_deterministic(tmp_path):
+    """Phase 5 Gate 2: provenance.json is written with sort_keys=True
+    so diffs across runs are stable (humans will be reading these).
+
+    Minimal fixture; assertion reads the raw text and checks that
+    top-level keys appear in sorted order.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": _refoss_day_with_channels(
+                day_ct, {"em:2": 200.0, "em:1": 800.0},
+            ),
+            "comed.prices": pd.DataFrame(columns=[
+                "_time", "_measurement", "_field", "_value", "period_type",
+            ]),
+            "nws.forecast": build_nws_forecast_df([day_ct]),
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-15T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "B",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    raw = (stage8_dir / "provenance.json").read_text()
+    # Find top-level keys (between the outermost braces) and verify
+    # they appear in alphabetical order in the raw output.
+    import re
+    # Match keys at indent depth 1 (two spaces or one tab after opening).
+    keys_in_order = re.findall(r'^  "([^"]+)":', raw, flags=re.MULTILINE)
+    assert keys_in_order == sorted(keys_in_order), (
+        f"provenance.json top-level keys must be sort_keys=True; "
+        f"got order: {keys_in_order}"
+    )
