@@ -260,7 +260,8 @@ def test_known_measurements_matches_analysis_pipeline_doc():
         "hvac.decisions", "hvac.5cp_state", "hvac.price_overlay",
         "hvac.precool_window", "hvac.arm_transitions",
         "nws.forecast", "ecowitt.weather", "pjm.inst_load",
-        "pjm.coincident_peak", "comed.bill",
+        "pjm.coincident_peak", "pjm.metered_load",
+        "comed.bill", "comed.bill_lineitems",
     }
     assert set(KNOWN_MEASUREMENTS) == expected_subset
 

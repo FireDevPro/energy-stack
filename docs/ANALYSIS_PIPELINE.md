@@ -209,8 +209,10 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 5. **Layer 3 — bill reconciliation:**
    - Sum `comed.bill capacity_charge_dollars` for the Y+1 May-Sep months.
    - Report ratio `(Layer 2 reconstructed $) / (Layer 3 observed $)` as tariff-reconstruction fidelity.
-6. **Detector accuracy report (process metric):**
-   - For each PJM-published 5CP hour in summer Y, check whether `hvac.5cp_state.state == "holding"` during that hour. Compute TP, FP, FN, TN against all summer hours. Report rates.
+6. **Detector accuracy report (process metric, dual-scope):**
+   - The Arm B detector runs separately for two scopes: `rto` (PJM RTO 5CP) and `comed_zone` (ComEd zone 5CP). `hvac.5cp_state` rows are tagged with `scope` (`rto` | `comed_zone`) and `is_active` (`true` | `false`).
+   - `detector_accuracy.csv` emits **three rows per run**: `scope=rto`, `scope=comed_zone`, and `scope=combined_any` (per-hour OR of the two predictions vs union of the two truth sets). A single aggregate row would hide whether RTO or ComEd coverage is failing.
+   - For each scope: count TP/FP/FN/TN over the **exported-window intersection** (not the full PJM summer). Otherwise short replay bundles would inflate true-negative counts. Truth comes from `pjm.coincident_peak` (RTO) and from `pjm.metered_load{zone=CE}` top-5 distinct-CT-day hourly maxima (ComEd zone).
 
 **Output:**
 - `out/<run>/stage6/o2_layer1.csv`

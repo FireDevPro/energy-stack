@@ -56,6 +56,7 @@ OBSERVED_SOURCE_TYPES: frozenset[str] = frozenset({
 # ANALYSIS_PIPELINE.md §2.1.
 KNOWN_MEASUREMENTS: tuple[str, ...] = (
     "comed.bill",
+    "comed.bill_lineitems",
     "comed.prices",
     "ecowitt.weather",
     "hvac.5cp_state",
@@ -70,6 +71,7 @@ KNOWN_MEASUREMENTS: tuple[str, ...] = (
     "nws.forecast",
     "pjm.coincident_peak",
     "pjm.inst_load",
+    "pjm.metered_load",
     "refoss.channel",
 )
 

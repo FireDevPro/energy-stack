@@ -36,7 +36,11 @@ class TariffConstants:
 
     @classmethod
     def load(cls, year: int, path: Path | None = None) -> "TariffConstants":
-        """Load locked tariff constants for a year.
+        """Load locked tariff constants for a capacity year.
+
+        ``year`` is the Att. M-2 capacity / delivery year (Jun Y through
+        May Y+1 billing window). For loading by summer-of-peaks instead,
+        use :meth:`load_for_summer_year`.
 
         `portfolio_sum_mw` is set to the `low` scenario denominator
         (1,500 MW) by convention. Layer 2 reporting must use
@@ -57,6 +61,23 @@ class TariffConstants:
             ),
             is_placeholder=bool(j.get("PLACEHOLDER", False)),
         )
+
+    @classmethod
+    def load_for_summer_year(
+        cls, summer_year: int, path: Path | None = None,
+    ) -> "TariffConstants":
+        """Load constants applicable to a summer's 5CP determination.
+
+        Att. M-2 specifies ``CPLC_(Y+1)`` from summer Y peaks: the 5CPs
+        observed in summer Y feed the capacity year Y+1 (which runs
+        Jun Y+1 through May Y+2). This wrapper takes the natural
+        ``summer_year`` argument and dispatches to ``load(summer_year + 1)``,
+        which is the capacity year keyed in tariff_constants.json.
+
+        Example: summer_year=2025 → load(2026), which returns the
+        2026/27 capacity-year constants applied to summer 2025 peaks.
+        """
+        return cls.load(year=summer_year + 1, path=path)
 
 
 def cplc_kw(

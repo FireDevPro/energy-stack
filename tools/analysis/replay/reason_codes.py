@@ -48,7 +48,13 @@ class ReasonCode(str, enum.Enum):
 
     # Stage 6 / O2
     NO_PJM_5CP_HOURS_IN_WINDOW = "no_pjm_5cp_hours_in_window"
+    AMBIGUOUS_SUMMER_YEAR = "ambiguous_summer_year"
+    INSUFFICIENT_PEAKS_BY_ARM = "insufficient_peaks_by_arm"
     NO_COMED_BILLS_IN_WINDOW = "no_comed_bills_in_window"
+    NO_REFOSS_MAINS_IN_WINDOW = "no_refoss_mains_in_window"
+    NO_COMED_5CP_HOURS_IN_WINDOW = "no_comed_5cp_hours_in_window"
+    INCOMPLETE_COMED_5CP_IN_WINDOW = "incomplete_comed_5cp_in_window"
+    NO_5CP_STATE_IN_WINDOW = "no_5cp_state_in_window"
 
     # Stage 7 / SCED
     NO_PAIR_DIFFERENCES_FROM_STAGE5 = "no_pair_differences_from_stage5"

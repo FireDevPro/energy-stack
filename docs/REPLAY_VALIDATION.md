@@ -24,6 +24,8 @@ Examples in scope for this work:
 - 2025 ComEd RTP prices at `tools/comed_2025_analysis/data/may2025.txt` through `sep2025.txt`
 - KORD ASOS 5-min routine reports (Iowa State Mesonet archive) or NWS hourly observations for 2025
 
+**Stage 6 ComEd 5CP source.** Stage 6's ComEd zone 5CP truth is derived from `pjm.metered_load{zone=CE}`, not from `pjm.coincident_peak` (which carries PJM/RTO 5CP hours plus the ComEd zone load AT those PJM hours — not ComEd's own 5 highest hours). The loader takes the top-5 distinct-CT-day hourly maxima after preferring `is_verified=true` rows over preliminary ones. When any top-5 hour came from a preliminary row, the bundle's `stage6/provenance.json` records `comed_5cp_preliminary: true` plus the per-hour list.
+
 ### `observed_recent`
 
 Real telemetry written by services whose history doesn't reach back to summer 2025 because the services themselves are newer. The data is real, just not historical.

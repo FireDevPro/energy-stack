@@ -205,28 +205,38 @@ def _stage9_inputs() -> dict:
 
 
 def _stage6_inputs() -> dict:
+    """Per-output Stage 6 inputs shape (post-Phase-1).
+
+    Phase 1 scope: only Layer 1 is wired. Other outputs return None
+    and the orchestrator emits header-only for them. As later phases
+    land, this fixture grows.
+    """
     from tools.o2_capacity_reconstruction.reconstruct import TariffConstants
     pjm_peaks_a = [datetime.datetime(2026, 7, 14 + i, 17) for i in range(2)]
     pjm_peaks_b = [datetime.datetime(2026, 8, 4 + i, 18) for i in range(3)]
+    all_peaks = pjm_peaks_a + pjm_peaks_b
+    tariff = TariffConstants(
+        year=2026,
+        comed_npl_mw=20736.0,
+        a_comed_cpl_mw=19138.22,
+        portfolio_sum_mw=1500.0,
+        rate_dollars_per_kw_month=10.13567,
+        is_placeholder=False,
+    )
     return {
-        "pjm_peak_hours_by_arm": {"A": pjm_peaks_a, "B": pjm_peaks_b},
-        "comed_peak_hours_by_arm": {"A": pjm_peaks_a, "B": pjm_peaks_b},
-        "hourly_mains_kw": {p: 3.0 for p in pjm_peaks_a + pjm_peaks_b},
-        "tariff_constants": TariffConstants(
-            year=2026,
-            comed_npl_mw=20736.0,
-            a_comed_cpl_mw=19138.22,
-            portfolio_sum_mw=1500.0,
-            rate_dollars_per_kw_month=10.13567,
-            is_placeholder=False,
-        ),
-        "summer_year": 2026,
-        "comed_bills": [
-            {"year": 2027, "month": 6, "capacity_charge_dollars": 22.50},
-            {"year": 2027, "month": 7, "capacity_charge_dollars": 28.75},
-        ],
-        "summer_hours": pjm_peaks_a + pjm_peaks_b,
-        "fivecp_state_by_hour": {p: "holding" for p in pjm_peaks_a + pjm_peaks_b},
+        "layer1": {
+            "data": {
+                "pjm_peak_hours_by_arm": {"A": pjm_peaks_a, "B": pjm_peaks_b},
+                "hourly_mains_kw": {p: 3.0 for p in all_peaks},
+                "capacity_rate_dollars_per_kw_month":
+                    tariff.rate_dollars_per_kw_month,
+                "summer_year": 2026,
+                "tariff_constants": tariff,
+            },
+        },
+        "layer2": None,
+        "layer3": None,
+        "detector": None,
     }
 
 
@@ -268,7 +278,7 @@ def full_pipeline_run(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(
-        pipeline, "_load_stage6_inputs", lambda _: _stage6_inputs(),
+        pipeline, "_load_stage6_inputs", lambda _, **kw: _stage6_inputs(),
     )
 
     monkeypatch.setattr(
@@ -385,25 +395,19 @@ def test_e2e_through_stage_5(full_pipeline_run):
 
 
 def test_e2e_through_stage_6(full_pipeline_run):
-    """Stage 6 emits four O2 / detector-accuracy CSVs from Stage 1
-    (mocked via _load_stage6_inputs in this test)."""
+    """Phase 1 of Stage 6 loader: Layer 1 is the only output wired
+    through the per-output loader shape. Layers 2/3/detector remain
+    header-only until later phases land. The earlier perfect-detector
+    expectations move into Phase 5's acceptance tests."""
     stage6 = full_pipeline_run["out_dir"] / "stage6"
     with open(stage6 / "o2_layer1.csv") as f:
         l1 = list(csv.DictReader(f))
     assert len(l1) == 1
     assert float(l1[0]["a_cust_cpl_kw_arm_a"]) == 3.0
 
-    with open(stage6 / "o2_layer2.csv") as f:
-        l2 = list(csv.DictReader(f))
-    assert {r["scenario"] for r in l2} == {"low", "anchor_2021", "high"}
-
-    with open(stage6 / "o2_layer3.csv") as f:
-        l3 = list(csv.DictReader(f))
-    assert float(l3[0]["total_capacity_charge_dollars"]) == pytest.approx(51.25)
-
-    with open(stage6 / "detector_accuracy.csv") as f:
-        det = list(csv.DictReader(f))
-    assert int(det[0]["tp"]) == 5
+    for name in ("o2_layer2.csv", "o2_layer3.csv", "detector_accuracy.csv"):
+        with open(stage6 / name) as f:
+            assert list(csv.DictReader(f)) == []
 
 
 def test_e2e_through_stage_7(full_pipeline_run):

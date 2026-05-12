@@ -1269,55 +1269,108 @@ def test_compute_layer3_bill_capacity_dollars_handles_missing_months():
 # -- Stage 6: Detector accuracy --------------------------------------------
 
 
-def test_compute_detector_accuracy_perfect_detector():
-    peaks = _pjm_5cp_2025()
+def _by_scope(rto_pred: dict, cz_pred: dict) -> dict:
+    """Tiny helper for the new per-scope detector input shape."""
+    return {"rto": rto_pred, "comed_zone": cz_pred}
+
+
+def test_compute_detector_accuracy_perfect_per_scope():
+    """Both scopes hold exactly the truth hours. The three returned
+    rows (rto, comed_zone, combined_any) all have tp=5, fn=0, fp=0."""
+    rto_peaks = _pjm_5cp_2025()
+    cz_peaks = [datetime.datetime(2025, 7, 11, h) for h in (14, 15, 16, 17, 18)]
     other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
-    all_summer = peaks + other_hours
-    state = {h: ("holding" if h in peaks else "off") for h in all_summer}
+    all_summer = list(set(rto_peaks + cz_peaks + other_hours))
+
+    rto_pred = {h: (h in rto_peaks) for h in all_summer}
+    cz_pred = {h: (h in cz_peaks) for h in all_summer}
+
     out = pipeline.compute_detector_accuracy(
-        published_5cp_hours=peaks,
+        published_5cp_hours_by_scope={
+            "rto": rto_peaks, "comed_zone": cz_peaks,
+        },
         summer_hours=all_summer,
-        fivecp_state_by_hour=state,
+        predicted_holds_by_scope=_by_scope(rto_pred, cz_pred),
     )
-    assert out["tp"] == 5
-    assert out["fn"] == 0
-    assert out["fp"] == 0
-    assert out["tn"] == 24
-    assert out["tpr"] == 1.0
-    assert out["fpr"] == 0.0
+    assert isinstance(out, list)
+    by_scope = {r["scope"]: r for r in out}
+    assert set(by_scope) == {"rto", "comed_zone", "combined_any"}
+    assert by_scope["rto"]["tp"] == 5
+    assert by_scope["rto"]["fp"] == 0
+    assert by_scope["comed_zone"]["tp"] == 5
+    assert by_scope["comed_zone"]["fp"] == 0
+    # combined_any: truth = union of both scopes' truth (10 distinct
+    # hours since rto/cz peaks are disjoint days in this fixture).
+    assert by_scope["combined_any"]["tp"] == 10
+    assert by_scope["combined_any"]["fp"] == 0
 
 
-def test_compute_detector_accuracy_one_miss_and_one_false_alarm():
-    peaks = _pjm_5cp_2025()
-    other_hours = [datetime.datetime(2025, 7, 10, h) for h in range(24)]
-    all_summer = peaks + other_hours
-    state = {h: "off" for h in all_summer}
-    for p in peaks[1:]:  # miss peaks[0]
-        state[p] = "holding"
-    state[datetime.datetime(2025, 7, 10, 14)] = "holding"  # false alarm
+def test_compute_detector_accuracy_rto_miss_does_not_affect_comed():
+    """A miss on the RTO scope leaves comed_zone accuracy intact."""
+    rto_peaks = _pjm_5cp_2025()
+    cz_peaks = [datetime.datetime(2025, 7, 11, h) for h in (14, 15, 16, 17, 18)]
+    all_summer = list(set(rto_peaks + cz_peaks))
+
+    rto_pred = {h: (h in rto_peaks) for h in all_summer}
+    rto_pred[rto_peaks[0]] = False  # one RTO miss
+    cz_pred = {h: (h in cz_peaks) for h in all_summer}
+
     out = pipeline.compute_detector_accuracy(
-        published_5cp_hours=peaks,
+        published_5cp_hours_by_scope={
+            "rto": rto_peaks, "comed_zone": cz_peaks,
+        },
         summer_hours=all_summer,
-        fivecp_state_by_hour=state,
+        predicted_holds_by_scope=_by_scope(rto_pred, cz_pred),
     )
-    assert out["tp"] == 4
-    assert out["fn"] == 1
-    assert out["fp"] == 1
-    assert out["tpr"] == pytest.approx(0.8)
-    assert out["fnr"] == pytest.approx(0.2)
+    by_scope = {r["scope"]: r for r in out}
+    assert by_scope["rto"]["tp"] == 4
+    assert by_scope["rto"]["fn"] == 1
+    assert by_scope["comed_zone"]["tp"] == 5
+    assert by_scope["comed_zone"]["fn"] == 0
 
 
-def test_compute_detector_accuracy_empty_truth_returns_zero_rates():
-    summer = [datetime.datetime(2025, 7, 10, h) for h in range(3)]
-    state = {h: "off" for h in summer}
+def test_compute_detector_accuracy_combined_any_is_per_hour_OR():
+    """`combined_any` predicts hold whenever EITHER scope predicts.
+    Verify by giving rto a hold at one hour and cz a hold at another;
+    combined_any TP should sum both, not just one."""
+    h1 = datetime.datetime(2025, 7, 14, 17)
+    h2 = datetime.datetime(2025, 7, 15, 18)
+    other = datetime.datetime(2025, 7, 16, 14)
+    summer = [h1, h2, other]
+
+    rto_pred = {h1: True, h2: False, other: False}
+    cz_pred = {h1: False, h2: True, other: False}
+
     out = pipeline.compute_detector_accuracy(
-        published_5cp_hours=[],
+        published_5cp_hours_by_scope={
+            "rto": [h1], "comed_zone": [h2],
+        },
         summer_hours=summer,
-        fivecp_state_by_hour=state,
+        predicted_holds_by_scope=_by_scope(rto_pred, cz_pred),
     )
-    assert out["tpr"] == 0.0
-    assert out["fnr"] == 0.0
-    assert out["tn"] == 3
+    by_scope = {r["scope"]: r for r in out}
+    # combined_any truth = {h1, h2}; combined_any pred holds at h1
+    # (via rto) and h2 (via cz). Both correct.
+    assert by_scope["combined_any"]["tp"] == 2
+    assert by_scope["combined_any"]["fp"] == 0
+    assert by_scope["combined_any"]["fn"] == 0
+
+
+def test_compute_detector_accuracy_empty_truth_zero_rates():
+    """Empty truth on both scopes → rates 0, TN = full summer."""
+    summer = [datetime.datetime(2025, 7, 10, h) for h in range(3)]
+    pred = {h: False for h in summer}
+
+    out = pipeline.compute_detector_accuracy(
+        published_5cp_hours_by_scope={"rto": [], "comed_zone": []},
+        summer_hours=summer,
+        predicted_holds_by_scope=_by_scope(pred, pred),
+    )
+    by_scope = {r["scope"]: r for r in out}
+    for s in ("rto", "comed_zone", "combined_any"):
+        assert by_scope[s]["tn"] == 3
+        assert by_scope[s]["tpr"] == 0.0
+        assert by_scope[s]["fnr"] == 0.0
 
 
 # -- Stage 6: stage6_o2 orchestrator ---------------------------------------
@@ -1333,26 +1386,33 @@ def test_stage6_o2_writes_four_csvs_header_only_when_no_inputs(tmp_path):
         assert (stage6 / name).exists()
 
 
-def test_stage6_o2_with_synthetic_loader_populates_layer1_layer2(
+def test_stage6_o2_with_synthetic_loader_populates_layer1(
     monkeypatch, tmp_path,
 ):
+    """Phase 1 scope: only Layer 1 wired through the per-output loader
+    shape. Layers 2/3/detector remain header-only until later phases.
+    """
     peaks_pjm = _pjm_5cp_2025()
-    peaks_comed = peaks_pjm  # identical for this fixture; branch 1 case
     hourly_kw = {p: 3.0 for p in peaks_pjm}
     fake_inputs = {
-        "pjm_peak_hours_by_arm": {"A": peaks_pjm[:3], "B": peaks_pjm[3:]},
-        "comed_peak_hours_by_arm": {"A": peaks_comed[:3], "B": peaks_comed[3:]},
-        "hourly_mains_kw": hourly_kw,
-        "tariff_constants": _layer2_constants(),
-        "summer_year": 2025,
-        "comed_bills": [
-            {"year": 2026, "month": 6, "capacity_charge_dollars": 20.0},
-        ],
-        "summer_hours": peaks_pjm,
-        "fivecp_state_by_hour": {h: "holding" for h in peaks_pjm},
+        "layer1": {
+            "data": {
+                "pjm_peak_hours_by_arm": {
+                    "A": peaks_pjm[:3], "B": peaks_pjm[3:],
+                },
+                "hourly_mains_kw": hourly_kw,
+                "capacity_rate_dollars_per_kw_month":
+                    _layer2_constants().rate_dollars_per_kw_month,
+                "summer_year": 2025,
+                "tariff_constants": _layer2_constants(),
+            },
+        },
+        "layer2": None,
+        "layer3": None,
+        "detector": None,
     }
     monkeypatch.setattr(
-        pipeline, "_load_stage6_inputs", lambda _: fake_inputs,
+        pipeline, "_load_stage6_inputs", lambda _, **kw: fake_inputs,
     )
     stage1 = tmp_path / "stage1"
     stage1.mkdir()
@@ -1363,20 +1423,10 @@ def test_stage6_o2_with_synthetic_loader_populates_layer1_layer2(
     assert len(rows) == 1
     assert float(rows[0]["a_cust_cpl_kw_arm_a"]) == 3.0
     assert float(rows[0]["a_cust_cpl_kw_arm_b"]) == 3.0
-    # Layer 2: three rows (one per scenario)
-    with open(tmp_path / "stage6" / "o2_layer2.csv") as f:
-        rows2 = list(csv.DictReader(f))
-    assert {r["scenario"] for r in rows2} == {"low", "anchor_2021", "high"}
-    # Layer 3: one row summing bills
-    with open(tmp_path / "stage6" / "o2_layer3.csv") as f:
-        rows3 = list(csv.DictReader(f))
-    assert len(rows3) == 1
-    assert float(rows3[0]["total_capacity_charge_dollars"]) == 20.0
-    # Detector accuracy: one row
-    with open(tmp_path / "stage6" / "detector_accuracy.csv") as f:
-        rows4 = list(csv.DictReader(f))
-    assert len(rows4) == 1
-    assert int(rows4[0]["tp"]) == 5
+    # Layers 2/3/detector remain header-only in Phase 1.
+    for name in ("o2_layer2.csv", "o2_layer3.csv", "detector_accuracy.csv"):
+        with open(tmp_path / "stage6" / name) as f:
+            assert list(csv.DictReader(f)) == []
 
 
 # -- Math primitives --------------------------------------------------------

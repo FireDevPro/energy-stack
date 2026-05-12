@@ -2524,24 +2524,18 @@ def compute_layer3_bill_capacity_dollars(
     }
 
 
-def compute_detector_accuracy(
-    published_5cp_hours: Iterable[datetime.datetime],
-    summer_hours: Iterable[datetime.datetime],
-    fivecp_state_by_hour: dict[datetime.datetime, str],
+DETECTOR_SCOPES = ("rto", "comed_zone", "combined_any")
+
+
+def _detector_accuracy_one_scope(
+    scope: str,
+    truth: set[datetime.datetime],
+    predicted: dict[datetime.datetime, bool],
+    summer_hours: list[datetime.datetime],
 ) -> dict[str, Any]:
-    """Arm B 5CP-detector accuracy vs PJM's October-published 5CP hours.
-
-    For each hour in ``summer_hours``:
-      - pred_holding = ``fivecp_state_by_hour.get(h) == "holding"``
-      - is_truth = h in ``published_5cp_hours``
-
-    Returns counts (tp/fp/fn/tn) and rates (tpr/fpr/fnr). Process
-    metric only — decoupled from O2's outcome statement.
-    """
-    truth = set(published_5cp_hours)
     tp = fp = fn = tn = 0
     for h in summer_hours:
-        pred = fivecp_state_by_hour.get(h, "off") == "holding"
+        pred = bool(predicted.get(h, False))
         is_truth = h in truth
         if pred and is_truth:
             tp += 1
@@ -2554,6 +2548,7 @@ def compute_detector_accuracy(
     pos = tp + fn
     neg = fp + tn
     return {
+        "scope": scope,
         "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         "tpr": (tp / pos) if pos else 0.0,
         "fpr": (fp / neg) if neg else 0.0,
@@ -2561,6 +2556,49 @@ def compute_detector_accuracy(
         "summer_hours_n": tp + fp + fn + tn,
         "published_5cp_n": pos,
     }
+
+
+def compute_detector_accuracy(
+    published_5cp_hours_by_scope: dict[str, Iterable[datetime.datetime]],
+    summer_hours: Iterable[datetime.datetime],
+    predicted_holds_by_scope: dict[str, dict[datetime.datetime, bool]],
+) -> list[dict[str, Any]]:
+    """Dual-scope 5CP-detector accuracy: rto, comed_zone, combined_any.
+
+    ``published_5cp_hours_by_scope`` and ``predicted_holds_by_scope``
+    are keyed by scope (``rto`` or ``comed_zone``). For each scope,
+    the row counts TP/FP/FN/TN over ``summer_hours`` against that
+    scope's truth and prediction. The ``combined_any`` row uses:
+
+      - published truth: union of rto + comed_zone published hours
+      - predicted hold: per-hour OR across rto + comed_zone predictions
+
+    ``summer_hours`` is the exported-window intersection, NOT the
+    full PJM summer. Inflating it past the window's distinct hours
+    would inflate TN counts and bias the rates.
+
+    Returns one dict per scope (3 rows total), each carrying a
+    ``scope`` field plus the existing confusion-matrix counts/rates.
+    """
+    summer = list(summer_hours)
+    rto_truth = set(published_5cp_hours_by_scope.get("rto", []))
+    cz_truth = set(published_5cp_hours_by_scope.get("comed_zone", []))
+    rto_pred = predicted_holds_by_scope.get("rto", {})
+    cz_pred = predicted_holds_by_scope.get("comed_zone", {})
+
+    combined_truth = rto_truth | cz_truth
+    combined_pred = {
+        h: bool(rto_pred.get(h, False) or cz_pred.get(h, False))
+        for h in summer
+    }
+
+    return [
+        _detector_accuracy_one_scope("rto", rto_truth, rto_pred, summer),
+        _detector_accuracy_one_scope("comed_zone", cz_truth, cz_pred, summer),
+        _detector_accuracy_one_scope(
+            "combined_any", combined_truth, combined_pred, summer,
+        ),
+    ]
 
 
 # Output column schemas (locked schemas at OSF tag)
@@ -2577,22 +2615,527 @@ O2_LAYER2_COLUMNS = (
 )
 O2_LAYER3_COLUMNS = ("year", "months_summed", "total_capacity_charge_dollars")
 DETECTOR_ACCURACY_COLUMNS = (
+    "scope",
     "tp", "fp", "fn", "tn", "tpr", "fpr", "fnr",
     "summer_hours_n", "published_5cp_n",
 )
 
 
-def _load_stage6_inputs(stage1_dir: Path) -> dict | None:
-    """Build Stage 6 inputs from Stage 1 parquet + bill PDFs + tariff JSON.
+def _load_pjm_5cp_hours(
+    manifest, stage1_dir: Path,
+) -> tuple[int, list[datetime.datetime]] | None:
+    """Read PJM 5CP rows from a stage1 bundle.
 
-    Empty-stub for now: returns None unconditionally. Real implementation
-    reads ``pjm.coincident_peak`` (for both PJM and ComEd 5CP hour lists),
-    ``refoss.channel`` (em:1 + em:7 mains pivoted to hourly), the locked
-    arm-assignment CSV (to map peak hours to arms), ``comed.bill``, and
-    ``hvac.5cp_state`` for the detector accuracy report. Real-data
-    integration runs against a 2025 replay export, gated by OSF criterion 14.
+    Returns ``(summer_year, peak_hours_utc)`` when exactly one
+    ``summer_year`` tag value appears across the parquet rows.
+    Returns ``None`` when the measurement is absent or empty
+    (caller emits ``NO_PJM_5CP_HOURS_IN_WINDOW``).
+
+    Raises ``_AmbiguousSummerYear`` when multiple distinct
+    ``summer_year`` tags appear; caller emits
+    ``AMBIGUOUS_SUMMER_YEAR``.
     """
-    return None
+    df = _load_concat_parquets(manifest, stage1_dir, "pjm.coincident_peak")
+    if len(df) == 0:
+        return None
+    if "summer_year" not in df.columns:
+        return None
+    years = {str(y) for y in df["summer_year"].dropna().unique()}
+    if not years:
+        return None
+    if len(years) > 1:
+        raise _AmbiguousSummerYear(sorted(years))
+    summer_year = int(next(iter(years)))
+    # Each (peak_rank, summer_year) pair contributes one peak hour.
+    # The row's _time is the hour-beginning of the peak. Dedupe on
+    # _time so multiple field rows for the same peak collapse.
+    unique_ts = df["_time"].dt.tz_convert("UTC").drop_duplicates()
+    hours = sorted(ts.to_pydatetime() for ts in unique_ts)
+    return summer_year, hours
+
+
+class _AmbiguousSummerYear(Exception):
+    def __init__(self, years: list[str]):
+        super().__init__(f"multiple summer_year values: {years}")
+        self.years = years
+
+
+def _load_comed_5cp_hours(
+    manifest,
+    stage1_dir: Path,
+    summer_year: int,
+) -> tuple[list[datetime.datetime], bool, list[datetime.datetime]] | None:
+    """Derive ComEd 5CP hours from pjm.metered_load{zone=CE}.
+
+    Procedure:
+      1. Filter to zone=CE rows within the cooling season for
+         ``summer_year`` (Jun 1 – Sep 30 CT).
+      2. Per timestamp, prefer the row where ``is_verified == "true"``
+         regardless of MW magnitude. If no verified row exists, use
+         the preliminary row and record that hour in
+         ``preliminary_hours`` for provenance.
+      3. Convert each row's UTC timestamp to a CT calendar date.
+         Group by CT date; per day, pick the hour with the maximum
+         selected MW.
+      4. Sort days by their day-max MW (descending) and take the
+         top 5 (or fewer if data is partial).
+
+    Returns ``(peak_hours_utc, partial, preliminary_hours)`` or None
+    when the measurement is missing/empty. ``partial=True`` when
+    fewer than 5 distinct CT days were found.
+    """
+    from zoneinfo import ZoneInfo
+    df = _load_concat_parquets(manifest, stage1_dir, "pjm.metered_load")
+    if len(df) == 0:
+        return None
+    required = {"_time", "_value", "zone", "is_verified"}
+    if not required.issubset(df.columns):
+        return None
+    # Cooling season window in CT.
+    ct = ZoneInfo("America/Chicago")
+    season_start_ct = datetime.datetime(
+        summer_year, 6, 1, 0, 0, tzinfo=ct,
+    )
+    season_end_ct = datetime.datetime(
+        summer_year, 10, 1, 0, 0, tzinfo=ct,
+    )
+    season_start_utc = season_start_ct.astimezone(datetime.timezone.utc)
+    season_end_utc = season_end_ct.astimezone(datetime.timezone.utc)
+    mask = (
+        (df["zone"] == "CE")
+        & (df["_field"] == "mw")
+        & (df["_time"] >= season_start_utc)
+        & (df["_time"] < season_end_utc)
+    )
+    sub = df.loc[mask].copy()
+    if len(sub) == 0:
+        return None
+
+    # Per-timestamp: prefer is_verified=true rows.
+    sub["_verified_bool"] = sub["is_verified"].astype(str).str.lower() == "true"
+    # Sort: True first within each _time.
+    sub = sub.sort_values(["_time", "_verified_bool"], ascending=[True, False])
+    selected = sub.drop_duplicates(subset=["_time"], keep="first").copy()
+    preliminary_mask = ~selected["_verified_bool"]
+
+    # Convert UTC to CT date for distinct-day grouping.
+    selected["_ct_date"] = (
+        selected["_time"].dt.tz_convert(ct).dt.date
+    )
+    # Per CT date: pick the row with the max _value.
+    idx_max = selected.groupby("_ct_date")["_value"].idxmax()
+    per_day = selected.loc[idx_max].sort_values("_value", ascending=False)
+    top5 = per_day.head(5)
+
+    peak_hours = sorted(
+        ts.to_pydatetime() for ts in top5["_time"]
+    )
+    partial = len(top5) < 5
+    preliminary_hours = sorted(
+        ts.to_pydatetime()
+        for ts in top5.loc[~top5["_verified_bool"], "_time"]
+    )
+    return peak_hours, partial, preliminary_hours
+
+
+def _load_comed_bills_for_capacity_year(
+    manifest, stage1_dir: Path, capacity_year: int,
+) -> list[dict]:
+    """Read May-Sep Capacity Charge line items for ``capacity_year``.
+
+    Joins ``comed.bill`` (for the ``service_from`` field) with
+    ``comed.bill_lineitems`` (for the ``Capacity Charge`` amount) on
+    ``(_time, account_no)``, then filters to bills whose service_from
+    month falls in the locked May-Sep window of ``capacity_year``.
+
+    Returns a list of ``{"year", "month", "capacity_charge_dollars"}``
+    dicts the way ``compute_layer3_bill_capacity_dollars`` consumes.
+    """
+    import pandas as pd
+    bill_df = _load_concat_parquets(manifest, stage1_dir, "comed.bill")
+    li_df = _load_concat_parquets(manifest, stage1_dir, "comed.bill_lineitems")
+    if len(bill_df) == 0 or len(li_df) == 0:
+        return []
+    if "account_no" not in bill_df.columns or "account_no" not in li_df.columns:
+        return []
+    if "line_item" not in li_df.columns:
+        return []
+
+    sf_rows = bill_df.loc[
+        bill_df["_field"] == "service_from",
+        ["_time", "account_no", "_value"],
+    ].rename(columns={"_value": "service_from"})
+    if len(sf_rows) == 0:
+        return []
+
+    cc_rows = li_df.loc[
+        (li_df["line_item"] == "Capacity Charge")
+        & (li_df["_field"] == "amount"),
+        ["_time", "account_no", "_value"],
+    ].rename(columns={"_value": "capacity_charge_dollars"})
+    if len(cc_rows) == 0:
+        return []
+
+    merged = cc_rows.merge(sf_rows, on=["_time", "account_no"], how="inner")
+    out: list[dict] = []
+    for _, row in merged.iterrows():
+        try:
+            sf_date = pd.to_datetime(row["service_from"]).date()
+        except (TypeError, ValueError):
+            continue
+        if sf_date.year == capacity_year and 5 <= sf_date.month <= 9:
+            out.append({
+                "year": sf_date.year,
+                "month": sf_date.month,
+                "capacity_charge_dollars": float(row["capacity_charge_dollars"]),
+            })
+    return out
+
+
+def _load_predicted_holds_and_summer_hours(
+    manifest, stage1_dir: Path, summer_year: int,
+) -> tuple[
+    dict[str, dict[datetime.datetime, bool]],
+    list[datetime.datetime],
+] | None:
+    """Build per-scope predicted-hold maps + the summer_hours list.
+
+    Reads ``hvac.5cp_state`` and indexes by ``(scope, _time-floor-h)``.
+    For each scope (``rto``, ``comed_zone``), the predicted-hold for
+    an hour is True iff any row with ``is_active=true`` exists in that
+    hour for that scope.
+
+    ``summer_hours`` is the bundle's manifest window intersected with
+    the PJM summer season (Jun 1 – Sep 30 CT of summer_year),
+    enumerated at 1-hour cadence. Per the plan: NOT the full PJM
+    summer — using the window intersection keeps TN counts honest.
+
+    Returns ``None`` when ``hvac.5cp_state`` is missing or empty
+    (caller emits ``NO_5CP_STATE_IN_WINDOW``).
+    """
+    from zoneinfo import ZoneInfo
+    df = _load_concat_parquets(manifest, stage1_dir, "hvac.5cp_state")
+    if len(df) == 0 or "scope" not in df.columns:
+        return None
+    if "is_active" not in df.columns:
+        return None
+
+    # Predicted-hold dict per scope.
+    df = df.copy()
+    df["_active_bool"] = df["is_active"].astype(str).str.lower() == "true"
+    df["_hour"] = df["_time"].dt.floor("h")
+    holds: dict[str, dict[datetime.datetime, bool]] = {"rto": {}, "comed_zone": {}}
+    for scope in ("rto", "comed_zone"):
+        sub = df[df["scope"] == scope]
+        if len(sub) == 0:
+            continue
+        any_active = sub.groupby("_hour")["_active_bool"].any()
+        holds[scope] = {
+            ts.to_pydatetime(): bool(v) for ts, v in any_active.items() if v
+        }
+
+    # summer_hours = manifest window ∩ summer season, at 1h cadence.
+    ct = ZoneInfo("America/Chicago")
+    season_start = datetime.datetime(
+        summer_year, 6, 1, 0, 0, tzinfo=ct,
+    ).astimezone(datetime.timezone.utc)
+    season_end = datetime.datetime(
+        summer_year, 10, 1, 0, 0, tzinfo=ct,
+    ).astimezone(datetime.timezone.utc)
+    window_start = _parse_iso_to_utc(manifest.export_window_start_ct)
+    window_end = _parse_iso_to_utc(manifest.export_window_end_ct)
+    start = max(season_start, window_start)
+    end = min(season_end, window_end)
+    summer_hours: list[datetime.datetime] = []
+    cur = start.replace(minute=0, second=0, microsecond=0)
+    while cur < end:
+        summer_hours.append(cur)
+        cur += datetime.timedelta(hours=1)
+    return holds, summer_hours
+
+
+def _parse_iso_to_utc(s: str) -> datetime.datetime:
+    """Parse an ISO 8601 string with offset into a tz-aware UTC datetime."""
+    dt = datetime.datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def _load_hourly_mains_kw(
+    manifest, stage1_dir: Path,
+) -> dict[datetime.datetime, float]:
+    """Hourly total household kW across refoss mains channels.
+
+    Two-stage aggregation:
+      1. Within each (hour, channel): mean of ``power_w`` across the
+         ~30 s polling ticks. The production refoss poller writes
+         instantaneous Watts; mean is the right time-aggregator.
+      2. Across channels within the hour: SUM. ``em:1`` and ``em:7``
+         are two mains legs; total household power is their sum.
+
+    Returns ``{hour_utc: kW}``. Hours with no mains data are absent.
+    """
+    df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
+    if len(df) == 0 or "channel" not in df.columns:
+        return {}
+    mask = (
+        (df["_field"] == "power_w")
+        & (df["channel"].isin(MAINS_CHANNELS))
+    )
+    sub = df.loc[mask].copy()
+    if len(sub) == 0:
+        return {}
+    sub["_hour"] = sub["_time"].dt.floor("h")
+    per_channel_hourly = sub.groupby(["_hour", "channel"])["_value"].mean()
+    hourly = per_channel_hourly.groupby(level=0).sum() / 1000.0
+    return {ts.to_pydatetime(): float(v) for ts, v in hourly.items()}
+
+
+def _partition_peak_hours_by_arm(
+    peak_hours: list[datetime.datetime],
+    assignments: list[dict],
+) -> dict[str, list[datetime.datetime]]:
+    """Group peak hours by the arm active that Monday-week.
+
+    Each assignment row has ``monday_date`` (datetime.date) and ``arm``.
+    A peak hour belongs to the arm whose Monday-week contains its
+    CT date.
+    """
+    if not peak_hours:
+        return {"A": [], "B": []}
+    by_arm: dict[str, list[datetime.datetime]] = {"A": [], "B": []}
+    sorted_assignments = sorted(assignments, key=lambda a: a["monday_date"])
+    for hour in peak_hours:
+        # Convert UTC hour to CT date for week-membership check.
+        from zoneinfo import ZoneInfo
+        hour_ct_date = hour.astimezone(ZoneInfo("America/Chicago")).date()
+        # Find the latest assignment whose monday_date <= hour_ct_date.
+        matching = [
+            a for a in sorted_assignments
+            if a["monday_date"] <= hour_ct_date
+            and a["monday_date"] + datetime.timedelta(days=7) > hour_ct_date
+        ]
+        if matching:
+            arm = matching[-1]["arm"]
+            if arm in by_arm:
+                by_arm[arm].append(hour)
+    return by_arm
+
+
+def _load_stage6_inputs(
+    stage1_dir: Path,
+    assignment_csv: Path | None = None,
+) -> dict:
+    """Build per-output Stage 6 inputs from a Stage 1 bundle.
+
+    Returns a dict keyed by output CSV with either ``{"data": ...}``
+    when inputs are sufficient, or ``{"reason_code": ReasonCode.X}``
+    when an output cannot be computed. The orchestrator iterates the
+    keys and writes header-only + emits the reason for each missing
+    output, while populating the others.
+
+    Keys: ``layer1``, ``layer2``, ``layer3``, ``detector``.
+
+    Phase 1 wires Layer 1 only; Layers 2-4 + detector return None for
+    not-yet-implemented loaders. Subsequent phases populate them.
+    """
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    manifest_path = stage1_dir / "manifest.json"
+    if not manifest_path.exists():
+        # No bundle at all; every output is missing for the same
+        # reason. Callers (e.g., schema-only unit tests) treat this
+        # as the legacy "everything header-only" path.
+        return {
+            "layer1": None,
+            "layer2": None,
+            "layer3": None,
+            "detector": None,
+        }
+
+    from tools.analysis.replay.manifest import read_manifest
+    manifest = read_manifest(manifest_path)
+
+    # --- Layer 1: PJM 5CP + refoss mains + arm partition + tariff ---
+    layer1_result: dict | None = None
+    try:
+        pjm_result = _load_pjm_5cp_hours(manifest, stage1_dir)
+    except _AmbiguousSummerYear:
+        layer1_result = {"reason_code": ReasonCode.AMBIGUOUS_SUMMER_YEAR}
+        pjm_result = None
+
+    summer_year: int | None = None
+    if layer1_result is None:
+        if pjm_result is None:
+            layer1_result = {"reason_code": ReasonCode.NO_PJM_5CP_HOURS_IN_WINDOW}
+        else:
+            summer_year, peak_hours = pjm_result
+            assignments = _read_assignment_csv(assignment_csv)
+            by_arm = _partition_peak_hours_by_arm(peak_hours, assignments)
+            if not by_arm["A"] and not by_arm["B"]:
+                layer1_result = {
+                    "reason_code": ReasonCode.NO_ARM_ASSIGNMENTS_IN_WINDOW,
+                }
+            elif not by_arm["A"] or not by_arm["B"]:
+                layer1_result = {
+                    "reason_code": ReasonCode.INSUFFICIENT_PEAKS_BY_ARM,
+                }
+            else:
+                hourly_kw = _load_hourly_mains_kw(manifest, stage1_dir)
+                if not hourly_kw:
+                    layer1_result = {
+                        "reason_code": ReasonCode.NO_REFOSS_MAINS_IN_WINDOW,
+                    }
+                else:
+                    from tools.o2_capacity_reconstruction.reconstruct import (
+                        TariffConstants,
+                    )
+                    tariff = TariffConstants.load_for_summer_year(summer_year)
+                    layer1_result = {
+                        "data": {
+                            "pjm_peak_hours_by_arm": by_arm,
+                            "hourly_mains_kw": hourly_kw,
+                            "capacity_rate_dollars_per_kw_month":
+                                tariff.rate_dollars_per_kw_month,
+                            "summer_year": summer_year,
+                            "tariff_constants": tariff,
+                        },
+                    }
+
+    # --- Layer 2: ComEd 5CP + tariff scenarios ----------------------
+    layer2_result: dict | None = None
+    if summer_year is None:
+        # Layer 2 depends on the same PJM 5CP source for summer_year +
+        # arm partitioning, so any Layer 1 PJM failure propagates here.
+        if layer1_result and "reason_code" in layer1_result:
+            layer2_result = {"reason_code": layer1_result["reason_code"]}
+    else:
+        comed_result = _load_comed_5cp_hours(manifest, stage1_dir, summer_year)
+        if comed_result is None:
+            layer2_result = {
+                "reason_code": ReasonCode.NO_COMED_5CP_HOURS_IN_WINDOW,
+            }
+        else:
+            comed_hours, partial, _preliminary = comed_result
+            if partial:
+                layer2_result = {
+                    "reason_code": ReasonCode.INCOMPLETE_COMED_5CP_IN_WINDOW,
+                }
+            else:
+                # Need the same hourly mains kW + arm partition; the
+                # Layer 1 success path computed these already. Re-use
+                # by checking layer1_result for data.
+                if layer1_result is None or "data" not in layer1_result:
+                    # Shouldn't generally happen if Layer 1 succeeded,
+                    # but emit a reason if it did not.
+                    layer2_result = layer1_result
+                else:
+                    l1 = layer1_result["data"]
+                    assignments = _read_assignment_csv(assignment_csv)
+                    comed_by_arm = _partition_peak_hours_by_arm(
+                        comed_hours, assignments,
+                    )
+                    layer2_result = {
+                        "data": {
+                            "pjm_peak_hours_by_arm": l1["pjm_peak_hours_by_arm"],
+                            "comed_peak_hours_by_arm": comed_by_arm,
+                            "hourly_mains_kw": l1["hourly_mains_kw"],
+                            "tariff_constants": l1["tariff_constants"],
+                        },
+                    }
+
+    # --- Layer 3: ComEd bill May-Sep capacity charge totals ----------
+    layer3_result: dict | None = None
+    if summer_year is None:
+        # Layer 3 still requires summer_year to derive the capacity
+        # year. Propagate the same PJM 5CP failure.
+        if layer1_result and "reason_code" in layer1_result:
+            layer3_result = {"reason_code": layer1_result["reason_code"]}
+    else:
+        capacity_year = summer_year + 1
+        bills = _load_comed_bills_for_capacity_year(
+            manifest, stage1_dir, capacity_year,
+        )
+        if not bills:
+            layer3_result = {"reason_code": ReasonCode.NO_COMED_BILLS_IN_WINDOW}
+        else:
+            layer3_result = {
+                "data": {
+                    "comed_bills": bills,
+                    "capacity_year": capacity_year,
+                },
+            }
+
+    # --- Detector: per-scope predicted-hold + PJM/ComEd truth -------
+    detector_result: dict | None = None
+    if summer_year is None:
+        if layer1_result and "reason_code" in layer1_result:
+            detector_result = {"reason_code": layer1_result["reason_code"]}
+    else:
+        # ComEd truth (re-run; cheap once cached above? we don't cache,
+        # so just reuse via a single re-call).
+        comed_result_again = _load_comed_5cp_hours(
+            manifest, stage1_dir, summer_year,
+        )
+        if comed_result_again is None:
+            detector_result = {
+                "reason_code": ReasonCode.NO_COMED_5CP_HOURS_IN_WINDOW,
+            }
+        else:
+            comed_hours_truth, comed_partial, _prelim = comed_result_again
+            if comed_partial:
+                detector_result = {
+                    "reason_code": ReasonCode.INCOMPLETE_COMED_5CP_IN_WINDOW,
+                }
+            else:
+                pred_result = _load_predicted_holds_and_summer_hours(
+                    manifest, stage1_dir, summer_year,
+                )
+                if pred_result is None:
+                    detector_result = {
+                        "reason_code": ReasonCode.NO_5CP_STATE_IN_WINDOW,
+                    }
+                else:
+                    predicted_holds, summer_hours = pred_result
+                    # PJM 5CP truth (already loaded earlier).
+                    pjm_truth = peak_hours if pjm_result is not None else []
+                    detector_result = {
+                        "data": {
+                            "published_5cp_hours_by_scope": {
+                                "rto": pjm_truth,
+                                "comed_zone": comed_hours_truth,
+                            },
+                            "summer_hours": summer_hours,
+                            "predicted_holds_by_scope": predicted_holds,
+                        },
+                    }
+
+    # --- Provenance: audit metadata for downstream review ---------
+    provenance: dict[str, Any] = {}
+    if summer_year is not None:
+        provenance["summer_year"] = summer_year
+        provenance["tariff_capacity_year"] = summer_year + 1
+        provenance["comed_distinct_day_tz"] = "CT"
+        # ComEd 5CP preliminary marker if any top-5 hour came from
+        # an unverified row.
+        comed_result_for_prov = _load_comed_5cp_hours(
+            manifest, stage1_dir, summer_year,
+        )
+        if comed_result_for_prov is not None:
+            _hours, _partial, preliminary = comed_result_for_prov
+            provenance["comed_5cp_preliminary"] = bool(preliminary)
+            provenance["comed_5cp_preliminary_hours"] = [
+                ts.isoformat() for ts in preliminary
+            ]
+
+    return {
+        "layer1": layer1_result,
+        "layer2": layer2_result,
+        "layer3": layer3_result,
+        "detector": detector_result,
+        "provenance": provenance,
+    }
 
 
 def stage6_o2(stage1_dir: Path, out_dir: Path) -> Path:
@@ -2603,6 +3146,9 @@ def stage6_o2(stage1_dir: Path, out_dir: Path) -> Path:
     None — synthetic-fixture path goes through `_load_stage6_inputs`
     monkeypatched in tests).
     """
+    from tools.analysis.replay.reason_codes import (
+        StageReasonReport, write_reason_report,
+    )
     stage_dir = out_dir / "stage6"
     stage_dir.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -2618,52 +3164,125 @@ def stage6_o2(stage1_dir: Path, out_dir: Path) -> Path:
             w.writeheader()
 
     inputs = _load_stage6_inputs(stage1_dir)
-    if inputs is None:
-        _write_header(paths["layer1"], O2_LAYER1_COLUMNS)
-        _write_header(paths["layer2"], O2_LAYER2_COLUMNS)
-        _write_header(paths["layer3"], O2_LAYER3_COLUMNS)
-        _write_header(paths["detector"], DETECTOR_ACCURACY_COLUMNS)
-        return stage_dir
+    reason_reports: list[StageReasonReport] = []
 
-    rate = inputs["tariff_constants"].rate_dollars_per_kw_month
-    layer1 = compute_layer1_arm_delta(
-        pjm_peak_hours_by_arm=inputs["pjm_peak_hours_by_arm"],
-        hourly_mains_kw=inputs["hourly_mains_kw"],
-        capacity_rate_dollars_per_kw_month=rate,
-    )
-    layer2 = compute_layer2_scenarios(
-        pjm_peak_hours_by_arm=inputs["pjm_peak_hours_by_arm"],
-        comed_peak_hours_by_arm=inputs["comed_peak_hours_by_arm"],
-        hourly_mains_kw=inputs["hourly_mains_kw"],
-        tariff_constants=inputs["tariff_constants"],
-    )
-    layer3 = compute_layer3_bill_capacity_dollars(
-        comed_bills=inputs["comed_bills"],
-        year_y_plus_1=int(inputs["summer_year"]) + 1,
-    )
-    detector = compute_detector_accuracy(
-        published_5cp_hours=inputs.get("published_5cp_hours") or inputs["pjm_peak_hours_by_arm"]["A"] + inputs["pjm_peak_hours_by_arm"]["B"],
-        summer_hours=inputs["summer_hours"],
-        fivecp_state_by_hour=inputs["fivecp_state_by_hour"],
-    )
+    # --- Layer 1 ---
+    layer1_inputs = inputs.get("layer1") if inputs else None
+    _write_header(paths["layer1"], O2_LAYER1_COLUMNS)
+    if layer1_inputs and "data" in layer1_inputs:
+        data = layer1_inputs["data"]
+        layer1 = compute_layer1_arm_delta(
+            pjm_peak_hours_by_arm=data["pjm_peak_hours_by_arm"],
+            hourly_mains_kw=data["hourly_mains_kw"],
+            capacity_rate_dollars_per_kw_month=
+                data["capacity_rate_dollars_per_kw_month"],
+        )
+        with open(paths["layer1"], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(O2_LAYER1_COLUMNS))
+            w.writeheader()
+            w.writerow({k: layer1[k] for k in O2_LAYER1_COLUMNS})
+    elif layer1_inputs and "reason_code" in layer1_inputs:
+        reason_reports.append(StageReasonReport(
+            stage="stage6",
+            output_file="o2_layer1.csv",
+            reason_code=layer1_inputs["reason_code"],
+            related_inputs=(
+                "stage1/manifest.json",
+                "stage1/pjm.coincident_peak.*.parquet",
+                "stage1/refoss.channel.*.parquet",
+            ),
+        ))
 
-    with open(paths["layer1"], "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(O2_LAYER1_COLUMNS))
-        w.writeheader()
-        w.writerow({k: layer1[k] for k in O2_LAYER1_COLUMNS})
-    with open(paths["layer2"], "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(O2_LAYER2_COLUMNS))
-        w.writeheader()
-        for row in layer2:
-            w.writerow({k: row[k] for k in O2_LAYER2_COLUMNS})
-    with open(paths["layer3"], "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(O2_LAYER3_COLUMNS))
-        w.writeheader()
-        w.writerow({k: layer3[k] for k in O2_LAYER3_COLUMNS})
-    with open(paths["detector"], "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(DETECTOR_ACCURACY_COLUMNS))
-        w.writeheader()
-        w.writerow({k: detector[k] for k in DETECTOR_ACCURACY_COLUMNS})
+    # --- Layer 2 ---
+    layer2_inputs = inputs.get("layer2") if inputs else None
+    _write_header(paths["layer2"], O2_LAYER2_COLUMNS)
+    if layer2_inputs and "data" in layer2_inputs:
+        data = layer2_inputs["data"]
+        layer2_rows = compute_layer2_scenarios(
+            pjm_peak_hours_by_arm=data["pjm_peak_hours_by_arm"],
+            comed_peak_hours_by_arm=data["comed_peak_hours_by_arm"],
+            hourly_mains_kw=data["hourly_mains_kw"],
+            tariff_constants=data["tariff_constants"],
+        )
+        with open(paths["layer2"], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(O2_LAYER2_COLUMNS))
+            w.writeheader()
+            for row in layer2_rows:
+                w.writerow({k: row[k] for k in O2_LAYER2_COLUMNS})
+    elif layer2_inputs and "reason_code" in layer2_inputs:
+        reason_reports.append(StageReasonReport(
+            stage="stage6",
+            output_file="o2_layer2.csv",
+            reason_code=layer2_inputs["reason_code"],
+            related_inputs=(
+                "stage1/manifest.json",
+                "stage1/pjm.coincident_peak.*.parquet",
+                "stage1/pjm.metered_load.*.parquet",
+            ),
+        ))
+
+    # --- Layer 3 ---
+    layer3_inputs = inputs.get("layer3") if inputs else None
+    _write_header(paths["layer3"], O2_LAYER3_COLUMNS)
+    if layer3_inputs and "data" in layer3_inputs:
+        data = layer3_inputs["data"]
+        layer3 = compute_layer3_bill_capacity_dollars(
+            comed_bills=data["comed_bills"],
+            year_y_plus_1=data["capacity_year"],
+        )
+        with open(paths["layer3"], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(O2_LAYER3_COLUMNS))
+            w.writeheader()
+            w.writerow({k: layer3[k] for k in O2_LAYER3_COLUMNS})
+    elif layer3_inputs and "reason_code" in layer3_inputs:
+        reason_reports.append(StageReasonReport(
+            stage="stage6",
+            output_file="o2_layer3.csv",
+            reason_code=layer3_inputs["reason_code"],
+            related_inputs=(
+                "stage1/manifest.json",
+                "stage1/comed.bill.*.parquet",
+                "stage1/comed.bill_lineitems.*.parquet",
+            ),
+        ))
+
+    # --- Detector accuracy (per-scope) ---
+    detector_inputs = inputs.get("detector") if inputs else None
+    _write_header(paths["detector"], DETECTOR_ACCURACY_COLUMNS)
+    if detector_inputs and "data" in detector_inputs:
+        data = detector_inputs["data"]
+        detector_rows = compute_detector_accuracy(
+            published_5cp_hours_by_scope=data["published_5cp_hours_by_scope"],
+            summer_hours=data["summer_hours"],
+            predicted_holds_by_scope=data["predicted_holds_by_scope"],
+        )
+        with open(paths["detector"], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(DETECTOR_ACCURACY_COLUMNS))
+            w.writeheader()
+            for row in detector_rows:
+                w.writerow({k: row[k] for k in DETECTOR_ACCURACY_COLUMNS})
+    elif detector_inputs and "reason_code" in detector_inputs:
+        reason_reports.append(StageReasonReport(
+            stage="stage6",
+            output_file="detector_accuracy.csv",
+            reason_code=detector_inputs["reason_code"],
+            related_inputs=(
+                "stage1/manifest.json",
+                "stage1/hvac.5cp_state.*.parquet",
+                "stage1/pjm.coincident_peak.*.parquet",
+                "stage1/pjm.metered_load.*.parquet",
+            ),
+        ))
+
+    if reason_reports:
+        write_reason_report(stage_dir, reason_reports)
+
+    # Provenance sidecar: written whenever the loader populated it.
+    provenance = inputs.get("provenance") if inputs else None
+    if provenance:
+        import json as _json
+        with open(stage_dir / "provenance.json", "w") as f:
+            _json.dump(provenance, f, indent=2, sort_keys=True)
 
     return stage_dir
 
