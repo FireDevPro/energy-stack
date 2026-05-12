@@ -37,3 +37,6 @@ deploy/energy-stack/inbox/
 
 # Local pipeline exports (per-run, large, gitignored)
 analysis/exports/
+
+# Firecrawl tool cache (reference PDFs etc; local-only)
+.firecrawl/
