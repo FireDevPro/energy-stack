@@ -292,9 +292,84 @@ def test_loader_weekly_hvac_kwh_zero_when_refoss_empty(tmp_path):
     assert inputs[0]["weekly_hvac_kwh"] == 100.0
 
 
+def test_refoss_weekly_hvac_kwh_aggregates_mean_within_hour_not_sum():
+    """Oracle test that distinguishes mean-then-sum from sum-then-sum.
+
+    Three power_w samples within one hour on a single HVAC channel:
+    [600, 1200, 1800] W. Mean = 1200 W = 1.2 kW. Over 1 h → 1.2 kWh.
+    Other 167 hours empty → 0. Weekly total = 1.2 kWh.
+
+    A buggy sum-then-sum aggregator would yield (600+1200+1800)/1000
+    = 3.6 kWh per hour; weekly would be 3.6. The 1.2 vs 3.6 split
+    distinguishes the two interpretations.
+    """
+    from tools.analysis.tests.fixture_real_shape import build_long_format_df
+    week_start_utc = datetime.datetime(
+        2026, 6, 8, 5, 0, tzinfo=datetime.timezone.utc,
+    )
+    # Three em:2 samples at 0, 20, 40 min after week start.
+    rows = []
+    for offset_min, watts in [(0, 600.0), (20, 1200.0), (40, 1800.0)]:
+        rows.append({
+            "_time": week_start_utc + datetime.timedelta(minutes=offset_min),
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": watts,
+            "channel": "em:2",
+        })
+    df = pd.DataFrame(rows)
+    df["_time"] = pd.to_datetime(df["_time"], utc=True)
+
+    result = pipeline._refoss_weekly_hvac_kwh(df, datetime.date(2026, 6, 8))
+    assert result == pytest.approx(1.2, abs=0.001)
+
+
+def test_stage3_hourly_refoss_kwh_aggregates_mean_within_hour_not_sum():
+    """Same mean-within-hour oracle for the Stage 3 helper.
+
+    Two channels in one hour:
+      em:2 samples [600, 1200, 1800] W → mean 1200 W = 1.2 kW
+      em:8 samples [400,  800, 1200] W → mean  800 W = 0.8 kW
+    Sum across channels = 2.0 kW × 1 h = 2.0 kWh in that hour.
+    Other hours = 0.
+    """
+    from tools.analysis.tests.fixture_real_shape import build_long_format_df
+    week_start_utc = datetime.datetime(
+        2026, 6, 8, 5, 0, tzinfo=datetime.timezone.utc,
+    )
+    rows = []
+    for offset_min, watts_em2, watts_em8 in [
+        (0, 600.0, 400.0),
+        (20, 1200.0, 800.0),
+        (40, 1800.0, 1200.0),
+    ]:
+        ts = week_start_utc + datetime.timedelta(minutes=offset_min)
+        rows.append({
+            "_time": ts, "_measurement": "refoss.channel",
+            "_field": "power_w", "_value": watts_em2, "channel": "em:2",
+        })
+        rows.append({
+            "_time": ts, "_measurement": "refoss.channel",
+            "_field": "power_w", "_value": watts_em8, "channel": "em:8",
+        })
+    df = pd.DataFrame(rows)
+    df["_time"] = pd.to_datetime(df["_time"], utc=True)
+
+    result = pipeline._stage3_hourly_refoss_kwh(
+        df, datetime.date(2026, 6, 8),
+        pipeline.HVAC_CHANNELS,
+    )
+    assert len(result) == 168
+    # Hour 0 has data; mean(em:2)/1000 + mean(em:8)/1000 = 1.2 + 0.8 = 2.0
+    assert result[0]["hvac_kwh"] == pytest.approx(2.0, abs=0.001)
+    # All other hours empty.
+    for h in range(1, 168):
+        assert result[h]["hvac_kwh"] == 0.0
+
+
 def test_refoss_weekly_hvac_kwh_helper_filters_correctly(tmp_path):
     """Direct test of _refoss_weekly_hvac_kwh: only em:2+em:8+em:9
-    energy_wh in the week's CT range contribute."""
+    power_w in the week's CT range contribute to the kWh sum."""
     start = datetime.datetime(2026, 6, 8, 5, 0, tzinfo=datetime.timezone.utc)
     end = datetime.datetime(2026, 6, 15, 5, 0, tzinfo=datetime.timezone.utc)
     refoss = build_refoss_channel_df(
@@ -492,10 +567,7 @@ def test_refoss_gap_intervals_detects_short_gap_tier1():
         measurement="refoss.channel",
         start_utc=start,
         end_utc=start + datetime.timedelta(minutes=11),
-        fields={
-            "power_w": lambda ts, _: 1200.0,
-            "energy_wh": lambda ts, _: 20.0,
-        },
+        fields={"power_w": lambda ts, _: 1200.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:2"]},
     )
@@ -504,10 +576,7 @@ def test_refoss_gap_intervals_detects_short_gap_tier1():
         measurement="refoss.channel",
         start_utc=start + datetime.timedelta(minutes=13),
         end_utc=start + datetime.timedelta(minutes=21),
-        fields={
-            "power_w": lambda ts, _: 1200.0,
-            "energy_wh": lambda ts, _: 20.0,
-        },
+        fields={"power_w": lambda ts, _: 1200.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:2"]},
     )
@@ -528,10 +597,7 @@ def test_refoss_gap_intervals_detects_tier4_long_gap():
         measurement="refoss.channel",
         start_utc=start,
         end_utc=start + datetime.timedelta(minutes=30),
-        fields={
-            "power_w": lambda ts, _: 1200.0,
-            "energy_wh": lambda ts, _: 20.0,
-        },
+        fields={"power_w": lambda ts, _: 1200.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:2"]},
     )
@@ -540,10 +606,7 @@ def test_refoss_gap_intervals_detects_tier4_long_gap():
         measurement="refoss.channel",
         start_utc=start + datetime.timedelta(hours=4, minutes=30),
         end_utc=start + datetime.timedelta(hours=5),
-        fields={
-            "power_w": lambda ts, _: 1200.0,
-            "energy_wh": lambda ts, _: 20.0,
-        },
+        fields={"power_w": lambda ts, _: 1200.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:2"]},
     )
@@ -566,10 +629,7 @@ def test_refoss_gap_intervals_only_hvac_channels():
         measurement="refoss.channel",
         start_utc=start,
         end_utc=start + datetime.timedelta(hours=1),
-        fields={
-            "power_w": lambda ts, _: 1200.0,
-            "energy_wh": lambda ts, _: 20.0,
-        },
+        fields={"power_w": lambda ts, _: 1200.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:2"]},
     )
@@ -578,10 +638,7 @@ def test_refoss_gap_intervals_only_hvac_channels():
         measurement="refoss.channel",
         start_utc=start,
         end_utc=start + datetime.timedelta(minutes=20),
-        fields={
-            "power_w": lambda ts, _: 800.0,
-            "energy_wh": lambda ts, _: 13.0,
-        },
+        fields={"power_w": lambda ts, _: 800.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:1"]},
     )
@@ -589,10 +646,7 @@ def test_refoss_gap_intervals_only_hvac_channels():
         measurement="refoss.channel",
         start_utc=start + datetime.timedelta(minutes=30),
         end_utc=start + datetime.timedelta(minutes=60),
-        fields={
-            "power_w": lambda ts, _: 800.0,
-            "energy_wh": lambda ts, _: 13.0,
-        },
+        fields={"power_w": lambda ts, _: 800.0},
         cadence=datetime.timedelta(minutes=1),
         tags={"channel": ["em:1"]},
     )

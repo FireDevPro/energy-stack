@@ -1300,6 +1300,305 @@ def test_phase5_oracle_perfect_detector_per_scope_with_tn(
         assert float(r["fnr"]) == pytest.approx(0.0)
 
 
+# ----------------------------------------------------------------------
+# Gap-coverage patches per audit (PR #94 patch round)
+# ----------------------------------------------------------------------
+
+def test_audit_ambiguous_summer_year_emits_reason(tmp_path, monkeypatch):
+    """Pre-audit gap: the AMBIGUOUS_SUMMER_YEAR path was wired in
+    `_load_pjm_5cp_hours` (via the `_AmbiguousSummerYear` sentinel)
+    but no test triggered it. A bundle whose pjm.coincident_peak
+    parquet carries two distinct summer_year tags must yield
+    AMBIGUOUS_SUMMER_YEAR for every Stage 6 output that depends on
+    summer_year (Layer 1, Layer 2, Layer 3, detector).
+    """
+    from tools.analysis.replay.reason_codes import ReasonCode
+    # Two summers in the same bundle: summer_year tags "2025" and "2026".
+    peak_2025 = datetime.datetime(2025, 7, 15, 22, 0, tzinfo=datetime.timezone.utc)
+    peak_2026 = datetime.datetime(2026, 7, 14, 22, 0, tzinfo=datetime.timezone.utc)
+    pjm_df = pd.concat([
+        _build_pjm_5cp_df(summer_year=2025, peak_hours_utc=[peak_2025]),
+        _build_pjm_5cp_df(summer_year=2026, peak_hours_utc=[peak_2026]),
+    ], ignore_index=True)
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={"pjm.coincident_peak": pjm_df},
+        window_start_ct="2025-06-01T00:00:00-05:00",
+        window_end_ct="2026-09-30T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+    assignment_csv = tmp_path / "assignment.csv"
+    _write_assignment_csv(assignment_csv, [])
+    monkeypatch.setattr(pipeline, "ASSIGNMENT_CSV_PATH", assignment_csv)
+
+    pipeline.stage6_o2(stage1_dir, tmp_path)
+
+    # All four CSVs header-only.
+    for name in ("o2_layer1.csv", "o2_layer2.csv",
+                 "o2_layer3.csv", "detector_accuracy.csv"):
+        with open(tmp_path / "stage6" / name) as f:
+            assert list(csv.DictReader(f)) == [], f"{name} expected header-only"
+
+    # AMBIGUOUS_SUMMER_YEAR present in reason_report.json.
+    import json
+    with open(tmp_path / "stage6" / "reason_report.json") as f:
+        entries = json.load(f)["entries"]
+    codes = {e["reason_code"] for e in entries}
+    assert ReasonCode.AMBIGUOUS_SUMMER_YEAR.value in codes
+
+
+def test_audit_layer2_branch1_invariant_all_scenarios_collapse_to_same_cplc(
+    tmp_path, monkeypatch,
+):
+    """Att. M-2 §2 branch 1: when ACustCPL >= ACustPL, the portfolio
+    denominator is unused. All three Layer 2 scenarios MUST return
+    identical CPLC per arm.
+
+    Setup forces branch 1 by making PJM peaks higher than ComEd peaks:
+      PJM peaks (both arms): 5.0 kW → ACustCPL_a = ACustCPL_b = 5.0
+      ComEd Arm A: 3 hours × 3.0 kW → ACustPL_a = 3.0 (< 5.0 → branch 1)
+      ComEd Arm B: 2 hours × 3.0 kW → ACustPL_b = 3.0 (< 5.0 → branch 1)
+
+    Expected: CPLC_a = CPLC_b = 5.0 kW across all three scenarios,
+    delta_kw = 0 for every scenario.
+    """
+    peak_a = datetime.datetime(2026, 6, 9, 22, 0, tzinfo=datetime.timezone.utc)
+    peak_b = datetime.datetime(2026, 6, 16, 23, 0, tzinfo=datetime.timezone.utc)
+    pjm_df = _build_pjm_5cp_df(
+        summer_year=2026, peak_hours_utc=[peak_a, peak_b],
+    )
+    comed_a_days = [
+        datetime.datetime(2026, 6, d, 22, 0, tzinfo=datetime.timezone.utc)
+        for d in (10, 11, 12)
+    ]
+    comed_b_days = [
+        datetime.datetime(2026, 6, d, 22, 0, tzinfo=datetime.timezone.utc)
+        for d in (17, 18)
+    ]
+    all_comed = comed_a_days + comed_b_days
+    metered_df = _build_metered_load_df([
+        {"ts": ts, "zone": "CE", "is_verified": True, "mw": 16500.0}
+        for ts in all_comed
+    ])
+
+    # PJM peaks @ 5.0 kW (em:1=3000, em:7=2000). ComEd @ 3.0 kW.
+    refoss_rows: list[dict] = []
+    for ts in (peak_a, peak_b):
+        for channel, w in [("em:1", 3000.0), ("em:7", 2000.0)]:
+            refoss_rows.append({
+                "_time": ts, "_measurement": "refoss.channel",
+                "_field": "power_w", "_value": w, "channel": channel,
+            })
+    for ts in all_comed:
+        for channel, w in [("em:1", 2000.0), ("em:7", 1000.0)]:
+            refoss_rows.append({
+                "_time": ts, "_measurement": "refoss.channel",
+                "_field": "power_w", "_value": w, "channel": channel,
+            })
+    refoss_df = pd.DataFrame(refoss_rows)
+    refoss_df["_time"] = pd.to_datetime(refoss_df["_time"], utc=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "pjm.coincident_peak": pjm_df,
+            "pjm.metered_load": metered_df,
+            "refoss.channel": refoss_df,
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+    assignment_csv = tmp_path / "assignment.csv"
+    _write_assignment_csv(assignment_csv, [
+        {"iso_week": "2026-W24", "monday_date": "2026-06-08", "arm": "A"},
+        {"iso_week": "2026-W25", "monday_date": "2026-06-15", "arm": "B"},
+    ])
+    monkeypatch.setattr(pipeline, "ASSIGNMENT_CSV_PATH", assignment_csv)
+
+    pipeline.stage6_o2(stage1_dir, tmp_path)
+
+    with open(tmp_path / "stage6" / "o2_layer2.csv") as f:
+        rows = list(csv.DictReader(f))
+    by_scenario = {r["scenario"]: r for r in rows}
+    assert set(by_scenario) == {"low", "anchor_2021", "high"}
+    # Branch 1 invariant: all three scenarios have identical CPLC.
+    cplc_a_values = {float(by_scenario[s]["cplc_kw_arm_a"])
+                     for s in ("low", "anchor_2021", "high")}
+    cplc_b_values = {float(by_scenario[s]["cplc_kw_arm_b"])
+                     for s in ("low", "anchor_2021", "high")}
+    assert len(cplc_a_values) == 1, f"branch 1 violated for arm A: {cplc_a_values}"
+    assert len(cplc_b_values) == 1, f"branch 1 violated for arm B: {cplc_b_values}"
+    # Exact branch 1 value: CPLC = ACustCPL = 5.0 kW for both arms.
+    assert next(iter(cplc_a_values)) == pytest.approx(5.0, abs=0.001)
+    assert next(iter(cplc_b_values)) == pytest.approx(5.0, abs=0.001)
+    # delta_kw = 0 across all scenarios in this symmetric setup.
+    for s in ("low", "anchor_2021", "high"):
+        assert float(by_scenario[s]["delta_kw"]) == pytest.approx(0.0, abs=0.001)
+
+
+def test_audit_layer2_inherits_insufficient_peaks_by_arm(
+    tmp_path, monkeypatch,
+):
+    """When Layer 1 fails with INSUFFICIENT_PEAKS_BY_ARM (only one arm
+    has PJM peaks), Layer 2 must also go header-only with the same
+    reason, even if ComEd 5CP is complete. Layer 2's arm-delta
+    arithmetic depends on the SAME arm partition that Layer 1 needs.
+    """
+    from tools.analysis.replay.reason_codes import ReasonCode
+    # Single PJM peak in Arm A week — leaves Arm B empty.
+    peak_a = datetime.datetime(2026, 6, 9, 22, 0, tzinfo=datetime.timezone.utc)
+    pjm_df = _build_pjm_5cp_df(
+        summer_year=2026, peak_hours_utc=[peak_a],
+    )
+    # Full ComEd 5CP (5 distinct CT days).
+    comed_hours = [
+        datetime.datetime(2026, 6, d, 22, 0, tzinfo=datetime.timezone.utc)
+        for d in (10, 11, 12, 17, 18)
+    ]
+    metered_df = _build_metered_load_df([
+        {"ts": ts, "zone": "CE", "is_verified": True, "mw": 16500.0}
+        for ts in comed_hours
+    ])
+    refoss_rows: list[dict] = []
+    for ts in [peak_a] + comed_hours:
+        for channel, w in [("em:1", 2000.0), ("em:7", 1500.0)]:
+            refoss_rows.append({
+                "_time": ts, "_measurement": "refoss.channel",
+                "_field": "power_w", "_value": w, "channel": channel,
+            })
+    refoss_df = pd.DataFrame(refoss_rows)
+    refoss_df["_time"] = pd.to_datetime(refoss_df["_time"], utc=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "pjm.coincident_peak": pjm_df,
+            "pjm.metered_load": metered_df,
+            "refoss.channel": refoss_df,
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+    assignment_csv = tmp_path / "assignment.csv"
+    _write_assignment_csv(assignment_csv, [
+        {"iso_week": "2026-W24", "monday_date": "2026-06-08", "arm": "A"},
+        {"iso_week": "2026-W25", "monday_date": "2026-06-15", "arm": "B"},
+    ])
+    monkeypatch.setattr(pipeline, "ASSIGNMENT_CSV_PATH", assignment_csv)
+
+    pipeline.stage6_o2(stage1_dir, tmp_path)
+
+    # Both Layer 1 AND Layer 2 header-only.
+    for name in ("o2_layer1.csv", "o2_layer2.csv"):
+        with open(tmp_path / "stage6" / name) as f:
+            assert list(csv.DictReader(f)) == [], f"{name} expected header-only"
+
+    # Both outputs in reason_report.json with INSUFFICIENT_PEAKS_BY_ARM.
+    import json
+    with open(tmp_path / "stage6" / "reason_report.json") as f:
+        entries = json.load(f)["entries"]
+    by_output = {e["output_file"]: e["reason_code"] for e in entries}
+    assert by_output["o2_layer1.csv"] == ReasonCode.INSUFFICIENT_PEAKS_BY_ARM.value
+    assert by_output["o2_layer2.csv"] == ReasonCode.INSUFFICIENT_PEAKS_BY_ARM.value
+
+
+def test_audit_tariff_missing_capacity_year_emits_reason(
+    tmp_path, monkeypatch,
+):
+    """When tariff_constants.json has no entry for the required
+    capacity year (summer_year + 1), Stage 6 must NOT crash. It
+    emits NO_TARIFF_FOR_CAPACITY_YEAR for the affected layers and
+    proceeds with header-only output.
+
+    summer_year=2027 → capacity_year=2028. The locked JSON only
+    has rate entries for 2026 and 2027, so 2028 raises KeyError
+    inside TariffConstants.load — the loader catches it and
+    converts to a reason code.
+    """
+    from tools.analysis.replay.reason_codes import ReasonCode
+    peak_2027 = datetime.datetime(2027, 7, 15, 22, 0, tzinfo=datetime.timezone.utc)
+    pjm_df = _build_pjm_5cp_df(
+        summer_year=2027, peak_hours_utc=[peak_2027],
+    )
+    # Provide enough other inputs that Layer 1 would otherwise succeed.
+    refoss_rows = [
+        {"_time": peak_2027, "_measurement": "refoss.channel",
+         "_field": "power_w", "_value": 2000.0, "channel": "em:1"},
+        {"_time": peak_2027, "_measurement": "refoss.channel",
+         "_field": "power_w", "_value": 1500.0, "channel": "em:7"},
+    ]
+    refoss_df = pd.DataFrame(refoss_rows)
+    refoss_df["_time"] = pd.to_datetime(refoss_df["_time"], utc=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "pjm.coincident_peak": pjm_df,
+            "refoss.channel": refoss_df,
+        },
+        window_start_ct="2027-06-01T00:00:00-05:00",
+        window_end_ct="2027-09-30T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+    # Inject a 2027 Monday into the assignment CSV so partition succeeds
+    # for at least one arm (still produces INSUFFICIENT_PEAKS_BY_ARM
+    # eventually, but the tariff guard should fire FIRST). To isolate
+    # the tariff path, give peak both arms by adding a second peak.
+    peak_2027_b = datetime.datetime(
+        2027, 7, 22, 22, 0, tzinfo=datetime.timezone.utc,
+    )
+    pjm_df_full = _build_pjm_5cp_df(
+        summer_year=2027, peak_hours_utc=[peak_2027, peak_2027_b],
+    )
+    refoss_rows.extend([
+        {"_time": peak_2027_b, "_measurement": "refoss.channel",
+         "_field": "power_w", "_value": 2000.0, "channel": "em:1"},
+        {"_time": peak_2027_b, "_measurement": "refoss.channel",
+         "_field": "power_w", "_value": 1500.0, "channel": "em:7"},
+    ])
+    refoss_df_full = pd.DataFrame(refoss_rows)
+    refoss_df_full["_time"] = pd.to_datetime(refoss_df_full["_time"], utc=True)
+    # Rewrite the bundle with the full inputs.
+    import shutil
+    shutil.rmtree(stage1_dir)
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "pjm.coincident_peak": pjm_df_full,
+            "refoss.channel": refoss_df_full,
+        },
+        window_start_ct="2027-06-01T00:00:00-05:00",
+        window_end_ct="2027-09-30T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+    assignment_csv = tmp_path / "assignment.csv"
+    _write_assignment_csv(assignment_csv, [
+        # Two 2027 Mondays alternating arms.
+        {"iso_week": "2027-W28", "monday_date": "2027-07-12", "arm": "A"},
+        {"iso_week": "2027-W29", "monday_date": "2027-07-19", "arm": "B"},
+    ])
+    monkeypatch.setattr(pipeline, "ASSIGNMENT_CSV_PATH", assignment_csv)
+
+    # Must NOT crash.
+    pipeline.stage6_o2(stage1_dir, tmp_path)
+
+    # Layer 1 header-only with NO_TARIFF_FOR_CAPACITY_YEAR.
+    with open(tmp_path / "stage6" / "o2_layer1.csv") as f:
+        assert list(csv.DictReader(f)) == []
+    import json
+    with open(tmp_path / "stage6" / "reason_report.json") as f:
+        entries = json.load(f)["entries"]
+    by_output = {e["output_file"]: e["reason_code"] for e in entries}
+    assert by_output["o2_layer1.csv"] == \
+        ReasonCode.NO_TARIFF_FOR_CAPACITY_YEAR.value
+
+
 def test_phase1_layer1_header_only_when_only_one_arm_has_peaks(tmp_path, monkeypatch):
     """Zero-arm-guard companion test. One peak hour falls in an Arm A
     week only; Arm B has zero peaks. Layer 1 must NOT report a real

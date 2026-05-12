@@ -50,6 +50,7 @@ class ReasonCode(str, enum.Enum):
     NO_PJM_5CP_HOURS_IN_WINDOW = "no_pjm_5cp_hours_in_window"
     AMBIGUOUS_SUMMER_YEAR = "ambiguous_summer_year"
     INSUFFICIENT_PEAKS_BY_ARM = "insufficient_peaks_by_arm"
+    NO_TARIFF_FOR_CAPACITY_YEAR = "no_tariff_for_capacity_year"
     NO_COMED_BILLS_IN_WINDOW = "no_comed_bills_in_window"
     NO_REFOSS_MAINS_IN_WINDOW = "no_refoss_mains_in_window"
     NO_COMED_5CP_HOURS_IN_WINDOW = "no_comed_5cp_hours_in_window"

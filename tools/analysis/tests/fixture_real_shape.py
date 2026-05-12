@@ -84,11 +84,18 @@ def build_refoss_channel_df(
     power_w_by_channel: dict[str, float] | None = None,
     cadence_minutes: int = 1,
 ) -> pd.DataFrame:
-    """Per-channel refoss.channel data at 1-min cadence (configurable).
+    """Per-channel refoss.channel data matching production shape.
+
+    Production refoss-poller writes ``power_w`` (instantaneous) plus
+    cumulative session counters (``day_energy_kwh`` etc.). It does
+    NOT write a per-interval ``energy_wh`` field, so this fixture
+    emits only ``power_w``. Stage 2/3 loaders derive hourly kWh by
+    averaging ``power_w`` within each hour bucket and integrating
+    across 1 h.
 
     `power_w_by_channel`: dict like {"em:1": 800, "em:2": 1200, ...}
-    giving the constant power_w to emit for each channel. Defaults to
-    a plausible mains + HVAC load profile.
+    giving the constant power_w to emit for each channel. Defaults
+    to a plausible mains + HVAC load profile.
     """
     power_w_by_channel = power_w_by_channel or {
         "em:1": 800.0,    # mains leg 1
@@ -102,15 +109,11 @@ def build_refoss_channel_df(
     def power_w(ts, tag_combo):
         return power_w_by_channel[tag_combo["channel"]]
 
-    def energy_wh(ts, tag_combo):
-        # energy_wh accumulates: power_w * (cadence_min / 60.0)
-        return power_w_by_channel[tag_combo["channel"]] * (cadence_minutes / 60.0)
-
     return build_long_format_df(
         measurement="refoss.channel",
         start_utc=start_utc,
         end_utc=end_utc,
-        fields={"power_w": power_w, "energy_wh": energy_wh},
+        fields={"power_w": power_w},
         cadence=datetime.timedelta(minutes=cadence_minutes),
         tags={"channel": channels},
     )

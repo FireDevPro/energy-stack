@@ -795,8 +795,17 @@ def _refoss_weekly_hvac_kwh(
     refoss_df: "pd.DataFrame",
     week_start_ct: datetime.date,
 ) -> float:
-    """Sum HVAC-channel (em:2+em:8+em:9) energy_wh over one CT week,
-    convert to kWh. Returns 0.0 if no rows match the filter."""
+    """Total HVAC-channel (em:2+em:8+em:9) energy over one CT week, in kWh.
+
+    Production refoss writes ``power_w`` (instantaneous, ~30 s cadence)
+    plus cumulative session counters (``day_energy_kwh`` etc.). It does
+    NOT write a per-interval ``energy_wh`` field. So energy is derived
+    from power: mean ``power_w`` within each (hour, channel) bucket
+    gives average kW for that hour; integrating over 1 h gives kWh;
+    summed across HVAC channels and across the 168-hour week.
+
+    Returns 0.0 if no rows match the filter.
+    """
     if len(refoss_df) == 0:
         return 0.0
     week_start_utc = _ct_date_to_utc(week_start_ct, 0)
@@ -804,13 +813,20 @@ def _refoss_weekly_hvac_kwh(
         week_start_ct + datetime.timedelta(days=7), 0,
     )
     mask = (
-        (refoss_df["_field"] == "energy_wh")
+        (refoss_df["_field"] == "power_w")
         & (refoss_df["channel"].isin(HVAC_CHANNELS))
         & (refoss_df["_time"] >= week_start_utc)
         & (refoss_df["_time"] < week_end_utc)
     )
-    total_wh = float(refoss_df.loc[mask, "_value"].sum())
-    return total_wh / 1000.0
+    sub = refoss_df.loc[mask]
+    if len(sub) == 0:
+        return 0.0
+    hours = sub["_time"].dt.floor("h")
+    # Mean watts per (hour, channel) → kWh = mean_kW × 1 h.
+    per_bucket_kwh = (
+        sub.groupby([hours, sub["channel"]])["_value"].mean() / 1000.0
+    )
+    return float(per_bucket_kwh.sum())
 
 
 def _hourly_price_observation_counts(
@@ -1977,9 +1993,15 @@ def _stage3_hourly_refoss_kwh(
     week_start_ct: datetime.date,
     channels: frozenset[str],
 ) -> list[dict]:
-    """168 hourly aggregates of refoss energy_wh for the given channels.
+    """168 hourly kWh aggregates for the given refoss channels.
 
-    Returns dicts with ``hour_of_day_ct`` (0-23) and ``hvac_kwh``
+    Production refoss writes ``power_w`` (instantaneous, ~30 s cadence);
+    there is no per-interval ``energy_wh`` field. Energy per hour is
+    derived as mean(``power_w``) within each (hour, channel) bucket
+    (→ avg kW), summed across channels in ``channels`` (→ total kW
+    for that hour), times 1 h.
+
+    Returns 168 dicts with ``hour_of_day_ct`` (0-23) and ``hvac_kwh``
     (energy in that hour, kWh). Mains aggregation uses the same shape
     but channels={em:1, em:7}; HVAC uses channels={em:2, em:8, em:9}.
 
@@ -1995,13 +2017,13 @@ def _stage3_hourly_refoss_kwh(
     week_end_utc = _ct_date_to_utc(
         week_start_ct + datetime.timedelta(days=7), 0,
     )
-    energy_mask = (
-        (refoss_df["_field"] == "energy_wh")
+    mask = (
+        (refoss_df["_field"] == "power_w")
         & (refoss_df["channel"].isin(channels))
         & (refoss_df["_time"] >= week_start_utc)
         & (refoss_df["_time"] < week_end_utc)
     )
-    sub = refoss_df.loc[energy_mask].copy()
+    sub = refoss_df.loc[mask].copy()
     if len(sub) == 0:
         return [
             {"hour_of_day_ct": h % 24, "hvac_kwh": 0.0}
@@ -2010,13 +2032,18 @@ def _stage3_hourly_refoss_kwh(
     sub["_hour_of_week"] = (
         (sub["_time"] - week_start_utc).dt.total_seconds() // 3600
     ).astype(int)
-    sums = sub.groupby("_hour_of_week")["_value"].sum()
+    # Per (hour_of_week, channel) mean power_w → kW → kWh for that hour.
+    per_bucket_kwh = (
+        sub.groupby(["_hour_of_week", "channel"])["_value"].mean() / 1000.0
+    )
+    # Sum across channels for each hour_of_week.
+    hourly_kwh = per_bucket_kwh.groupby(level=0).sum()
     result: list[dict] = []
     for hour_of_week in range(168):
-        wh = float(sums.get(hour_of_week, 0.0))
+        kwh = float(hourly_kwh.get(hour_of_week, 0.0))
         result.append({
             "hour_of_day_ct": hour_of_week % 24,
-            "hvac_kwh": wh / 1000.0,
+            "hvac_kwh": kwh,
         })
     return result
 
@@ -2991,17 +3018,28 @@ def _load_stage6_inputs(
                     from tools.o2_capacity_reconstruction.reconstruct import (
                         TariffConstants,
                     )
-                    tariff = TariffConstants.load_for_summer_year(summer_year)
-                    layer1_result = {
-                        "data": {
-                            "pjm_peak_hours_by_arm": by_arm,
-                            "hourly_mains_kw": hourly_kw,
-                            "capacity_rate_dollars_per_kw_month":
-                                tariff.rate_dollars_per_kw_month,
-                            "summer_year": summer_year,
-                            "tariff_constants": tariff,
-                        },
-                    }
+                    try:
+                        tariff = TariffConstants.load_for_summer_year(summer_year)
+                    except KeyError:
+                        # tariff_constants.json has no entry for the
+                        # required capacity year (summer_year + 1). Don't
+                        # crash; emit a reason so replay validation can
+                        # continue and the audit trail records why.
+                        layer1_result = {
+                            "reason_code":
+                                ReasonCode.NO_TARIFF_FOR_CAPACITY_YEAR,
+                        }
+                    else:
+                        layer1_result = {
+                            "data": {
+                                "pjm_peak_hours_by_arm": by_arm,
+                                "hourly_mains_kw": hourly_kw,
+                                "capacity_rate_dollars_per_kw_month":
+                                    tariff.rate_dollars_per_kw_month,
+                                "summer_year": summer_year,
+                                "tariff_constants": tariff,
+                            },
+                        }
 
     # --- Layer 2: ComEd 5CP + tariff scenarios ----------------------
     layer2_result: dict | None = None
