@@ -84,42 +84,115 @@ without operator intervention.
       end-to-end on the real-shape replay export (criterion 14) under
       the frozen env without operator intervention, producing the
       Stage 1-9 output tree that is tar'd into the OSF attachment.
-  14. ✅ **Real-data replay validation** — three coordinated sub-gates
-      that together satisfy what was previously phrased as "2025
-      replay." That earlier phrasing over-promised: measurements
-      introduced after summer 2025 (`hvac.5cp_state`,
-      `hvac.price_overlay`, `hvac.arm_transitions`, `ecowitt.weather`)
-      have no 2025 history and cannot be retroactively replayed.
+  14. ✅ **Real-data replay validation** — the replay bundle is composed
+      of four explicitly-labeled source types, the pipeline runs
+      end-to-end on it, every output carries machine-readable
+      provenance, and the bundle includes at least some real observed
+      data. Replaces the prior "three sub-gates" framing with a
+      sharper source-type-per-row model that's auditable from the
+      manifest alone.
 
-      a. **Real-shape replay**: a recent (last 2-4 weeks) live Influx
-         export exists at a recorded path with SHA-256 manifest. Proves
-         the analysis loaders handle actual measurement names, tags,
-         null patterns, cadence, and parquet shape on data the system
-         is actively writing. Pre-randomization-start dates are
-         acceptable for this gate; the experimental layer hasn't
-         cycled yet but the production schemas have.
+      ### Source types
 
-      b. **Historical replay (partial)**: where 2025-era source data
-         exists in the repo (ComEd RTP prices at
-         `tools/comed_2025_analysis/data/*`, NWS forecasts archived
-         alongside) the corresponding pipeline-stage loaders process
-         it without error. Post-2025-only measurements are exempt;
-         their loader validation comes from sub-gate (a).
+      The bundle's manifest records one source type **per manifest
+      entry**, and entries are traceable to stage-output provenance.
+      A single measurement (e.g., `ecowitt.weather`) may have multiple
+      manifest entries with different source types — for example, an
+      `observed_recent` entry for the window since 2026-05-11 when
+      the Ecowitt receiver deployed, and a
+      `weather_derived_compatibility` entry covering the earlier
+      window where Ecowitt didn't exist. Each entry's source type
+      is exactly one of:
 
-      c. **Filing gate (end-to-end execution)**: Stage 1-9 pipeline
-         runs end-to-end on the real-shape replay export. Every stage
-         writes its declared schema. Loader-derived stages contain
-         non-empty rows where the exported data include the required
-         source measurements. Any empty downstream outcome tables
-         (e.g., Stage 7 sced_pvalues when the export window contains
-         no arm cycling) MUST include a machine-readable reason code
-         identifying which input was missing or insufficient.
-         Synthetic-fixture-only execution does not satisfy this gate.
+      - **`observed_historical`**: real data from a historical period;
+        the measurement existed back then. Examples: 2025 PJM
+        inst_load / metered_load / 5CP, ComEd RTP, KORD ASOS or NWS
+        historical observations, archived Refoss if available.
+
+      - **`observed_recent`**: real telemetry written by services
+        whose history doesn't reach back to 2025. Examples:
+        post-2026-05-11 `ecowitt.weather`, current `hvac.5cp_state`,
+        `hvac.price_overlay`, `hvac.arm_transitions`,
+        `hvac.precool_window`.
+
+      - **`weather_derived_compatibility`**: synthetic Ecowitt-shaped
+        rows built from a historical weather source (preferred: KORD
+        ASOS 5-min routines for cadence match; fallback: ERA5-Land
+        hourly with interpolation). Used to fill the pre-2026-05-11
+        gap where Ecowitt didn't yet exist. NOT a claim that Ecowitt
+        observed these conditions; explicitly labeled in the manifest
+        so reviewers can distinguish derived rows from sensor truth.
+
+      - **`injected_validation_case`**: synthetic rows for path
+        coverage of conditions that won't fire naturally during the
+        pre-tag build window. The locked case list lives at
+        [`docs/REPLAY_VALIDATION.md`](REPLAY_VALIDATION.md). NOT a
+        claim about historical events; the rows test that the
+        pipeline handles the data-shape, dirty-data, and reason-code
+        paths correctly.
+
+      ### Bundle-level minimum
+
+      The bundle MUST contain at least some real observed data
+      (`observed_historical` OR `observed_recent`). A purely-synthetic
+      bundle does not satisfy the gate; it would be a synthetic test
+      wearing a replay hat. Specifically: at least one measurement
+      must have ≥1 `observed_*` row in its entries.
+
+      ### Filing gate (end-to-end execution)
+
+      Stage 1-9 pipeline runs end-to-end on the bundle. Every stage
+      writes its declared schema. Loader-derived stages contain
+      non-empty rows where the source data (any source type)
+      supports it.
+
+      ### Per-output provenance
+
+      Every stage output carries a machine-readable provenance
+      sidecar at `<stage>/provenance.json` listing which source types
+      contributed to its computation:
+      ```json
+      {
+        "outputs": {
+          "qualifying_weeks.csv": {
+            "input_source_types": ["observed_recent", "injected_validation_case"],
+            "row_source_breakdown": {
+              "from_observed": 2,
+              "from_injected": 3
+            }
+          }
+        }
+      }
+      ```
+      An output that ran entirely on `injected_validation_case` rows
+      is NOT rejected by the gate — but it's labeled as such, so a
+      future reviewer reading the bundle can tell which numbers trace
+      to real-world conditions vs validation-case synthetic conditions.
+
+      Any empty downstream outcome table MUST include a machine-
+      readable reason code in `<stage>/reason_report.json` per the
+      enumeration in `tools/analysis/replay/reason_codes.py`.
+      Examples of legitimate empty-output cases:
+      - No PJM-published 5CP hours yet (annual, mid-October release):
+        `no_pjm_5cp_hours_in_window`
+      - Pre-randomization window: `no_arm_assignments_in_window`
+      - Single arm in window: `single_arm_in_window`
 
       Companion edit: ANALYSIS_PIPELINE.md §6 originally listed
       "all Stage scripts present and runnable on a 2025 replay dump"
-      as an acceptance criterion; that phrasing has been updated to
-      match the three-sub-gate framing here.
+      as an acceptance criterion; updated to match the four-source
+      framing here.
+
+      ### Honest scoping note
+
+      Some natural-firing paths can't be validated against real data
+      before OSF tag because they only activate during the experiment:
+      arm transitions, summer 5CP events, scarcity-tier price
+      reactions, post-summer published 5CP hours. The
+      `injected_validation_case` source type explicitly covers these.
+      The locked methodology depends on the locked methodology text +
+      per-output provenance, NOT on a claim that we ran the
+      experiment before it started.
 
 If any of these is incomplete by 2026-05-30, OSF filing slips and
 randomization start date moves accordingly.

@@ -301,16 +301,27 @@ A pipeline run is reproducible if:
 Before OSF filing (target 2026-05-30):
 
 - [x] All Stage scripts present
-- [ ] All Stage scripts runnable on a **real-shape replay export** of
-      recent live Influx data (per [OSF_FILING.md criterion 14](OSF_FILING.md#acceptance-criteria-pre-flight-checklist)),
-      with non-empty rows wherever the exported window contains the
-      required source measurements and machine-readable reason codes
-      for downstream stages where input is legitimately absent
-      (e.g., no arm cycling pre-randomization → Stage 7 empty with
-      reason `no_arm_assignments_in_window`). The earlier phrasing
-      "runnable on a 2025 replay dump" over-promised: post-2025
-      measurements (`hvac.5cp_state`, `hvac.price_overlay`,
-      `hvac.arm_transitions`, `ecowitt.weather`) have no 2025 history.
+- [ ] All Stage scripts runnable on a **replay bundle** composed of the
+      four labeled source types defined in [OSF_FILING.md criterion 14](OSF_FILING.md#acceptance-criteria-pre-flight-checklist):
+      `observed_historical`, `observed_recent`,
+      `weather_derived_compatibility`, and
+      `injected_validation_case`. Each parquet entry in the bundle's
+      manifest is labeled with exactly one source type. Each stage
+      output carries a per-output provenance sidecar identifying
+      which source types contributed. Stages produce non-empty rows
+      where source data exists (any type) and machine-readable
+      reason codes where it doesn't (e.g., no arm cycling pre-
+      randomization → Stage 7 empty with reason
+      `no_arm_assignments_in_window`). The bundle must contain at
+      least some real observed data (`observed_historical` OR
+      `observed_recent`); purely-synthetic bundles do not satisfy
+      the gate.
+
+      The locked injection-case list lives at
+      [`docs/REPLAY_VALIDATION.md`](REPLAY_VALIDATION.md). The
+      earlier wording "runnable on a 2025 replay dump" was incorrect
+      for post-2025 measurements that have no 2025 history; the
+      four-source framing is the current locked phrasing.
 - [x] `pytest tools/analysis/tests/` green against synthetic fixtures
 - [x] `spread_constants.json` locked (`PLACEHOLDER: false`, computed 2026-05-11 from 2024-2025 RTP+LMP data spanning 5,840 hours)
 - [x] `tariff_constants.json` locked (`PLACEHOLDER: false`, locked 2026-05-11; ComEdNPL, AComEdCPL, capacity rate from primary sources; portfolio_sum reported across three pre-registered named scenarios with FERC ER22-1520-001 anchor — see [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md))
