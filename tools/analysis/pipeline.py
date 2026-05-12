@@ -600,6 +600,7 @@ class _StageRowResult:
     row: dict[str, Any]
     imputed_intervals: list[dict]
     outages: list[dict]
+    qualifying_days: list[dict]
 
 
 def _apply_rules_for_week(inputs: dict) -> _StageRowResult:
@@ -699,7 +700,52 @@ def _apply_rules_for_week(inputs: dict) -> _StageRowResult:
     for entry in (r9.intervals_log or []):
         outages.append({"date": entry["date"], "kind": "vacation"})
 
-    return _StageRowResult(row=row, imputed_intervals=imputed_intervals, outages=outages)
+    # Day-level exclusion data for Stage 8 daily decomposition.
+    # Independent of Rule 8's week-level P_i (which uses the broader
+    # "any day with outage" rule7_outage_days set above): a day is
+    # excluded for Stage 8 IFF a scheduler outage overlaps a
+    # control-relevant window on that day.
+    rule5_weather_gap_days = {
+        week_start_ct + datetime.timedelta(days=i)
+        for i, h in enumerate(inputs["daily_ecowitt_both_missing_hours"])
+        if h > RULE5_DROP_HOURS_GT
+    }
+    rule7_outage_in_crw_days: set[datetime.date] = set()
+    for o_start, o_end in inputs["scheduler_outages"]:
+        for cw_start, cw_end in inputs["control_relevant_windows"]:
+            i_start = max(o_start, cw_start)
+            i_end = min(o_end, cw_end)
+            if i_start < i_end:
+                cur = i_start.date()
+                last = i_end.date()
+                while cur <= last:
+                    rule7_outage_in_crw_days.add(cur)
+                    cur += datetime.timedelta(days=1)
+
+    qualifying_days: list[dict] = []
+    for i in range(7):
+        d = week_start_ct + datetime.timedelta(days=i)
+        sources: list[str] = []
+        if d in rule1_tier4_days:
+            sources.append("rule1_tier4")
+        if d in rule5_weather_gap_days:
+            sources.append("rule5_weather_gap")
+        if d in rule7_outage_in_crw_days:
+            sources.append("rule7_scheduler_outage")
+        if d in rule9_vacation_days:
+            sources.append("rule9_vacation")
+        qualifying_days.append({
+            "date": d,
+            "included": len(sources) == 0,
+            "exclusion_source": ";".join(sorted(sources)),
+        })
+
+    return _StageRowResult(
+        row=row,
+        imputed_intervals=imputed_intervals,
+        outages=outages,
+        qualifying_days=qualifying_days,
+    )
 
 
 def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
@@ -728,6 +774,7 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
     qual_path = stage_dir / "qualifying_weeks.csv"
     imputed_path = stage_dir / "imputed_intervals.csv"
     outages_path = stage_dir / "outages.csv"
+    qualifying_days_path = stage_dir / "qualifying_days.csv"
 
     # Build per-week inputs from Stage 1 parquet. When no Stage 1 data
     # is present (e.g., the schema-only unit test), emit empty CSVs with
@@ -763,13 +810,20 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
             result = _apply_rules_for_week(inputs)
             w.writerow({k: result.row.get(k) for k in QUALIFYING_WEEKS_LOCKED_COLUMNS})
 
-    # Imputed intervals + outages: collect across all weeks
+    # Imputed intervals + outages + qualifying days: collect across all weeks
     all_imputed: list[dict] = []
     all_outages: list[dict] = []
+    all_qualifying_days: list[tuple[str, str, list[dict]]] = []
     for inputs in week_inputs:
         result = _apply_rules_for_week(inputs)
         all_imputed.extend(result.imputed_intervals)
         all_outages.extend(result.outages)
+        if result.row.get("qualifying"):
+            all_qualifying_days.append((
+                result.row["week_start_ct"],
+                result.row["arm"],
+                result.qualifying_days,
+            ))
 
     with open(imputed_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -791,6 +845,21 @@ def stage2_quality(stage1_dir: Path, out_dir: Path) -> Path:
                 o.get("end", ""),
                 o.get("date", ""),
             ])
+
+    with open(qualifying_days_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "week_start_ct", "arm", "date", "included", "exclusion_source",
+        ])
+        for week_start_ct, arm, days in all_qualifying_days:
+            for d in days:
+                w.writerow([
+                    week_start_ct,
+                    arm,
+                    d["date"].isoformat(),
+                    str(d["included"]).lower(),
+                    d["exclusion_source"],
+                ])
 
     if reason_reports:
         write_reason_report(stage_dir, reason_reports)
@@ -3489,11 +3558,21 @@ def classify_spike_day(
     return "grid_event_spike"
 
 
+STAGE8_OUTCOMES = (
+    "o1_daily_hvac_dollars",
+    "o3_daily_peak_hvac_kw",
+    "o4_daily_mains_dollars",
+)
+STAGE8_OUTCOME_UNITS = {
+    "o1_daily_hvac_dollars": "dollars",
+    "o3_daily_peak_hvac_kw": "kw",
+    "o4_daily_mains_dollars": "dollars",
+}
 STAGE8_DECOMPOSITION_COLUMNS = (
-    "outcome", "category",
-    "arm_a_n_days", "arm_a_median_cost",
-    "arm_b_n_days", "arm_b_median_cost",
-    "delta_median",
+    "outcome", "unit", "category",
+    "arm_a_n_days", "arm_a_median_value",
+    "arm_b_n_days", "arm_b_median_value",
+    "delta_median_value",
 )
 STAGE8_LAYER_ATTRIBUTION_COLUMNS = (
     "date", "hour_ct", "arm",
@@ -3517,7 +3596,9 @@ def _load_stage8_inputs(
     Expected return dict shape:
       {
         "daily_records": list of dicts with keys:
-          date, arm, category, costs (dict: outcome -> $ for that day)
+          date, arm, category, outcomes (dict: Stage 8 outcome name ->
+          per-day value; see STAGE8_OUTCOMES / STAGE8_OUTCOME_UNITS for
+          the unit per outcome)
         "layer_attribution": list of dicts with keys:
           date, hour_ct, arm, layer_triggered, indoor_temp_f, action
       }
@@ -3530,48 +3611,81 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
 
     Output:
       - ``decomposition.csv``: per (outcome × category), arm A vs arm B
-        median day-level cost + B−A delta.
+        median daily value + B−A delta. Unit column distinguishes
+        dollars (o1, o4) from kW (o3).
       - ``layer_attribution.csv``: per grid-event day in Arm B, which
         layer triggered (``price_spike_reactivity``, ``5cp_detection``,
         or ``neither``) and the timing.
+      - ``reason_report.json``: per-cell reasons. Quiet-zero guard
+        emits INSUFFICIENT_ARM_DAYS_FOR_CATEGORY whenever exactly one
+        arm has zero days in an (outcome, category) cell — that cell
+        gets a row with blank delta + blank empty-arm median rather
+        than a misleading delta computed against 0.0.
     """
+    from tools.analysis.replay.reason_codes import (
+        ReasonCode, StageReasonReport, write_reason_report,
+    )
     stage_dir = out_dir / "stage8"
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     inputs = _load_stage8_inputs(stage1_dir, stage3_dir)
+    reason_reports: list[StageReasonReport] = []
 
     with open(stage_dir / "decomposition.csv", "w", newline="") as f:
         dw = csv.DictWriter(f, fieldnames=list(STAGE8_DECOMPOSITION_COLUMNS))
         dw.writeheader()
         if inputs is not None:
             daily = inputs.get("daily_records", [])
-            # Group costs by (outcome, category, arm)
-            for outcome in STAGE5_OUTCOMES:
+            for outcome in STAGE8_OUTCOMES:
                 for category in SPIKE_DAY_CATEGORIES:
-                    a_costs = [
-                        float(d["costs"][outcome]) for d in daily
+                    a_values = [
+                        float(d["outcomes"][outcome]) for d in daily
                         if d["arm"] == "A"
                         and d["category"] == category
-                        and outcome in d.get("costs", {})
+                        and outcome in d.get("outcomes", {})
                     ]
-                    b_costs = [
-                        float(d["costs"][outcome]) for d in daily
+                    b_values = [
+                        float(d["outcomes"][outcome]) for d in daily
                         if d["arm"] == "B"
                         and d["category"] == category
-                        and outcome in d.get("costs", {})
+                        and outcome in d.get("outcomes", {})
                     ]
-                    if not a_costs and not b_costs:
+                    if not a_values and not b_values:
+                        # Both arms zero: skip the row entirely.
                         continue
-                    a_med = float(np.median(a_costs)) if a_costs else 0.0
-                    b_med = float(np.median(b_costs)) if b_costs else 0.0
+                    a_n = len(a_values)
+                    b_n = len(b_values)
+                    a_med_str = (
+                        f"{float(np.median(a_values)):.6f}" if a_values else ""
+                    )
+                    b_med_str = (
+                        f"{float(np.median(b_values)):.6f}" if b_values else ""
+                    )
+                    if a_values and b_values:
+                        delta_str = (
+                            f"{(float(np.median(b_values)) - float(np.median(a_values))):.6f}"
+                        )
+                    else:
+                        # Quiet-zero: exactly one arm empty. Blank delta;
+                        # emit a per-cell reason rather than implying B-A
+                        # against 0.0.
+                        delta_str = ""
+                        reason_reports.append(StageReasonReport(
+                            stage="stage8",
+                            output_file="decomposition.csv",
+                            reason_code=ReasonCode.INSUFFICIENT_ARM_DAYS_FOR_CATEGORY,
+                            note=f"({outcome}, {category}): "
+                                 f"arm_a_n_days={a_n}, arm_b_n_days={b_n}",
+                        ))
                     dw.writerow({
                         "outcome": outcome,
+                        "unit": STAGE8_OUTCOME_UNITS[outcome],
                         "category": category,
-                        "arm_a_n_days": len(a_costs),
-                        "arm_a_median_cost": f"{a_med:.6f}",
-                        "arm_b_n_days": len(b_costs),
-                        "arm_b_median_cost": f"{b_med:.6f}",
-                        "delta_median": f"{(b_med - a_med):.6f}",
+                        "arm_a_n_days": a_n,
+                        "arm_a_median_value": a_med_str,
+                        "arm_b_n_days": b_n,
+                        "arm_b_median_value": b_med_str,
+                        "delta_median_value": delta_str,
                     })
 
     with open(stage_dir / "layer_attribution.csv", "w", newline="") as f:
@@ -3582,6 +3696,9 @@ def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> P
                 lw.writerow({
                     col: row.get(col, "") for col in STAGE8_LAYER_ATTRIBUTION_COLUMNS
                 })
+
+    if reason_reports:
+        write_reason_report(stage_dir, reason_reports)
 
     return stage_dir
 

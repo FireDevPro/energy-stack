@@ -63,6 +63,9 @@ class ReasonCode(str, enum.Enum):
     # Stage 8 / decomposition
     NO_PRICE_DATA_FOR_CLASSIFICATION = "no_price_data_for_classification"
     NO_GRID_EVENT_DAYS_IN_WINDOW = "no_grid_event_days_in_window"
+    NO_QUALIFYING_DAYS_FROM_STAGE3 = "no_qualifying_days_from_stage3"
+    NO_NWS_FORECAST_FOR_CLASSIFICATION = "no_nws_forecast_for_classification"
+    INSUFFICIENT_ARM_DAYS_FOR_CATEGORY = "insufficient_arm_days_for_category"
 
     # Stage 9 / sensitivities
     UPSTREAM_STAGES_EMPTY = "upstream_stages_empty"

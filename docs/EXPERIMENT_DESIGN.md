@@ -331,7 +331,7 @@ For the experimental period, classify each cooling-relevant day into:
 
 Report Arm B vs Arm A cost differences separately for each category. Specifically:
 
-- **Headline split:** matched-pair median Arm B - Arm A cost difference, decomposed by day classification.
+- **Headline split:** arm-level category-median Arm B - Arm A value difference per (outcome × category), decomposed by day classification. **Descriptive only** (not the matched-pair primary inference; the matched-pair Δ lives in Stage 5/Stage 7 over weekly aggregates). Stage 8 uses its own daily outcome names (`o1_daily_hvac_dollars`, `o3_daily_peak_hvac_kw`, `o4_daily_mains_dollars`) with an explicit unit column; daily DOLLARS, NOT $/CDD, so zero-CDD grid-event days remain in.
 - **Magnitude attribution:** what fraction of total observed savings (or additional costs) came from forecast-correlated days vs grid-event days.
 - **Layer attribution (descriptive):** for grid-event days specifically, log Arm B's response patterns — which layer triggered (price-spike reactivity vs 5CP detection vs neither), at what time, and what indoor temperature resulted.
 
@@ -360,7 +360,7 @@ The paper reports effect sizes with 95% CIs. It does not run a confirmatory hypo
 For each cooling season:
 
 1. **Headline:** matched-pair median O1 difference with bootstrap 95% CI, plus O2 Layer 1 (`ACustCPL` difference) $ delta with bootstrap 95% CI. O2 Layers 2 and 3 reported as descriptive side-tables.
-2. **Forecast-correlated vs grid-event decomposition** (per §7): Arm B - Arm A cost difference reported separately for forecast-correlated price-spike days, grid-event price-spike days, and no-spike days. Layer attribution (which Arm B layer triggered) reported for grid-event days specifically.
+2. **Forecast-correlated vs grid-event decomposition** (per §7): arm-level category-median Arm B - Arm A value difference reported separately for forecast-correlated price-spike days, grid-event price-spike days, and no-spike days (descriptive only; not the matched-pair primary inference). Layer attribution (which Arm B layer triggered) reported for grid-event days specifically.
 3. **Continuous-axis scatter plots:** matched-pair O1 difference on the y-axis vs each weather summary vector component on the x-axis. Lets readers see whether the effect varies systematically with weather severity.
 4. **Per-pair table:** every matched pair shown with its weather summary vector and outcome difference.
 5. **Within-day hourly profile** by arm, on cooling-relevant weeks only, descriptive only.

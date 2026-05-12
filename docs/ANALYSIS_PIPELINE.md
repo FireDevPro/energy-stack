@@ -121,6 +121,7 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 | `qualifying_weeks.csv` | `(week_start_ct, arm, qualifying:bool, exclusion_reason:str\|null, imputed_hvac_kwh_pct:float, imputed_price_hours_pct:float, override_operational_count:int, override_vacation_days:int)` |
 | `imputed_intervals.csv` | per-Tier 1-3 imputed interval log |
 | `outages.csv` | scheduler and Refoss outage spans with overlap flags |
+| `qualifying_days.csv` | `(week_start_ct, arm, date, included:bool, exclusion_source:str)`. One row per (qualifying-week × day-in-week), 7 rows per qualifying week. `exclusion_source` is empty when `included=true` and semicolon-joined alphabetical sources otherwise (`rule1_tier4` / `rule5_weather_gap` / `rule7_scheduler_outage` / `rule9_vacation`). Day-level rule 7 fires only when a scheduler outage overlaps a control-relevant window on that day, distinct from the broader week-level rule 7 set used by Rule 8 P_i. Consumed by Stage 8's daily decomposition; non-qualifying weeks are omitted. |
 
 **Per-rule notes:**
 
@@ -234,13 +235,15 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 
 **Function:** `pipeline.stage8_decomposition(...)`
 
-**Inputs:** Stage 3 weekly outcomes; daily classification using `nws.forecast` (21:00-prior issuance) and `comed.prices` hourly average.
+**Inputs:** Stage 2 `qualifying_days.csv` (day-level included/excluded), Stage 3 weekly outcomes, daily classification using `nws.forecast` (21:00-prior issuance) and `comed.prices` hourly average.
 
-**Logic:** Classify each day in each qualifying week into `forecast_correlated_spike`, `grid_event_spike`, or `no_spike` per the EXPERIMENT_DESIGN §7 definitions. Decompose the matched-pair median Δ for each category; report magnitude attribution.
+**Logic:** Classify each *included* day in each qualifying week (excluded days per Stage 2's `qualifying_days.csv` are dropped from the decomposition) into `forecast_correlated_spike`, `grid_event_spike`, or `no_spike` per the EXPERIMENT_DESIGN §7 definitions. Compute Stage-8-specific daily outcomes (`o1_daily_hvac_dollars`, `o3_daily_peak_hvac_kw`, `o4_daily_mains_dollars`) per included day, then report the arm-level category median per `(outcome × category)` cell with the Arm B − Arm A delta. **Descriptive only**; this is NOT the matched-pair primary inference (which is Stage 5/Stage 7 over weekly aggregates). Daily DOLLARS, NOT $/CDD: zero-CDD grid-event days remain in.
 
-Layer-attribution side-table for grid-event days: for each grid-event day in Arm B, log which Arm B layer triggered (`hvac.price_overlay.tier`, `hvac.5cp_state.state`) and the timing.
+Quiet-zero guard: when exactly one arm has zero days in a cell, the row is still written with the populated-arm median but with blank delta + blank empty-arm median, and an `INSUFFICIENT_ARM_DAYS_FOR_CATEGORY` entry lands in `stage8/reason_report.json`. Both-arms-zero cells are skipped entirely.
 
-**Output:** `out/<run>/stage8/decomposition.csv` + `out/<run>/stage8/layer_attribution.csv`
+Layer-attribution side-table for grid-event days: for each grid-event day in Arm B, log which Arm B layer triggered (`hvac.price_overlay` state-machine reconstruction with 24h lookback, `hvac.5cp_state.is_active` in-hour) and the timing. Five enum values for `layer_triggered`: `price_spike_reactivity`, `5cp_detection`, `both`, `neither`, `unknown` (the last for "no `hvac.price_overlay` transition in lookback").
+
+**Output:** `out/<run>/stage8/decomposition.csv` + `out/<run>/stage8/layer_attribution.csv` + `out/<run>/stage8/reason_report.json` (when guards fire) + `out/<run>/stage8/provenance.json` (in Phase 5).
 
 ### Stage 9 — Sensitivity analyses
 
@@ -276,6 +279,7 @@ filing_bundle_<commit>.tar.gz
 ├── layer_attribution.csv     (Stage 8)
 ├── sensitivity/              (Stage 9 individual files)
 ├── qualifying_weeks.csv      (Stage 2)
+├── qualifying_days.csv       (Stage 2; day-level inclusion for Stage 8)
 ├── matched_pairs.csv         (Stage 4)
 ├── data_quality_summary.md   (counts per §4 exclusion rule)
 └── commit_info.txt           (git rev, run_ts, dep hashes)

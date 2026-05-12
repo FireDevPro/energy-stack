@@ -102,7 +102,7 @@ def _stage3_week_inputs(week_start_ct: datetime.date, arm: str,
 
 def _stage8_inputs(weeks_a, weeks_b) -> dict:
     """Synthetic Stage 8 inputs: 4 weeks × 7 days = 28 days mixed across
-    the three spike categories. Arm B's per-day costs are 20% lower
+    the three spike categories. Arm B's per-day values are 20% lower
     than Arm A's (matching the Stage 3 fixture), so the per-category
     decomposition shows B − A < 0 medians.
     """
@@ -118,9 +118,7 @@ def _stage8_inputs(weeks_a, weeks_b) -> dict:
                     category = "grid_event_spike"
                 else:
                     category = "no_spike"
-                # Cost lower for arm B; differs per category just enough
-                # to give Stage 8 distinct medians per category.
-                base_cost = {
+                base_value = {
                     "forecast_correlated_spike": 3.50,
                     "grid_event_spike": 2.20,
                     "no_spike": 1.10,
@@ -130,10 +128,10 @@ def _stage8_inputs(weeks_a, weeks_b) -> dict:
                     "date": date,
                     "arm": arm,
                     "category": category,
-                    "costs": {
-                        "o1_dollars_per_cdd": base_cost * multiplier,
-                        "o3_peak_hvac_kw": (base_cost / 2) * multiplier,
-                        "o4_dollars_per_cdd_whole_home": (base_cost * 1.4) * multiplier,
+                    "outcomes": {
+                        "o1_daily_hvac_dollars": base_value * multiplier,
+                        "o3_daily_peak_hvac_kw": (base_value / 2) * multiplier,
+                        "o4_daily_mains_dollars": (base_value * 1.4) * multiplier,
                     },
                 })
 
@@ -439,12 +437,12 @@ def test_e2e_through_stage_8(full_pipeline_run):
     assert len(decomp) == 9, (
         f"Stage 8 should emit one row per (outcome × category); got {len(decomp)}"
     )
-    # Each row should have arm B with lower cost than arm A in the fixture
-    # (Arm B uses 20% less HVAC), so delta_median is negative everywhere.
+    # Each row should have arm B with lower value than arm A in the fixture
+    # (Arm B uses 20% less HVAC), so delta_median_value is negative everywhere.
     for r in decomp:
-        assert float(r["delta_median"]) < 0, (
-            f"{r['outcome']}/{r['category']} delta_median should be < 0 "
-            f"(Arm B uses less in fixture); got {r['delta_median']}"
+        assert float(r["delta_median_value"]) < 0, (
+            f"{r['outcome']}/{r['category']} delta_median_value should be < 0 "
+            f"(Arm B uses less in fixture); got {r['delta_median_value']}"
         )
     # Layer attribution: 2 grid-event days × 2 Arm B weeks = 4 rows
     with open(stage8 / "layer_attribution.csv") as f:

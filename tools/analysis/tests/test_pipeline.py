@@ -703,6 +703,106 @@ def test_stage2_apply_week_scheduler_outages_recorded():
     assert any(o.get("kind") == "scheduler_outage" for o in out.outages)
 
 
+def test_stage2_apply_week_qualifying_days_with_overlap():
+    """Acceptance (Phase 0 Stage 8 contract): `_apply_rules_for_week`
+    surfaces a per-day `qualifying_days` list with locked schema
+    `(date, included, exclusion_source)`. Multiple exclusion sources on
+    the same day are joined with semicolons in alphabetical order.
+    Included days have an empty `exclusion_source`.
+
+    Stage 8's daily decomposition must NOT see excluded days. This test
+    pins the upstream contract.
+    """
+    inputs = _happy_week_inputs()
+    week_start = datetime.date(2026, 6, 8)  # Monday
+
+    # Day 0 (Mon 06-08): vacation override AND scheduler outage that
+    # overlaps a control-relevant window -> rule7 AND rule9 both fire.
+    inputs["overrides"] = [
+        {"category": "vacation",
+         "start_ts": datetime.datetime(2026, 6, 8, 0, 0),
+         "end_ts": datetime.datetime(2026, 6, 8, 23, 59),
+         "setpoint_f": 82.0},
+    ]
+    inputs["scheduler_outages"] = [
+        (datetime.datetime(2026, 6, 8, 12, 0),
+         datetime.datetime(2026, 6, 8, 14, 0)),
+    ]
+    inputs["control_relevant_windows"] = [
+        (datetime.datetime(2026, 6, 8, 12, 0),
+         datetime.datetime(2026, 6, 8, 14, 0)),
+    ]
+
+    # Day 1 (Tue 06-09): Refoss tier 4 gap.
+    inputs["refoss_intervals"] = [
+        {"tier": 4, "imputed_kwh": 0.0,
+         "start_ts": datetime.datetime(2026, 6, 9, 10, 0),
+         "end_ts": datetime.datetime(2026, 6, 9, 14, 0)},
+    ]
+
+    # Day 2 (Wed 06-10): Rule 5 weather gap (>6h both-missing).
+    inputs["daily_ecowitt_both_missing_hours"] = [0, 0, 7, 0, 0, 0, 0]
+
+    out = pipeline._apply_rules_for_week(inputs)
+
+    assert hasattr(out, "qualifying_days"), (
+        "Stage 2 must expose day-level qualifying_days for Stage 8"
+    )
+    days = out.qualifying_days
+    assert len(days) == 7, f"expected 7 day rows, got {len(days)}"
+
+    # Locked schema columns
+    for d in days:
+        assert set(d.keys()) == {"date", "included", "exclusion_source"}, (
+            f"unexpected keys on day row: {d.keys()}"
+        )
+
+    # Days ordered Mon..Sun
+    expected_dates = [
+        week_start + datetime.timedelta(days=i) for i in range(7)
+    ]
+    assert [d["date"] for d in days] == expected_dates
+
+    # Day 0: vacation + scheduler-outage-in-CRW (alphabetical join)
+    assert days[0]["included"] is False
+    assert days[0]["exclusion_source"] == (
+        "rule7_scheduler_outage;rule9_vacation"
+    )
+
+    # Day 1: Refoss tier 4
+    assert days[1]["included"] is False
+    assert days[1]["exclusion_source"] == "rule1_tier4"
+
+    # Day 2: Rule 5 weather gap
+    assert days[2]["included"] is False
+    assert days[2]["exclusion_source"] == "rule5_weather_gap"
+
+    # Days 3-6 (Thu..Sun): included
+    for d in days[3:]:
+        assert d["included"] is True
+        assert d["exclusion_source"] == ""
+
+
+def test_stage2_apply_week_qualifying_days_scheduler_outage_outside_crw_does_not_exclude():
+    """Day-level rule7 exclusion fires ONLY when a scheduler outage
+    overlaps a control-relevant window. An outage entirely outside any
+    CRW does NOT exclude the day (the week may still qualify under
+    rule7's pass/fail; that's separate from day-level decomp exclusion).
+    """
+    inputs = _happy_week_inputs()
+    # Outage 03:00-03:30 on day 1, NO control-relevant windows.
+    inputs["scheduler_outages"] = [
+        (datetime.datetime(2026, 6, 9, 3, 0),
+         datetime.datetime(2026, 6, 9, 3, 30)),
+    ]
+    inputs["control_relevant_windows"] = []
+
+    out = pipeline._apply_rules_for_week(inputs)
+    days = out.qualifying_days
+    assert days[1]["included"] is True
+    assert days[1]["exclusion_source"] == ""
+
+
 # -- Stage 2 parquet-I/O wrapper -------------------------------------------
 
 
@@ -725,6 +825,115 @@ def test_stage2_quality_writes_locked_csv_schema_for_no_weeks(tmp_path):
         "imputed_hvac_kwh_pct", "imputed_price_hours_pct",
         "override_operational_count", "override_vacation_days",
     ]
+
+
+def test_stage2_quality_writes_qualifying_days_csv_with_locked_header(tmp_path):
+    """Phase 0 Stage 8 contract: stage2_quality emits qualifying_days.csv
+    with the locked 5-column schema even when no weeks qualify.
+    """
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage2_quality(stage1, tmp_path)
+    stage2 = tmp_path / "stage2"
+    assert (stage2 / "qualifying_days.csv").exists()
+    with open(stage2 / "qualifying_days.csv") as f:
+        header = next(csv.reader(f))
+    assert header == [
+        "week_start_ct", "arm", "date", "included", "exclusion_source",
+    ]
+
+
+def test_stage2_quality_writes_qualifying_days_csv_with_data(tmp_path, monkeypatch):
+    """Phase 0 self-audit gap-closer: orchestrator writes exactly 7
+    rows per qualifying week to qualifying_days.csv with correct
+    (week_start_ct, arm, date, included, exclusion_source) values.
+    Non-qualifying weeks are omitted entirely.
+
+    Fixture: one qualifying week (Arm B, day 1 = vacation, other 6
+    included) and one non-qualifying week (Arm A, 90-min outage fails
+    Rule 7's single-outage-too-long gate).
+    """
+    def _week(week_start, arm, overrides=None, outages=None):
+        inputs = _happy_week_inputs(arm=arm)
+        inputs["week_start_ct"] = week_start
+        inputs["overrides"] = overrides or []
+        inputs["scheduler_outages"] = outages or []
+        switch = datetime.datetime.combine(week_start, datetime.time(5, 0))
+        inputs["arm_transition"] = {
+            "switch_ts": switch,
+            "intended_arm": arm,
+            "action_events": [
+                {"timestamp": switch + datetime.timedelta(hours=3),
+                 "arm": arm, "action": "HOT_PRE_COOL",
+                 "dry_run": (arm == "A")},
+            ],
+        }
+        return inputs
+
+    week1_start = datetime.date(2026, 6, 8)
+    week2_start = datetime.date(2026, 6, 15)
+
+    week1 = _week(
+        week1_start, "B",
+        overrides=[{
+            "category": "vacation",
+            "start_ts": datetime.datetime(2026, 6, 9, 0, 0),
+            "end_ts": datetime.datetime(2026, 6, 9, 23, 59),
+            "setpoint_f": 82.0,
+        }],
+    )
+    week2 = _week(
+        week2_start, "A",
+        outages=[(
+            datetime.datetime(2026, 6, 16, 12, 0),
+            datetime.datetime(2026, 6, 16, 13, 30),  # 90 min > 60 min
+        )],
+    )
+
+    monkeypatch.setattr(
+        pipeline, "_load_week_inputs_from_stage1",
+        lambda stage1_dir, assignment_csv=None: [week1, week2],
+    )
+
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    pipeline.stage2_quality(stage1, tmp_path)
+
+    stage2 = tmp_path / "stage2"
+    with open(stage2 / "qualifying_days.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # Exactly 7 rows: only the qualifying week contributes.
+    assert len(rows) == 7, (
+        f"non-qualifying week 2 should be omitted; got {len(rows)} rows"
+    )
+
+    # All rows belong to week 1 / arm B.
+    for r in rows:
+        assert r["week_start_ct"] == "2026-06-08"
+        assert r["arm"] == "B"
+
+    # Dates ordered Mon..Sun.
+    expected_dates = [
+        (week1_start + datetime.timedelta(days=i)).isoformat()
+        for i in range(7)
+    ]
+    assert [r["date"] for r in rows] == expected_dates
+
+    # Day 0 (Mon 06-08): included
+    assert rows[0]["included"] == "true"
+    assert rows[0]["exclusion_source"] == ""
+
+    # Day 1 (Tue 06-09): vacation
+    assert rows[1]["included"] == "false"
+    assert rows[1]["exclusion_source"] == "rule9_vacation"
+
+    # Days 2-6 (Wed..Sun): included, empty source
+    for i, r in enumerate(rows[2:], start=2):
+        assert r["included"] == "true", (
+            f"day {i} ({r['date']}) should be included"
+        )
+        assert r["exclusion_source"] == ""
 
 
 # -- Stage 3: DTOD rates synced with production scheduler ------------------
@@ -813,6 +1022,220 @@ def test_classify_spike_day_temp_threshold_inclusive_on_85f():
 def test_classify_spike_day_apparent_only_qualifies():
     # max temp < 85 but apparent ≥90 → forecast-correlated
     assert pipeline.classify_spike_day([15.0], 80.0, 92.0) == "forecast_correlated_spike"
+
+
+def test_stage8_outcomes_locked():
+    """Phase 0: Stage 8 defines its OWN outcome names (Stage 3 weekly
+    names lie about units when reused here). Daily HVAC dollars,
+    daily mains dollars, daily peak HVAC kW.
+    """
+    assert pipeline.STAGE8_OUTCOMES == (
+        "o1_daily_hvac_dollars",
+        "o3_daily_peak_hvac_kw",
+        "o4_daily_mains_dollars",
+    )
+    assert pipeline.STAGE8_OUTCOME_UNITS == {
+        "o1_daily_hvac_dollars": "dollars",
+        "o3_daily_peak_hvac_kw": "kw",
+        "o4_daily_mains_dollars": "dollars",
+    }
+
+
+def test_stage8_decomposition_columns_locked():
+    """Phase 0: STAGE8_DECOMPOSITION_COLUMNS uses value-not-cost naming
+    with the `unit` column second. Locked at OSF filing.
+    """
+    assert pipeline.STAGE8_DECOMPOSITION_COLUMNS == (
+        "outcome", "unit", "category",
+        "arm_a_n_days", "arm_a_median_value",
+        "arm_b_n_days", "arm_b_median_value",
+        "delta_median_value",
+    )
+
+
+def test_stage8_decomposition_both_arms_exact_delta_oracle(tmp_path, monkeypatch):
+    """Phase 0 self-audit gap-closer: when both arms have populated
+    cells, the orchestrator computes Arm B median - Arm A median
+    exactly. Catches mean-vs-median, wrong arm subtraction, and
+    quiet-zero regressions.
+
+    Asymmetric fixture chosen so the median is far from the mean:
+      Arm A o1: [2.00, 100.00, 2.00] -> median 2.00 (mean would be 34.67)
+      Arm B o1: [1.60, 1.60, 20.00]  -> median 1.60 (mean would be 7.73)
+      delta_median_value = 1.60 - 2.00 = -0.40 exact
+
+    Other cells (forecast_correlated_spike, grid_event_spike) are
+    both-arms-zero -> skipped entirely; no reason report fires.
+    """
+    arm_a_values = [2.00, 100.00, 2.00]
+    arm_b_values = [1.60, 1.60, 20.00]
+    daily_records = (
+        [{"date": datetime.date(2026, 7, d + 1), "arm": "A",
+          "category": "no_spike",
+          "outcomes": {"o1_daily_hvac_dollars": v,
+                       "o3_daily_peak_hvac_kw": 1.0,
+                       "o4_daily_mains_dollars": 5.0}}
+         for d, v in enumerate(arm_a_values)]
+        +
+        [{"date": datetime.date(2026, 7, d + 10), "arm": "B",
+          "category": "no_spike",
+          "outcomes": {"o1_daily_hvac_dollars": v,
+                       "o3_daily_peak_hvac_kw": 1.0,
+                       "o4_daily_mains_dollars": 5.0}}
+         for d, v in enumerate(arm_b_values)]
+    )
+
+    monkeypatch.setattr(
+        pipeline, "_load_stage8_inputs",
+        lambda s1, s3: {
+            "daily_records": daily_records,
+            "layer_attribution": [],
+        },
+    )
+
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    stage3 = tmp_path / "stage3"
+    stage3.mkdir()
+
+    pipeline.stage8_decomposition(stage1, stage3, tmp_path)
+    stage8 = tmp_path / "stage8"
+
+    with open(stage8 / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # 3 outcomes × 1 populated category (no_spike) = 3 rows
+    assert len(rows) == 3, (
+        f"expected 3 rows (3 outcomes × no_spike only); got {len(rows)}"
+    )
+
+    o1_row = next(
+        r for r in rows
+        if r["outcome"] == "o1_daily_hvac_dollars"
+        and r["category"] == "no_spike"
+    )
+    assert int(o1_row["arm_a_n_days"]) == 3
+    assert int(o1_row["arm_b_n_days"]) == 3
+    # Exact median oracle: medians are far from means by design.
+    assert float(o1_row["arm_a_median_value"]) == pytest.approx(2.00)
+    assert float(o1_row["arm_b_median_value"]) == pytest.approx(1.60)
+    # Exact delta oracle: B - A = 1.60 - 2.00 = -0.40
+    assert float(o1_row["delta_median_value"]) == pytest.approx(-0.40), (
+        "Catches mean-vs-median (mean would yield ~-26.94), "
+        "wrong arm subtraction (would yield +0.40), "
+        "and quiet-zero regression (would yield -2.00)."
+    )
+    assert o1_row["unit"] == "dollars"
+
+    # No quiet-zero firings: no_spike has both arms populated; other
+    # categories are both-arms-zero and skipped entirely (existing
+    # behavior, no reason report).
+    assert not (stage8 / "reason_report.json").exists(), (
+        "Quiet-zero guard should NOT fire for both-arms-populated "
+        "cells; both-arms-zero cells are skipped without reason."
+    )
+
+
+def test_stage8_decomposition_quiet_zero_guard(tmp_path, monkeypatch):
+    """Phase 0 quiet-zero guard: when one arm has zero days in an
+    (outcome, category) cell, write the populated arm's median +
+    BLANK delta and emit INSUFFICIENT_ARM_DAYS_FOR_CATEGORY in
+    `stage8/reason_report.json`. Never compute delta against 0.0.
+
+    Cells where BOTH arms are zero are still skipped (existing
+    behavior). The guard fires only on asymmetric zero.
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    daily_records = [
+        # Arm A only in no_spike (2 days)
+        {"date": datetime.date(2026, 7, 1), "arm": "A",
+         "category": "no_spike",
+         "outcomes": {"o1_daily_hvac_dollars": 5.00,
+                      "o3_daily_peak_hvac_kw": 1.0,
+                      "o4_daily_mains_dollars": 8.00}},
+        {"date": datetime.date(2026, 7, 2), "arm": "A",
+         "category": "no_spike",
+         "outcomes": {"o1_daily_hvac_dollars": 6.00,
+                      "o3_daily_peak_hvac_kw": 1.2,
+                      "o4_daily_mains_dollars": 9.00}},
+        # Arm B only in forecast_correlated_spike (1 day)
+        {"date": datetime.date(2026, 7, 3), "arm": "B",
+         "category": "forecast_correlated_spike",
+         "outcomes": {"o1_daily_hvac_dollars": 12.00,
+                      "o3_daily_peak_hvac_kw": 2.0,
+                      "o4_daily_mains_dollars": 16.00}},
+    ]
+    monkeypatch.setattr(
+        pipeline, "_load_stage8_inputs",
+        lambda s1, s3: {
+            "daily_records": daily_records,
+            "layer_attribution": [],
+        },
+    )
+
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    stage3 = tmp_path / "stage3"
+    stage3.mkdir()
+
+    pipeline.stage8_decomposition(stage1, stage3, tmp_path)
+    stage8 = tmp_path / "stage8"
+
+    with open(stage8 / "decomposition.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    a_only = next(
+        r for r in rows
+        if r["outcome"] == "o1_daily_hvac_dollars"
+        and r["category"] == "no_spike"
+    )
+    assert int(a_only["arm_a_n_days"]) == 2
+    assert float(a_only["arm_a_median_value"]) == pytest.approx(5.50)
+    assert int(a_only["arm_b_n_days"]) == 0
+    assert a_only["arm_b_median_value"] == "", (
+        "Empty arm B must write blank, not 0.0"
+    )
+    assert a_only["delta_median_value"] == "", (
+        "Delta against zero-days arm must be blank"
+    )
+    assert a_only["unit"] == "dollars"
+
+    b_only = next(
+        r for r in rows
+        if r["outcome"] == "o1_daily_hvac_dollars"
+        and r["category"] == "forecast_correlated_spike"
+    )
+    assert int(b_only["arm_a_n_days"]) == 0
+    assert b_only["arm_a_median_value"] == ""
+    assert int(b_only["arm_b_n_days"]) == 1
+    assert float(b_only["arm_b_median_value"]) == pytest.approx(12.00)
+    assert b_only["delta_median_value"] == ""
+
+    # No row for (grid_event_spike, *) — both arms zero, skipped
+    assert not any(
+        r["category"] == "grid_event_spike" for r in rows
+    ), "Both-arms-zero cells should be skipped entirely"
+
+    # Reason report fires INSUFFICIENT_ARM_DAYS_FOR_CATEGORY for each
+    # cell that hit the guard. 2 categories × 3 outcomes = 6 entries.
+    with open(stage8 / "reason_report.json") as f:
+        report = json.load(f)
+    entries = report["entries"]
+    guard_entries = [
+        e for e in entries
+        if e["reason_code"] == ReasonCode.INSUFFICIENT_ARM_DAYS_FOR_CATEGORY.value
+    ]
+    assert len(guard_entries) == 6, (
+        f"Expected 6 guard entries (2 cats × 3 outcomes), got {len(guard_entries)}"
+    )
+    # Each entry's note identifies the (outcome, category) cell
+    notes = " ".join(e.get("note") or "" for e in guard_entries)
+    for outcome in pipeline.STAGE8_OUTCOMES:
+        assert outcome in notes
+    assert "no_spike" in notes
+    assert "forecast_correlated_spike" in notes
 
 
 # -- Stage 3: weekly_cdd ----------------------------------------------------
