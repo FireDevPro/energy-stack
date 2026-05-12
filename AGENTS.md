@@ -1,0 +1,145 @@
+# energy-proxy — AI Agent Context
+
+Standing rules for every AI session. Any agent reading this (Claude, Codex, Cursor, etc.) follows these rules.
+
+## Project
+
+Home Energy Monitoring & HVAC Optimization: real-time and historical residential energy monitoring with dynamic-pricing-aware HVAC scheduling, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance. Owner: Chris. Phase: pre-OSF-filing for a pre-registered SCED field study starting summer 2026 (Arm A baseline RBC vs Arm B thermal-model-informed controller). See [PROJECT.md](PROJECT.md), [README.md](README.md), [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md), [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md).
+
+**Pre-registration is binding.** Once filed to OSF, hypotheses, arm definitions, randomization seed, metric definitions, statistical analysis plan, and decision rules lock at a frozen commit hash. Anything touching scheduler, thermal model, or telemetry is on the critical path to June 1 experiment start. Operational features that don't serve Arm A / Arm B / observability are parked.
+
+## Build & test
+
+Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.168.20.10`) via Docker Compose.
+
+**Deploy:**
+
+- Canonical: merging to `main` is the deploy. GitHub Actions self-hosted runner on Pi-lab watches `deploy/**` and `.github/workflows/deploy.yml`; pushes to `main` matching those paths rsync + `docker compose build && up -d` + verify health. ~30-60s for single-service change. PRs touching only `tools/` or `docs/` do not deploy.
+- Agent stops at `gh pr create` per branching policy. Your merge of a `deploy/**` PR in the GitHub UI is the deploy action. No separate ops step.
+- Manual rsync (local-only testing) exists but gets overwritten on next push to main. Prefer branch + PR + merge.
+- `.env` lives only on Pi-lab (`chmod 600`). Never committed. SOPS-encrypted copy at `deploy/energy-stack/secrets/env.sops.env` is the recovery path.
+- Force a redeploy without code change: GitHub Actions UI -> "Deploy to Pi" -> "Run workflow".
+
+**Tests:**
+
+- Canonical full-stack: `bash deploy/energy-stack/run_tests.sh`. Runs each service in its own pytest process to sidestep the `sys.modules` cache collision across services with identically-named `app.py`.
+- Single service: `cd deploy/energy-stack/<service>/ && python -m pytest .`
+- **DO NOT** run `python -m pytest deploy/energy-stack` from the repo root. Collection silently fails or imports the wrong `app.py`. See [deploy/energy-stack/pytest.ini](deploy/energy-stack/pytest.ini) for context.
+- One-time setup: `pip install -r deploy/energy-stack/requirements-dev.txt` plus each service's `requirements.txt` for imports.
+- Most services have test files; depth varies. Add tests when bugs surface.
+
+**Ops cheat sheet (on Pi-lab):** `docker compose ps`, `docker compose logs -f <service>`, `docker compose restart <service>`. Full ops table in [deploy/energy-stack/README.md](deploy/energy-stack/README.md).
+
+**Stack guide of record:** [deploy/energy-stack/README.md](deploy/energy-stack/README.md). AGENTS.md gives the minimum an agent needs; that file has the full operational surface.
+
+## Entry points
+
+- Project index: [PROJECT.md](PROJECT.md)
+- Per-service detail: [docs/SERVICES.md](docs/SERVICES.md)
+- HVAC scheduler logic + fallback: [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)
+- Experiment design (binding once filed): [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md)
+- Thermal model design: [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md)
+- Pollers and tooling: `tools/`
+- Stack compose + provisioning: `deploy/energy-stack/`
+
+## Tone
+
+Be extremely concise. Sacrifice grammar for concision. Drop articles, filler, pleasantries. Fragments OK. Code and error messages quoted exact. No em dashes.
+
+`caveman` skill default-on for stronger compression. Toggle off with "stop caveman" if full-sentence explanation needed.
+
+## Core coding rules
+
+1. **Think before coding.** State assumptions. If uncertain, ask. If multiple interpretations exist, present them, don't pick silently. If a simpler approach exists, say so. If something is unclear, stop and name it.
+
+2. **Simplicity first.** Minimum code that solves the problem. No features beyond what was asked. No abstractions for single-use code. No unrequested flexibility or configurability. No error handling for impossible scenarios. If 200 lines could be 50, rewrite. Test: "Would a senior engineer say this is overcomplicated?"
+
+3. **Surgical changes.** Touch only what you must. Don't "improve" adjacent code, comments, or formatting. Don't refactor what isn't broken. Match existing style. Spot unrelated dead code: mention, don't delete. Remove orphans YOUR changes created (imports, vars, functions). Every changed line traces to the user's request.
+
+4. **Outside-in TDD.** First step on any feature: write a feature-level acceptance test that exercises the full vertical slice end-to-end. Drive inward from there. Reason: prevents "task done equals feature done" confusion. The project is the whole, not any given task. Intermediate stages stay xfail or skip until the slice ships.
+
+For multi-step tasks, state a brief plan with verify steps. Strong success criteria let the agent loop independently. Weak criteria require constant clarification.
+
+## Skill protocol
+
+Follow Superpowers protocol (`using-superpowers` auto-loads). User instructions override skills. Skills override default system behavior. Project-specific defaults below override generic skill guidance:
+
+- **New feature work:** `grill-me` or `brainstorming` first. Resolve the design tree before coding.
+- **Bugs / failures / regressions:** `diagnose`. Build a fast pass/fail signal before theorizing.
+- **Multi-phase features:** `writing-plans`. See plan-authoring discipline below.
+- **Executing a written plan:** `executing-plans` or `subagent-driven-development`.
+- **Before claiming done, fixed, or passing:** `verification-before-completion`. Evidence before assertions.
+- **Architectural friction:** `improve-codebase-architecture`.
+- **Throwaway exploration:** `prototype`.
+- **Unfamiliar code region:** `zoom-out`.
+- **Session compact / handoff:** `handoff`.
+
+## Session-start working-tree audit
+
+Every session and every dispatched subagent runs `git status` and `git stash list` BEFORE any other action.
+
+If working tree contains modifications or untracked files unrelated to the current task, triage first:
+
+- **Commit** if it belongs on the current branch and work is complete.
+- **Stash** with descriptive message if it belongs to a different feature.
+- **Discard** only with explicit user approval.
+- **Escalate** if you don't know what it is. Never proceed past unknown WIP.
+
+Reason: branch checkouts (`git checkout -b`, `git switch`) carry the working tree. `git add <file>` stages the current working-tree state of that file, not just your edits. Uncommitted edits plus a subagent running `git add` equals contaminated commits with mixed concerns. Audit prevents this.
+
+Subagent briefings must include this rule explicitly. Subagent's first action is `git status`. If anything is unexpected, escalate to controller before continuing.
+
+## Plan-authoring discipline (multi-phase features only)
+
+Small single-file changes skip this section.
+
+1. **Spec is source of truth for intent.** Plans are execution artifacts. Every task cites the spec section it implements.
+2. **If a task needs a decision the spec doesn't answer, update the spec first.** No local "fit for purpose" calls.
+3. **Unified plan doc at `docs/plans/<feature>-plan.md`.** One file, phase headers inside. Not a directory of phase files.
+4. **Each phase = vertical slice (data -> logic -> UI / output).** Demoable end-to-end. Horizontal phases (all schema first, then all services, then all UI) forbidden.
+5. **Phase 1 = tracer bullet.** Smallest possible cut through every layer the feature will eventually touch.
+6. **Front-load full decomposition.** Plan all phases before executing any. If phase 1 surprises, revise later phases in place. Cheaper than designing each phase from cold.
+7. **Archive on merge.** Move to `docs/plans/archive/<feature>-plan.md` in the commit that closes the feature branch.
+
+## Branching policy
+
+1. **Never push directly to `main`.** Always branch.
+2. **Merging to `main` requires explicit per-merge approval.** Prior approval of branch work does not extend to the merge. Silence or a pending tool call is not approval.
+3. **Agent stops at `gh pr create`.** Surface PR URL. User reviews and merges in the GitHub UI. After merge, agent syncs local `main` (`git pull --ff-only origin main`) and deletes the local feature branch.
+4. **Never bypass safety hooks.** No `--no-verify`, no `--no-gpg-sign`, no `ALLOW_*=1` overrides unless explicitly instructed for this specific push.
+
+Per memory `feedback_stacked_pr_retargeting`: every PR uses `--base main`, no stacking; wait for prior PR to merge before opening the next.
+
+Honor `.git/hooks/pre-push` if present.
+
+## Doc hygiene (Layer 1: discipline)
+
+Canonical: `repo-doc-hygiene` skill at `~/.claude/skills/repo-doc-hygiene/`. Skill is source of truth. Cite, don't re-derive.
+
+Universal rules:
+
+- Every doc living beyond one session carries a YAML header per the skill's schema (date, owner, status, role-label).
+- Headerless non-session doc is a bug. Fix in the same commit.
+- Dates: ISO 8601 (`YYYY-MM-DD`). No "Q2 2026", no year-only, no "April 2026".
+- Convert relative dates in conversation to absolute before saving ("Thursday" -> `2026-05-14`).
+
+Layer 2 (drift-rules, audit artifacts, Stop hook): project-specific infrastructure. Add when the project warrants. Stub:
+
+```
+.claude/drift-rules.yaml          # code-path -> doc-update triggers + severity
+.claude/hooks/                    # pre-push / Stop hook scripts that enforce
+docs/DOC_AUDIT.md                 # audit state, per-doc verdicts
+```
+
+## Agents
+
+- Solo project. Chris is operator. No named subagents yet.
+
+Role labels (per `repo-doc-hygiene`): `chris`, `code-team`, `unknown`. Extend per project.
+
+## See also
+
+- User-level rules: `~/.claude/rules/` (auto-loaded every session).
+- Path-scoped rules: `.claude/rules/` in this repo (load only when Claude reads matching files).
+- Memory: `~/.claude/projects/D--Projects-energy-proxy/memory/MEMORY.md`.
+- Project history and roadmap: [PROJECT.md](PROJECT.md).
