@@ -1599,6 +1599,115 @@ def test_audit_tariff_missing_capacity_year_emits_reason(
         ReasonCode.NO_TARIFF_FOR_CAPACITY_YEAR.value
 
 
+def test_audit_load_comed_bills_reads_service_from_from_value_text(tmp_path):
+    """Direct unit test for the loader path that PR #95 introduced:
+    ``_load_comed_bills_for_capacity_year`` must read the
+    ``service_from`` field from the ``_value_text`` column
+    (post-Stage-1-export shape) — not from ``_value``, which is NaN
+    for string-origin rows.
+
+    Builds a parquet directly with the split shape (rather than
+    going through ``_write_stage1_export``) so the test fails fast
+    on a regression that reverts the loader back to reading
+    ``_value`` for string fields.
+    """
+    from tools.analysis.replay.manifest import (
+        Manifest,
+        MeasurementEntry,
+        OBSERVED_RECENT,
+        compute_sha256,
+        parquet_filename,
+        write_manifest,
+    )
+
+    stage1_dir = tmp_path / "stage1"
+    stage1_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build comed.bill parquet directly in post-split shape:
+    # service_from rows have _value=NaN, _value_text="2026-05-05".
+    bill_ts = datetime.datetime(2026, 6, 5, tzinfo=datetime.timezone.utc)
+    bill_rows = pd.DataFrame([
+        {
+            "_time": bill_ts,
+            "_measurement": "comed.bill",
+            "_field": "service_from",
+            "_value": float("nan"),
+            "_value_text": "2026-05-05",
+            "account_no": "9999999991",
+        },
+    ])
+    bill_rows["_time"] = pd.to_datetime(bill_rows["_time"], utc=True)
+    bill_path = stage1_dir / parquet_filename("comed.bill", OBSERVED_RECENT)
+    bill_rows.to_parquet(bill_path, index=False)
+
+    # Build comed.bill_lineitems parquet: one Capacity Charge row at
+    # the same _time / account_no so the loader's merge succeeds.
+    li_rows = pd.DataFrame([
+        {
+            "_time": bill_ts,
+            "_measurement": "comed.bill_lineitems",
+            "_field": "amount",
+            "_value": 22.50,
+            "_value_text": None,
+            "account_no": "9999999991",
+            "line_item": "Capacity Charge",
+            "category": "DELIVERY",
+        },
+    ])
+    li_rows["_time"] = pd.to_datetime(li_rows["_time"], utc=True)
+    li_path = stage1_dir / parquet_filename(
+        "comed.bill_lineitems", OBSERVED_RECENT,
+    )
+    li_rows.to_parquet(li_path, index=False)
+
+    # Hand-build a manifest pointing at both parquet files.
+    manifest = Manifest(
+        export_window_start_ct="2026-05-01T00:00:00-05:00",
+        export_window_end_ct="2026-06-30T00:00:00-05:00",
+        source_bucket="energy",
+        exported_at_utc="2026-06-10T00:00:00+00:00",
+        exporter={"version": "test_fixture"},
+        entries=(
+            MeasurementEntry(
+                measurement="comed.bill",
+                source_type=OBSERVED_RECENT,
+                parquet_path=bill_path.name,
+                row_count=len(bill_rows),
+                sha256=compute_sha256(bill_path),
+                field_set=("service_from",),
+                first_timestamp_utc=bill_ts.isoformat(),
+                last_timestamp_utc=bill_ts.isoformat(),
+            ),
+            MeasurementEntry(
+                measurement="comed.bill_lineitems",
+                source_type=OBSERVED_RECENT,
+                parquet_path=li_path.name,
+                row_count=len(li_rows),
+                sha256=compute_sha256(li_path),
+                field_set=("amount",),
+                first_timestamp_utc=bill_ts.isoformat(),
+                last_timestamp_utc=bill_ts.isoformat(),
+            ),
+        ),
+    )
+    write_manifest(manifest, stage1_dir / "manifest.json")
+
+    # Call the loader directly. capacity_year=2026 because
+    # service_from=2026-05-05 → service_from month 5 → bill is for
+    # the May 2026 capacity year per Att. M-2.
+    result = pipeline._load_comed_bills_for_capacity_year(
+        manifest, stage1_dir, capacity_year=2026,
+    )
+
+    # Exactly one bill matched; year/month derived from _value_text,
+    # capacity charge from amount.
+    assert result == [{
+        "year": 2026,
+        "month": 5,
+        "capacity_charge_dollars": 22.50,
+    }]
+
+
 def test_phase1_layer1_header_only_when_only_one_arm_has_peaks(tmp_path, monkeypatch):
     """Zero-arm-guard companion test. One peak hour falls in an Arm A
     week only; Arm B has zero peaks. Layer 1 must NOT report a real
