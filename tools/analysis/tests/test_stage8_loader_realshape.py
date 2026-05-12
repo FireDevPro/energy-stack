@@ -1420,3 +1420,942 @@ def test_stage8_phase3_o3_multi_day_median_across_days(tmp_path):
         "o3 per-arm-category must be median of daily peaks; got "
         f"{r['arm_a_median_value']} for daily peaks [1.0, 3.0, 9.0]"
     )
+
+
+# -- Phase 4: layer attribution (price-overlay state machine + 5cp) ---------
+
+
+def _price_overlay_row(time_utc: pd.Timestamp, new_tier: str) -> dict:
+    """One long-format hvac.price_overlay row. The helper only reads
+    _time and the new_tier tag, so we can keep the row minimal."""
+    return {
+        "_time": time_utc,
+        "_measurement": "hvac.price_overlay",
+        "_field": "current_price_cents",
+        "_value": 0.0,
+        "_value_text": None,
+        "prev_tier": "normal",
+        "new_tier": new_tier,
+    }
+
+
+def _fivecp_state_row(time_utc: pd.Timestamp, is_active: str) -> dict:
+    """One long-format hvac.5cp_state row. The helper only reads _time
+    and the is_active tag."""
+    return {
+        "_time": time_utc,
+        "_measurement": "hvac.5cp_state",
+        "_field": "current_load_mw",
+        "_value": 0.0,
+        "_value_text": None,
+        "scope": "rto",
+        "zone": "RTO",
+        "is_active": is_active,
+    }
+
+
+def test_phase4_price_overlay_state_single_transition_returns_new_tier():
+    """Phase 4 oracle: state machine walks hvac.price_overlay rows in
+    reverse-chrono and returns the latest row's new_tier within the
+    lookback window.
+
+    Fixture: one transition at 14:00 CT (19:00 UTC) with
+    new_tier="elevated". Query hour: 17:00 CT (22:00 UTC). Helper
+    returns "elevated" — catches the "use hvac.actions tags" regression
+    that prompted Phase 4's redesign.
+    """
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(_ct_to_utc(2026, 6, 8, 14, 0), "elevated"),
+    ])
+    hour_utc = _ct_to_utc(2026, 6, 8, 17, 0)
+    result = pipeline._price_overlay_state_at_hour(price_overlay_df, hour_utc)
+    assert result == "elevated"
+
+
+def test_phase4_price_overlay_state_multiple_transitions_latest_wins():
+    """Phase 4 oracle: when multiple transitions fall in the lookback
+    window, the helper returns the LATEST one's new_tier.
+
+    Fixture transitions on 2026-06-08:
+      14:00 CT (19:00 UTC) -> elevated
+      16:00 CT (21:00 UTC) -> scarcity
+      18:00 CT (23:00 UTC) -> normal
+    Query hour: 17:00 CT (22:00 UTC). The latest transition with
+    _time <= hour_utc + 1h is 16:00 CT (scarcity); 18:00 is AFTER
+    the +1h cutoff (22:00 + 1h = 23:00 UTC, exclusive of strictly later;
+    23:00 UTC is `_time == hour_utc + 1h` which is <= so it IS included).
+    Helper returns "scarcity" only if the 18:00 transition is rejected.
+    The 18:00 row's _time is 23:00 UTC -- exactly equal to hour_utc + 1h
+    -- so per the plan's `<=` it WOULD be included.
+
+    Adjust fixture so the latest in-window transition is unambiguous:
+      18:00 CT (23:00 UTC) cuts to 17:59 CT (22:59 UTC) -- still
+      <= 23:00 -- still included. To get "scarcity" deterministically
+      the third transition needs to be AFTER the cutoff. Use 19:01 CT.
+    """
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(_ct_to_utc(2026, 6, 8, 14, 0), "elevated"),
+        _price_overlay_row(_ct_to_utc(2026, 6, 8, 16, 0), "scarcity"),
+        _price_overlay_row(_ct_to_utc(2026, 6, 8, 19, 1), "normal"),
+    ])
+    hour_utc = _ct_to_utc(2026, 6, 8, 17, 0)
+    result = pipeline._price_overlay_state_at_hour(price_overlay_df, hour_utc)
+    assert result == "scarcity", (
+        "Latest in-window transition (16:00 CT scarcity) must win; "
+        "19:01 CT row is AFTER the hour_utc + 1h cutoff and must "
+        "be rejected"
+    )
+
+
+def test_phase4_price_overlay_state_no_transition_in_lookback_is_unknown():
+    """Phase 4 oracle: when zero hvac.price_overlay rows fall in the
+    lookback window, the helper returns "unknown" -- NOT "normal".
+
+    Locked: never default unknown to "normal" or "neither". A bundle
+    that doesn't include the prior transition has unknowable state;
+    silently calling it "normal" would hide the gap.
+    """
+    price_overlay_df = pd.DataFrame(columns=[
+        "_time", "_measurement", "_field", "_value", "_value_text",
+        "prev_tier", "new_tier",
+    ])
+    hour_utc = _ct_to_utc(2026, 6, 8, 17, 0)
+    result = pipeline._price_overlay_state_at_hour(price_overlay_df, hour_utc)
+    assert result == "unknown", (
+        "Empty lookback must return unknown sentinel, not normal"
+    )
+
+
+def test_phase4_price_peak_hour_identification_asymmetric_prices():
+    """Phase 4 oracle: _price_peak_hour_ct returns the hour-of-day (0-23
+    CT) with max hourly supply price.
+
+    Fixture: hours 0-15 at 5c, hour 16 at 14c, hours 17-23 at 8c. Peak
+    is hour 16.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    # Overwrite hour 16 CT -> 14c, hours 17-23 -> 8c.
+    hour16_start = pipeline._ct_date_to_utc(day_ct, 16)
+    hour16_end = pipeline._ct_date_to_utc(day_ct, 17)
+    hour17_start = pipeline._ct_date_to_utc(day_ct, 17)
+    prices_df.loc[
+        (prices_df["_time"] >= hour16_start) & (prices_df["_time"] < hour16_end),
+        "_value",
+    ] = 14.0
+    prices_df.loc[
+        (prices_df["_time"] >= hour17_start) & (prices_df["_time"] < day_end_utc),
+        "_value",
+    ] = 8.0
+
+    peak_hour = pipeline._price_peak_hour_ct(prices_df, day_ct)
+    assert peak_hour == 16, f"expected peak hour 16, got {peak_hour}"
+
+
+def test_phase4_price_peak_hour_tie_returns_first_hour():
+    """Phase 4 oracle (Chris's audit amendment B): when two hours
+    share the max supply price, the helper returns the LOWER hour --
+    a deterministic first-max tie-breaker.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+    times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    # Hours 10 AND 18 BOTH at 12c (tie); other hours at 5c.
+    for h in (10, 18):
+        h_start = pipeline._ct_date_to_utc(day_ct, h)
+        h_end = pipeline._ct_date_to_utc(day_ct, h + 1)
+        prices_df.loc[
+            (prices_df["_time"] >= h_start) & (prices_df["_time"] < h_end),
+            "_value",
+        ] = 12.0
+
+    peak_hour = pipeline._price_peak_hour_ct(prices_df, day_ct)
+    assert peak_hour == 10, (
+        "Tie-break: first-max wins. Hours 10 and 18 are equal; "
+        "lower hour (10) is the deterministic choice."
+    )
+
+
+def test_phase4_action_label_at_hour_no_lookback_returns_none():
+    """Phase 4 audit amendment 2: _action_label_at_hour returns None
+    when no hvac.actions row exists in the queried hour.
+
+    Looking back to an EARLIER action would imply an action at the
+    queried hour that did not happen -- defensive: return None.
+    """
+    actions_df = pd.DataFrame([{
+        "_time": _ct_to_utc(2026, 6, 8, 14, 0),
+        "_measurement": "hvac.actions",
+        "_field": "cool_setpoint_f",
+        "_value": 74.0,
+        "_value_text": None,
+        "action_label": "PRICE_PRECOOL",
+    }])
+    # Query a different hour (17:00 CT). No row in that hour.
+    hour_utc = _ct_to_utc(2026, 6, 8, 17, 0)
+    result = pipeline._action_label_at_hour(actions_df, hour_utc)
+    assert result is None, (
+        "Empty hour must return None; lookback to earlier action would "
+        "imply something that did not happen at the price-peak hour"
+    )
+
+
+# Combinatorics: 6 fixtures, including amendment 1 (unknown overlay
+# with active 5CP -> 5cp_detection, not unknown).
+
+def test_phase4_classify_layer_price_only_is_price_spike_reactivity():
+    """Phase 4 combinatorics: price layer active, 5cp inactive."""
+    assert pipeline._classify_layer_triggered("elevated", False) == "price_spike_reactivity"
+    assert pipeline._classify_layer_triggered("scarcity", False) == "price_spike_reactivity"
+
+
+def test_phase4_classify_layer_5cp_only_is_5cp_detection():
+    """Phase 4 combinatorics: price normal, 5cp active."""
+    assert pipeline._classify_layer_triggered("normal", True) == "5cp_detection"
+
+
+def test_phase4_classify_layer_both_is_both():
+    """Phase 4 combinatorics: price layer active AND 5cp active."""
+    assert pipeline._classify_layer_triggered("elevated", True) == "both"
+    assert pipeline._classify_layer_triggered("scarcity", True) == "both"
+
+
+def test_phase4_classify_layer_neither_is_neither():
+    """Phase 4 combinatorics: price normal, 5cp inactive."""
+    assert pipeline._classify_layer_triggered("normal", False) == "neither"
+
+
+def test_phase4_classify_layer_unknown_overlay_with_5cp_inactive_is_unknown():
+    """Phase 4 combinatorics: price-overlay state unknown, 5cp inactive."""
+    assert pipeline._classify_layer_triggered("unknown", False) == "unknown"
+
+
+def test_phase4_classify_layer_unknown_overlay_with_5cp_active_is_5cp_detection():
+    """Phase 4 combinatorics (Chris's audit amendment 1): when the
+    price-overlay state is unknown but 5cp is active in the hour, the
+    layer is 5cp_detection -- NOT unknown.
+
+    Rationale: 5CP activity is directly observed from hvac.5cp_state
+    (a continuous tick-cadence measurement). Hiding that known signal
+    behind an unknown price-overlay state would understate observed
+    layer activity.
+    """
+    assert pipeline._classify_layer_triggered("unknown", True) == "5cp_detection"
+
+
+def test_phase4_integration_grid_event_arm_b_day_writes_layer_row(tmp_path):
+    """Phase 4 integration: a grid_event_spike day in Arm B surfaces a
+    row in layer_attribution.csv with the correct enum, indoor_temp,
+    and (None) action.
+
+    Fixture (one Arm B day, 2026-06-15 Mon):
+      - prices: 5c base; one spike hour at 15c at hour_ct=17
+        (grid_event_spike because forecast keeps temp cool).
+      - nws.forecast: high_f=72, apparent_max_f=78 (below hot
+        thresholds -> grid_event after spike classification).
+      - hvac.price_overlay: one transition at 14:00 CT -> "elevated"
+        (overlay state at peak hour = "elevated").
+      - hvac.5cp_state: no rows -> 5cp inactive.
+      - hvac.thermostat: indoor_temp_f = 77.5 across the day.
+      - hvac.actions: none in hour 17 -> action_label is None.
+
+    Expected layer_attribution row:
+      date = 2026-06-15
+      hour_ct = 17  (price-peak hour)
+      arm = "B"
+      layer_triggered = "price_spike_reactivity"
+        (overlay state elevated + 5cp inactive)
+      indoor_temp_f = 77.5
+      action = "" (empty in CSV; None in dict)
+    """
+    day_ct = datetime.date(2026, 6, 15)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    refoss_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="30s", inclusive="left",
+    )
+    refoss_df = pd.DataFrame({
+        "_time": refoss_times,
+        "_measurement": "refoss.channel",
+        "_field": "power_w",
+        "_value": 500.0,
+        "channel": "em:2",
+    })
+
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    hour17_start = pipeline._ct_date_to_utc(day_ct, 17)
+    hour17_end = pipeline._ct_date_to_utc(day_ct, 18)
+    prices_df.loc[
+        (prices_df["_time"] >= hour17_start)
+        & (prices_df["_time"] < hour17_end),
+        "_value",
+    ] = 15.0
+
+    # Forecast: cool day so spike classifies as grid_event_spike.
+    forecast_df = build_nws_forecast_df(
+        [day_ct],
+        high_f_fn=lambda d: 72.0,
+        apparent_max_f_fn=lambda d: 78.0,
+    )
+
+    # hvac.price_overlay: one transition at 14:00 CT -> elevated.
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(
+            _ct_to_utc(2026, 6, 15, 14, 0), "elevated",
+        ),
+    ])
+
+    # hvac.thermostat: indoor_temp_f = 77.5 throughout.
+    thermo_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="1min", inclusive="left",
+    )
+    thermostat_df = pd.DataFrame({
+        "_time": thermo_times,
+        "_measurement": "hvac.thermostat",
+        "_field": "indoor_temp_f",
+        "_value": 77.5,
+        "_value_text": None,
+        "thermostat_id": "main",
+    })
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+            "hvac.price_overlay": price_overlay_df,
+            "hvac.thermostat": thermostat_df,
+        },
+        window_start_ct="2026-06-15T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "B",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1, (
+        f"Phase 4 must write one layer_attribution row per grid-event "
+        f"Arm B day; got {len(rows)}: {rows}"
+    )
+    r = rows[0]
+    assert r["date"] == day_ct.isoformat()
+    assert r["arm"] == "B"
+    assert int(r["hour_ct"]) == 17
+    assert r["layer_triggered"] == "price_spike_reactivity"
+    assert float(r["indoor_temp_f"]) == pytest.approx(77.5, abs=1e-3)
+    assert r["action"] == ""
+
+
+def test_phase4_layer_attribution_filters_to_arm_b_grid_event_only(tmp_path):
+    """Phase 4 RED-pre-implementation closer A: layer_attribution.csv
+    must emit rows ONLY for category=grid_event_spike AND arm=B.
+    Positive-case-only tests are too easy to satisfy by over-emitting.
+
+    Fixture covers all three negative cases in a single bundle:
+      Arm B week (2026-06-15):
+        Mon 06-15: grid_event_spike (price spike + cool forecast)
+                   -> ROW APPEARS
+        Tue 06-16: no_spike (flat low prices)
+                   -> NO ROW (category filter)
+        Wed 06-17: forecast_correlated_spike (price spike + hot forecast)
+                   -> NO ROW (category filter)
+      Arm A week (2026-06-08):
+        Mon 06-08: grid_event_spike (price spike + cool forecast)
+                   -> NO ROW (arm filter; arm A excluded by spec)
+
+    Expected: exactly ONE row in layer_attribution.csv (the Mon 06-15
+    Arm B grid-event day).
+    """
+    arm_a_day = datetime.date(2026, 6, 8)
+    arm_b_grid = datetime.date(2026, 6, 15)
+    arm_b_no_spike = datetime.date(2026, 6, 16)
+    arm_b_forecast = datetime.date(2026, 6, 17)
+
+    def _refoss_day(day_ct: datetime.date) -> pd.DataFrame:
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        times = pd.date_range(
+            day_start_utc, day_end_utc, freq="30s", inclusive="left",
+        )
+        return pd.DataFrame({
+            "_time": times,
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": 500.0,
+            "channel": "em:2",
+        })
+
+    def _prices_day(day_ct: datetime.date, spike: bool) -> pd.DataFrame:
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        times = pd.date_range(
+            day_start_utc, day_end_utc, freq="5min", inclusive="left",
+        )
+        df = pd.DataFrame({
+            "_time": times,
+            "_measurement": "comed.prices",
+            "_field": "price_cents_per_kwh",
+            "_value": 5.0,
+            "period_type": "5min",
+        })
+        if spike:
+            h17_start = pipeline._ct_date_to_utc(day_ct, 17)
+            h17_end = pipeline._ct_date_to_utc(day_ct, 18)
+            df.loc[
+                (df["_time"] >= h17_start) & (df["_time"] < h17_end),
+                "_value",
+            ] = 15.0
+        return df
+
+    # Forecast: cool for grid-event days, hot for forecast-correlated day.
+    forecast_rows = []
+    for day, high in [
+        (arm_b_grid, 72.0),
+        (arm_b_no_spike, 72.0),
+        (arm_b_forecast, 90.0),
+        (arm_a_day, 72.0),
+    ]:
+        d_minus_1 = day - datetime.timedelta(days=1)
+        from zoneinfo import ZoneInfo
+        ct = ZoneInfo("America/Chicago")
+        issuance_ct = datetime.datetime(
+            d_minus_1.year, d_minus_1.month, d_minus_1.day, 21, 0, tzinfo=ct,
+        )
+        issuance_utc = pd.Timestamp(
+            issuance_ct.astimezone(datetime.timezone.utc)
+        )
+        forecast_rows.append({
+            "_time": issuance_utc, "_measurement": "nws.forecast",
+            "_field": "high_f", "_value": high, "_value_text": None,
+            "for_period": "tomorrow",
+        })
+        forecast_rows.append({
+            "_time": issuance_utc, "_measurement": "nws.forecast",
+            "_field": "apparent_max_f",
+            "_value": (95.0 if high > 85 else 78.0), "_value_text": None,
+            "for_period": "tomorrow",
+        })
+        forecast_rows.append({
+            "_time": issuance_utc, "_measurement": "nws.forecast",
+            "_field": "period_date",
+            "_value": float("nan"), "_value_text": day.isoformat(),
+            "for_period": "tomorrow",
+        })
+    forecast_df = pd.DataFrame(forecast_rows)
+
+    # hvac.price_overlay: transition to elevated at 14:00 CT on both
+    # grid-event days so the overlay state at peak hour is "elevated".
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(_ct_to_utc(2026, 6, 15, 14, 0), "elevated"),
+        _price_overlay_row(_ct_to_utc(2026, 6, 17, 14, 0), "elevated"),
+        _price_overlay_row(_ct_to_utc(2026, 6, 8, 14, 0), "elevated"),
+    ])
+
+    # hvac.thermostat: constant 77.5F across the whole window.
+    window_start = pipeline._ct_date_to_utc(arm_a_day, 0)
+    window_end = pipeline._ct_date_to_utc(
+        arm_b_forecast + datetime.timedelta(days=1), 0,
+    )
+    thermo_times = pd.date_range(
+        window_start, window_end, freq="1min", inclusive="left",
+    )
+    thermostat_df = pd.DataFrame({
+        "_time": thermo_times,
+        "_measurement": "hvac.thermostat",
+        "_field": "indoor_temp_f",
+        "_value": 77.5,
+        "_value_text": None,
+        "thermostat_id": "main",
+    })
+
+    refoss_df = pd.concat([
+        _refoss_day(arm_a_day),
+        _refoss_day(arm_b_grid),
+        _refoss_day(arm_b_no_spike),
+        _refoss_day(arm_b_forecast),
+    ], ignore_index=True)
+    prices_df = pd.concat([
+        _prices_day(arm_a_day, spike=True),
+        _prices_day(arm_b_grid, spike=True),
+        _prices_day(arm_b_no_spike, spike=False),
+        _prices_day(arm_b_forecast, spike=True),
+    ], ignore_index=True)
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+            "hvac.price_overlay": price_overlay_df,
+            "hvac.thermostat": thermostat_df,
+        },
+        window_start_ct="2026-06-08T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[
+            {"week_start_ct": arm_a_day, "arm": "A",
+             "included_day_indexes": [0]},
+            {"week_start_ct": arm_b_grid, "arm": "B",
+             "included_day_indexes": [0, 1, 2]},
+        ],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[
+            {"week_start_ct": arm_a_day.isoformat(), "arm": "A",
+             "qualifies": "True"},
+            {"week_start_ct": arm_b_grid.isoformat(), "arm": "B",
+             "qualifies": "True"},
+        ],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == 1, (
+        f"Filter must reject Arm A grid-event, Arm B no_spike, and "
+        f"Arm B forecast_correlated days; only one row expected (Arm B "
+        f"Mon 06-15 grid-event). Got {len(rows)}: "
+        f"{[(r['date'], r['arm']) for r in rows]}"
+    )
+    r = rows[0]
+    assert r["date"] == arm_b_grid.isoformat()
+    assert r["arm"] == "B"
+
+
+def test_phase4_unknown_overlay_writes_row_not_reason(tmp_path):
+    """Phase 4 RED-pre-implementation closer B: when hvac.price_overlay
+    has no transitions in the lookback window, the grid-event Arm B
+    day's layer_attribution row carries layer_triggered="unknown" --
+    AND no reason_report.json entry fires for the unknown overlay.
+
+    This locks the distinction between row-level uncertainty (which
+    surfaces as an attribution value in the CSV + accumulates in
+    `unknown_overlay_days` sub-dict for Phase 5 provenance) versus
+    stage/output failure (which would fire a reason code).
+
+    Fixture: Arm B grid-event day with empty hvac.price_overlay
+    DataFrame in the bundle. 5cp inactive. Expected:
+      - layer_attribution.csv row: layer_triggered="unknown"
+      - reason_report.json does NOT carry an unknown-overlay entry
+        (other reasons may exist; we assert specifically that no
+        entry's note mentions the unknown-overlay day).
+    """
+    import json
+    from tools.analysis.replay.reason_codes import ReasonCode
+
+    day_ct = datetime.date(2026, 6, 15)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    refoss_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="30s", inclusive="left",
+    )
+    refoss_df = pd.DataFrame({
+        "_time": refoss_times,
+        "_measurement": "refoss.channel",
+        "_field": "power_w",
+        "_value": 500.0,
+        "channel": "em:2",
+    })
+    prices_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    prices_df = pd.DataFrame({
+        "_time": prices_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    h17_start = pipeline._ct_date_to_utc(day_ct, 17)
+    h17_end = pipeline._ct_date_to_utc(day_ct, 18)
+    prices_df.loc[
+        (prices_df["_time"] >= h17_start) & (prices_df["_time"] < h17_end),
+        "_value",
+    ] = 15.0
+    forecast_df = build_nws_forecast_df(
+        [day_ct],
+        high_f_fn=lambda d: 72.0,
+        apparent_max_f_fn=lambda d: 78.0,
+    )
+    # Empty hvac.price_overlay (present in bundle but zero transitions).
+    price_overlay_df = pd.DataFrame(columns=[
+        "_time", "_measurement", "_field", "_value", "_value_text",
+        "prev_tier", "new_tier",
+    ])
+    thermo_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="1min", inclusive="left",
+    )
+    thermostat_df = pd.DataFrame({
+        "_time": thermo_times,
+        "_measurement": "hvac.thermostat",
+        "_field": "indoor_temp_f",
+        "_value": 77.5,
+        "_value_text": None,
+        "thermostat_id": "main",
+    })
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+            "hvac.price_overlay": price_overlay_df,
+            "hvac.thermostat": thermostat_df,
+        },
+        window_start_ct="2026-06-15T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": day_ct, "arm": "B",
+                "included_day_indexes": [0]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": day_ct.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["layer_triggered"] == "unknown", (
+        "Empty hvac.price_overlay -> overlay state unknowable -> "
+        "layer_triggered=unknown (NOT normal, NOT neither)"
+    )
+
+    # No reason_report entry should fire for the unknown-overlay day.
+    # Unknown is row-level uncertainty, not stage/output failure.
+    reason_path = stage8_dir / "reason_report.json"
+    if reason_path.exists():
+        with open(reason_path) as f:
+            report = json.load(f)
+        for e in report["entries"]:
+            note = e.get("note") or ""
+            assert day_ct.isoformat() not in note or (
+                e["reason_code"]
+                != ReasonCode.NO_NWS_FORECAST_FOR_CLASSIFICATION.value
+            ), "unknown overlay must not emit a NO_NWS_FORECAST reason"
+            # Locked: no reason code exists for unknown overlay state.
+            # Unknown days surface in unknown_overlay_days sub-dict for
+            # Phase 5 provenance; they do NOT emit reason_report entries.
+
+
+def test_phase4_price_peak_hour_filters_to_5min_period_type():
+    """Phase 4 RED-pre-implementation closer C: _price_peak_hour_ct
+    must filter to period_type=5min only. The poller writes both
+    period_type=5min (canonical) and period_type=hourly_avg (poller-
+    side rollup); the analysis pipeline owns its own hourly aggregation
+    from the 5min stream (Stage 3 pattern; ANALYSIS_PIPELINE.md §3
+    Stage 3).
+
+    Fixture: 5-min stream has hour 16 spike at 14c (peak should be 16).
+    hourly_avg stream has hour 8 spike at 20c (would be peak if helper
+    failed to filter). Helper must return 16.
+
+    Catches: schema-drift regression (per #96 history) that
+    accidentally consumes hourly_avg rows or mixes them into the mean.
+    """
+    day_ct = datetime.date(2026, 6, 8)
+    day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+    day_end_utc = pipeline._ct_date_to_utc(
+        day_ct + datetime.timedelta(days=1), 0,
+    )
+
+    five_min_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="5min", inclusive="left",
+    )
+    five_min_df = pd.DataFrame({
+        "_time": five_min_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "5min",
+    })
+    h16_start = pipeline._ct_date_to_utc(day_ct, 16)
+    h16_end = pipeline._ct_date_to_utc(day_ct, 17)
+    five_min_df.loc[
+        (five_min_df["_time"] >= h16_start) & (five_min_df["_time"] < h16_end),
+        "_value",
+    ] = 14.0
+
+    hourly_times = pd.date_range(
+        day_start_utc, day_end_utc, freq="1h", inclusive="left",
+    )
+    hourly_df = pd.DataFrame({
+        "_time": hourly_times,
+        "_measurement": "comed.prices",
+        "_field": "price_cents_per_kwh",
+        "_value": 5.0,
+        "period_type": "hourly_avg",
+    })
+    h8_start = pipeline._ct_date_to_utc(day_ct, 8)
+    hourly_df.loc[hourly_df["_time"] == h8_start, "_value"] = 20.0
+
+    prices_df = pd.concat([five_min_df, hourly_df], ignore_index=True)
+    peak_hour = pipeline._price_peak_hour_ct(prices_df, day_ct)
+    assert peak_hour == 16, (
+        "Helper must filter to period_type=5min only; hour 8 hourly_avg "
+        "row at 20c would dominate if the filter were missing or "
+        "broken (regression #96 territory)"
+    )
+
+
+def test_phase4_multi_day_arm_b_grid_event_loops_all_days_with_distinct_attributions(tmp_path):
+    """Phase 4 audit closer (post-GREEN): the loader walks EVERY
+    eligible grid-event Arm B day, not just the first. Fixture has 3
+    grid-event Arm B days, each engineered to produce a DIFFERENT
+    layer_triggered value AND a DIFFERENT hour_ct so the test cannot
+    pass by duplicating one day's result three times.
+
+    Day 1 (Mon 2026-06-15):
+      price-peak hour: 17 CT
+      overlay state at peak: "elevated" (transition at 14:00 CT)
+      5cp active at peak: False
+      -> layer_triggered = "price_spike_reactivity"
+
+    Day 2 (Tue 2026-06-16):
+      price-peak hour: 18 CT
+      overlay state at peak: "normal" (transition at 14:00 CT)
+      5cp active at peak: True (5cp_state row at 18:00 CT with is_active=true)
+      -> layer_triggered = "5cp_detection"
+
+    Day 3 (Wed 2026-06-17):
+      price-peak hour: 19 CT
+      overlay state at peak: "scarcity" (transition at 14:00 CT)
+      5cp active at peak: True
+      -> layer_triggered = "both"
+
+    Catches: per-day loop quitting early; same-day shortcut that
+    repeats day 1's result; wrong day ordering; integration-level
+    misuse of the 3 distinct combinatorics branches.
+    """
+    days_specs = [
+        # (day_ct, peak_hour_ct, overlay_tier, fivecp_active, expected_layer)
+        (datetime.date(2026, 6, 15), 17, "elevated", False, "price_spike_reactivity"),
+        (datetime.date(2026, 6, 16), 18, "normal",   True,  "5cp_detection"),
+        (datetime.date(2026, 6, 17), 19, "scarcity", True,  "both"),
+    ]
+    week_start = days_specs[0][0]
+
+    def _refoss_day(day_ct: datetime.date) -> pd.DataFrame:
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        times = pd.date_range(
+            day_start_utc, day_end_utc, freq="30s", inclusive="left",
+        )
+        return pd.DataFrame({
+            "_time": times,
+            "_measurement": "refoss.channel",
+            "_field": "power_w",
+            "_value": 500.0,
+            "channel": "em:2",
+        })
+
+    def _prices_day(day_ct: datetime.date, peak_hour: int) -> pd.DataFrame:
+        day_start_utc = pipeline._ct_date_to_utc(day_ct, 0)
+        day_end_utc = pipeline._ct_date_to_utc(
+            day_ct + datetime.timedelta(days=1), 0,
+        )
+        times = pd.date_range(
+            day_start_utc, day_end_utc, freq="5min", inclusive="left",
+        )
+        df = pd.DataFrame({
+            "_time": times,
+            "_measurement": "comed.prices",
+            "_field": "price_cents_per_kwh",
+            "_value": 5.0,
+            "period_type": "5min",
+        })
+        h_start = pipeline._ct_date_to_utc(day_ct, peak_hour)
+        h_end = pipeline._ct_date_to_utc(day_ct, peak_hour + 1)
+        df.loc[
+            (df["_time"] >= h_start) & (df["_time"] < h_end),
+            "_value",
+        ] = 15.0
+        return df
+
+    refoss_df = pd.concat(
+        [_refoss_day(spec[0]) for spec in days_specs], ignore_index=True,
+    )
+    prices_df = pd.concat(
+        [_prices_day(spec[0], spec[1]) for spec in days_specs],
+        ignore_index=True,
+    )
+    forecast_df = build_nws_forecast_df(
+        [spec[0] for spec in days_specs],
+        high_f_fn=lambda d: 72.0,
+        apparent_max_f_fn=lambda d: 78.0,
+    )
+    # Overlay transitions: 14:00 CT on each day, to the day-specific tier.
+    price_overlay_df = pd.DataFrame([
+        _price_overlay_row(
+            _ct_to_utc(spec[0].year, spec[0].month, spec[0].day, 14, 0),
+            spec[2],
+        )
+        for spec in days_specs
+    ])
+    # 5cp_state rows AT the peak hour of each day that needs 5cp active.
+    fivecp_rows = []
+    for day_ct, peak_hour, _, fivecp_active, _ in days_specs:
+        if fivecp_active:
+            fivecp_rows.append(_fivecp_state_row(
+                pd.Timestamp(pipeline._ct_date_to_utc(day_ct, peak_hour)),
+                "true",
+            ))
+    fivecp_df = (
+        pd.DataFrame(fivecp_rows)
+        if fivecp_rows
+        else pd.DataFrame(columns=[
+            "_time", "_measurement", "_field", "_value", "_value_text",
+            "scope", "zone", "is_active",
+        ])
+    )
+
+    stage1_dir = tmp_path / "stage1"
+    write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss_df,
+            "comed.prices": prices_df,
+            "nws.forecast": forecast_df,
+            "hvac.price_overlay": price_overlay_df,
+            "hvac.5cp_state": fivecp_df,
+        },
+        window_start_ct="2026-06-15T00:00:00-05:00",
+        window_end_ct="2026-06-22T00:00:00-05:00",
+        source_type=OBSERVED_RECENT,
+    )
+
+    stage2_dir = tmp_path / "stage2"
+    stage2_dir.mkdir()
+    _write_qualifying_days_csv(
+        stage2_dir / "qualifying_days.csv",
+        weeks=[{"week_start_ct": week_start, "arm": "B",
+                "included_day_indexes": [0, 1, 2]}],
+    )
+    stage3_dir = tmp_path / "stage3"
+    stage3_dir.mkdir()
+    _write_stage3_weekly_csv(
+        stage3_dir / "weekly.csv",
+        rows=[{"week_start_ct": week_start.isoformat(),
+               "arm": "B", "qualifies": "True"}],
+    )
+
+    pipeline.stage8_decomposition(stage1_dir, stage3_dir, tmp_path)
+    stage8_dir = tmp_path / "stage8"
+
+    with open(stage8_dir / "layer_attribution.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 3, (
+        f"Loader must walk all 3 grid-event Arm B days; got {len(rows)}: "
+        f"{[(r['date'], r['hour_ct'], r['layer_triggered']) for r in rows]}"
+    )
+    by_date = {r["date"]: r for r in rows}
+    assert set(by_date.keys()) == {
+        spec[0].isoformat() for spec in days_specs
+    }, "All three days must appear; loop must not skip any day"
+
+    for day_ct, peak_hour, _, _, expected_layer in days_specs:
+        r = by_date[day_ct.isoformat()]
+        assert r["arm"] == "B"
+        assert int(r["hour_ct"]) == peak_hour, (
+            f"Day {day_ct}: hour_ct mismatch (expected {peak_hour}); "
+            "if the loop returned day 1's result three times this fails"
+        )
+        assert r["layer_triggered"] == expected_layer, (
+            f"Day {day_ct}: layer_triggered mismatch (expected "
+            f"{expected_layer}); a same-day shortcut would yield "
+            f"identical layer_triggered values across all 3 rows"
+        )

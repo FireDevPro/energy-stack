@@ -3887,6 +3887,165 @@ def _forecast_for_day_ct(
     }
 
 
+# -- Phase 4: layer attribution helpers ------------------------------------
+
+
+def _classify_layer_triggered(
+    price_state: str,
+    fivecp_active: bool,
+) -> str:
+    """Translate ``(price_overlay_state, 5cp_active)`` into the locked
+    layer_triggered enum value.
+
+    Locked mapping:
+      price unknown:
+        - 5CP inactive: ``"unknown"``
+        - 5CP active:   ``"5cp_detection"`` (known 5CP is NOT hidden
+                        behind unknown overlay state)
+      price ``"normal"``:
+        - 5CP inactive: ``"neither"``
+        - 5CP active:   ``"5cp_detection"``
+      price in {``"elevated"``, ``"scarcity"``}:
+        - 5CP inactive: ``"price_spike_reactivity"``
+        - 5CP active:   ``"both"``
+    """
+    if price_state == "unknown":
+        return "5cp_detection" if fivecp_active else "unknown"
+    if price_state == "normal":
+        return "5cp_detection" if fivecp_active else "neither"
+    if price_state in ("elevated", "scarcity"):
+        return "both" if fivecp_active else "price_spike_reactivity"
+    # Defensive: an unexpected state value is treated as unknown so
+    # the row carries that uncertainty rather than silently choosing
+    # "neither".
+    return "unknown"
+
+
+def _price_overlay_state_at_hour(
+    price_overlay_df: "pd.DataFrame",
+    hour_utc: datetime.datetime,
+    lookback: datetime.timedelta = datetime.timedelta(hours=24),
+) -> str:
+    """Reconstruct price-overlay state at a specific hour by walking
+    ``hvac.price_overlay`` transition rows in reverse-chrono within the
+    lookback window. Returns ``"unknown"`` if no transition is found.
+
+    Window: ``[hour_utc + 1h - lookback, hour_utc + 1h]``. The +1h tail
+    captures mid-hour transitions (a transition at 14:30 CT counts as
+    the state for hour 14).
+
+    Returns the ``new_tier`` value of the latest in-window row. Never
+    defaults ``unknown`` to ``"normal"`` or ``"neither"`` -- the
+    caller's ``_classify_layer_triggered`` handles the policy mapping.
+    """
+    import pandas as pd
+    if len(price_overlay_df) == 0 or "new_tier" not in price_overlay_df.columns:
+        return "unknown"
+    upper = pd.Timestamp(hour_utc) + pd.Timedelta(hours=1)
+    lower = upper - pd.Timedelta(seconds=lookback.total_seconds())
+    sub = price_overlay_df[
+        (price_overlay_df["_time"] >= lower)
+        & (price_overlay_df["_time"] <= upper)
+    ]
+    if len(sub) == 0:
+        return "unknown"
+    latest_idx = sub["_time"].idxmax()
+    return str(sub.loc[latest_idx, "new_tier"])
+
+
+def _fivecp_active_in_hour(
+    fivecp_state_df: "pd.DataFrame",
+    hour_utc: datetime.datetime,
+) -> bool:
+    """True iff any ``hvac.5cp_state`` row in the hour has
+    ``is_active == "true"``.
+
+    The measurement is tick-cadence (~5 min), so "any active row in the
+    hour" is well-defined. Returns False if the measurement is absent
+    from the bundle or no rows fall in the hour.
+    """
+    import pandas as pd
+    if len(fivecp_state_df) == 0 or "is_active" not in fivecp_state_df.columns:
+        return False
+    hour_end = pd.Timestamp(hour_utc) + pd.Timedelta(hours=1)
+    sub = fivecp_state_df[
+        (fivecp_state_df["_time"] >= pd.Timestamp(hour_utc))
+        & (fivecp_state_df["_time"] < hour_end)
+    ]
+    if len(sub) == 0:
+        return False
+    return bool((sub["is_active"] == "true").any())
+
+
+def _price_peak_hour_ct(
+    prices_df: "pd.DataFrame",
+    day_ct: datetime.date,
+) -> int | None:
+    """Hour-of-day (0-23 CT) with the maximum hourly mean supply price
+    for the given CT day. First-max tie-breaker (deterministic).
+
+    Filters to ``period_type == "5min"`` only via
+    ``_hourly_prices_for_day_ct`` -- the poller also writes
+    ``period_type == "hourly_avg"`` rows, but the analysis pipeline
+    owns its own hourly aggregation from the 5min stream.
+
+    Returns None if no observations exist for the day.
+    """
+    hourly_prices = _hourly_prices_for_day_ct(prices_df, day_ct)
+    if not hourly_prices or max(hourly_prices) == 0.0:
+        return None
+    # list.index returns the first occurrence -> first-max tie-break.
+    return hourly_prices.index(max(hourly_prices))
+
+
+def _indoor_temp_at_hour(
+    thermostat_df: "pd.DataFrame",
+    hour_utc: datetime.datetime,
+) -> float | None:
+    """Mean ``indoor_temp_f`` from ``hvac.thermostat`` rows within the
+    hour. Returns None if no observations -- the caller writes an
+    empty cell in layer_attribution.csv rather than a misleading 0.0.
+    """
+    import pandas as pd
+    if len(thermostat_df) == 0 or "_field" not in thermostat_df.columns:
+        return None
+    hour_end = pd.Timestamp(hour_utc) + pd.Timedelta(hours=1)
+    mask = (
+        (thermostat_df["_field"] == "indoor_temp_f")
+        & (thermostat_df["_time"] >= pd.Timestamp(hour_utc))
+        & (thermostat_df["_time"] < hour_end)
+    )
+    sub = thermostat_df.loc[mask]
+    if len(sub) == 0:
+        return None
+    return float(sub["_value"].mean())
+
+
+def _action_label_at_hour(
+    actions_df: "pd.DataFrame",
+    hour_utc: datetime.datetime,
+) -> str | None:
+    """Most recent ``action_label`` tag value within the hour, or None
+    if no ``hvac.actions`` row exists in the hour.
+
+    NO lookback. ``hvac.actions`` is evidence of action AT that time,
+    not state. Looking back to an earlier action would imply something
+    that did not happen at the price-peak hour.
+    """
+    import pandas as pd
+    if len(actions_df) == 0 or "action_label" not in actions_df.columns:
+        return None
+    hour_end = pd.Timestamp(hour_utc) + pd.Timedelta(hours=1)
+    sub = actions_df[
+        (actions_df["_time"] >= pd.Timestamp(hour_utc))
+        & (actions_df["_time"] < hour_end)
+    ]
+    if len(sub) == 0:
+        return None
+    latest_idx = sub["_time"].idxmax()
+    return str(sub.loc[latest_idx, "action_label"])
+
+
 def _load_stage8_inputs(
     stage1_dir: Path, stage3_dir: Path,
 ) -> dict | None:
@@ -3977,12 +4136,71 @@ def _load_stage8_inputs(
             "outcomes": outcomes,
         })
 
+    # Phase 4: build layer_attribution rows for grid-event Arm B days.
+    # Per locked semantics, only category == "grid_event_spike" AND
+    # arm == "B" days are attributed; other days are out of scope.
+    price_overlay_df = _load_concat_parquets(
+        manifest, stage1_dir, "hvac.price_overlay",
+    )
+    fivecp_state_df = _load_concat_parquets(
+        manifest, stage1_dir, "hvac.5cp_state",
+    )
+    thermostat_df = _load_concat_parquets(
+        manifest, stage1_dir, "hvac.thermostat",
+    )
+    actions_df = _load_concat_parquets(
+        manifest, stage1_dir, "hvac.actions",
+    )
+
+    layer_rows: list[dict] = []
+    unknown_overlay_days: list[dict] = []
+    for daily in daily_records:
+        if daily["category"] != "grid_event_spike":
+            continue
+        if daily["arm"] != "B":
+            continue
+        day_ct = daily["date"]
+        peak_hour_ct = _price_peak_hour_ct(prices_df, day_ct)
+        if peak_hour_ct is None:
+            # Defensive: grid_event_spike implies a price spike exists,
+            # so this should not happen with non-empty prices_df.
+            continue
+        peak_hour_utc = _ct_date_to_utc(day_ct, peak_hour_ct)
+        price_state = _price_overlay_state_at_hour(
+            price_overlay_df, peak_hour_utc,
+        )
+        fivecp_active = _fivecp_active_in_hour(
+            fivecp_state_df, peak_hour_utc,
+        )
+        layer_triggered = _classify_layer_triggered(price_state, fivecp_active)
+        if price_state == "unknown":
+            # Row-level uncertainty: capture for Phase 5 provenance,
+            # but do NOT emit a reason_report entry. The row's
+            # layer_triggered value already surfaces the uncertainty.
+            unknown_overlay_days.append({
+                "date": day_ct,
+                "arm": daily["arm"],
+            })
+        indoor_temp = _indoor_temp_at_hour(thermostat_df, peak_hour_utc)
+        action = _action_label_at_hour(actions_df, peak_hour_utc)
+        layer_rows.append({
+            "date": day_ct.isoformat(),
+            "hour_ct": peak_hour_ct,
+            "arm": daily["arm"],
+            "layer_triggered": layer_triggered,
+            "indoor_temp_f": "" if indoor_temp is None else indoor_temp,
+            "action": "" if action is None else action,
+        })
+
     return {
         "decomposition": {
             "data": daily_records,
             "dropped_days": dropped_days,
         },
-        "layer_attribution": None,
+        "layer_attribution": {
+            "data": layer_rows,
+            "unknown_overlay_days": unknown_overlay_days,
+        },
     }
 
 
