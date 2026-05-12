@@ -114,11 +114,9 @@ Honor `.git/hooks/pre-push` if present.
 
 ## Doc hygiene (Layer 1: discipline)
 
-Canonical: `repo-doc-hygiene` skill at `~/.claude/skills/repo-doc-hygiene/`. Skill is source of truth. Cite, don't re-derive.
-
 Universal rules:
 
-- Every doc living beyond one session carries a YAML header per the skill's schema (date, owner, status, role-label).
+- Every doc living beyond one session carries a YAML header (date, owner, status, role-label).
 - Headerless non-session doc is a bug. Fix in the same commit.
 - Dates: ISO 8601 (`YYYY-MM-DD`). No "Q2 2026", no year-only, no "April 2026".
 - Convert relative dates in conversation to absolute before saving ("Thursday" -> `2026-05-14`).
@@ -135,7 +133,7 @@ docs/DOC_AUDIT.md                 # audit state, per-doc verdicts
 
 - Solo project. Chris is operator. No named subagents yet.
 
-Role labels (per `repo-doc-hygiene`): `chris`, `code-team`, `unknown`. Extend per project.
+Role labels: `chris`, `code-team`, `unknown`. Extend per project.
 
 ## See also
 
