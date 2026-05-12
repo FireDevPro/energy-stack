@@ -100,6 +100,110 @@ def _stage3_week_inputs(week_start_ct: datetime.date, arm: str,
     }
 
 
+def _stage8_inputs(weeks_a, weeks_b) -> dict:
+    """Synthetic Stage 8 inputs: 4 weeks × 7 days = 28 days mixed across
+    the three spike categories. Arm B's per-day costs are 20% lower
+    than Arm A's (matching the Stage 3 fixture), so the per-category
+    decomposition shows B − A < 0 medians.
+    """
+    daily_records = []
+    for arm_weeks, arm in [(weeks_a, "A"), (weeks_b, "B")]:
+        for week in arm_weeks:
+            for d in range(7):
+                date = week + datetime.timedelta(days=d)
+                # Distribute categories: 4 forecast / 2 grid_event / 1 no_spike per week
+                if d < 4:
+                    category = "forecast_correlated_spike"
+                elif d < 6:
+                    category = "grid_event_spike"
+                else:
+                    category = "no_spike"
+                # Cost lower for arm B; differs per category just enough
+                # to give Stage 8 distinct medians per category.
+                base_cost = {
+                    "forecast_correlated_spike": 3.50,
+                    "grid_event_spike": 2.20,
+                    "no_spike": 1.10,
+                }[category]
+                multiplier = 0.8 if arm == "B" else 1.0
+                daily_records.append({
+                    "date": date,
+                    "arm": arm,
+                    "category": category,
+                    "costs": {
+                        "o1_dollars_per_cdd": base_cost * multiplier,
+                        "o3_peak_hvac_kw": (base_cost / 2) * multiplier,
+                        "o4_dollars_per_cdd_whole_home": (base_cost * 1.4) * multiplier,
+                    },
+                })
+
+    # Layer attribution: a few grid-event days in Arm B with synthetic responses
+    layer_attribution = []
+    for week in weeks_b:
+        for d in [4, 5]:  # Fri/Sat grid-event days
+            layer_attribution.append({
+                "date": week + datetime.timedelta(days=d),
+                "hour_ct": 17,
+                "arm": "B",
+                "layer_triggered": "price_spike_reactivity",
+                "indoor_temp_f": 78.5,
+                "action": "PRICE_OVERLAY_TIER2",
+            })
+
+    return {
+        "daily_records": daily_records,
+        "layer_attribution": layer_attribution,
+    }
+
+
+def _effects_like_row(outcome: str, median: float) -> dict:
+    return {
+        "outcome": outcome,
+        "n_pairs": 2,
+        "median_diff": f"{median:.6f}",
+        "ci_low_95": f"{(median - 0.05):.6f}",
+        "ci_high_95": f"{(median + 0.05):.6f}",
+    }
+
+
+def _stage9_inputs() -> dict:
+    """Synthetic Stage 9 inputs: each sensitivity returns a small set
+    of result rows mirroring what the real upstream-re-run would
+    produce. All sensitivities reflect the fixture's B−A < 0 direction.
+    """
+    effects_outcomes = (
+        "o1_dollars_per_cdd", "o3_peak_hvac_kw", "o4_dollars_per_cdd_whole_home",
+    )
+    return {
+        "euclidean_zscore": [
+            _effects_like_row(o, -0.10) for o in effects_outcomes
+        ],
+        "include_washout": [
+            _effects_like_row(o, -0.08) for o in effects_outcomes
+        ],
+        "em2_em8_only": [
+            _effects_like_row("o1_dollars_per_cdd", -0.09),
+        ],
+        "five_min_pricing": [
+            _effects_like_row("o1_dollars_per_cdd", -0.11),
+        ],
+        "day_of_week": [
+            {"outcome": "o1_dollars_per_cdd",
+             "day_of_week": dow, "arm": arm,
+             "n": 4, "mean_value": f"{(0.5 if arm == 'A' else 0.4):.6f}"}
+            for dow in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            for arm in ("A", "B")
+        ],
+        "threshold_robustness": [
+            {"threshold_pair": tp, "outcome": "o1_dollars_per_cdd",
+             "category": cat, "delta_median": f"{-0.10:.6f}"}
+            for tp in ("8/15", "10/20", "12/25")
+            for cat in ("forecast_correlated_spike",
+                        "grid_event_spike", "no_spike")
+        ],
+    }
+
+
 def _stage6_inputs() -> dict:
     from tools.o2_capacity_reconstruction.reconstruct import TariffConstants
     pjm_peaks_a = [datetime.datetime(2026, 7, 14 + i, 17) for i in range(2)]
@@ -165,6 +269,16 @@ def full_pipeline_run(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         pipeline, "_load_stage6_inputs", lambda _: _stage6_inputs(),
+    )
+
+    monkeypatch.setattr(
+        pipeline, "_load_stage8_inputs",
+        lambda stage1, stage3: _stage8_inputs(weeks_a, weeks_b),
+    )
+
+    monkeypatch.setattr(
+        pipeline, "_load_stage9_inputs",
+        lambda stage1, stage2, stage3: _stage9_inputs(),
     )
 
     baseline_cov_path = tmp_path / "baseline_cov.npz"
@@ -292,11 +406,6 @@ def test_e2e_through_stage_6(full_pipeline_run):
     assert int(det[0]["tp"]) == 5
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Stage 7 (SCED randomization) not yet implemented; "
-           "sced_pvalues.csv is an empty stub. Remove this xfail when Stage 7 lands.",
-)
 def test_e2e_through_stage_7(full_pipeline_run):
     """Stage 7 reads Stage 5's effects.csv (or recomputes pair differences
     from Stage 3 + Stage 4) and emits sced_pvalues.csv with one row per
@@ -314,49 +423,66 @@ def test_e2e_through_stage_7(full_pipeline_run):
         assert 0.0 <= p <= 1.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Stage 8 (forecast-vs-grid decomposition) not yet implemented; "
-           "decomposition.csv + layer_attribution.csv are empty stubs. "
-           "Remove this xfail when Stage 8 lands.",
-)
 def test_e2e_through_stage_8(full_pipeline_run):
-    """Stage 8 emits decomposition.csv (per-outcome magnitude attribution
-    across forecast_correlated_spike / grid_event_spike / no_spike
-    categories) and layer_attribution.csv (per-grid-event-day which Arm B
-    layer triggered).
+    """Stage 8 emits decomposition.csv (per-outcome × per-category B−A
+    median day cost) and layer_attribution.csv (per-grid-event-day
+    which Arm B layer triggered).
     """
     stage8 = full_pipeline_run["out_dir"] / "stage8"
     with open(stage8 / "decomposition.csv") as f:
         decomp = list(csv.DictReader(f))
-    assert len(decomp) >= 1, "Stage 8 should emit at least one decomposition row"
+    # 3 outcomes × 3 categories = 9 rows in the fixture
+    assert len(decomp) == 9, (
+        f"Stage 8 should emit one row per (outcome × category); got {len(decomp)}"
+    )
+    # Each row should have arm B with lower cost than arm A in the fixture
+    # (Arm B uses 20% less HVAC), so delta_median is negative everywhere.
+    for r in decomp:
+        assert float(r["delta_median"]) < 0, (
+            f"{r['outcome']}/{r['category']} delta_median should be < 0 "
+            f"(Arm B uses less in fixture); got {r['delta_median']}"
+        )
+    # Layer attribution: 2 grid-event days × 2 Arm B weeks = 4 rows
     with open(stage8 / "layer_attribution.csv") as f:
         attrib = list(csv.DictReader(f))
-    # Layer attribution may be empty if there are no grid-event days in the
-    # fixture; the FILE must exist with the locked header.
-    assert attrib is not None
+    assert len(attrib) == 4
+    assert all(r["arm"] == "B" for r in attrib)
+    assert all(r["layer_triggered"] == "price_spike_reactivity" for r in attrib)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Stage 9 (six pre-committed sensitivities) not yet implemented; "
-           "all six sensitivity CSVs are empty stubs. Remove this xfail "
-           "when Stage 9 lands.",
-)
 def test_e2e_through_stage_9(full_pipeline_run):
     """Stage 9 emits six per-sensitivity CSVs (one per pre-committed
-    sensitivity in EXPERIMENT_DESIGN.md §7). Each should contain at
-    least one row.
+    sensitivity in EXPERIMENT_DESIGN.md §7). Each must contain at
+    least one row, and the rows should reflect the fixture's B−A < 0
+    direction where applicable.
     """
     stage9 = full_pipeline_run["out_dir"] / "stage9"
-    sensitivities = (
-        "euclidean_zscore", "include_washout", "em2_em8_only",
-        "five_min_pricing", "day_of_week", "threshold_robustness",
-    )
-    for sid in sensitivities:
+
+    # Sensitivities 1-4: effects-like outputs with negative B−A medians
+    for sid in ("euclidean_zscore", "include_washout",
+                "em2_em8_only", "five_min_pricing"):
         with open(stage9 / f"{sid}.csv") as f:
             rows = list(csv.DictReader(f))
-        assert len(rows) >= 1, f"Stage 9 sensitivity '{sid}' should emit at least one row"
+        assert len(rows) >= 1, f"sensitivity '{sid}' should emit ≥1 row"
+        for r in rows:
+            assert float(r["median_diff"]) < 0, (
+                f"sensitivity '{sid}' / {r['outcome']} median_diff should "
+                f"be < 0 (fixture direction); got {r['median_diff']}"
+            )
+
+    # Day-of-week: 7 days × 2 arms × 1 outcome = 14 rows
+    with open(stage9 / "day_of_week.csv") as f:
+        dow_rows = list(csv.DictReader(f))
+    assert len(dow_rows) == 14
+    arms = {r["arm"] for r in dow_rows}
+    assert arms == {"A", "B"}
+
+    # Threshold robustness: 3 thresholds × 3 categories × 1 outcome = 9 rows
+    with open(stage9 / "threshold_robustness.csv") as f:
+        tr_rows = list(csv.DictReader(f))
+    assert len(tr_rows) == 9
+    pairs = {r["threshold_pair"] for r in tr_rows}
+    assert pairs == {"8/15", "10/20", "12/25"}
 
 
 # -- Orthogonal property test: Stage 3 boundary rule -----------------------

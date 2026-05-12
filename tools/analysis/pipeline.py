@@ -1314,38 +1314,67 @@ def stage4_matching(stage3_dir: Path, baseline_cov_path: Path, out_dir: Path) ->
     return stage_dir
 
 
-def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
-    """Compute matched-pair median Δ + stationary bootstrap 95% CI per outcome."""
-    stage_dir = out_dir / "stage5"
-    stage_dir.mkdir(parents=True, exist_ok=True)
+STAGE5_OUTCOMES = (
+    "o1_dollars_per_cdd",
+    "o3_peak_hvac_kw",
+    "o4_dollars_per_cdd_whole_home",
+)
 
-    weekly = {}
+
+def _compute_pair_diffs(
+    stage3_dir: Path, stage4_dir: Path,
+) -> dict[str, list[tuple[str, float]]]:
+    """Compute per-outcome matched-pair differences (arm B − arm A).
+
+    Returns {outcome: [(pair_id, diff), ...]} for every (outcome, primary
+    pair) where both arms have a numeric value in Stage 3's weekly.csv.
+    Used by both Stage 5 (bootstrap CI) and Stage 7 (SCED sign-flip).
+    """
+    weekly: dict[tuple[str, str], dict] = {}
     with open(stage3_dir / "weekly.csv") as f:
         for row in csv.DictReader(f):
             weekly[(row["week_start_ct"], row["arm"])] = row
 
-    pairs = []
+    pairs: list[dict] = []
     with open(stage4_dir / "matched_pairs.csv") as f:
         for row in csv.DictReader(f):
             if row["quality"] == "primary":
                 pairs.append(row)
 
-    outcomes = ("o1_dollars_per_cdd", "o3_peak_hvac_kw", "o4_dollars_per_cdd_whole_home")
+    out: dict[str, list[tuple[str, float]]] = {o: [] for o in STAGE5_OUTCOMES}
+    for outcome in STAGE5_OUTCOMES:
+        for p in pairs:
+            wa = weekly.get((p["week_a"], "A"))
+            wb = weekly.get((p["week_b"], "B"))
+            if wa is None or wb is None:
+                continue
+            try:
+                diff = float(wb[outcome]) - float(wa[outcome])
+            except ValueError:
+                continue
+            out[outcome].append((p["pair_id"], diff))
+    return out
+
+
+def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
+    """Compute matched-pair median Δ + stationary bootstrap 95% CI per outcome.
+
+    Writes:
+      - effects.csv: per-outcome summary (median, 95% CI from
+        stationary bootstrap)
+      - pair_diffs.csv: per-(outcome, pair) raw difference. Stage 7
+        reads this for the SCED sign-flip randomization test.
+    """
+    stage_dir = out_dir / "stage5"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    diffs_by_outcome = _compute_pair_diffs(stage3_dir, stage4_dir)
+
     with open(stage_dir / "effects.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["outcome", "n_pairs", "median_diff", "ci_low_95", "ci_high_95"])
-        for i_outcome, outcome in enumerate(outcomes):
-            diffs = []
-            for p in pairs:
-                wa = weekly.get((p["week_a"], "A"))
-                wb = weekly.get((p["week_b"], "B"))
-                if wa is None or wb is None:
-                    continue
-                try:
-                    diff = float(wb[outcome]) - float(wa[outcome])
-                except ValueError:
-                    continue
-                diffs.append(diff)
+        for i_outcome, outcome in enumerate(STAGE5_OUTCOMES):
+            diffs = [d for _pid, d in diffs_by_outcome[outcome]]
             res = stationary_bootstrap_median_diff(
                 diffs, rng_seed=PRNG_SEED + i_outcome,
             )
@@ -1353,6 +1382,15 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
                 [outcome, res["n"], f"{res['point']:.6f}",
                  f"{res['ci_low']:.6f}", f"{res['ci_high']:.6f}"]
             )
+
+    # Per-(outcome, pair) raw differences for Stage 7 SCED input
+    with open(stage_dir / "pair_diffs.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["outcome", "pair_id", "diff"])
+        for outcome in STAGE5_OUTCOMES:
+            for pair_id, diff in diffs_by_outcome[outcome]:
+                w.writerow([outcome, pair_id, f"{diff:.6f}"])
+
     return stage_dir
 
 
@@ -1630,34 +1668,281 @@ def stage6_o2(stage1_dir: Path, out_dir: Path) -> Path:
     return stage_dir
 
 
+STAGE7_SCED_PVALUES_COLUMNS = (
+    "outcome", "n_pairs", "observed_median", "pvalue", "exact",
+)
+
+
 def stage7_sced(stage5_dir: Path, out_dir: Path) -> Path:
-    """SCED randomization test on the pair differences from Stage 5."""
+    """SCED sign-flip randomization p-value per outcome (§7).
+
+    Per EXPERIMENT_DESIGN.md §7 / ANALYSIS_PIPELINE.md Stage 7: for each
+    outcome, exhaustively enumerate sign flips of the matched-pair
+    differences (exact for N ≤ SCED_EXACT_MAX_N; random sampling
+    otherwise). The fraction of permutations with absolute median
+    ≥ |observed median| is the two-sided p-value.
+
+    Reads ``stage5_dir / "pair_diffs.csv"`` (written by Stage 5),
+    grouped by outcome. Uses ``sced_randomization_pvalue`` with
+    ``rng_seed = PRNG_SEED + outcome_index + 1`` per spec.
+
+    Output: ``stage7/sced_pvalues.csv`` with one row per outcome,
+    columns: outcome, n_pairs, observed_median, pvalue, exact.
+    """
     stage_dir = out_dir / "stage7"
     stage_dir.mkdir(parents=True, exist_ok=True)
-    (stage_dir / "sced_pvalues.csv").touch()
+
+    diffs_by_outcome: dict[str, list[float]] = {o: [] for o in STAGE5_OUTCOMES}
+    pair_diffs_path = stage5_dir / "pair_diffs.csv"
+    if pair_diffs_path.exists():
+        with open(pair_diffs_path) as f:
+            for row in csv.DictReader(f):
+                outcome = row["outcome"]
+                if outcome in diffs_by_outcome:
+                    try:
+                        diffs_by_outcome[outcome].append(float(row["diff"]))
+                    except ValueError:
+                        continue
+
+    with open(stage_dir / "sced_pvalues.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(list(STAGE7_SCED_PVALUES_COLUMNS))
+        for i_outcome, outcome in enumerate(STAGE5_OUTCOMES):
+            diffs = diffs_by_outcome[outcome]
+            if not diffs:
+                w.writerow([outcome, 0, "", "", "False"])
+                continue
+            res = sced_randomization_pvalue(
+                diffs, rng_seed=PRNG_SEED + i_outcome + 1,
+            )
+            obs_median = float(np.median(np.asarray(diffs)))
+            w.writerow([
+                outcome,
+                res["n"],
+                f"{obs_median:.6f}",
+                f"{res['pvalue']:.6f}",
+                str(res["exact"]),
+            ])
     return stage_dir
+
+
+SPIKE_PRICE_THRESHOLD_C_PER_KWH = 10.0
+SPIKE_DAY_CATEGORIES = (
+    "forecast_correlated_spike",
+    "grid_event_spike",
+    "no_spike",
+)
+
+
+def classify_spike_day(
+    hourly_prices_cents_per_kwh: Sequence[float],
+    max_forecast_temp_f: float,
+    apparent_max_f: float,
+) -> str:
+    """Per EXPERIMENT_DESIGN.md §7 (Stage 8 decomposition).
+
+    - **No-spike day**: no hour above 10¢/kWh.
+    - **Forecast-correlated price-spike day**: any hour ≥10¢/kWh AND
+      max forecast temp ≥85°F (or apparent ≥90°F) at 21:00-prior
+      classification time.
+    - **Grid-event price-spike day**: any hour ≥10¢/kWh AND max
+      forecast temp <85°F AND apparent <90°F.
+    """
+    has_spike = any(
+        p >= SPIKE_PRICE_THRESHOLD_C_PER_KWH
+        for p in hourly_prices_cents_per_kwh
+    )
+    if not has_spike:
+        return "no_spike"
+    if max_forecast_temp_f >= HOT_TEMP_F or apparent_max_f >= HOT_APPARENT_F:
+        return "forecast_correlated_spike"
+    return "grid_event_spike"
+
+
+STAGE8_DECOMPOSITION_COLUMNS = (
+    "outcome", "category",
+    "arm_a_n_days", "arm_a_median_cost",
+    "arm_b_n_days", "arm_b_median_cost",
+    "delta_median",
+)
+STAGE8_LAYER_ATTRIBUTION_COLUMNS = (
+    "date", "hour_ct", "arm",
+    "layer_triggered", "indoor_temp_f", "action",
+)
+
+
+def _load_stage8_inputs(
+    stage1_dir: Path, stage3_dir: Path,
+) -> dict | None:
+    """Build Stage 8 inputs from Stage 1 raw data + Stage 3 weekly outputs.
+
+    Empty-stub for now: returns None. Real implementation classifies
+    each day in each qualifying week via ``classify_spike_day`` using
+    ``comed.prices`` hourly average + ``nws.forecast`` (21:00-prior),
+    aggregates day-level outcome costs from ``refoss.channel``, and
+    derives layer-attribution rows for grid-event days from
+    ``hvac.price_overlay.tier`` + ``hvac.5cp_state.state``. Real-data
+    integration runs against a 2025 replay export (OSF criterion 14).
+
+    Expected return dict shape:
+      {
+        "daily_records": list of dicts with keys:
+          date, arm, category, costs (dict: outcome -> $ for that day)
+        "layer_attribution": list of dicts with keys:
+          date, hour_ct, arm, layer_triggered, indoor_temp_f, action
+      }
+    """
+    return None
 
 
 def stage8_decomposition(stage1_dir: Path, stage3_dir: Path, out_dir: Path) -> Path:
-    """Forecast-correlated vs grid-event day decomposition (§7)."""
+    """Forecast-correlated vs grid-event day decomposition (§7).
+
+    Output:
+      - ``decomposition.csv``: per (outcome × category), arm A vs arm B
+        median day-level cost + B−A delta.
+      - ``layer_attribution.csv``: per grid-event day in Arm B, which
+        layer triggered (``price_spike_reactivity``, ``5cp_detection``,
+        or ``neither``) and the timing.
+    """
     stage_dir = out_dir / "stage8"
     stage_dir.mkdir(parents=True, exist_ok=True)
-    (stage_dir / "decomposition.csv").touch()
-    (stage_dir / "layer_attribution.csv").touch()
+
+    inputs = _load_stage8_inputs(stage1_dir, stage3_dir)
+
+    with open(stage_dir / "decomposition.csv", "w", newline="") as f:
+        dw = csv.DictWriter(f, fieldnames=list(STAGE8_DECOMPOSITION_COLUMNS))
+        dw.writeheader()
+        if inputs is not None:
+            daily = inputs.get("daily_records", [])
+            # Group costs by (outcome, category, arm)
+            for outcome in STAGE5_OUTCOMES:
+                for category in SPIKE_DAY_CATEGORIES:
+                    a_costs = [
+                        float(d["costs"][outcome]) for d in daily
+                        if d["arm"] == "A"
+                        and d["category"] == category
+                        and outcome in d.get("costs", {})
+                    ]
+                    b_costs = [
+                        float(d["costs"][outcome]) for d in daily
+                        if d["arm"] == "B"
+                        and d["category"] == category
+                        and outcome in d.get("costs", {})
+                    ]
+                    if not a_costs and not b_costs:
+                        continue
+                    a_med = float(np.median(a_costs)) if a_costs else 0.0
+                    b_med = float(np.median(b_costs)) if b_costs else 0.0
+                    dw.writerow({
+                        "outcome": outcome,
+                        "category": category,
+                        "arm_a_n_days": len(a_costs),
+                        "arm_a_median_cost": f"{a_med:.6f}",
+                        "arm_b_n_days": len(b_costs),
+                        "arm_b_median_cost": f"{b_med:.6f}",
+                        "delta_median": f"{(b_med - a_med):.6f}",
+                    })
+
+    with open(stage_dir / "layer_attribution.csv", "w", newline="") as f:
+        lw = csv.DictWriter(f, fieldnames=list(STAGE8_LAYER_ATTRIBUTION_COLUMNS))
+        lw.writeheader()
+        if inputs is not None:
+            for row in inputs.get("layer_attribution", []):
+                lw.writerow({
+                    col: row.get(col, "") for col in STAGE8_LAYER_ATTRIBUTION_COLUMNS
+                })
+
     return stage_dir
+
+
+# Stage 9 sensitivity ids and per-sensitivity output schemas (locked at OSF
+# tag). Sensitivities 1-4 produce effects-like rows (alternative effect
+# estimates). 5 is descriptive day-of-week stratification. 6 is per-
+# threshold-pair re-run of the Stage 8 decomposition.
+STAGE9_EFFECTS_LIKE_SENSITIVITIES = (
+    "euclidean_zscore",       # §7 #1: Euclidean on z-scored vector vs Mahalanobis
+    "include_washout",        # §7 #2: washout hours included in Stage 3 aggregates
+    "em2_em8_only",           # §7 #3: O1 with em:2 + em:8 only (no em:9 blower)
+    "five_min_pricing",       # §7 #4: O1 with 5-min pricing vs hourly average
+)
+STAGE9_EFFECTS_LIKE_COLUMNS = (
+    "outcome", "n_pairs", "median_diff", "ci_low_95", "ci_high_95",
+)
+STAGE9_DAY_OF_WEEK_COLUMNS = (
+    "outcome", "day_of_week", "arm", "n", "mean_value",
+)
+STAGE9_THRESHOLD_ROBUSTNESS_COLUMNS = (
+    "threshold_pair", "outcome", "category", "delta_median",
+)
+
+
+def _load_stage9_inputs(
+    stage1_dir: Path, stage2_dir: Path, stage3_dir: Path,
+) -> dict | None:
+    """Build Stage 9 inputs by re-running upstream stages with perturbed
+    parameters per sensitivity.
+
+    Empty-stub for now: returns None. Real implementation re-runs
+    Stages 4-5 (or 8) per sensitivity:
+      - euclidean_zscore: re-run Stage 4 matching with Euclidean
+        distance on z-scored weather vector; pipe through Stage 5.
+      - include_washout: re-run Stage 3 weekly aggregation including
+        the first 48h after each Monday switch; Stages 4-5 downstream.
+      - em2_em8_only: re-run Stage 3 O1 with em:2 + em:8 only (drop
+        em:9 furnace blower); Stage 5 downstream.
+      - five_min_pricing: re-run Stage 3 O1 with 5-min comed.prices
+        granularity instead of hourly_avg.
+      - day_of_week: descriptive split — group Stage 3 weekly outcomes
+        by day-of-week of the price-spike hours.
+      - threshold_robustness: re-run Stage 8 decomposition under each
+        of {(8¢, 15¢), (10¢, 20¢), (12¢, 25¢)} spike/scarcity thresholds.
+
+    Real-data integration runs against a 2025 replay export per
+    OSF_FILING.md criterion 14.
+
+    Expected return dict shape:
+      {
+        "euclidean_zscore": list of effects-like row dicts,
+        "include_washout": list of effects-like row dicts,
+        "em2_em8_only": list of effects-like row dicts,
+        "five_min_pricing": list of effects-like row dicts,
+        "day_of_week": list of day-of-week row dicts,
+        "threshold_robustness": list of threshold-robustness row dicts,
+      }
+    """
+    return None
 
 
 def stage9_sensitivity(
     stage1_dir: Path, stage2_dir: Path, stage3_dir: Path, out_dir: Path,
 ) -> Path:
-    """Six pre-committed sensitivities per §7."""
+    """Six pre-committed sensitivities per EXPERIMENT_DESIGN.md §7.
+
+    Reads inputs from ``_load_stage9_inputs`` (a stub that returns None
+    until the real upstream-re-run plumbing lands with the replay
+    export). Writes one CSV per sensitivity with locked column schemas.
+    """
     stage_dir = out_dir / "stage9"
     stage_dir.mkdir(parents=True, exist_ok=True)
-    for sid in (
-        "euclidean_zscore", "include_washout", "em2_em8_only",
-        "five_min_pricing", "day_of_week", "threshold_robustness",
-    ):
-        (stage_dir / f"{sid}.csv").touch()
+    inputs = _load_stage9_inputs(stage1_dir, stage2_dir, stage3_dir)
+
+    def _write(name: str, cols: Sequence[str], key: str) -> None:
+        with open(stage_dir / f"{name}.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(cols))
+            w.writeheader()
+            if inputs is not None:
+                for row in inputs.get(key, []):
+                    w.writerow({c: row.get(c, "") for c in cols})
+
+    for sid in STAGE9_EFFECTS_LIKE_SENSITIVITIES:
+        _write(sid, STAGE9_EFFECTS_LIKE_COLUMNS, sid)
+    _write("day_of_week", STAGE9_DAY_OF_WEEK_COLUMNS, "day_of_week")
+    _write(
+        "threshold_robustness",
+        STAGE9_THRESHOLD_ROBUSTNESS_COLUMNS,
+        "threshold_robustness",
+    )
     return stage_dir
 
 

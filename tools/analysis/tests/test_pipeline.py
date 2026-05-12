@@ -770,6 +770,51 @@ def test_dtod_delivery_rate_for_hour_ct_rejects_out_of_range():
         pipeline.dtod_delivery_rate_for_hour_ct(-1)
 
 
+# -- Stage 8: classify_spike_day -------------------------------------------
+
+
+def test_classify_spike_day_no_spike_when_all_prices_below_threshold():
+    out = pipeline.classify_spike_day(
+        hourly_prices_cents_per_kwh=[2.5, 4.0, 8.0, 9.99],
+        max_forecast_temp_f=92.0,
+        apparent_max_f=98.0,
+    )
+    assert out == "no_spike"
+
+
+def test_classify_spike_day_forecast_correlated_when_hot_and_spike():
+    out = pipeline.classify_spike_day(
+        hourly_prices_cents_per_kwh=[2.5, 15.0, 8.0],
+        max_forecast_temp_f=90.0,
+        apparent_max_f=95.0,
+    )
+    assert out == "forecast_correlated_spike"
+
+
+def test_classify_spike_day_grid_event_when_cool_but_spike():
+    out = pipeline.classify_spike_day(
+        hourly_prices_cents_per_kwh=[5.0, 30.0, 5.0],
+        max_forecast_temp_f=78.0,
+        apparent_max_f=82.0,
+    )
+    assert out == "grid_event_spike"
+
+
+def test_classify_spike_day_threshold_inclusive_on_10c():
+    # Exactly 10¢ = spike (per spec "≥10¢/kWh")
+    assert pipeline.classify_spike_day([10.0], 70.0, 75.0) == "grid_event_spike"
+
+
+def test_classify_spike_day_temp_threshold_inclusive_on_85f():
+    # Exactly 85°F max temp = forecast-correlated (per spec "≥85°F")
+    assert pipeline.classify_spike_day([15.0], 85.0, 80.0) == "forecast_correlated_spike"
+
+
+def test_classify_spike_day_apparent_only_qualifies():
+    # max temp < 85 but apparent ≥90 → forecast-correlated
+    assert pipeline.classify_spike_day([15.0], 80.0, 92.0) == "forecast_correlated_spike"
+
+
 # -- Stage 3: weekly_cdd ----------------------------------------------------
 
 
