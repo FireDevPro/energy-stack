@@ -37,9 +37,25 @@ Examples:
 
 Synthetic Ecowitt-shape rows built from a historical weather source. Fills the pre-2026-05-11 gap where Ecowitt didn't yet exist, so the analysis pipeline's `ecowitt.weather` loader can be exercised against the historical window.
 
-**Preferred source**: KORD ASOS 5-min routine reports (Iowa State Mesonet `mesonet.agron.iastate.edu/request/download.phtml`). Cadence matches Ecowitt's native 5-min, captures hourly weather variation. Fields map: ASOS `tmpf`/`dwpf`/`relh`/`sknt`/`alti` → Ecowitt `outdoor_temp_f`/`outdoor_dewpoint_f`/`outdoor_rh_pct`/`wind_mph`/`pressure_inhg`. Solar irradiance is not in standard ASOS; need to derive from `skyc1/2/3` (cloud cover) + clear-sky model, OR pull from a separate solar product (e.g., NSRDB), OR fall back to ERA5's surface shortwave.
+**Canonical producer**: [`tools/analysis/replay/weather_compat.py`](../tools/analysis/replay/weather_compat.py). CLI entry: `python -m tools.analysis.replay.weather_compat fetch ...`. See module docstring for current options.
 
-**Fallback source**: ERA5-Land hourly reanalysis at KORD coordinates. Already used elsewhere in the repo for `baseline_cov.npz`. Hourly cadence requires interpolation to Ecowitt's 5-min shape; that interpolation smooths sub-hourly variation that real Ecowitt would capture, so the converter should explicitly document this limitation.
+**Primary ASOS source**: Iowa State Mesonet bulk CGI (`https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py`) with `report_type=1,3,4` (HFMETAR 5-min ASOS plus routine and special METAR). Field map: ASOS `tmpf` → `outdoor_temp_f` (°F identity), `dwpf` → `outdoor_dewpoint_f` (°F identity), `relh` → `outdoor_rh_pct` (% identity), `mslp` → `pressure_inhg` (divide by 33.8639), `sknt` → `wind_mph` (multiply by 1.15078).
+
+**Solar source (always)**: Open-Meteo Historical Weather API (`archive-api.open-meteo.com/v1/archive`), `shortwave_radiation` hourly, ERA5-Land backed. Solar is never derived from ASOS cloud cover; ASOS has no shortwave field.
+
+**Gap-fill source**: Open-Meteo also supplies the five ASOS-equivalent fields (`temperature_2m`, `dew_point_2m`, `relative_humidity_2m`, `pressure_msl`, `wind_speed_10m`) for slots where ASOS has a material gap (≥ 60 minutes without an observation).
+
+**Cadence handling — forward-fill, not interpolation**. Both Open-Meteo hourly data and the rare hourly-only METAR routine reports are forward-filled onto the 5-min Ecowitt grid. Interpolation would invent intermediate values that no observation supports; forward-fill preserves observed-value provenance (every filled slot carries the value of the most recent native observation within 60 minutes). The converter never invents intermediate values.
+
+**Per-row provenance columns** (audit-only; the Stage 3 loader reads only `_time`/`_measurement`/`_field`/`_value`):
+
+| Column | Values | Meaning |
+|---|---|---|
+| `weather_source` | `iem_asos` / `open_meteo_era5_gap_fill` / null on solar rows | Where the non-solar value came from |
+| `solar_source` | `open_meteo_era5` / null on non-solar rows | Where solar came from |
+| `station` | e.g. `KORD` | ASOS station the bundle was built for |
+| `cadence` | `5min` | Grid cadence (always 5-min in this converter) |
+| `upsampled` | boolean | True for forward-filled slots; False for slots where the row matches a native observation timestamp |
 
 **Not a claim about observed conditions at the sensor location**. These rows test that the pipeline's `ecowitt.weather` loader handles real-shape data; they do NOT claim Ecowitt-the-instrument recorded these values.
 

@@ -6,7 +6,36 @@ Contract for satisfying [OSF_FILING.md](../../../docs/OSF_FILING.md) criterion 1
 
 - `manifest.py` — schema for the export manifest (JSON file describing the export window, measurements present, row counts, SHA-256 hashes, and known-missing measurements with reason codes).
 - `reason_codes.py` — enumeration of legitimately-empty-output reasons. Stages emit these via `reason_report.json` sidecars.
+- `weather_compat.py` — weather-derived Ecowitt compatibility converter. Builds Ecowitt-shaped parquet from IEM ASOS + Open-Meteo / ERA5 for pre-2026-05-11 windows where Ecowitt didn't yet exist. Source-type `weather_derived_compatibility`. See [`docs/REPLAY_VALIDATION.md`](../../../docs/REPLAY_VALIDATION.md) for the wider catalog.
 - `__init__.py` — re-exports the public API.
+
+## Weather compatibility (pre-deployment windows)
+
+For windows before Ecowitt receiver deployment (2026-05-11), use `weather_compat` to build a synthetic-but-real-data Ecowitt-shaped parquet:
+
+```bash
+# Build a compat bundle for a single summer week:
+python -m tools.analysis.replay.weather_compat fetch \
+    --station KORD \
+    --start 2025-07-14T05:00:00+00:00 \
+    --end   2025-07-21T05:00:00+00:00 \
+    --out   analysis/exports/compat-2025-W29
+
+# Merge it into an existing stage1 bundle:
+python -m tools.analysis.replay.weather_compat merge \
+    --compat-dir         analysis/exports/compat-2025-W29 \
+    --target-stage1-dir  analysis/exports/20260511T220000Z/stage1
+```
+
+The converter:
+
+- Pulls IEM ASOS bulk CGI (`report_type=1,3,4` — HFMETAR 5-min plus routine and special METAR) for `tmpf`, `dwpf`, `relh`, `sknt`, `mslp`.
+- Pulls Open-Meteo Historical Weather API (ERA5-Land backed) for `shortwave_radiation` (solar; ASOS has no solar field) and for the same five ASOS-equivalent fields (used as gap-fill when ASOS has a ≥60-minute outage).
+- Emits long-format parquet on a 5-min UTC grid. Forward-fill from the nearest preceding native observation within 60 minutes; slots beyond the gap threshold fill from ERA5. No interpolation.
+- Tags every row with per-row provenance columns (`weather_source`, `solar_source`, `station`, `cadence`, `upsampled`). These are audit-only; the Stage 3 loader ignores them.
+- Writes a manifest entry tagged `source_type=weather_derived_compatibility` per the source-type catalog.
+
+These rows test that the pipeline's `ecowitt.weather` loader handles real-shape data. They do NOT claim Ecowitt-the-instrument recorded these values. See [`docs/REPLAY_VALIDATION.md`](../../../docs/REPLAY_VALIDATION.md#weather_derived_compatibility).
 
 ## Export procedure
 
