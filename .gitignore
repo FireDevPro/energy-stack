@@ -34,3 +34,6 @@ restore/
 
 # ComEd bill ingest runtime — bills contain personal info, never commit
 deploy/energy-stack/inbox/
+
+# Local pipeline exports (per-run, large, gitignored)
+analysis/exports/

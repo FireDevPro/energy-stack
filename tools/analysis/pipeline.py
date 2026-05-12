@@ -884,11 +884,17 @@ def _hourly_price_observation_counts(
     week_end_utc = _ct_date_to_utc(
         week_start_ct + datetime.timedelta(days=7), 0,
     )
+    # Production poller writes _field=price_cents_per_kwh with a
+    # period_type tag of either "5min" or "hourly_avg". Rule 3 coverage
+    # counts raw 5-min cadence only — the poller's hourly_avg roll-up
+    # would obscure missing-data periods.
     mask = (
-        (prices_df["_field"] == "price_cents")
+        (prices_df["_field"] == "price_cents_per_kwh")
         & (prices_df["_time"] >= week_start_utc)
         & (prices_df["_time"] < week_end_utc)
     )
+    if "period_type" in prices_df.columns:
+        mask = mask & (prices_df["period_type"] == "5min")
     in_window = prices_df.loc[mask]
     if len(in_window) == 0:
         return result
@@ -2098,6 +2104,12 @@ def _stage3_hourly_supply_prices(
     Per-hour mean of the 5-min comed.prices observations. Missing hours
     yield 0.0; Rule 3 imputation (sub-hourly missing) is the
     orchestrator's responsibility, not this loader's.
+
+    Production schema: ``_field=price_cents_per_kwh`` with a
+    ``period_type`` tag in {``5min``, ``hourly_avg``}. We use ONLY
+    the 5min rows so the analysis pipeline owns the aggregation;
+    the poller's hourly_avg row is NOT trusted as primary input.
+    Audit chain stays shorter for OSF reproducibility.
     """
     if len(prices_df) == 0:
         return [0.0] * 168
@@ -2106,10 +2118,12 @@ def _stage3_hourly_supply_prices(
         week_start_ct + datetime.timedelta(days=7), 0,
     )
     mask = (
-        (prices_df["_field"] == "price_cents")
+        (prices_df["_field"] == "price_cents_per_kwh")
         & (prices_df["_time"] >= week_start_utc)
         & (prices_df["_time"] < week_end_utc)
     )
+    if "period_type" in prices_df.columns:
+        mask = mask & (prices_df["period_type"] == "5min")
     sub = prices_df.loc[mask].copy()
     if len(sub) == 0:
         return [0.0] * 168

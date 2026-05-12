@@ -125,7 +125,11 @@ def build_comed_prices_df(
     price_cents_fn: callable = lambda ts: 5.0,
     cadence_minutes: int = 5,
 ) -> pd.DataFrame:
-    """ComEd RTP prices at 5-min cadence.
+    """ComEd RTP prices at 5-min cadence, production-shape.
+
+    Production poller (deploy/energy-stack/comed-poller/poller.py) writes
+    `_field=price_cents_per_kwh` with a `period_type=5min` tag. This
+    fixture mirrors that schema so loader tests exercise the real path.
 
     `price_cents_fn(ts) -> float` lets the test inject realistic prices.
     Default: flat 5¢/kWh.
@@ -134,8 +138,9 @@ def build_comed_prices_df(
         measurement="comed.prices",
         start_utc=start_utc,
         end_utc=end_utc,
-        fields={"price_cents": lambda ts, _t: price_cents_fn(ts)},
+        fields={"price_cents_per_kwh": lambda ts, _t: price_cents_fn(ts)},
         cadence=datetime.timedelta(minutes=cadence_minutes),
+        tags={"period_type": ["5min"]},
     )
 
 

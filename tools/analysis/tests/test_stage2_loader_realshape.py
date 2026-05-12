@@ -417,7 +417,10 @@ def test_hourly_price_observation_counts_full_week(tmp_path):
 
 
 def test_hourly_price_observation_counts_partial_hour(tmp_path):
-    """An hour with only some 5-min prints reports the partial count."""
+    """An hour with only some 5-min prints reports the partial count.
+
+    Production schema: _field=price_cents_per_kwh with period_type=5min.
+    """
     # 6 ticks for hour 0, then nothing for hours 1-167
     one_hour_only = pd.DataFrame({
         "_time": pd.date_range(
@@ -425,8 +428,9 @@ def test_hourly_price_observation_counts_partial_hour(tmp_path):
             periods=6, freq="5min", tz="UTC",
         ),
         "_measurement": ["comed.prices"] * 6,
-        "_field": ["price_cents"] * 6,
+        "_field": ["price_cents_per_kwh"] * 6,
         "_value": [5.0] * 6,
+        "period_type": ["5min"] * 6,
     })
     result = pipeline._hourly_price_observation_counts(
         one_hour_only, datetime.date(2026, 6, 8),
