@@ -120,7 +120,7 @@ Outside-in RED tests written first.
 2. **Weekly whole-home actual $ oracle (Eagle).** Synthetic Eagle `delivered_kwh` totalizer values → hand-computed hourly differentials → hand-computed actual whole-home $. Stage 3 weekly.csv has `weekly_whole_home_dollars`. Stage 5 effects.csv emits row.
 3. **Eagle vs Refoss mains drift detection.** Synthetic week where Eagle and Refoss mains diverge by X%. Verify drift flag fires in provenance output. Verify primary outcome uses Eagle (not silently averaged).
 4. **kWh secondaries.** Stage 3 weekly.csv has `weekly_hvac_kwh` and `weekly_whole_home_kwh` columns with hand-computed oracle values. Stage 5 reports them.
-5. **`percent_of_arm_a` column.** Stage 5 effects.csv has a `percent_of_arm_a` column populated for each primary outcome.
+5. **`percent_of_arm_a` column.** Stage 5 effects.csv has a `percent_of_arm_a` column populated for O1 and O4 dollar outcomes only; O2 reports absolute dollar delta only outside Stage 5 (O2 lives in Stage 6, with bootstrap over PJM 5CP hours under each arm rather than matched weekly pairs, so the O1/O4 denominator does not transfer).
 
 **Implementation:**
 

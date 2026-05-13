@@ -135,7 +135,7 @@ Explicitly NOT added: `$/CDD as sensitivity`, `cooling_relevant_subset`, any new
   - **Add:** `weekly_hvac_dollars`, `weekly_whole_home_dollars`, `weekly_hvac_kwh`, `weekly_whole_home_kwh`.
   - **Remove (Phase 2):** `o1_dollars_per_cdd`, `o4_dollars_per_cdd_whole_home`.
   - **Keep:** `o3_peak_hvac_kw`, all 6 weather-vector components.
-- `STAGE5_OUTCOMES` (`pipeline.py:2454-2458`) — replace with the new primary + secondary list. Effects.csv adds `percent_of_arm_a` column.
+- `STAGE5_OUTCOMES` (`pipeline.py:2454-2458`) — replace with the new primary + secondary list. Effects.csv adds `percent_of_arm_a` column populated for O1 and O4 dollar outcomes only (O2 lives in Stage 6 with different bootstrap denominator semantics and reports absolute $ delta only).
 
 ### Test changes
 
