@@ -2374,6 +2374,95 @@ def _stage3_hourly_weather(
     return result
 
 
+# When Eagle's delivered_kwh totalizer has a mid-window gap longer
+# than this threshold, the per-hour differential helper would silently
+# smear accumulated gap energy into the first post-gap hour bucket —
+# under variable RTP/DTOD pricing this misattributes kWh into wrong-
+# price hours. Locked at 300 s (5 min) per the post-PR-#109 gap
+# analysis at docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md
+# (28-day history showed max gap 1941 s = ~32 min and 2 gaps > 5 min
+# total). When a week's max gap exceeds this threshold, Stage 3 drops
+# O4 and O8 for that week with reason `eagle_meter_gap_exceeds_threshold`;
+# Refoss-mains is NOT substituted as canonical.
+EAGLE_MAX_GAP_SECONDS_THRESHOLD = 300.0
+
+# Expected number of Eagle delivered_kwh samples per CT week at the
+# locked 30-second poll cadence (168 hours × 120 samples/hour).
+_EAGLE_EXPECTED_SAMPLES_PER_WEEK = 168 * 120
+
+
+def eagle_coverage(
+    eagle_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> dict:
+    """Compute Eagle ``delivered_kwh`` coverage metrics for one CT week.
+
+    Returns a dict with keys:
+      - ``max_gap_seconds``: float — the maximum gap between consecutive
+        ``delivered_kwh`` samples in the week, INCLUDING edge gaps
+        (``week_start_utc`` to first sample, last sample to
+        ``week_end_utc``).
+      - ``n_samples``: int — count of ``delivered_kwh`` samples in
+        the week window.
+      - ``expected_samples``: int — 20160 (= 168 h × 120 samples/h
+        at 30 s cadence).
+      - ``percent_present``: float — ``100.0 × n_samples /
+        expected_samples``.
+      - ``exceeds_max_gap_threshold``: bool — ``max_gap_seconds >=
+        EAGLE_MAX_GAP_SECONDS_THRESHOLD``.
+
+    When ``eagle_df`` is empty or contains no ``delivered_kwh`` rows
+    in the week window, ``max_gap_seconds`` is reported as ``+inf``
+    and ``exceeds_max_gap_threshold`` is True — the orchestrator
+    treats this as Eagle-absent and drops O4 / O8 with a per-output
+    reason code.
+    """
+    import pandas as pd
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+
+    base_result = {
+        "max_gap_seconds": float("inf"),
+        "n_samples": 0,
+        "expected_samples": _EAGLE_EXPECTED_SAMPLES_PER_WEEK,
+        "percent_present": 0.0,
+        "exceeds_max_gap_threshold": True,
+    }
+    if len(eagle_df) == 0 or "_field" not in eagle_df.columns:
+        return base_result
+
+    mask = (
+        (eagle_df["_field"] == "delivered_kwh")
+        & (eagle_df["_time"] >= week_start_utc)
+        & (eagle_df["_time"] < week_end_utc)
+    )
+    sub = eagle_df.loc[mask].copy()
+    if len(sub) == 0:
+        return base_result
+
+    sub = sub.sort_values("_time")
+    times = pd.to_datetime(sub["_time"])
+    inter_sample = times.diff().dt.total_seconds().dropna()
+    first_edge = (times.iloc[0] - week_start_utc).total_seconds()
+    last_edge = (week_end_utc - times.iloc[-1]).total_seconds()
+    candidates = [first_edge, last_edge]
+    if len(inter_sample) > 0:
+        candidates.append(float(inter_sample.max()))
+    max_gap = max(candidates)
+
+    return {
+        "max_gap_seconds": float(max_gap),
+        "n_samples": int(len(sub)),
+        "expected_samples": _EAGLE_EXPECTED_SAMPLES_PER_WEEK,
+        "percent_present": 100.0 * len(sub) / _EAGLE_EXPECTED_SAMPLES_PER_WEEK,
+        "exceeds_max_gap_threshold": (
+            max_gap >= EAGLE_MAX_GAP_SECONDS_THRESHOLD
+        ),
+    }
+
+
 def eagle_hourly_kwh_from_delivered(
     eagle_df: "pd.DataFrame",
     week_start_ct: datetime.date,
@@ -2501,27 +2590,47 @@ def _load_stage3_inputs_for_week(
         hvac_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
         mains_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
 
-    # Eagle whole-home (canonical). Empty list when eagle.meter is
-    # absent from the bundle — _compute_weekly_row falls back to the
-    # Refoss-mains backup in that case.
+    # Eagle whole-home (canonical) with coverage gate. Coverage runs
+    # BEFORE hourly differentials so a multi-hour gap can drop O4/O8
+    # without first being silently smeared across hourly price/DTOD
+    # buckets. When coverage exceeds the locked threshold, Eagle is
+    # treated as effectively absent for the week — Refoss-mains is
+    # NOT substituted as canonical.
+    coverage = eagle_coverage(eagle_df, week_start_ct)
     eagle_hourly_records: list[dict] = []
     eagle_drift: dict | None = None
-    eagle_hourly_kwh = eagle_hourly_kwh_from_delivered(eagle_df, week_start_ct)
-    if len(eagle_df) > 0 and any(v > 0 for v in eagle_hourly_kwh):
-        eagle_hourly_records = [
-            {
-                "hour_of_day_ct": h % 24,
-                "hvac_kwh": eagle_hourly_kwh[h],
-                "supply_c_per_kwh": supply_prices[h],
-            }
-            for h in range(168)
-        ]
-        eagle_week_kwh = sum(eagle_hourly_kwh)
-        refoss_week_kwh = sum(float(r["hvac_kwh"]) for r in mains_kwh)
-        eagle_drift = eagle_refoss_mains_drift(eagle_week_kwh, refoss_week_kwh)
-        eagle_drift["eagle_kwh"] = eagle_week_kwh
-        eagle_drift["refoss_mains_kwh"] = refoss_week_kwh
-        eagle_drift["threshold_pct"] = EAGLE_REFOSS_DRIFT_THRESHOLD_PCT
+    eagle_drop_reason: str | None = None
+    if coverage["exceeds_max_gap_threshold"]:
+        # Distinguish complete absence from partial-with-large-gap so
+        # the orchestrator can surface the right reason code.
+        if coverage["n_samples"] == 0:
+            eagle_drop_reason = "no_eagle_meter_data_in_window"
+        else:
+            eagle_drop_reason = "eagle_meter_gap_exceeds_threshold"
+    else:
+        eagle_hourly_kwh = eagle_hourly_kwh_from_delivered(eagle_df, week_start_ct)
+        if any(v > 0 for v in eagle_hourly_kwh):
+            eagle_hourly_records = [
+                {
+                    "hour_of_day_ct": h % 24,
+                    "hvac_kwh": eagle_hourly_kwh[h],
+                    "supply_c_per_kwh": supply_prices[h],
+                }
+                for h in range(168)
+            ]
+            eagle_week_kwh = sum(eagle_hourly_kwh)
+            refoss_week_kwh = sum(float(r["hvac_kwh"]) for r in mains_kwh)
+            eagle_drift = eagle_refoss_mains_drift(
+                eagle_week_kwh, refoss_week_kwh,
+            )
+            eagle_drift["eagle_kwh"] = eagle_week_kwh
+            eagle_drift["refoss_mains_kwh"] = refoss_week_kwh
+            eagle_drift["threshold_pct"] = EAGLE_REFOSS_DRIFT_THRESHOLD_PCT
+        else:
+            # Coverage passed but every hourly differential is zero —
+            # shouldn't happen for a real meter unless the totalizer
+            # is stuck. Treat as effectively absent.
+            eagle_drop_reason = "no_eagle_meter_data_in_window"
 
     return {
         "week_start_ct": week_start_ct,
@@ -2532,6 +2641,8 @@ def _load_stage3_inputs_for_week(
         "hourly_eagle_records": eagle_hourly_records,
         "hourly_weather": weather,
         "eagle_refoss_drift": eagle_drift,
+        "eagle_coverage": coverage,
+        "eagle_drop_reason": eagle_drop_reason,
     }
 
 
@@ -2563,6 +2674,7 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
     rows_written = 0
     eagle_vs_refoss_drift: list[dict] = []
     eagle_missing_weeks: list[dict] = []
+    eagle_coverage_records: list[dict] = []
     with open(weekly_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(WEEKLY_CSV_LOCKED_COLUMNS))
         w.writeheader()
@@ -2597,32 +2709,56 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
                                 "exceeds_threshold": drift["exceeds_threshold"],
                                 "threshold_pct": drift["threshold_pct"],
                             })
-                        else:
-                            # No Eagle data for this week → O4 and O8
-                            # drop with a per-output reason code per
-                            # the locked behavior in docs/EXPERIMENT_DESIGN.md
-                            # §2 (Refoss is NOT substituted as canonical).
+                        drop_reason = inputs.get("eagle_drop_reason")
+                        if drop_reason is not None:
+                            # O4 and O8 drop for this week per the
+                            # locked behavior in
+                            # docs/EXPERIMENT_DESIGN.md §2 (Refoss is
+                            # NOT substituted as canonical). The
+                            # specific drop reason distinguishes total
+                            # absence from gap-exceeds-threshold.
                             eagle_missing_weeks.append({
                                 "week_start_ct": week_start_ct_str,
                                 "arm": arm,
-                                "reason": "no_eagle_meter_data_in_window",
+                                "reason": drop_reason,
                                 "dropped_outcomes": [
                                     "weekly_whole_home_dollars",
                                     "weekly_whole_home_kwh",
                                 ],
                             })
+                        # Per-week Eagle coverage surfaced for every
+                        # week (whether the gate fired or not) so the
+                        # provenance sidecar carries a complete audit
+                        # trail of meter cadence health.
+                        coverage = inputs.get("eagle_coverage")
+                        if coverage is not None:
+                            eagle_coverage_records.append({
+                                "week_start_ct": week_start_ct_str,
+                                "arm": arm,
+                                "max_gap_seconds": coverage["max_gap_seconds"],
+                                "n_samples": coverage["n_samples"],
+                                "expected_samples": coverage["expected_samples"],
+                                "percent_present": coverage["percent_present"],
+                                "exceeds_max_gap_threshold": coverage[
+                                    "exceeds_max_gap_threshold"
+                                ],
+                            })
                     w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
                     rows_written += 1
 
-    # Provenance sidecar: per-week Eagle vs Refoss-mains drift records
-    # PLUS per-week records of Eagle absence (which drops O4/O8 for
-    # that week). Always written (even when empty) so downstream
-    # consumers can distinguish "Stage 3 ran with no records" from
-    # "file missing."
+    # Provenance sidecar: per-week Eagle drift, missing-weeks (with
+    # specific drop reasons), and per-week Eagle coverage records.
+    # Always written (even when empty) so downstream consumers can
+    # distinguish "Stage 3 ran with no records" from "file missing."
+    # Drift handling and coverage handling are kept SEPARATE:
+    #   - drift: Refoss-mains sanity check; flags don't drop outcomes
+    #   - coverage: whether Eagle itself is usable; flags DO drop O4/O8
     provenance = {
         "eagle_vs_refoss_drift": eagle_vs_refoss_drift,
         "eagle_missing_weeks": eagle_missing_weeks,
+        "eagle_coverage": eagle_coverage_records,
         "drift_threshold_pct": EAGLE_REFOSS_DRIFT_THRESHOLD_PCT,
+        "max_gap_seconds_threshold": EAGLE_MAX_GAP_SECONDS_THRESHOLD,
     }
     with open(stage_dir / "provenance.json", "w") as pf:
         json.dump(provenance, pf, indent=2, sort_keys=True)

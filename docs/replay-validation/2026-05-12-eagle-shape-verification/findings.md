@@ -106,6 +106,45 @@ This threshold is locked at the OSF filing commit. Revisit only if summer 2026 w
 - `received_kwh` totalizer behavior (currently zero / negligible; future solar will exercise this path).
 - Drift behavior across a full cooling season — the 7-day window observed here is spring shoulder; high-load summer weeks may show different noise characteristics.
 
+## Mid-window gap analysis (2026-05-13 amendment, post-PR-#109-review)
+
+PR #109 review raised concern that `eagle_hourly_kwh_from_delivered` may silently smear energy across hourly RTP/DTOD buckets when `delivered_kwh` has a mid-week gap longer than the 30 s cadence. The helper finds the latest sample at-or-before each hour boundary; during a gap, multiple consecutive boundaries resolve to the same pre-gap value (differentials = 0), and the first boundary AFTER recovery carries the full accumulated gap energy as a single-hour spike. Under variable pricing this misattributes kWh into wrong-price hours.
+
+Real-data check on the 28-day Eagle history (Pi-lab):
+
+| Metric | Value |
+|---|---|
+| Max gap between consecutive `delivered_kwh` samples | **1941 s (~32 min)** at 2026-04-29 18:42 UTC |
+| Gaps > 60 s | 4 |
+| Gaps > 5 min (300 s) | 2 |
+| Gaps > 10 min (600 s) | 2 |
+
+A 32-minute gap straddling an hour boundary shifts up to ~32 min of energy into one hourly bucket. With variable pricing (DTOD periods, RTP spikes), the misattribution can be material — e.g., 30 min of evening Off-Peak energy misallocated to Mid-Day Peak DTOD (10.712¢ vs 3.747¢ = 7¢/kWh × 1+ kWh = ~7¢-15¢ error per gap-event).
+
+### Locked coverage threshold (Phase 1.4)
+
+`EAGLE_MAX_GAP_SECONDS_THRESHOLD = 300.0` (5 minutes).
+
+When the max gap in a week's `delivered_kwh` samples (including edge gaps from `week_start_utc` to first sample and last sample to `week_end_utc`) exceeds 300 s, the helper treats Eagle as effectively absent for the week: `weekly_whole_home_dollars` and `weekly_whole_home_kwh` DROP with reason `eagle_meter_gap_exceeds_threshold`. Refoss-mains is NOT substituted as canonical. Other outcomes (O1, O3, O7) populate normally from Refoss / HVAC channels.
+
+Rationale:
+- Cadence is 30 s; one missed poll → ~60–90 s gap (normal, tolerated).
+- 5-minute threshold permits brief network blips or poller restarts without flagging.
+- Catches the 2 observed gaps > 5 min in the 28-day window, which would have caused detectable mispricing if they had landed on a qualifying week with high RTP volatility.
+- Smearing error within tolerated <5 min gaps is bounded by `gap_minutes/60 × hourly_kwh × max_price_diff_$/kWh` — ~5¢ worst case for typical residential loads.
+
+### Provenance fields added
+
+`stage3/provenance.json` now carries (in addition to `eagle_vs_refoss_drift` and `eagle_missing_weeks`):
+
+- `eagle_coverage`: per-week coverage record `{week_start_ct, arm, max_gap_seconds, n_samples, expected_samples, percent_present, exceeds_max_gap_threshold}` for every Stage 3 week that had any Eagle data.
+- `max_gap_seconds_threshold`: the locked threshold value (300.0).
+- `eagle_missing_weeks` entries now also include reason `eagle_meter_gap_exceeds_threshold` in addition to the existing `no_eagle_meter_data_in_window`.
+
+### Open follow-up (not blocking PR #109)
+
+Re-run gap analysis at end of summer 2026 cooling season — high-load weeks may have different cadence behavior (e.g., correlated with thermal events). If gaps cluster on high-RTP-volatility days, the 5-min threshold may need tightening or the smearing handling may need to evolve from "drop" to "linear interpolation across the gap".
+
 ## Next step
 
 Phase 1.1: write the 5 RED acceptance tests with oracles derived from this verified shape. Drift threshold baked into Phase 1.2 implementation at **10% weekly** with the explicit `drift_pct = |refoss − eagle| / eagle × 100` formula and Eagle-as-canonical-source framing.

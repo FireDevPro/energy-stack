@@ -400,6 +400,210 @@ def test_eagle_missing_drops_whole_home_outcomes_no_silent_refoss_substitution()
 # ---------------------------------------------------------------------------
 
 
+def test_eagle_coverage_helper_reports_max_gap_and_percent_present():
+    """Per Chris 2026-05-13 PR review: helper must surface a coverage
+    metric so the orchestrator can drop O4/O8 when a sparse gap would
+    silently smear energy into wrong-price hours.
+
+    Fixture: 7-day window with samples every 30 s EXCEPT a 6-hour gap
+    in the middle. Coverage helper must:
+      - max_gap_seconds ≈ 6 hours (21600 s)
+      - exceeds_max_gap_threshold = True (above the locked 300 s)
+      - percent_present roughly reflects the gap-as-fraction-of-expected
+    """
+    pd = pytest.importorskip("pandas")
+    helper = getattr(pipeline, "eagle_coverage", None)
+    threshold = getattr(pipeline, "EAGLE_MAX_GAP_SECONDS_THRESHOLD", None)
+    assert helper is not None, "eagle_coverage helper not yet implemented"
+    assert threshold == 300.0, (
+        f"EAGLE_MAX_GAP_SECONDS_THRESHOLD not yet locked at 300.0; got {threshold}"
+    )
+
+    week_start_ct = datetime.date(2026, 6, 8)
+    week_start_utc = datetime.datetime.combine(
+        week_start_ct, datetime.time(5, 0), tzinfo=datetime.timezone.utc,
+    )
+    rows = []
+    # Samples every 30 s for the first 24 h.
+    t = week_start_utc
+    end_first_block = week_start_utc + datetime.timedelta(hours=24)
+    while t < end_first_block:
+        rows.append({
+            "_time": t, "_field": "delivered_kwh",
+            "_value": 10000.0 + (t - week_start_utc).total_seconds() / 3600 * 1.5,
+        })
+        t += datetime.timedelta(seconds=30)
+    # 6-hour gap (no samples between hour 24 and hour 30).
+    # Resume at hour 30, samples every 30 s until end of week.
+    t = week_start_utc + datetime.timedelta(hours=30)
+    end_utc = week_start_utc + datetime.timedelta(days=7)
+    while t < end_utc:
+        rows.append({
+            "_time": t, "_field": "delivered_kwh",
+            "_value": 10000.0 + (t - week_start_utc).total_seconds() / 3600 * 1.5,
+        })
+        t += datetime.timedelta(seconds=30)
+
+    eagle_df = pd.DataFrame(rows)
+    coverage = helper(eagle_df=eagle_df, week_start_ct=week_start_ct)
+    # 6h gap = 21600 s — flagged. Allow ±30s slop for cadence boundary.
+    # Last pre-gap sample at 23:59:30, first post-gap sample at 30:00:00
+    # → 6h + 30s cadence offset = 21630s exactly. ±60s tolerance for
+    # cadence boundary.
+    assert 21570 <= coverage["max_gap_seconds"] <= 21690
+    assert coverage["exceeds_max_gap_threshold"] is True
+    # Expected samples: 168 h × 120/h = 20160. Actual: ~24×120 + 138×120
+    # = 2880 + 16560 = 19440. percent_present ~ 96%.
+    assert coverage["expected_samples"] == 20160
+    assert 90.0 < coverage["percent_present"] < 100.0
+
+
+def test_eagle_coverage_tolerates_short_gaps_under_threshold():
+    """A single ~60 s gap (one missed poll cadence) is BELOW the 300 s
+    threshold and must not trigger the drop. exceeds_max_gap_threshold
+    is False; O4/O8 still emit. Pre-cadence noise floor — see
+    docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
+    """
+    pd = pytest.importorskip("pandas")
+    week_start_ct = datetime.date(2026, 6, 8)
+    week_start_utc = datetime.datetime.combine(
+        week_start_ct, datetime.time(5, 0), tzinfo=datetime.timezone.utc,
+    )
+    rows = []
+    t = week_start_utc
+    skip_at = week_start_utc + datetime.timedelta(hours=12)  # one missed poll
+    end_utc = week_start_utc + datetime.timedelta(days=7)
+    while t < end_utc:
+        if not (skip_at <= t < skip_at + datetime.timedelta(seconds=60)):
+            rows.append({
+                "_time": t, "_field": "delivered_kwh",
+                "_value": 10000.0 + (t - week_start_utc).total_seconds() / 3600 * 1.5,
+            })
+        t += datetime.timedelta(seconds=30)
+
+    eagle_df = pd.DataFrame(rows)
+    coverage = pipeline.eagle_coverage(eagle_df=eagle_df, week_start_ct=week_start_ct)
+    # Two missed polls → gap ~90s; comfortably under 300s threshold.
+    assert coverage["max_gap_seconds"] < 300.0
+    assert coverage["exceeds_max_gap_threshold"] is False
+
+
+def test_stage3_real_loader_drops_o4_o8_when_eagle_gap_exceeds_threshold(tmp_path: Path):
+    """Per Chris 2026-05-13: when delivered_kwh has a multi-hour gap,
+    `eagle_hourly_kwh_from_delivered` would silently smear all
+    accumulated gap energy into the first post-gap hour. Under
+    variable RTP/DTOD pricing this misattributes kWh to wrong-price
+    hours.
+
+    Locked behavior: when the coverage check finds max_gap_seconds
+    >= EAGLE_MAX_GAP_SECONDS_THRESHOLD (300 s), Stage 3 treats Eagle
+    as effectively absent for the week. O4 (weekly_whole_home_dollars)
+    and O8 (weekly_whole_home_kwh) DROP for that week with reason
+    `eagle_meter_gap_exceeds_threshold`. Refoss-mains is NOT
+    substituted as canonical. Other outcomes (O1, O3, O7) still
+    populate normally.
+
+    Provenance: `stage3/provenance.json` records the drop in the
+    `eagle_missing_weeks` list with the gap-exceeds-threshold reason
+    AND records the per-week coverage stats in `eagle_coverage`.
+    """
+    pytest.importorskip("pandas")
+    from tools.analysis.tests import fixture_real_shape as frs
+    import pandas as pd
+
+    week_start_ct = datetime.date(2026, 6, 8)
+    week_start_utc = datetime.datetime(2026, 6, 8, 5, 0, tzinfo=datetime.timezone.utc)
+    week_end_utc = week_start_utc + datetime.timedelta(days=7)
+
+    refoss = frs.build_refoss_channel_df(
+        start_utc=week_start_utc, end_utc=week_end_utc,
+    )
+    prices = frs.build_comed_prices_df(
+        start_utc=week_start_utc, end_utc=week_end_utc,
+        price_cents_fn=lambda ts: 5.0,
+    )
+    ecowitt = frs.build_ecowitt_weather_df(
+        start_utc=week_start_utc, end_utc=week_end_utc,
+    )
+
+    # Eagle with a 6-hour mid-week gap: data for hours 0-24, gap for
+    # hours 24-30, then data for hours 30-168.
+    eagle = frs.build_eagle_meter_df(
+        start_utc=week_start_utc, end_utc=week_end_utc,
+        base_kwh=10000.0, kwh_per_hour=2.0, cadence_seconds=30,
+    )
+    gap_start = week_start_utc + datetime.timedelta(hours=24)
+    gap_end = week_start_utc + datetime.timedelta(hours=30)
+    eagle_no_gap_mask = (eagle["_time"] < gap_start) | (eagle["_time"] >= gap_end)
+    eagle = eagle.loc[eagle_no_gap_mask].reset_index(drop=True)
+
+    stage1_dir = tmp_path / "stage1"
+    frs.write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss,
+            "comed.prices": prices,
+            "ecowitt.weather": ecowitt,
+            "eagle.meter": eagle,
+        },
+        window_start_ct=week_start_utc.isoformat(),
+        window_end_ct=week_end_utc.isoformat(),
+    )
+
+    stage2_dir = tmp_path
+    with open(stage2_dir / "qualifying_weeks.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["week_start_ct", "arm", "qualifying"])
+        w.writerow([week_start_ct.isoformat(), "A", "true"])
+
+    pipeline.stage3_weekly(
+        stage1_dir=stage1_dir, stage2_dir=stage2_dir, out_dir=tmp_path,
+    )
+
+    # weekly.csv: O4 + O8 dropped (empty cells); O1 + O3 + O7 still emit.
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["weekly_whole_home_dollars"] == "", (
+        f"Eagle gap should drop O4; got {row['weekly_whole_home_dollars']!r}. "
+        "A smearing bug would land at a non-empty (Refoss- or "
+        "gap-smeared-Eagle-) derived value."
+    )
+    assert row["weekly_whole_home_kwh"] == "", (
+        f"Eagle gap should drop O8; got {row['weekly_whole_home_kwh']!r}."
+    )
+    # Other outcomes unaffected.
+    assert float(row["weekly_hvac_dollars"]) > 0
+    assert float(row["weekly_hvac_kwh"]) > 0
+    assert float(row["o3_peak_hvac_kw"]) > 0
+
+    # Provenance: the drop is recorded with the gap-exceeds reason,
+    # AND the per-week coverage stats are surfaced.
+    with open(tmp_path / "stage3" / "provenance.json") as pf:
+        provenance = json.load(pf)
+    assert provenance["max_gap_seconds_threshold"] == 300.0
+
+    dropped = provenance["eagle_missing_weeks"]
+    assert len(dropped) == 1, (
+        f"expected exactly one eagle_missing_weeks entry; got {dropped}"
+    )
+    assert dropped[0]["reason"] == "eagle_meter_gap_exceeds_threshold"
+    assert dropped[0]["week_start_ct"] == week_start_ct.isoformat()
+    assert dropped[0]["arm"] == "A"
+    assert "weekly_whole_home_dollars" in dropped[0]["dropped_outcomes"]
+    assert "weekly_whole_home_kwh" in dropped[0]["dropped_outcomes"]
+
+    coverage = provenance["eagle_coverage"]
+    assert len(coverage) == 1
+    cov = coverage[0]
+    assert cov["week_start_ct"] == week_start_ct.isoformat()
+    assert cov["arm"] == "A"
+    # 6h gap + cadence offset = 21630s; ±60s tolerance.
+    assert 21570 <= cov["max_gap_seconds"] <= 21690
+    assert cov["exceeds_max_gap_threshold"] is True
+
+
 def test_stage3_real_loader_eagle_canonical_with_drift_provenance(tmp_path: Path):
     """Full Stage 3 orchestrator through _load_stage3_inputs_for_week
     against a synthetic real-shape Stage 1 export. Proves:
