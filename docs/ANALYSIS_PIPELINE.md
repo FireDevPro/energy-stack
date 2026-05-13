@@ -55,6 +55,7 @@ All raw data lives in the `energy` bucket of the on-prem InfluxDB 2 instance des
 | `comed.prices` | `comed-poller` | `price_cents` | 5-min |
 | `refoss.channel` | `refoss-poller` | `power_w`, `energy_wh`, per-channel tag `channel` (`em:1`..`em:9`) | 1-min |
 | `refoss.system` | `refoss-poller` | system-level health and totals | 1-min |
+| `eagle.meter` | `eagle-poller` ([`deploy/energy-stack/eagle-poller/poller.py`](../deploy/energy-stack/eagle-poller/poller.py)) | `demand_kw` (instantaneous), `delivered_kwh` (cumulative totalizer), `received_kwh` (export totalizer, future solar). Tags `hw_address`, `source=eagle3` | ~30-sec |
 | `hvac.thermostat` | `thermostat-poller` | `indoor_temp_f`, `cool_setpoint_f`, `heat_setpoint_f`, `running`, `hvac_mode` | 1-min |
 | `hvac.comfortnet` | `thermostat-poller` (CT-485 ingestion) | `cool_actual_pct`, `heat_actual_pct`, `blower_cfm` | 1-min |
 | `hvac.overrides` | `thermostat-poller` (occupant-driven detection) and [`tools/log_override.py`](../tools/log_override.py) (operator annotation) | `category`, `start_ts`, `end_ts`, `setpoint_f`, `note` | event |
@@ -80,6 +81,8 @@ All raw data lives in the `energy` bucket of the on-prem InfluxDB 2 instance des
 
 The HVAC energy channels referenced as `em_2_kwh + em_8_kwh + em_9_kwh` in §3 Stage 3 are derived at analysis time from the per-channel rows of `refoss.channel` (filter `channel == em:2`, etc.) — the production schema is long-format (one row per channel per tick), not wide-format. The pipeline pivots at Stage 1 before passing to Stage 3.
 
+Whole-home energy and dollars (O4, O8) are computed from `eagle.meter` as the canonical source — `delivered_kwh` differentials per hour for energy, multiplied through `comed.prices` hourly average + DTOD delivery rate for cost. Refoss split-phase mains (`em:1 + em:7`) is loaded in parallel as a sanity cross-check / backup; per-week Eagle-vs-Refoss-mains kWh drift exceeding a pre-committed threshold is flagged in `stage3/provenance.json` for investigation. The two sources are never silently averaged. If Eagle is absent for a week, the whole-home outcomes (O4, O8) drop for that week with a per-output reason code (Stage 8-pattern), not the entire week.
+
 ### 2.2 External data (not in Influx)
 
 | Source | Acquisition | Used for |
@@ -88,7 +91,7 @@ The HVAC energy channels referenced as `em_2_kwh + em_8_kwh + em_9_kwh` in §3 S
 | ComEd bill PDFs | [`scripts/parse_comed_bill.py`](../deploy/energy-stack/scripts/parse_comed_bill.py) — monthly ingestion | O4 (whole-home), O2 Layer 3 (bill reconciliation) |
 | ComEd tariff Schedule of Rates | committed snapshot at [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md) | O2 Layer 2 stipulated portfolio constant |
 | Historical PJM day-ahead LMP (COMED zone, summers 2023-2025) | [`tools/comed_price_imputation/fetch_lmp.py`](../tools/comed_price_imputation/fetch_lmp.py) — runs once at OSF lock | Rule 3 (price feed imputation) spread constant |
-| 2020-2025 ERA5 reanalysis at KORD coordinates (41.9786°N, 87.9047°W), cooling-relevant weeks (CDD ≥ 5) | [`tools/analysis/fetch_kord_era5.py`](../tools/analysis/fetch_kord_era5.py) → [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → `data/baseline_cov.npz` | Mahalanobis Σ (matched-pair distance) |
+| 2020-2025 ERA5 reanalysis at KORD coordinates (41.9786°N, 87.9047°W), filtered to weeks with CDD ≥ 5 for calibration-set purposes (so the covariance reflects cooling-regime variability; this filter applies ONLY to the historical baseline calibration, NOT to experimental weeks) | [`tools/analysis/fetch_kord_era5.py`](../tools/analysis/fetch_kord_era5.py) → [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → `data/baseline_cov.npz` | Mahalanobis Σ (matched-pair distance) |
 
 ---
 
@@ -146,15 +149,16 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 
 **Logic:** For each qualifying week × arm, compute the per-outcome inputs:
 
-- **O1 numerator (`$_hvac`):** `Σ_h (em_2_kwh + em_8_kwh + em_9_kwh)_h × (comed_hourly_supply_c + delivery_c)` over the week. The hourly supply price uses `comed.prices period_type=hourly_avg` after Rule 3 imputation. The delivery rate is the ComEd Delivery TOD-rate for the time-of-day bucket the hour falls into; the locked rate table (Morning / Mid-Day Peak / Evening / Overnight) lives in [`deploy/energy-stack/hvac-scheduler/precool.py`](../deploy/energy-stack/hvac-scheduler/precool.py) (`DTOD_PERIODS_CT` constant, sourced from the CUB March-2026 fact sheet for the Single-Family Non-Electric Heat delivery class).
-- **O1 denominator (`CDD`):** `Σ_d max(T_avg_d − 65, 0)` over the 7 days of the week. T_avg per day from Ecowitt (Rule 5 fallback handling already applied in Stage 2).
-- **O3:** `max_h (em_2_kwh + em_8_kwh + em_9_kwh)_h` — peak hourly HVAC kW of the week (kWh-per-hour = kW for hourly-summed data).
-- **O4 numerator:** same construction as O1 but on `em_1 + em_7` (mains).
+- **O1 (weekly HVAC actual cost):** `Σ_h (em_2_kwh + em_8_kwh + em_9_kwh)_h × (comed_hourly_supply_c + delivery_c) / 100` over the week, in dollars. The hourly supply price uses `comed.prices period_type=hourly_avg` after Rule 3 imputation. The delivery rate is the ComEd Delivery TOD-rate for the time-of-day bucket the hour falls into; the locked rate table (Morning / Mid-Day Peak / Evening / Overnight) lives in [`deploy/energy-stack/hvac-scheduler/precool.py`](../deploy/energy-stack/hvac-scheduler/precool.py) (`DTOD_PERIODS_CT` constant, sourced from the CUB March-2026 fact sheet for the Single-Family Non-Electric Heat delivery class). No CDD normalization — actual dollars only.
+- **O3 (weekly peak HVAC kW):** `max_h (em_2_kwh + em_8_kwh + em_9_kwh)_h` — peak hourly HVAC kW of the week (kWh-per-hour = kW for hourly-summed data).
+- **O4 (weekly whole-home actual cost):** same construction as O1, applied to the canonical Eagle whole-home source: `Σ_h eagle_hourly_kwh_h × (comed_hourly_supply_c + delivery_c) / 100` where `eagle_hourly_kwh` is computed as the per-hour differential of `eagle.meter.delivered_kwh` cumulative totalizer. Refoss `em_1 + em_7` mains is loaded in parallel and the per-week kWh totals are compared; divergence beyond a pre-committed weekly-kWh threshold is flagged in `stage3/provenance.json` for investigation. The two sources are never silently averaged.
+- **O7 (weekly HVAC actual energy):** `Σ_h (em_2_kwh + em_8_kwh + em_9_kwh)_h` over the week, in kWh.
+- **O8 (weekly whole-home actual energy):** `Σ_h eagle_hourly_kwh_h` over the week, in kWh. Same Refoss-mains drift check as O4.
 - **O5 raw:** per-hour `(em_2+em_8+em_9)` kWh and supply-price-multiplied $, retained for matched-pair aggregation.
-- **O6 raw:** per-HOT-day 18:00-23:59 CT `(em_2+em_8+em_9)` kWh, retained for matched-pair aggregation.
-- **Weather summary vector (§7 components 1-6 of EXPERIMENT_DESIGN):** CDD, mean enthalpy, total solar, mean wind, max temp, max dewpoint. Enthalpy computed via ASHRAE Handbook of Fundamentals psychrometric formulas given pressure/temp/dewpoint, in BTU/lb dry air.
+- **O6 raw:** per-hour `(em_2+em_8+em_9)` kWh + cost stratified by price tier (Normal `< 10¢`, Elevated `≥ 10¢ < 20¢`, Scarcity `≥ 20¢`) and by `hvac.5cp_state.is_active` membership, retained for matched-pair aggregation. The Stage 3 storage shape is per-hour granularity with tier and 5CP-active flags attached; Stage 5 aggregates to weekly panels.
+- **Weather summary vector (§7 components 1-6 of EXPERIMENT_DESIGN):** CDD, mean enthalpy, total solar, mean wind, max temp, max dewpoint. Enthalpy computed via ASHRAE Handbook of Fundamentals psychrometric formulas given pressure/temp/dewpoint, in BTU/lb dry air. CDD is a matching-vector component here, NOT an outcome denominator.
 
-**Output:** `out/<run>/stage3/weekly.csv` with one row per `(week_start_ct, arm)` and all of the above fields plus a `qualifies` boolean from Stage 2.
+**Output:** `out/<run>/stage3/weekly.csv` with one row per `(week_start_ct, arm)` carrying all of the above fields plus a `qualifies` boolean from Stage 2; `out/<run>/stage3/provenance.json` carrying per-week Eagle-vs-Refoss-mains drift records and any per-week reason codes.
 
 ### Stage 4 — Matched-pair construction
 
@@ -181,13 +185,14 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 
 **Inputs:** Stage 3 outcomes per week + Stage 4 pairings.
 
-**Logic, per outcome (O1, O3, O4):**
+**Logic, per outcome (O1 HVAC actual $, O4 whole-home actual $, O3 peak HVAC kW, O7 HVAC actual kWh, O8 whole-home actual kWh):**
 
 1. For each primary-quality pair, compute the difference `Δ = arm_B − arm_A` of the outcome.
 2. Effect size: matched-pair median of Δ.
 3. Stationary bootstrap CI: 10,000 resamples with mean block length 2 pairs (≈ √N for typical N=8-12). Percentile method. Seeded from `PRNG_SEED + outcome_index` so each outcome is independent and reproducible.
+4. For dollar outcomes (O1, O4), additionally compute `percent_of_arm_a`: matched-pair median of `(Δ / arm_a_value)` × 100, reported alongside the absolute $ delta. Percent is NEVER reported as the sole headline — the absolute dollar figure is the trustworthy primary; percent provides reader intuition.
 
-**Output:** `out/<run>/stage5/effects.csv`: `(outcome, n_pairs, median_diff, ci_low_95, ci_high_95, bootstrap_samples_npz)`
+**Output:** `out/<run>/stage5/effects.csv`: `(outcome, unit, n_pairs, median_diff, ci_low_95, ci_high_95, percent_of_arm_a, bootstrap_samples_npz)`. The `unit` column distinguishes dollars (O1, O4) from kW (O3) from kWh (O7, O8); `percent_of_arm_a` is populated only for dollar outcomes.
 
 ### Stage 6 — O2 layer reconstructions
 
@@ -347,7 +352,7 @@ Before OSF filing (target 2026-05-30):
 - [x] `pytest tools/analysis/tests/` green against synthetic fixtures
 - [x] `spread_constants.json` locked (`PLACEHOLDER: false`, computed 2026-05-11 from 2024-2025 RTP+LMP data spanning 5,840 hours)
 - [x] `tariff_constants.json` locked (`PLACEHOLDER: false`, locked 2026-05-11; ComEdNPL, AComEdCPL, capacity rate from primary sources; portfolio_sum reported across three pre-registered named scenarios with FERC ER22-1520-001 anchor — see [`tools/o2_capacity_reconstruction/tariff_snapshot.md`](../tools/o2_capacity_reconstruction/tariff_snapshot.md))
-- [x] `baseline_cov.npz` produced from 2020-2025 ERA5 reanalysis at KORD coords, cooling-relevant weeks (CDD ≥ 5)
+- [x] `baseline_cov.npz` produced from 2020-2025 ERA5 reanalysis at KORD coords, calibration-set filter CDD ≥ 5 applied to the historical baseline (not to experimental weeks)
 
 [`tools/analysis/check_constants_locked.py`](../tools/analysis/check_constants_locked.py) is the pre-filing gate that refuses to bless the OSF commit while any placeholder remains. Currently returns 0 (all three constants files are locked).
 

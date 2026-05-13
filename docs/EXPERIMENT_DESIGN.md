@@ -37,19 +37,35 @@ All outcomes are pre-committed before any data unblinding. Framing is descriptiv
 
 ### Co-primary outcomes
 
-**O1 — Weekly HVAC-circuit cost per cooling-degree-day.** Sum across all hours in the calendar week of (`hvac_circuit_hourly_kWh × hourly_supply_price`) + (`hvac_circuit_hourly_kWh × delivery_rate`), divided by sum of cooling-degree-days base 65°F for the week. The HVAC channel set (`em:2 + em:8 + em:9` on the Refoss EM16P) is fixed at the OSF commit hash. Reported as the matched-pair median difference (Arm B minus Arm A) with bootstrap 95% CI.
+All co-primary outcomes are reported as the matched-pair median difference (Arm B minus Arm A) with bootstrap 95% CI, presented as an absolute dollar delta side-by-side with the percent of Arm A matched cost for reader intuition. Percent is never reported as the sole headline — the absolute dollar figure is the trustworthy primary; the percent provides context.
+
+**O1 — Weekly HVAC-circuit actual cost.** Sum across all hours in the calendar week of (`hvac_circuit_hourly_kWh × hourly_supply_price`) + (`hvac_circuit_hourly_kWh × delivery_rate`). The HVAC channel set (`em:2 + em:8 + em:9` on the Refoss EM16P) is fixed at the OSF commit hash. `em:2` and `em:8` are the two AC compressor legs; `em:9` is the furnace blower (which moves cool air during cooling cycles). Pricing granularity: hourly average from `comed.prices` `period_type=hourly_avg`, matching the ComEd bill calculation. Delivery rate is the ComEd Delivery TOD-rate for the time-of-day bucket the hour falls into.
 
 **O2 — Annual capacity-charge avoidance (cross-summer; three measurement layers).** Difference in the following-year ComEd Capacity Charge attributable to the experimental period, anchored to PJM's final-published 5CP hour lists (released mid-October per [PJM Manual 19 §4.3](https://www.pjm.com/-/media/documents/manuals/m19.ashx)) rather than to the live detector. Reported at three layers: **Layer 1** (primary, fully observable) — `ACustCPL` difference at the five PJM Five Peak hours, the first-branch term of [PJM OATT Attachment M-2 (ComEd) §2](https://www.pjm.com/pjmfiles/directory/etariff/MasterTariffs/23TariffSections/18111.pdf); **Layer 2** (descriptive) — full `CPLC_(Y+1)` reconstruction including the second branch's portfolio term, sourced as a stipulated constant from ComEd's published tariff Schedule; **Layer 3** (descriptive, post-Y+1) — the actual ComEd Capacity Charge line item on the Y+1 May-Sep bills. Full mechanics in §6. With the 2025-2026 PJM Base Residual Auction increasing the residential capacity rate roughly tenfold, this outcome moves from secondary to co-primary in dollar terms. Layer 1 reported as the matched-pair $ delta with 95% CI bootstrapped from the qualifying-weeks distribution; Layers 2 and 3 descriptive. No directional reject/accept threshold.
 
-### Secondary outcomes
+**O4 — Weekly whole-home actual cost.** Same construction as O1, applied to the canonical whole-home meter source (Rainforest EAGLE-3 HAN smart-meter feed, measurement `eagle.meter`, ~30 s cadence). Refoss split-phase mains (`em:1 + em:7`) is retained as a sanity cross-check / backup; when Eagle and Refoss-mains diverge beyond a pre-committed weekly-kWh threshold, the divergence is flagged in the per-week provenance output for investigation. The two sources are never silently averaged. Provides whole-home reconciliation against the ComEd bill.
+
+### Secondary outcomes (mechanism)
+
+The kWh outcomes (O7, O8) exist to distinguish "saved money by using less energy" from "saved money by shifting usage into cheaper / lower-risk hours." Two arms with similar actual kWh but different $ → savings came from timing. Different kWh → savings came from reduction.
 
 **O3 — Weekly peak HVAC kW (1-hour rolling mean).** Maximum of the 1-hour rolling mean of `refoss.channel.power_w` summed across the HVAC channel set, per week. Matched-pair median difference with bootstrap 95% CI.
 
-**O4 — Whole-home cost per CDD.** Same construction as O1 but computed on `em:1 + em:7` (split-phase mains) for whole-home reconciliation against the ComEd bill. Provided as ASHRAE G14 / IPMVP comparability.
+**O7 — Weekly HVAC-circuit actual energy (kWh).** Sum across all hours in the calendar week of `(em:2 + em:8 + em:9)` hourly kWh from the Refoss EM16P. Matched-pair median difference (kWh) with bootstrap 95% CI.
 
-**O5 — Within-day energy and cost profile by arm.** Hourly kWh and hourly cost on the HVAC channel set, averaged across cooling-relevant weeks within each arm. Descriptive; no formal test.
+**O8 — Weekly whole-home actual energy (kWh).** Sum across all hours in the calendar week of whole-home kWh from the canonical Eagle source (per O4). Refoss-mains backup with drift flag as in O4. Matched-pair median difference (kWh) with bootstrap 95% CI.
 
-**O6 — Recovery-overhead ratio.** kWh consumed on the HVAC channel set during the 18:00-23:59 window on HOT-classified days, normalized by daily mean outdoor temp delta from 75°F. Tests whether the load-shifting strategy in Arm B incurs net energy cost during recovery that erodes the peak-window savings.
+### Descriptive outcomes (no formal test)
+
+**O5 — Within-day energy and cost profile by arm.** Hourly kWh and hourly cost on the HVAC channel set, averaged across qualifying weeks within each arm. Descriptive context for how the controllers redistribute load across the day.
+
+**O6 — Load-shift / rebound diagnostic (all-day, all-source).** Diagnostic measures of how Arm B redistributes HVAC load across price tiers, 5CP-active windows, and post-event rebound periods. Not a single number; reported as a panel:
+  - HVAC kWh and HVAC $ stratified by price tier — **Normal** (`< 10¢/kWh`), **Elevated** (`≥ 10¢/kWh, < 20¢/kWh`), **Scarcity** (`≥ 20¢/kWh`). Tier thresholds match the controller's locked price-overlay rule (§3 Arm B item 5); no analysis-only cutoffs are introduced. Thresholds recorded in provenance/spec so the diagnostic is tied to the controller rule being evaluated.
+  - HVAC kWh and HVAC $ during 5CP-active windows (driven by `hvac.5cp_state.is_active`; OR across `rto` and `comed_zone` scopes).
+  - Post-event rebound kWh and $ in a defined window after price-tier-release or 5CP-release transitions.
+  - (Optional) Pre-cool kWh and $ in a defined window before forecasted hot or expensive windows.
+
+  Purpose: explain whether Arm B actually moved HVAC load away from expensive / risky periods AND whether that load reappeared later. Arm B shifts load **all day** in response to prices, weather, and 5CP risk — not only in an evening recovery window. Diagnostic / context, not the primary outcome.
 
 ### Operational safety floor (not a measured outcome)
 
@@ -139,17 +155,15 @@ Generalization claims in the final paper are bounded to similar households. Equi
 
 ## 4. Study design
 
-**Type:** Year-round operation with formal analysis restricted to cooling-relevant weeks, single-case experimental design (SCED) with alternating-treatments week-level randomization within calendar-month blocks.
+**Type:** Year-round operation with formal analysis run on each cooling season (Jun-Sep observation window), single-case experimental design (SCED) with alternating-treatments week-level randomization within calendar-month blocks.
 
-**Duration:** continuous from study start (target June 1, 2026), with formal cooling-relevant analysis on each cooling season. Multi-summer replication planned (paper 1 reports summer 2026 cooling, paper 2 reports combined 2026+2027 plus first H4-equivalent capacity-charge readout).
+**Duration:** continuous from study start (target June 1, 2026). Multi-summer replication planned (paper 1 reports summer 2026 cooling, paper 2 reports combined 2026+2027 plus first H4-equivalent capacity-charge readout).
 
-**Cooling-relevance criterion:** a calendar week is included in the formal O1, O3, O5, O6 analysis if its realized weekly cooling-degree-day count (base 65°F, derived from co-located weather observations) is ≥ 5. Weeks below this threshold are reported descriptively only and excluded from formal effect-size estimation. The threshold is pre-committed before OSF and not adjusted post-hoc.
-
-This handles climate variability cleanly: spring and fall weeks with real cooling load qualify; deep-winter and dead-shoulder weeks where AC barely runs do not. Categorical "summer" boundaries are not used.
+**Cooling-season scope:** the formal analysis window is Jun 1 - Sep 30 each year. Within that window, every week with valid telemetry enters the matched-pair analysis; comparability across arms is handled by the Stage 4 weather-vector matching (§7), not by a CDD-based eligibility threshold. Low-CDD weeks represent mild weather, not invalid data: if a mild Arm A week and a mild Arm B week match well on the full 6-component weather vector, the pair is informative for an RTP/DTOD/5CP study where cost depends on event timing and price as much as on cooling load.
 
 ### Data quality rules and missing-data handling
 
-A week qualifies for the formal O1 / O3 / O5 / O6 analysis if it passes the cooling-relevance criterion above AND every gate below. Weeks failing any gate are reported descriptively only and excluded from formal effect-size estimation. All gates pre-committed before OSF.
+A week qualifies for the formal analysis if it passes every gate below. Weeks failing any gate are reported descriptively only and excluded from formal effect-size estimation. All gates pre-committed before OSF.
 
 **1. Refoss EM16P HVAC-channel coverage (`em:2`, `em:8`, `em:9`).** Four-tier handling, applied per-interval in order:
 
@@ -227,12 +241,13 @@ The transition is logged to `hvac.actions` with explicit `arm` tag.
 
 ## 6. Metrics and measurement
 
-### Primary metric: O1 weekly HVAC-circuit $/CDD
+### Primary metric: O1 weekly HVAC-circuit actual cost
 
-For each cooling-relevant week:
+For each qualifying week (per §4 data-quality gates):
 
-- **Cost numerator:** sum across all hours of (`hvac_circuit_hourly_kWh × ComEd_hourly_supply_price + hvac_circuit_hourly_kWh × delivery_rate`). The HVAC channel set is `em:2 + em:8 + em:9` on the Refoss EM16P, fixed at the OSF commit hash. `em:2` and `em:8` are the two AC compressor legs; `em:9` is the furnace blower (which moves cool air during cooling cycles). Pricing granularity: hourly average from `comed.prices` `period_type=hourly_avg`, matching the ComEd bill calculation.
-- **CDD denominator:** sum of `cooling_degree_days_base_65F` for the week, computed from co-located weather observations (Ecowitt when online, NWS gridpoint as fallback).
+- **Cost:** sum across all hours of (`hvac_circuit_hourly_kWh × ComEd_hourly_supply_price + hvac_circuit_hourly_kWh × delivery_rate`). The HVAC channel set is `em:2 + em:8 + em:9` on the Refoss EM16P, fixed at the OSF commit hash. `em:2` and `em:8` are the two AC compressor legs; `em:9` is the furnace blower (which moves cool air during cooling cycles). Pricing granularity: hourly average from `comed.prices` `period_type=hourly_avg`, matching the ComEd bill calculation.
+
+No CDD normalization. Weather comparability is established by the Stage 4 matched-pair construction (§7) using the 6-component weather vector that includes CDD as one component; matching, not denominator normalization, is the comparability mechanism.
 
 ### O2 capacity-charge avoidance — three-layer measurement
 
@@ -268,17 +283,21 @@ The actual ComEd Capacity Charge line item on the Y+1 bills (May-Sep months, the
 
 **Counterfactual scope.** Layers 1 and 2 are computed twice: once on the Arm A weeks' realized demand, once on the Arm B weeks' realized demand. The pair difference is what the cross-summer SCED randomization permits as inference. Layer 3 is anchored only to the realized assignment.
 
-**Bootstrap CI** for Layer 1 (the primary statement) computed across whatever number of qualifying weeks the cooling-relevance criterion and §4 data-quality gates produce under each arm.
+**Bootstrap CI** for Layer 1 (the primary statement) computed across whatever number of qualifying weeks the §4 data-quality gates produce under each arm.
 
 **Detector accuracy report (process metric, not an outcome).** Separately, the Arm B live 5CP detector's hour-by-hour decisions during summer Y are cross-referenced against PJM's October-published 5CP hour list. Reported: true-positive rate (detector held shutoff during a published 5CP hour), false-positive rate (detector held shutoff during a non-5CP hour), false-negative rate (detector did not hold during a published 5CP hour). This characterizes the live detector as an engineering subsystem; it is decoupled from O2's outcome statement.
 
-### Secondary metrics
+### Co-primary, secondary, and descriptive metrics
 
-O3 (weekly peak HVAC kW) and O4 (whole-home $/CDD) constructed analogously to O1.
+O4 (weekly whole-home actual cost) constructed analogously to O1, sourced from the canonical Eagle whole-home meter feed with Refoss split-phase mains as a sanity cross-check / backup (per §2 O4 definition; the two sources are never silently averaged, and divergence beyond a pre-committed weekly-kWh threshold flags the week for investigation in the per-week provenance output).
 
-O5 (within-day profile) reported as hourly kWh and hourly cost averaged across each arm's cooling-relevant weeks, with continuous weather-condition descriptors per matched pair.
+O7 (weekly HVAC-circuit actual energy in kWh) sums `em:2 + em:8 + em:9` hourly kWh across the week. O8 (weekly whole-home actual energy in kWh) sums the canonical Eagle whole-home kWh across the week, with Refoss-mains backup and drift flag as in O4. Both reported as matched-pair median difference in kWh with bootstrap 95% CI. Purpose: distinguish savings via reduced energy from savings via shifted timing.
 
-O6 (recovery-overhead ratio) integrated 18:00-23:59 on HOT-classified days; a positive ratio indicates the load-shifting strategy in Arm B incurs net evening kWh.
+O3 (weekly peak HVAC kW) computed as the maximum of the 1-hour rolling mean of `refoss.channel.power_w` summed across the HVAC channel set, per week. Matched-pair median difference with bootstrap 95% CI.
+
+O5 (within-day profile) reported as hourly kWh and hourly cost averaged across each arm's qualifying weeks, with continuous weather-condition descriptors per matched pair.
+
+O6 (load-shift / rebound diagnostic) per the §2 definition: HVAC kWh and HVAC $ panel stratified by the controller-locked price tiers (Normal `< 10¢`, Elevated `≥ 10¢ < 20¢`, Scarcity `≥ 20¢`), by 5CP-active windows, and post-event rebound periods; optionally pre-cool windows. Diagnostic, not a single test statistic. Old O6 framing (kWh during 18:00-23:59 normalized by daily mean outdoor temp delta from 75°F) is removed; Arm B shifts load all day, not only in evening recovery.
 
 ### Descriptive accompaniments
 
@@ -290,7 +309,7 @@ For each matched pair, the following are reported alongside the cost outcomes fo
 
 ### Primary inference: matched-pair effect sizes with bootstrap 95% CI
 
-Each Arm A week and each Arm B week (after washout exclusion and cooling-relevance filtering) is summarized to a weekly weather summary vector and an outcome value (O1 $/CDD primarily; same procedure applies to other metrics).
+Each Arm A week and each Arm B week (after washout exclusion and §4 data-quality filtering) is summarized to a weekly weather summary vector and an outcome value (O1 weekly HVAC actual cost primarily; the same procedure applies to O4 whole-home actual cost, O3 peak HVAC kW, O7 weekly HVAC kWh, and O8 weekly whole-home kWh).
 
 **Weather summary vector (6 components, ASHRAE Guideline 14-2023 multivariable regression aligned):**
 
@@ -303,7 +322,7 @@ Each Arm A week and each Arm B week (after washout exclusion and cooling-relevan
 
 Items 1-4 are the ASHRAE G14 canonical set. Items 5-6 are extensions to capture peak-condition distribution shape that the cumulative metrics integrate over.
 
-**Distance metric:** Mahalanobis distance (generalized point-to-point form) `d²(x,y) = (x-y)ᵀ Σ⁻¹ (x-y)` where Σ is the covariance matrix estimated from 2020-2025 **ERA5 reanalysis at KORD coordinates** (41.9786°N, 87.9047°W), cooling-relevant weeks (CDD ≥ 5). ERA5 is chosen over multi-source NOAA stitching because it provides all six required weather-summary components (CDD basis, dewpoint, wind, solar, enthalpy inputs) consistently at a single grid point; NOAA GHCND/LCD/NSRDB would require three separate ingest paths with different timing skew and would produce a functionally equivalent covariance matrix for the matched-pair distance application. Computation: [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → [`tools/analysis/data/baseline_cov.npz`](../tools/analysis/data/baseline_cov.npz), locked at OSF filing.
+**Distance metric:** Mahalanobis distance (generalized point-to-point form) `d²(x,y) = (x-y)ᵀ Σ⁻¹ (x-y)` where Σ is the covariance matrix estimated from 2020-2025 **ERA5 reanalysis at KORD coordinates** (41.9786°N, 87.9047°W), restricted to weeks with CDD ≥ 5 for calibration-set purposes (so the covariance reflects cooling-regime variability the matching metric is sensitive to). The CDD ≥ 5 filter applies ONLY to the historical baseline calibration set; it does NOT gate the experimental weeks entering Stage 4 matching. ERA5 is chosen over multi-source NOAA stitching because it provides all six required weather-summary components (CDD basis, dewpoint, wind, solar, enthalpy inputs) consistently at a single grid point; NOAA GHCND/LCD/NSRDB would require three separate ingest paths with different timing skew and would produce a functionally equivalent covariance matrix for the matched-pair distance application. Computation: [`tools/analysis/baseline_distribution.py`](../tools/analysis/baseline_distribution.py) → [`tools/analysis/data/baseline_cov.npz`](../tools/analysis/data/baseline_cov.npz), locked at OSF filing.
 
 **Matching algorithm:** Hungarian optimal pairing without replacement, minimizing total Mahalanobis distance across all matched pairs.
 
@@ -323,7 +342,7 @@ Same matched pairs, same outcome. Under the null hypothesis of no controller dif
 
 **Committed decomposition output:**
 
-For the experimental period, classify each cooling-relevant day into:
+For the experimental period, classify each qualifying day (per Stage 2 day-level inclusion) into:
 
 - **Forecast-correlated price-spike day:** any hour with hourly average ≥10¢/kWh AND that day's max forecast temp ≥85°F (or apparent ≥90°F) at 21:00-prior classification time
 - **Grid-event price-spike day:** any hour with hourly average ≥10¢/kWh AND that day's max forecast temp <85°F (and apparent <90°F)
@@ -359,11 +378,11 @@ The paper reports effect sizes with 95% CIs. It does not run a confirmatory hypo
 
 For each cooling season:
 
-1. **Headline:** matched-pair median O1 difference with bootstrap 95% CI, plus O2 Layer 1 (`ACustCPL` difference) $ delta with bootstrap 95% CI. O2 Layers 2 and 3 reported as descriptive side-tables.
+1. **Headline:** matched-pair median Arm B − Arm A difference with bootstrap 95% CI for each co-primary outcome (O1 weekly HVAC actual cost, O4 weekly whole-home actual cost, O2 Layer 1 capacity-charge $ delta). Each $ outcome is reported as an absolute dollar delta side-by-side with the percent of Arm A matched cost for reader intuition; the absolute dollar figure is the trustworthy primary, and percent is never reported as the sole headline (denominator matters). O2 Layers 2 and 3 reported as descriptive side-tables. Secondary outcomes (O3 peak kW, O7 HVAC kWh, O8 whole-home kWh) reported alongside.
 2. **Forecast-correlated vs grid-event decomposition** (per §7): arm-level category-median Arm B - Arm A value difference reported separately for forecast-correlated price-spike days, grid-event price-spike days, and no-spike days (descriptive only; not the matched-pair primary inference). Layer attribution (which Arm B layer triggered) reported for grid-event days specifically.
-3. **Continuous-axis scatter plots:** matched-pair O1 difference on the y-axis vs each weather summary vector component on the x-axis. Lets readers see whether the effect varies systematically with weather severity.
+3. **Continuous-axis scatter plots:** matched-pair O1 actual-cost difference on the y-axis vs each weather summary vector component on the x-axis. Lets readers see whether the effect varies systematically with weather severity. Same plot panel produced for O4, O7, O8.
 4. **Per-pair table:** every matched pair shown with its weather summary vector and outcome difference.
-5. **Within-day hourly profile** by arm, on cooling-relevant weeks only, descriptive only.
+5. **Within-day hourly profile** by arm, on qualifying weeks, descriptive only.
 6. **Indoor temperature distribution** (median, 90th, 95th percentile) by arm, descriptive only.
 7. **Day-of-week distribution** of price-spike hours and scarcity hours (descriptive only).
 8. **Boundary-conditions block** (the §3 list) prominently displayed so readers can assess transferability to their own situation.
@@ -446,7 +465,7 @@ Self-experimentation is offered as context, not as a regulatory exemption: [Fors
 - **Investigator-as-occupant unblinding.** Mitigated by frozen analysis code and pre-committed metrics, not eliminated.
 - **Forecast-skill dependence.** Both arms' performance depends on NWS forecast quality; degraded forecasts during the experimental period would affect Arm B more than Arm A but would also be a real-world operational reality, not a design flaw.
 - **5CP attribution.** Arm B's 5CP-prediction logic is a heuristic, not a forecast. Hit rate on actual PJM 5CPs will reflect prediction skill, not theoretical maximum savings.
-- **5CP day-of-week scope.** PJM Manual 19 §4.3 restricts the published PJM RTO 5CP set to non-holiday weekdays in Jun-Sep; ComEd's filed tariff (PJM OATT Attachment M-2 §2(e)) imposes only "different calendar days in a summer" with no day-of-week or holiday carve-out. Arm B's §3 detector applies a single Jun 1 - Sep 30 gate to both scopes (no weekday/holiday refinement) because (a) ComEd zone 5CPs can in principle land on weekends, (b) a federal-holiday calendar dependency would introduce drift risk that could silently invalidate weeks of SCED data, and (c) the cost of a false-positive shutoff on a weekend RTO ramp is small comfort cost with zero capacity benefit — Arm B's weekly $/CDD metric naturally captures this as a design cost. Reported as a measurement limitation rather than corrected in code.
+- **5CP day-of-week scope.** PJM Manual 19 §4.3 restricts the published PJM RTO 5CP set to non-holiday weekdays in Jun-Sep; ComEd's filed tariff (PJM OATT Attachment M-2 §2(e)) imposes only "different calendar days in a summer" with no day-of-week or holiday carve-out. Arm B's §3 detector applies a single Jun 1 - Sep 30 gate to both scopes (no weekday/holiday refinement) because (a) ComEd zone 5CPs can in principle land on weekends, (b) a federal-holiday calendar dependency would introduce drift risk that could silently invalidate weeks of SCED data, and (c) the cost of a false-positive shutoff on a weekend RTO ramp is small comfort cost with zero capacity benefit — Arm B's weekly HVAC actual-cost outcome (O1) naturally captures this as a design cost. Reported as a measurement limitation rather than corrected in code.
 - **Thermal model dependency.** If the operational thermal model fails ratification, Arm B operates with hand-tuned constants for pre-cool depth, coast lead time, and stage-2 advisory. The thermal-model component of the contribution claim is then dropped and reported as a limitation.
 
 ---
@@ -455,17 +474,21 @@ Self-experimentation is offered as context, not as a regulatory exemption: [Fors
 
 The following are binding once this document is filed to OSF and the pre-registration URL is committed to this repo:
 
-1. The outcome definitions in §2 (O1-O6) including the HVAC channel set (`em:2 + em:8 + em:9`).
+1. The outcome definitions in §2:
+   - **Co-primary:** O1 (weekly HVAC-circuit actual cost on `em:2 + em:8 + em:9`), O2 (annual capacity-charge avoidance with three measurement layers; Layer 1 ACustCPL $ delta is the headline), O4 (weekly whole-home actual cost on the Eagle HAN smart-meter feed canonical, Refoss `em:1 + em:7` mains as drift-checked backup with no silent averaging).
+   - **Secondary:** O3 (weekly peak HVAC kW), O7 (weekly HVAC-circuit actual energy in kWh), O8 (weekly whole-home actual energy in kWh on the same Eagle/Refoss-backup arrangement as O4).
+   - **Descriptive:** O5 (within-day hourly kWh + $ profile by arm), O6 (load-shift / rebound diagnostic — HVAC kWh + $ panel stratified by controller-locked price tiers Normal/Elevated/Scarcity at 10¢/20¢, by 5CP-active windows, and post-event rebound; optionally pre-cool windows).
+
+   No $/CDD outcome is reported anywhere in the analysis. The §13 list does not include a cooling-relevance eligibility criterion; CDD ≥ 5 is NOT a gate on experimental weeks (it remains as a calibration-set filter on the historical ERA5 baseline covariance only, per §7).
 2. The arm definitions in §3, including the commit hash for both controllers and the boundary-conditions block.
 3. **The locked Arm B threshold values in Appendix A**: day-type classification (HOT at ≥85°F max OR apparent ≥90°F), price-spike tier thresholds (10¢ elevated, 20¢ scarcity, 2¢ hysteresis, 30 min hold), 5CP detection rule (load ratio >0.95 in 13-20 CT window, summer eligibility gate Jun 1 - Sep 30 per PJM Manual 19, dual-scope ComEd-zone + RTO OR'd with per-scope forecast feeds, pre-season fallbacks 20,375 MW and 151,525 MW respectively), pre-cool deepening forecast trigger, and layer priority resolution.
-4. The cooling-relevance criterion in §4 (weekly CDD ≥ 5).
-5. The randomization seed (`20260601`) and the `randomize_arms.py` script that derives the assignment list, plus the year-round assignment CSV.
-6. The 2-week-arm structure within 4-week blocks with randomized order.
-7. The post-switch washout duration `W` (§5), formula and clamp.
-8. The 6-component weather summary vector (§7), Hungarian matching algorithm, Mahalanobis distance (Use 2) primary metric, T=2.5 quality threshold, 10,000 stationary bootstrap resamples with percentile 95% CI, and the five pre-committed sensitivity analyses.
-9. The forecast-correlated vs grid-event decomposition analysis (§7).
-10. The reporting structure in §8 (decomposition, continuous-axis scatter, per-pair table, within-day hourly profile, indoor temperature distribution, day-of-week distribution, boundary-conditions block).
-11. The §11 building-as-subject ethics framing.
+4. The randomization seed (`20260601`) and the `randomize_arms.py` script that derives the assignment list, plus the year-round assignment CSV.
+5. The 2-week-arm structure within 4-week blocks with randomized order.
+6. The post-switch washout duration `W` (§5), formula and clamp.
+7. The statistical analysis plan in §7: the 6-component weather summary vector, the Hungarian matching algorithm minimizing total Mahalanobis distance (with Σ from the locked ERA5 baseline covariance), the T=2.5 Mahalanobis quality threshold, the 10,000-resample stationary bootstrap with percentile 95% CI as the primary inference, the SCED sign-flip randomization test as the secondary inference, and the pre-committed sensitivity analyses. Headline reporting is the absolute matched-pair median $ delta with bootstrap 95% CI, presented side-by-side with the percent of Arm A matched cost (per §8); percent is never the sole headline.
+8. The forecast-correlated vs grid-event decomposition analysis (§7).
+9. The reporting structure in §8 (decomposition, continuous-axis scatter, per-pair table, within-day hourly profile, indoor temperature distribution, day-of-week distribution, boundary-conditions block).
+10. The §11 building-as-subject ethics framing.
 
 Changes after pre-registration require an amendment posted to OSF with explicit justification and are reported as deviations in any published methods section.
 

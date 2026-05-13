@@ -292,5 +292,7 @@ explicit amendment with justification.
 The CSV is named `experiment-assignments-summer-2026.csv` for
 historical continuity but covers year-round 2026-06-01 through
 2027-05-31 weeks (53 Mondays) per `EXPERIMENT_DESIGN.md` §5. Formal
-analysis weeks are filtered post-hoc by realized weekly cooling-degree
-days >= 5; non-cooling-relevant weeks are reported descriptively only.
+analysis runs on every cooling-season week (Jun 1 - Sep 30) that
+passes the §4 data-quality gates; weather comparability is established
+by the Stage 4 matched-pair construction over the 6-component weather
+summary vector, not by a CDD-based eligibility threshold.
