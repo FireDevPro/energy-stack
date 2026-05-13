@@ -129,7 +129,7 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 **Per-rule notes:**
 
 - **Rule 1 (Refoss 4-tier)** — `pipeline.rule1_refoss`. Tier classification by gap length, mains-scaled historical-median imputation for tier 2, ComfortNet-derived imputation for tier 3. ComfortNet `kW = cool_actual_pct × cool_nameplate_kW + heat_actual_pct × furnace_nameplate_kW + blower_cfm_to_kW(cfm)` with `cool_nameplate_kW = 4.6` (Amana ASXC160481BE 4-ton @ 1.15 kW/ton SEER-adjusted; locked in [`pipeline.NAMEPLATE`](../tools/analysis/pipeline.py)), `furnace_nameplate_kW = 0.06` (electrical, blower-only since heat months excluded), and `blower_cfm_to_kW = cfm / 4500 × 0.6` (ECM motor curve). Imputation cap: ≥10% weekly HVAC kWh → week excluded.
-- **Rule 2 (ComfortNet)** — `pipeline.rule2_comfortnet`. Flags O6-ineligible days.
+- **Rule 2 (ComfortNet)** — `pipeline.rule2_comfortnet`. ComfortNet/CT-485 is a data source, not a control authority; it feeds Refoss Tier 3 imputation (Rule 1) and provides HVAC-state observations for diagnostics. Missing intervals are not imputed; ComfortNet downtime does not by itself invalidate any outcome — an outcome subcomponent invalidates only if its computation actually requires ComfortNet-derived state. Per-week ComfortNet coverage is logged for descriptive context.
 - **Rule 3 (RTP price feed)** — `pipeline.rule3_price`. Uses the locked spread constant from [`tools/comed_price_imputation/spread_constants.json`](../tools/comed_price_imputation/spread_constants.json).
 - **Rule 4 (NWS forecast)** — `pipeline.rule4_forecast`. Flags substitutions; does not gate week eligibility.
 - **Rule 5 (Ecowitt CDD)** — `pipeline.rule5_ecowitt`. NWS gridpoint fallback then daily `(Tmax+Tmin)/2−65` estimator.
@@ -190,9 +190,9 @@ Stages run in order, all implemented as functions in [`tools/analysis/pipeline.p
 1. For each primary-quality pair, compute the difference `Δ = arm_B − arm_A` of the outcome.
 2. Effect size: matched-pair median of Δ.
 3. Stationary bootstrap CI: 10,000 resamples with mean block length 2 pairs (≈ √N for typical N=8-12). Percentile method. Seeded from `PRNG_SEED + outcome_index` so each outcome is independent and reproducible.
-4. For dollar outcomes (O1, O4), additionally compute `percent_of_arm_a`: matched-pair median of `(Δ / arm_a_value)` × 100, reported alongside the absolute $ delta. Percent is NEVER reported as the sole headline — the absolute dollar figure is the trustworthy primary; percent provides reader intuition.
+4. For matched-pair dollar outcomes (O1 and O4 only), additionally compute `percent_of_arm_a`: matched-pair median of `(Δ / arm_a_value) × 100`, reported alongside the absolute $ delta. Percent is NEVER reported as the sole headline — the absolute dollar figure is the trustworthy primary; percent provides reader intuition. O2 is computed in Stage 6 against PJM 5CP hours under each arm (not matched weekly pairs); its bootstrap denominator semantics differ from O1/O4 and Stage 5 does not emit a `percent_of_arm_a` for it.
 
-**Output:** `out/<run>/stage5/effects.csv`: `(outcome, unit, n_pairs, median_diff, ci_low_95, ci_high_95, percent_of_arm_a, bootstrap_samples_npz)`. The `unit` column distinguishes dollars (O1, O4) from kW (O3) from kWh (O7, O8); `percent_of_arm_a` is populated only for dollar outcomes.
+**Output:** `out/<run>/stage5/effects.csv`: `(outcome, unit, n_pairs, median_diff, ci_low_95, ci_high_95, percent_of_arm_a, bootstrap_samples_npz)`. The `unit` column distinguishes dollars (O1, O4) from kW (O3) from kWh (O7, O8); `percent_of_arm_a` is populated only for O1 and O4.
 
 ### Stage 6 — O2 layer reconstructions
 
