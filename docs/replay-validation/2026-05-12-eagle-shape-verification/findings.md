@@ -6,26 +6,29 @@ role-label: chris
 context: Phase 1.0 of docs/plans/actual-dollar-outcomes-migration-plan.md
 ---
 
-# Eagle (`eagle.meter`) shape verification on Pi-lab Influx
+# Eagle (`eagle.meter`) shape verification
 
-Pre-implementation verification per Phase 1.0 of the actual-dollar migration plan. Goal: confirm Eagle data shape, cadence, monotonicity, and alignment with the Refoss-mains backup BEFORE writing acceptance-test oracles, so the oracles pin against real shape rather than spec-only assumptions.
+Pre-implementation verification per Phase 1.0 of the actual-dollar migration plan. Goal: confirm Eagle data shape, cadence, monotonicity, and the Refoss-mains backup sanity check BEFORE writing acceptance-test oracles or locking the weekly drift threshold, so the oracles pin against real shape and the threshold reflects real noise.
+
+## Framing
+
+**Eagle is the canonical whole-home meter feed** (Rainforest EAGLE-3 over Zigbee SmartEnergy 1.0 to the utility-installed smart meter). This is the same data the ComEd bill is computed from. O4 (weekly whole-home actual cost) and O8 (weekly whole-home actual kWh) read Eagle as the source of truth.
+
+**Refoss split-phase mains (`em:1 + em:7`) is a CT-clamp instrumentation sanity check.** It is loaded in parallel with Eagle to detect possible Refoss channel-mapping / calibration / time-alignment problems. It is never silently averaged with Eagle and never replaces Eagle in any outcome. When Eagle and Refoss-mains diverge beyond the locked weekly threshold, the divergence is flagged in `stage3/provenance.json` for human investigation — the assumption is that the smart meter is correct and Refoss instrumentation may have an issue worth looking at.
 
 ## Source
 
-- Host: Pi-lab (`192.168.20.10`)
-- Container: `influxdb` (energy-stack docker compose)
-- Bucket: `energy`
-- Measurement: `eagle.meter`
-- Verification queries run 2026-05-12 ~22:04 CT (2026-05-13 04:04 UTC)
+- Pi-lab Influx (bucket `energy`, measurement `eagle.meter`).
+- Verification queries run 2026-05-12 ~22:23 CT.
 
 ## Schema (verified)
 
 Matches the locked spec at `docs/ANALYSIS_PIPELINE.md` §2.1.
 
-**Fields:** `delivered_kwh`, `demand_kw`, `received_kwh`
-**Tags (non-system):** `hw_address`, `source`
+- **Fields:** `delivered_kwh`, `demand_kw`, `received_kwh`
+- **Tags (non-system):** `hw_address`, `source`
 
-Single meter present: `hw_address=0x001350050037ac6b`, `source=eagle3`.
+Single meter present (`source=eagle3`).
 
 ## Cadence (verified)
 
@@ -33,60 +36,76 @@ Single meter present: `hw_address=0x001350050037ac6b`, `source=eagle3`.
 
 ## Monotonicity (verified)
 
-- **30-minute window:** zero negative differentials.
+- **30-minute window:** zero negative differentials on `delivered_kwh`.
 - **7-day window:** zero negative differentials.
-- **History span:** earliest sample at `2026-04-15 02:02:57 UTC` = ~28 days of continuous history. `delivered_kwh` rises monotonically over the full span.
+- **History span:** earliest sample on 2026-04-15 — about 28 days of continuous history. Totalizer rises monotonically over the full span.
 
-No totalizer resets, no rollback, no out-of-order data. The Eagle `delivered_kwh` totalizer is safe to use for per-hour differential energy calculations directly.
+No totalizer resets, no rollback, no out-of-order data. The Eagle `delivered_kwh` totalizer is safe to use directly for per-hour differential energy calculations.
 
-## Eagle vs Refoss mains alignment
+## Drift definition (locked)
 
-This is the load-bearing finding for the threshold decision in Phase 1.
+Per Chris's direction, since Eagle is the canonical source:
 
-**30-minute window** (2026-05-13 03:34 — 04:04 UTC):
-- Eagle `delivered_kwh` spread (end − start): **2.261 kWh**
-- Refoss mains mean power (`em:1 + em:7`): 1236.53 W + 2852.02 W = 4088.55 W
-  → energy = 4.089 kW × 0.5 h = **2.045 kWh**
-- **Eagle higher by 0.216 kWh = +10.6% vs Refoss**
+```
+drift_pct = abs(refoss_mains_kwh - eagle_kwh) / eagle_kwh * 100
+```
 
-**24-hour window** (2026-05-12 04:04 — 2026-05-13 04:04 UTC):
-- Eagle `delivered_kwh` spread: **72.523 kWh**
-- Refoss mains, sum of 24 hourly mean powers as Wh: em:1 = 22,881.87 Wh + em:7 = 53,040.79 Wh = 75,922.66 Wh → **75.923 kWh**
-- **Refoss higher by 3.400 kWh = +4.7% vs Eagle**
+Eagle is always the denominator. Drift is reported in percent of Eagle's reading.
 
-**Conclusion:** the sign of the Eagle-vs-Refoss-mains difference **flips between windows**. 30-min sample shows Eagle higher; 24-hour sample shows Refoss higher. This is NOT a systematic bias of one meter relative to the other — it is measurement noise from differences in sampling cadence, time alignment, and aggregation-window edge effects between the two systems.
+## Refoss-instrumentation sanity check evidence (7-day + daily)
 
-Likely contributors (not investigated in this verification step, noted for future):
-- Refoss CT clamp calibration tolerance (~1-2%)
-- Time-skew between Eagle 30s polls and Refoss 1-min polls
-- Sub-second power variation that averages differently across the two cadences
-- Power-factor handling differences
+The threshold being locked is **weekly**, so the evidence below includes one full weekly window plus daily breakdown of the same 7 days.
 
-## Implications for the drift threshold (Phase 1.2 implementation decision)
+### Weekly (2026-05-06 04:23 — 2026-05-13 04:23 UTC, 7 days)
 
-The migration plan's tentative "5% weekly kWh" threshold is too tight given the 4.7% noise observed on a single 24h window. A 5% threshold would flag essentially every normal week as drift-anomalous, defeating the purpose (flagging only weeks where the divergence is investigation-worthy).
+- Eagle `delivered_kwh` spread: **388.103 kWh**
+- Refoss mains (sum of hourly mean power × 1 h): em:1 = 102.285 kWh + em:7 = 286.566 kWh = **388.851 kWh**
+- **drift_pct = |388.851 − 388.103| / 388.103 × 100 = 0.193%**
 
-**Recommended Phase 1 drift threshold: ≥ 10% weekly kWh delta** (absolute, in either direction). Rationale:
-- Doubles the observed noise floor (~5%) so normal weeks don't flag.
-- Still catches the kinds of failures the check is for: channel mapping errors, dead phase, swapped CT clamps, packet-gap losses, meter-feed dropout.
-- Provenance flag triggers an investigation note in `stage3/provenance.json`, NOT an outcome drop. Both arms see the same drift if it's measurement noise; matched pairs are stable.
+Weekly drift is essentially zero — 50× below the 10% threshold being locked.
 
-**Alternative (Phase 2 or later, NOT Phase 1):** learned baseline ratio per week-of-year + flag deviation > N stddev. More work to set up; not justified for Phase 1.
+### Daily breakdown (same 7-day span, aggregated to calendar UTC days)
 
-## Behavior locks confirmed
+| Date (UTC) | Eagle kWh | Refoss em:1 + em:7 kWh | drift_pct |
+|---|---|---|---|
+| 2026-05-07 | 31.987 | 31.101 | 2.77% |
+| 2026-05-08 | 57.991 | 57.020 | 1.67% |
+| 2026-05-09 | 38.197 | 38.115 | 0.21% |
+| 2026-05-10 | 51.626 | 51.050 | 1.12% |
+| 2026-05-11 | 57.164 | 55.598 | 2.74% |
+| 2026-05-12 | 64.454 | 64.605 | 0.23% |
+| 2026-05-13 | 70.448 | 69.317 | 1.61% |
 
-- Eagle is the **canonical** whole-home source for O4 (weekly whole-home actual cost) and O8 (weekly whole-home actual kWh), per Chris lock + spec amendment in PR #108.
-- Refoss `em:1 + em:7` mains is loaded **in parallel** as a sanity cross-check / backup. NOT silently averaged with Eagle.
-- Per-week drift exceeding the threshold flags the week in `stage3/provenance.json` for human investigation. Outcomes are NOT dropped on drift alone (both meters are healthy data sources; drift = "interesting" not "invalid").
-- If Eagle is absent for a week, whole-home outcomes (O4, O8) drop with a per-output reason code (Stage-8-pattern); the week is not failed entirely.
+Daily drift range: 0.21% — 2.77%. Median ~1.6%. Highest daily drift is well under 5%, and the daily values do not concentrate in one direction (Refoss lower 6 of 7 days, Refoss higher 1 day) — **no evidence of a stable one-direction offset in this short verification**.
+
+This is a single 7-day spring window. Sign of drift could shift across seasons (cooling load distribution between em:1 and em:7 may change), so the "no stable offset" reading is bounded to this window and should be revisited if summer 2026 data shows a persistent signed drift.
+
+## Weekly drift threshold (locked at 10%)
+
+**Threshold:** weekly `drift_pct >= 10%` flags the week in `stage3/provenance.json` for human investigation.
+
+Rationale:
+- Observed weekly drift in this 7-day window: 0.19%. The 10% threshold is 50× the observed noise floor.
+- Daily drift max in this window: 2.77%. The 10% threshold is ~4× the daily noise floor; a weekly aggregation of similar daily values would not approach 10%.
+- A 5% threshold would have a smaller margin against future operational noise (e.g., a single anomalous hour caused by a packet gap, time-skew during DST, or transient CT calibration drift on one phase). 10% keeps the flag specific to the failures the check exists for: channel mapping errors, dead phase, swapped CT clamps, prolonged packet-gap losses, meter-feed dropout.
+
+This threshold is locked at the OSF filing commit. Revisit only if summer 2026 weekly data consistently shows drift in the 5-10% range, in which case a pre-registration amendment would tighten the threshold.
+
+## Behavioral decisions (locked)
+
+1. **drift_pct >= 10%** → flag the week in `stage3/provenance.json` for human investigation.
+2. **drift alone does NOT drop outcomes.** Both meters are healthy data sources; drift means "interesting" not "invalid." O4 and O8 are still emitted; the flag is for the human to look at, not for the pipeline to mask data.
+3. **Eagle remains canonical** for all whole-home outcomes (O4 dollars, O8 kWh) regardless of drift value.
+4. **Refoss-mains is backup / sanity check, never averaged with Eagle.** If Eagle is absent for a week, O4 and O8 drop with a per-output reason code (Stage-8 pattern); the week is not failed entirely and Refoss-mains is not substituted as canonical.
 
 ## What is NOT verified by this step
 
 - ComEd bill reconciliation against Eagle `delivered_kwh` over a full billing month (deferred to Phase 3 replay re-run or later).
-- Behavior across DST transitions (Pi-lab has been live across at least one DST; no specific test run here).
-- Eagle handling during meter swaps / hw_address changes (`hw_address` is a tag specifically to survive this; not tested as no swap occurred in the verification window).
+- Behavior across DST transitions (Pi-lab has been live across at least one DST; not specifically tested here).
+- Eagle handling during meter swaps / `hw_address` changes (the `hw_address` tag exists specifically to survive this; not tested as no swap occurred in the verification window).
 - `received_kwh` totalizer behavior (currently zero / negligible; future solar will exercise this path).
+- Drift behavior across a full cooling season — the 7-day window observed here is spring shoulder; high-load summer weeks may show different noise characteristics.
 
 ## Next step
 
-Phase 1.1: write the 5 RED acceptance tests with oracles derived from this verified shape. Drift threshold in Phase 1.2 implementation set at **10% weekly kWh** per this verification, locked in code + provenance documentation.
+Phase 1.1: write the 5 RED acceptance tests with oracles derived from this verified shape. Drift threshold baked into Phase 1.2 implementation at **10% weekly** with the explicit `drift_pct = |refoss − eagle| / eagle × 100` formula and Eagle-as-canonical-source framing.
