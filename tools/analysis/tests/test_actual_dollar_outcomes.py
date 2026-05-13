@@ -1,10 +1,8 @@
-"""RED acceptance tests for Phase 1 of the actual-dollar-outcomes migration.
+"""Acceptance tests for the actual-dollar-outcomes migration.
 
-Per docs/plans/actual-dollar-outcomes-migration-plan.md Phase 1.1.
-All tests are marked xfail(strict=True) in the Phase 1.1 commit — they
-fail because the helpers / columns they assert against do not yet
-exist. Phase 1.2 implementation lands the helpers + columns, and
-removes the xfail markers in the same PR to flip the suite to GREEN.
+Per docs/plans/actual-dollar-outcomes-migration-plan.md. Phase 1.1
+wrote these as RED (xfail) tests; Phase 1.2 lands the implementation
+and removes the xfail markers, flipping the suite to GREEN.
 
 Five oracle tests, mirroring the migration plan's acceptance set:
 
@@ -33,18 +31,11 @@ import pytest
 from tools.analysis import pipeline
 
 
-PHASE_1_2_PENDING = pytest.mark.xfail(
-    strict=True,
-    reason="Phase 1.2 implementation pending; expected RED until helpers + columns land",
-)
-
-
 # ---------------------------------------------------------------------------
 # Oracle 1 — Weekly HVAC actual dollars helper
 # ---------------------------------------------------------------------------
 
 
-@PHASE_1_2_PENDING
 def test_weekly_actual_dollars_oracle():
     """O1 numerator: Σ_h hvac_kwh × (supply_c + dtod_c) / 100, in dollars.
 
@@ -64,7 +55,6 @@ def test_weekly_actual_dollars_oracle():
 # ---------------------------------------------------------------------------
 
 
-@PHASE_1_2_PENDING
 def test_eagle_hourly_kwh_from_delivered_oracle():
     """Eagle.meter delivered_kwh is a monotonic cumulative totalizer.
     Per-hour kWh = last_value_in_hour - last_value_in_prior_hour.
@@ -101,7 +91,6 @@ def test_eagle_hourly_kwh_from_delivered_oracle():
 # ---------------------------------------------------------------------------
 
 
-@PHASE_1_2_PENDING
 @pytest.mark.parametrize(
     "eagle_kwh, refoss_kwh, expected_drift_pct, expected_flag",
     [
@@ -147,7 +136,6 @@ def test_eagle_refoss_mains_drift_boundary(
 # ---------------------------------------------------------------------------
 
 
-@PHASE_1_2_PENDING
 def test_stage3_weekly_csv_has_actual_dollar_and_kwh_columns():
     """WEEKLY_CSV_LOCKED_COLUMNS includes the four new actual-outcome
     columns Phase 1.2 introduces additively (the existing $/CDD
@@ -184,7 +172,6 @@ def _write_weekly_csv_with_actual_cols(path: Path, rows: Sequence[dict[str, Any]
             w.writerow({c: r.get(c, "") for c in fields})
 
 
-@PHASE_1_2_PENDING
 def test_stage5_effects_percent_of_arm_a_populated_for_dollar_outcomes_only(tmp_path: Path):
     """Stage 5 effects.csv adds a `percent_of_arm_a` column.
 

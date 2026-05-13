@@ -58,6 +58,7 @@ KNOWN_MEASUREMENTS: tuple[str, ...] = (
     "comed.bill",
     "comed.bill_lineitems",
     "comed.prices",
+    "eagle.meter",
     "ecowitt.weather",
     "hvac.5cp_state",
     "hvac.actions",
@@ -80,12 +81,16 @@ KNOWN_MEASUREMENTS: tuple[str, ...] = (
 # observed_historical; must come from observed_recent,
 # weather_derived_compatibility (ecowitt only), or
 # injected_validation_case.
+# eagle.meter writer (deploy/energy-stack/eagle-poller/poller.py) was
+# deployed in spring 2026; earliest production data 2026-04-15 per
+# docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
 POST_2025_MEASUREMENTS: frozenset[str] = frozenset({
     "hvac.5cp_state",
     "hvac.price_overlay",
     "hvac.arm_transitions",
     "hvac.precool_window",
     "ecowitt.weather",
+    "eagle.meter",
 })
 
 

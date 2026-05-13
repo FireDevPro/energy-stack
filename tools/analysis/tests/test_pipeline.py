@@ -1450,7 +1450,14 @@ def _write_stage2_qualifying_weeks(stage2_dir: Path, rows: list[dict]) -> None:
 
 
 def test_stage3_weekly_writes_locked_schema_header(tmp_path):
-    """Existing schema test, preserved: weekly.csv has the locked columns."""
+    """Existing schema test, preserved: weekly.csv has the locked columns.
+
+    Header is asserted against pipeline.WEEKLY_CSV_LOCKED_COLUMNS so that
+    Phase 1 additive schema changes (new actual-$ and actual-kWh columns
+    per docs/plans/actual-dollar-outcomes-migration-plan.md) flow through
+    without manual sync; Phase 2's removal of the $/CDD scaffolding will
+    also be picked up automatically.
+    """
     pipeline.stage3_weekly(
         stage1_dir=tmp_path, stage2_dir=tmp_path, out_dir=tmp_path,
     )
@@ -1459,12 +1466,7 @@ def test_stage3_weekly_writes_locked_schema_header(tmp_path):
     with open(weekly) as f:
         header = next(csv.reader(f))
         data_rows = list(csv.reader(f))
-    assert header == [
-        "week_start_ct", "arm", "qualifies",
-        "o1_dollars_per_cdd", "o3_peak_hvac_kw",
-        "o4_dollars_per_cdd_whole_home",
-        *pipeline.WEATHER_VECTOR_COMPONENTS,
-    ]
+    assert header == list(pipeline.WEEKLY_CSV_LOCKED_COLUMNS)
     # Header-only when no Stage 2 / Stage 1 input is wired
     assert data_rows == []
 

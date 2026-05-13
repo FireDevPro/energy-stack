@@ -377,14 +377,16 @@ def test_e2e_through_stage_4(full_pipeline_run):
 
 def test_e2e_through_stage_5(full_pipeline_run):
     """Stage 5 reads Stage 3 + Stage 4 and emits effects.csv. With Arm B
-    using 20% less HVAC than Arm A in the fixture, all three outcome
-    medians must be negative (B − A < 0).
+    using 20% less HVAC than Arm A in the fixture, all outcome medians
+    must be negative (B − A < 0).
+
+    Outcome set asserted from pipeline.STAGE5_OUTCOMES so Phase 1
+    additive changes (actual-$ + actual-kWh outcomes) and Phase 2
+    subtractive changes ($/CDD removal) flow through automatically.
     """
     with open(full_pipeline_run["out_dir"] / "stage5" / "effects.csv") as f:
         rows = {r["outcome"]: r for r in csv.DictReader(f)}
-    assert set(rows) == {
-        "o1_dollars_per_cdd", "o3_peak_hvac_kw", "o4_dollars_per_cdd_whole_home",
-    }
+    assert set(rows) == set(pipeline.STAGE5_OUTCOMES)
     for outcome, row in rows.items():
         assert float(row["median_diff"]) < 0, (
             f"{outcome} median_diff should be < 0 (Arm B uses less HVAC); "
@@ -411,15 +413,16 @@ def test_e2e_through_stage_6(full_pipeline_run):
 def test_e2e_through_stage_7(full_pipeline_run):
     """Stage 7 reads Stage 5's effects.csv (or recomputes pair differences
     from Stage 3 + Stage 4) and emits sced_pvalues.csv with one row per
-    outcome (o1, o3, o4). Each row has a two-sided p-value in [0, 1]
-    and an `exact` flag indicating exhaustive vs random sampling.
+    Stage 5 outcome. Each row has a two-sided p-value in [0, 1] and an
+    `exact` flag indicating exhaustive vs random sampling.
+
+    Outcome set asserted from pipeline.STAGE5_OUTCOMES so migration
+    phase changes flow through automatically.
     """
     with open(full_pipeline_run["out_dir"] / "stage7" / "sced_pvalues.csv") as f:
         rows = list(csv.DictReader(f))
     outcomes = {r["outcome"] for r in rows}
-    assert outcomes == {
-        "o1_dollars_per_cdd", "o3_peak_hvac_kw", "o4_dollars_per_cdd_whole_home",
-    }
+    assert outcomes == set(pipeline.STAGE5_OUTCOMES)
     for r in rows:
         p = float(r["pvalue"])
         assert 0.0 <= p <= 1.0

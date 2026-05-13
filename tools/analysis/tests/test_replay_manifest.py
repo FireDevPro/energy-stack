@@ -262,6 +262,10 @@ def test_known_measurements_matches_analysis_pipeline_doc():
         "nws.forecast", "ecowitt.weather", "pjm.inst_load",
         "pjm.coincident_peak", "pjm.metered_load",
         "comed.bill", "comed.bill_lineitems",
+        # Eagle HAN smart-meter feed added in PR #109 as part of the
+        # actual-dollar migration (Phase 1). Canonical whole-home
+        # source for O4 / O8 per docs/EXPERIMENT_DESIGN.md §2.
+        "eagle.meter",
     }
     assert set(KNOWN_MEASUREMENTS) == expected_subset
 
@@ -271,6 +275,9 @@ def test_post_2025_measurements_only_contains_new_services():
         "hvac.5cp_state", "hvac.price_overlay",
         "hvac.arm_transitions", "hvac.precool_window",
         "ecowitt.weather",
+        # eagle-poller deployed spring 2026; earliest production data
+        # 2026-04-15 per Phase 1.0 shape verification findings.
+        "eagle.meter",
     }
 
 

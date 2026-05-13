@@ -327,19 +327,80 @@ def weekly_dollars_per_cdd(
     RTP hourly-avg supply price in cents/kWh after rule 3 imputation).
     Delivery rate is looked up via ``dtod_delivery_rate_for_hour_ct``.
 
-    Returns 0 if ``weekly_cdd <= 0`` to avoid division by zero on
-    cooling-irrelevant weeks (which Stage 2 already gates out of the
-    formal analysis via the cooling-relevance criterion).
+    Returns 0 if ``weekly_cdd <= 0`` to avoid division by zero.
+
+    Phase 1 migration note: this helper is retained as cross-validation
+    scaffolding only. The pre-reg-locked outcomes per docs/EXPERIMENT_DESIGN.md
+    §2 are actual dollars (computed by ``weekly_actual_dollars``), not
+    $/CDD. Phase 2 of the actual-dollar migration plan removes this
+    helper and its dependent columns.
     """
     if weekly_cdd <= 0:
         return 0.0
+    return weekly_actual_dollars(hourly_records) / weekly_cdd
+
+
+def weekly_actual_dollars(hourly_records: Sequence[dict]) -> float:
+    """Actual dollars across all hours: O1 / O4 / O7 / O8 numerator.
+
+    Each ``hourly_records`` entry needs ``hour_of_day_ct`` (0-23, CT),
+    ``hvac_kwh`` (energy that hour in kWh — the dict key is named
+    ``hvac_kwh`` for shape continuity with the existing HVAC / mains
+    record types, but the helper is outcome-agnostic and accepts any
+    record whose ``hvac_kwh`` field holds an hourly kWh value, e.g.
+    Eagle-derived whole-home hourly kWh), and ``supply_c_per_kwh``
+    (ComEd RTP hourly-avg supply price in cents/kWh after rule 3
+    imputation).
+
+    Delivery rate is looked up via ``dtod_delivery_rate_for_hour_ct``.
+    Output is dollars (cents divided by 100 once at the end).
+    """
     total_cents = 0.0
     for r in hourly_records:
         kwh = float(r["hvac_kwh"])
         supply_c = float(r["supply_c_per_kwh"])
         delivery_c = dtod_delivery_rate_for_hour_ct(int(r["hour_of_day_ct"]))
         total_cents += kwh * (supply_c + delivery_c)
-    return (total_cents / 100.0) / weekly_cdd
+    return total_cents / 100.0
+
+
+# Eagle (canonical whole-home smart-meter feed) vs Refoss split-phase
+# mains (CT-clamp instrumentation sanity check) weekly drift threshold.
+# Locked per docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
+# 7-day evidence: 0.193% weekly drift; daily range 0.21%-2.77%. 10% is
+# ~50x the observed weekly noise floor — keeps the flag specific to
+# channel-mapping / dead-phase / swapped-CT / packet-gap-loss failures.
+EAGLE_REFOSS_DRIFT_THRESHOLD_PCT = 10.0
+
+
+def eagle_refoss_mains_drift(
+    eagle_kwh: float,
+    refoss_mains_kwh: float,
+) -> dict:
+    """Compute drift between Refoss-mains CT-clamp instrumentation and the
+    canonical Eagle whole-home meter feed.
+
+    Eagle is the denominator because Eagle is canonical (the smart-meter
+    HAN feed that the ComEd bill is computed from). Refoss is the
+    sanity check used to detect possible Refoss-side channel-mapping /
+    calibration / time-alignment problems.
+
+    Returns a dict with keys ``drift_pct`` and ``exceeds_threshold``.
+    drift_pct = abs(refoss_mains_kwh - eagle_kwh) / eagle_kwh * 100.
+    exceeds_threshold is True iff drift_pct >= EAGLE_REFOSS_DRIFT_THRESHOLD_PCT.
+
+    The flag triggers a provenance entry for human investigation. It
+    does NOT drop Eagle-derived outcomes; Eagle remains canonical
+    regardless of the drift value. The two sources are never silently
+    averaged.
+    """
+    if eagle_kwh <= 0.0:
+        return {"drift_pct": 0.0, "exceeds_threshold": False}
+    drift_pct = abs(refoss_mains_kwh - eagle_kwh) / eagle_kwh * 100.0
+    return {
+        "drift_pct": drift_pct,
+        "exceeds_threshold": drift_pct >= EAGLE_REFOSS_DRIFT_THRESHOLD_PCT,
+    }
 
 
 # --- Refoss Tier 3 ComfortNet-derived imputation ---------------------------
@@ -1992,7 +2053,20 @@ def rule10_transition_apply(
 
 WEEKLY_CSV_LOCKED_COLUMNS = (
     "week_start_ct", "arm", "qualifies",
-    "o1_dollars_per_cdd", "o3_peak_hvac_kw",
+    # Pre-reg-locked actual-dollar + actual-kWh outcomes per
+    # docs/EXPERIMENT_DESIGN.md §2. Eagle is the canonical whole-home
+    # source for whole_home_* columns; Refoss split-phase mains is a
+    # sanity-check backup used only when Eagle is absent for the week.
+    "weekly_hvac_dollars",
+    "weekly_whole_home_dollars",
+    "weekly_hvac_kwh",
+    "weekly_whole_home_kwh",
+    "o3_peak_hvac_kw",
+    # Phase 1 cross-validation scaffolding ONLY — these $/CDD columns
+    # are NOT pre-reg-locked outcomes; spec amendment in PR #108
+    # removed $/CDD as a supported analysis output entirely. Phase 2
+    # of the actual-dollar migration plan deletes them.
+    "o1_dollars_per_cdd",
     "o4_dollars_per_cdd_whole_home",
     *WEATHER_VECTOR_COMPONENTS,
 )
@@ -2022,11 +2096,31 @@ def _compute_weekly_row(inputs: dict) -> dict:
     cdd = weekly_cdd(inputs["daily_avg_temps_f"])
     hourly_hvac = inputs["hourly_hvac_records"]
     hourly_mains = inputs["hourly_mains_records"]
+    hourly_eagle = inputs.get("hourly_eagle_records") or []
     weather = inputs["hourly_weather"]
 
+    # Pre-reg-locked actual-$ + actual-kWh outcomes per §2.
+    weekly_hvac_dollars = weekly_actual_dollars(hourly_hvac)
+    weekly_hvac_kwh = sum(float(r["hvac_kwh"]) for r in hourly_hvac)
+
+    # Whole-home: Eagle is canonical when present in the bundle. Refoss
+    # split-phase mains (em:1 + em:7) is a sanity-check backup that is
+    # used ONLY when Eagle is absent. The two sources are never silently
+    # averaged. When both are present, Eagle wins; the Refoss-vs-Eagle
+    # drift is recorded separately for provenance via
+    # ``eagle_refoss_mains_drift``.
+    if hourly_eagle:
+        weekly_whole_home_dollars = weekly_actual_dollars(hourly_eagle)
+        weekly_whole_home_kwh = sum(float(r["hvac_kwh"]) for r in hourly_eagle)
+    else:
+        weekly_whole_home_dollars = weekly_actual_dollars(hourly_mains)
+        weekly_whole_home_kwh = sum(float(r["hvac_kwh"]) for r in hourly_mains)
+
+    o3 = max((float(r["hvac_kwh"]) for r in hourly_hvac), default=0.0)
+
+    # Phase 1 scaffolding only — see WEEKLY_CSV_LOCKED_COLUMNS comment.
     o1 = weekly_dollars_per_cdd(hourly_hvac, cdd)
     o4 = weekly_dollars_per_cdd(hourly_mains, cdd)
-    o3 = max((float(r["hvac_kwh"]) for r in hourly_hvac), default=0.0)
 
     mean_enth = weekly_mean_enthalpy_btu_lb(weather)
     total_solar = sum(float(r.get("solar_wm2", 0.0)) for r in weather)
@@ -2041,8 +2135,12 @@ def _compute_weekly_row(inputs: dict) -> dict:
         "week_start_ct": inputs["week_start_ct"].isoformat(),
         "arm": inputs["arm"],
         "qualifies": bool(inputs["qualifies"]),
-        "o1_dollars_per_cdd": o1,
+        "weekly_hvac_dollars": weekly_hvac_dollars,
+        "weekly_whole_home_dollars": weekly_whole_home_dollars,
+        "weekly_hvac_kwh": weekly_hvac_kwh,
+        "weekly_whole_home_kwh": weekly_whole_home_kwh,
         "o3_peak_hvac_kw": o3,
+        "o1_dollars_per_cdd": o1,
         "o4_dollars_per_cdd_whole_home": o4,
         "weekly_cdd": cdd,
         "mean_enthalpy_btu_lb": mean_enth,
@@ -2061,8 +2159,12 @@ def _empty_weekly_row(week_start_ct: str, arm: str, qualifies: bool) -> dict:
         "week_start_ct": week_start_ct,
         "arm": arm,
         "qualifies": qualifies,
-        "o1_dollars_per_cdd": 0.0,
+        "weekly_hvac_dollars": 0.0,
+        "weekly_whole_home_dollars": 0.0,
+        "weekly_hvac_kwh": 0.0,
+        "weekly_whole_home_kwh": 0.0,
         "o3_peak_hvac_kw": 0.0,
+        "o1_dollars_per_cdd": 0.0,
         "o4_dollars_per_cdd_whole_home": 0.0,
     })
     return row
@@ -2267,6 +2369,70 @@ def _stage3_hourly_weather(
     return result
 
 
+def eagle_hourly_kwh_from_delivered(
+    eagle_df: "pd.DataFrame",
+    week_start_ct: datetime.date,
+) -> list[float]:
+    """168 hourly kWh values for one CT week from Eagle ``delivered_kwh``.
+
+    Per Phase 1.0 verification (docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md),
+    ``eagle.meter.delivered_kwh`` is a monotonic cumulative totalizer
+    sampled every 30 s. Per-hour energy = last_value_in_hour minus
+    last_value_in_prior_hour.
+
+    Returns ``[0.0] * 168`` when the input frame is empty or has no
+    ``delivered_kwh`` rows for the week.
+    """
+    import pandas as pd
+    if len(eagle_df) == 0 or "_field" not in eagle_df.columns:
+        return [0.0] * 168
+
+    week_start_utc = _ct_date_to_utc(week_start_ct, 0)
+    week_end_utc = _ct_date_to_utc(
+        week_start_ct + datetime.timedelta(days=7), 0,
+    )
+
+    # Include a small buffer so the helper can find a baseline sample
+    # just before the first hour boundary.
+    one_hour = datetime.timedelta(hours=1)
+    mask = (
+        (eagle_df["_field"] == "delivered_kwh")
+        & (eagle_df["_time"] >= week_start_utc - one_hour)
+        & (eagle_df["_time"] < week_end_utc + one_hour)
+    )
+    sub = eagle_df.loc[mask].copy()
+    if len(sub) == 0:
+        return [0.0] * 168
+    sub = sub.sort_values("_time")
+
+    # Latest sample at-or-before each of the 169 hour boundaries.
+    boundary_values: list[float | None] = []
+    times = sub["_time"]
+    values = sub["_value"]
+    for h in range(169):
+        boundary = week_start_utc + datetime.timedelta(hours=h)
+        prior_mask = times <= boundary
+        if prior_mask.any():
+            boundary_values.append(float(values[prior_mask].iloc[-1]))
+        else:
+            boundary_values.append(None)
+
+    # Differential: hour h kWh = boundary[h+1] - boundary[h]. Missing
+    # boundary → 0.0. Cumulative-totalizer should be monotonic per
+    # Phase 1.0 verification (zero negative diffs over 28-day history),
+    # but clamp at 0.0 defensively in case of a single anomalous
+    # backwards blip.
+    result: list[float] = []
+    for h in range(168):
+        a = boundary_values[h]
+        b = boundary_values[h + 1]
+        if a is None or b is None:
+            result.append(0.0)
+        else:
+            result.append(max(b - a, 0.0))
+    return result
+
+
 def _load_stage3_inputs_for_week(
     stage1_dir: Path,
     week_start_ct: datetime.date,
@@ -2279,7 +2445,13 @@ def _load_stage3_inputs_for_week(
       - daily_avg_temps_f (7 floats)
       - hourly_hvac_records (168 dicts; channels em:2/8/9)
       - hourly_mains_records (168 dicts; channels em:1/7)
+      - hourly_eagle_records (168 dicts; canonical whole-home from
+        eagle.meter; empty list when eagle.meter is absent from the
+        bundle, in which case _compute_weekly_row falls back to the
+        Refoss-mains backup for whole-home outcomes)
       - hourly_weather (168 dicts)
+      - eagle_refoss_drift (dict with drift_pct + exceeds_threshold;
+        None when Eagle is absent and the comparison cannot be made)
 
     Returns None when stage1/manifest.json is absent; the orchestrator
     falls back to _empty_weekly_row in that case.
@@ -2294,6 +2466,7 @@ def _load_stage3_inputs_for_week(
     refoss_df = _load_concat_parquets(manifest, stage1_dir, "refoss.channel")
     prices_df = _load_concat_parquets(manifest, stage1_dir, "comed.prices")
     ecowitt_df = _load_concat_parquets(manifest, stage1_dir, "ecowitt.weather")
+    eagle_df = _load_concat_parquets(manifest, stage1_dir, "eagle.meter")
 
     daily_temps = _stage3_daily_avg_temps_f(ecowitt_df, week_start_ct)
     hvac_kwh = _stage3_hourly_refoss_kwh(
@@ -2305,11 +2478,33 @@ def _load_stage3_inputs_for_week(
     supply_prices = _stage3_hourly_supply_prices(prices_df, week_start_ct)
     weather = _stage3_hourly_weather(ecowitt_df, week_start_ct)
 
-    # Attach supply_c_per_kwh to each hourly record so weekly_dollars_per_cdd
-    # can read it directly.
+    # Attach supply_c_per_kwh to each hourly record so weekly_actual_dollars
+    # / weekly_dollars_per_cdd can read it directly.
     for h in range(168):
         hvac_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
         mains_kwh[h]["supply_c_per_kwh"] = supply_prices[h]
+
+    # Eagle whole-home (canonical). Empty list when eagle.meter is
+    # absent from the bundle — _compute_weekly_row falls back to the
+    # Refoss-mains backup in that case.
+    eagle_hourly_records: list[dict] = []
+    eagle_drift: dict | None = None
+    eagle_hourly_kwh = eagle_hourly_kwh_from_delivered(eagle_df, week_start_ct)
+    if len(eagle_df) > 0 and any(v > 0 for v in eagle_hourly_kwh):
+        eagle_hourly_records = [
+            {
+                "hour_of_day_ct": h % 24,
+                "hvac_kwh": eagle_hourly_kwh[h],
+                "supply_c_per_kwh": supply_prices[h],
+            }
+            for h in range(168)
+        ]
+        eagle_week_kwh = sum(eagle_hourly_kwh)
+        refoss_week_kwh = sum(float(r["hvac_kwh"]) for r in mains_kwh)
+        eagle_drift = eagle_refoss_mains_drift(eagle_week_kwh, refoss_week_kwh)
+        eagle_drift["eagle_kwh"] = eagle_week_kwh
+        eagle_drift["refoss_mains_kwh"] = refoss_week_kwh
+        eagle_drift["threshold_pct"] = EAGLE_REFOSS_DRIFT_THRESHOLD_PCT
 
     return {
         "week_start_ct": week_start_ct,
@@ -2317,7 +2512,9 @@ def _load_stage3_inputs_for_week(
         "daily_avg_temps_f": daily_temps,
         "hourly_hvac_records": hvac_kwh,
         "hourly_mains_records": mains_kwh,
+        "hourly_eagle_records": eagle_hourly_records,
         "hourly_weather": weather,
+        "eagle_refoss_drift": eagle_drift,
     }
 
 
@@ -2332,6 +2529,7 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
     When Stage 2's qualifying CSV is absent (e.g., a schema-only unit
     test), the output is header-only.
     """
+    import json
     from tools.analysis.replay.reason_codes import (
         ReasonCode, StageReasonReport, write_reason_report,
     )
@@ -2346,6 +2544,7 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
         qualifying_csv = stage2_dir / "qualifying_weeks.csv"
 
     rows_written = 0
+    eagle_vs_refoss_drift: list[dict] = []
     with open(weekly_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(WEEKLY_CSV_LOCKED_COLUMNS))
         w.writeheader()
@@ -2364,8 +2563,34 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
                         # qualifies bool the loader may have set.
                         inputs["qualifies"] = qualifies
                         row = _compute_weekly_row(inputs)
+                        # Eagle-vs-Refoss-mains drift recorded for human
+                        # investigation per the sanity-check framing at
+                        # docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
+                        # Drift alone does not drop outcomes; Eagle remains
+                        # canonical regardless of the drift value.
+                        drift = inputs.get("eagle_refoss_drift")
+                        if drift is not None:
+                            eagle_vs_refoss_drift.append({
+                                "week_start_ct": week_start_ct_str,
+                                "arm": arm,
+                                "eagle_kwh": drift["eagle_kwh"],
+                                "refoss_mains_kwh": drift["refoss_mains_kwh"],
+                                "drift_pct": drift["drift_pct"],
+                                "exceeds_threshold": drift["exceeds_threshold"],
+                                "threshold_pct": drift["threshold_pct"],
+                            })
                     w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
                     rows_written += 1
+
+    # Provenance sidecar: per-week Eagle vs Refoss-mains drift records.
+    # Always written (even when empty) so downstream consumers can
+    # distinguish "Stage 3 ran with no drift records" from "file missing."
+    provenance = {
+        "eagle_vs_refoss_drift": eagle_vs_refoss_drift,
+        "drift_threshold_pct": EAGLE_REFOSS_DRIFT_THRESHOLD_PCT,
+    }
+    with open(stage_dir / "provenance.json", "w") as pf:
+        json.dump(provenance, pf, indent=2, sort_keys=True)
 
     if rows_written == 0:
         write_reason_report(stage_dir, [StageReasonReport(
@@ -2452,20 +2677,45 @@ def stage4_matching(stage3_dir: Path, baseline_cov_path: Path, out_dir: Path) ->
 
 
 STAGE5_OUTCOMES = (
+    # Phase 1 cross-validation scaffolding (Phase 2 removes these and
+    # promotes the actual-$ outcomes to the canonical positions).
+    # PRNG seed indices held stable in this tuple so existing fixtures
+    # that pin specific bootstrap CI values continue to work.
     "o1_dollars_per_cdd",
     "o3_peak_hvac_kw",
     "o4_dollars_per_cdd_whole_home",
+    # Pre-reg-locked actual-dollar + actual-kWh outcomes per
+    # docs/EXPERIMENT_DESIGN.md §2.
+    "weekly_hvac_dollars",
+    "weekly_whole_home_dollars",
+    "weekly_hvac_kwh",
+    "weekly_whole_home_kwh",
 )
+
+# Outcomes whose unit is dollars and that therefore get a
+# percent_of_arm_a value populated in stage5/effects.csv. Per Chris
+# lock 2026-05-12 + docs/EXPERIMENT_DESIGN.md §8: percent applies to
+# O1 (weekly_hvac_dollars) and O4 (weekly_whole_home_dollars) only;
+# blank for O3 peak kW, O7 / O8 kWh outcomes. O2 is computed in
+# Stage 6 (not in this list) with a different bootstrap denominator
+# and reports absolute $ delta only.
+STAGE5_DOLLAR_OUTCOMES = frozenset({
+    "weekly_hvac_dollars",
+    "weekly_whole_home_dollars",
+})
 
 
 def _compute_pair_diffs(
     stage3_dir: Path, stage4_dir: Path,
-) -> dict[str, list[tuple[str, float]]]:
+) -> dict[str, list[tuple[str, float, float]]]:
     """Compute per-outcome matched-pair differences (arm B − arm A).
 
-    Returns {outcome: [(pair_id, diff), ...]} for every (outcome, primary
-    pair) where both arms have a numeric value in Stage 3's weekly.csv.
-    Used by both Stage 5 (bootstrap CI) and Stage 7 (SCED sign-flip).
+    Returns {outcome: [(pair_id, diff, arm_a_value), ...]} for every
+    (outcome, primary pair) where both arms have a numeric value in
+    Stage 3's weekly.csv. The third element (arm A value) is used by
+    Stage 5 to compute ``percent_of_arm_a`` for dollar outcomes.
+    Stage 7's SCED sign-flip path reads only the diff column from
+    pair_diffs.csv and is unaffected by the triple shape.
     """
     weekly: dict[tuple[str, str], dict] = {}
     with open(stage3_dir / "weekly.csv") as f:
@@ -2478,7 +2728,9 @@ def _compute_pair_diffs(
             if row["quality"] == "primary":
                 pairs.append(row)
 
-    out: dict[str, list[tuple[str, float]]] = {o: [] for o in STAGE5_OUTCOMES}
+    out: dict[str, list[tuple[str, float, float]]] = {
+        o: [] for o in STAGE5_OUTCOMES
+    }
     for outcome in STAGE5_OUTCOMES:
         for p in pairs:
             wa = weekly.get((p["week_a"], "A"))
@@ -2486,10 +2738,11 @@ def _compute_pair_diffs(
             if wa is None or wb is None:
                 continue
             try:
-                diff = float(wb[outcome]) - float(wa[outcome])
-            except ValueError:
+                arm_a_value = float(wa[outcome])
+                diff = float(wb[outcome]) - arm_a_value
+            except (ValueError, KeyError):
                 continue
-            out[outcome].append((p["pair_id"], diff))
+            out[outcome].append((p["pair_id"], diff, arm_a_value))
     return out
 
 
@@ -2498,7 +2751,8 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
 
     Writes:
       - effects.csv: per-outcome summary (median, 95% CI from
-        stationary bootstrap)
+        stationary bootstrap, plus ``percent_of_arm_a`` for dollar
+        outcomes per ``STAGE5_DOLLAR_OUTCOMES``).
       - pair_diffs.csv: per-(outcome, pair) raw difference. Stage 7
         reads this for the SCED sign-flip randomization test.
     """
@@ -2509,23 +2763,44 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
 
     with open(stage_dir / "effects.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["outcome", "n_pairs", "median_diff", "ci_low_95", "ci_high_95"])
+        w.writerow([
+            "outcome", "n_pairs", "median_diff",
+            "ci_low_95", "ci_high_95", "percent_of_arm_a",
+        ])
         for i_outcome, outcome in enumerate(STAGE5_OUTCOMES):
-            diffs = [d for _pid, d in diffs_by_outcome[outcome]]
+            triples = diffs_by_outcome[outcome]
+            diffs = [d for _pid, d, _arm_a in triples]
             res = stationary_bootstrap_median_diff(
                 diffs, rng_seed=PRNG_SEED + i_outcome,
             )
+
+            # percent_of_arm_a: median of per-pair (diff / arm_a) × 100,
+            # populated only for dollar outcomes per Chris lock 2026-05-12.
+            # Blank string for non-dollar outcomes (kW, kWh) — the
+            # percent-of-cost framing doesn't apply.
+            percent_str = ""
+            if outcome in STAGE5_DOLLAR_OUTCOMES:
+                percents = [
+                    d / arm_a * 100.0
+                    for _pid, d, arm_a in triples
+                    if arm_a != 0.0
+                ]
+                if percents:
+                    percent_str = f"{float(np.median(percents)):.6f}"
+
             w.writerow(
                 [outcome, res["n"], f"{res['point']:.6f}",
-                 f"{res['ci_low']:.6f}", f"{res['ci_high']:.6f}"]
+                 f"{res['ci_low']:.6f}", f"{res['ci_high']:.6f}",
+                 percent_str]
             )
 
-    # Per-(outcome, pair) raw differences for Stage 7 SCED input
+    # Per-(outcome, pair) raw differences for Stage 7 SCED input.
+    # Schema unchanged from prior — Stage 7 doesn't need arm_a_value.
     with open(stage_dir / "pair_diffs.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["outcome", "pair_id", "diff"])
         for outcome in STAGE5_OUTCOMES:
-            for pair_id, diff in diffs_by_outcome[outcome]:
+            for pair_id, diff, _arm_a in diffs_by_outcome[outcome]:
                 w.writerow([outcome, pair_id, f"{diff:.6f}"])
 
     total_pairs = sum(len(diffs_by_outcome[o]) for o in STAGE5_OUTCOMES)
