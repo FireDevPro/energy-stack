@@ -119,6 +119,44 @@ def build_refoss_channel_df(
     )
 
 
+def build_eagle_meter_df(
+    start_utc: datetime.datetime,
+    end_utc: datetime.datetime,
+    base_kwh: float = 10000.0,
+    kwh_per_hour: float = 1.5,
+    cadence_seconds: int = 30,
+    received_kwh: float = 0.0,
+    demand_kw_fn: callable = lambda ts: 1.5,
+) -> pd.DataFrame:
+    """Eagle.meter at 30-second cadence with monotonic delivered_kwh totalizer.
+
+    Mirrors the production shape from deploy/energy-stack/eagle-poller/poller.py:
+    fields ``delivered_kwh`` (cumulative monotonic), ``demand_kw``
+    (instantaneous), ``received_kwh`` (export totalizer, future solar)
+    plus tags ``hw_address`` and ``source``. ``delivered_kwh`` starts at
+    ``base_kwh`` and ramps linearly at ``kwh_per_hour``.
+    """
+    def delivered(ts, _tag):
+        elapsed_seconds = (ts - start_utc).total_seconds()
+        return base_kwh + kwh_per_hour * (elapsed_seconds / 3600.0)
+
+    return build_long_format_df(
+        measurement="eagle.meter",
+        start_utc=start_utc,
+        end_utc=end_utc,
+        fields={
+            "delivered_kwh": delivered,
+            "demand_kw": lambda ts, _t: demand_kw_fn(ts),
+            "received_kwh": lambda ts, _t: received_kwh,
+        },
+        cadence=datetime.timedelta(seconds=cadence_seconds),
+        tags={
+            "hw_address": ["0x001350050037ac6b"],
+            "source": ["eagle3"],
+        },
+    )
+
+
 def build_comed_prices_df(
     start_utc: datetime.datetime,
     end_utc: datetime.datetime,

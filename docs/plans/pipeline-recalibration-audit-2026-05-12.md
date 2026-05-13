@@ -73,7 +73,7 @@ Purpose of kWh secondaries: show mechanism. Readers need to distinguish "saved m
 
 Eagle is the smart-meter HAN feed; its 30-second cadence supports per-hour RTP/DTOD cost calculation. Treat Eagle as the canonical whole-home energy source. Refoss mains (`em:1 + em:7`) remains the sanity cross-check / backup. Do NOT silently average the two.
 
-Drift check: emit a provenance/reason output when Eagle and Refoss mains diverge beyond a threshold (TBD; recommend 5% on weekly kWh as a starting value, finalized during implementation). Drift triggers investigation of channel mapping, time alignment, packet gaps, CT calibration, or meter-feed semantics. Do NOT swallow drift silently.
+Drift check: emit a provenance/reason output when Eagle and Refoss mains diverge beyond a threshold. **Threshold locked at ≥10% weekly kWh delta** per the Phase 1.0 shape verification at `docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md` (7-day spring window showed 0.193% weekly drift, daily range 0.21%-2.77%; 10% is ~50× the observed weekly noise floor and keeps the flag specific to channel-mapping / dead-phase / swapped-CT / packet-gap-loss / meter-feed-dropout failures). drift_pct definition locked: `abs(refoss_mains_kwh - eagle_kwh) / eagle_kwh × 100`. Drift triggers investigation of channel mapping, time alignment, packet gaps, CT calibration, or meter-feed semantics. Do NOT swallow drift silently.
 
 ### O6 — redefined as all-day load-shift / rebound diagnostic
 
@@ -175,7 +175,7 @@ Answered by 2026-05-12 locks (no further input needed):
 
 Still open (tactical, Phase 0 or Phase 1 implementation-time decisions, NOT pre-Phase-0 blockers):
 
-1. **Eagle vs Refoss mains drift threshold.** Recommend start at 5% weekly kWh; finalize during Phase 1 after looking at a few weeks of real Eagle data to characterize typical noise.
+1. ~~Eagle vs Refoss mains drift threshold.~~ **Locked at ≥10% weekly kWh delta** per Phase 1.0 verification at `docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md` (7-day spring window: 0.193% weekly drift, daily range 0.21%-2.77%; 10% is ~50× the observed weekly noise floor).
 2. **Eagle whole-home energy formula choice.** Two options:
    - (a) Mean(`demand_kw`) per hour × 1 hour = hourly kWh. Mirrors Refoss approach.
    - (b) Differential `delivered_kwh` per hour from the cumulative totalizer. Direct meter-true integration; reconciles best against the ComEd bill.

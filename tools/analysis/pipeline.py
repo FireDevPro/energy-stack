@@ -2103,18 +2103,23 @@ def _compute_weekly_row(inputs: dict) -> dict:
     weekly_hvac_dollars = weekly_actual_dollars(hourly_hvac)
     weekly_hvac_kwh = sum(float(r["hvac_kwh"]) for r in hourly_hvac)
 
-    # Whole-home: Eagle is canonical when present in the bundle. Refoss
-    # split-phase mains (em:1 + em:7) is a sanity-check backup that is
-    # used ONLY when Eagle is absent. The two sources are never silently
-    # averaged. When both are present, Eagle wins; the Refoss-vs-Eagle
-    # drift is recorded separately for provenance via
-    # ``eagle_refoss_mains_drift``.
+    # Whole-home (O4, O8): Eagle is the canonical source per
+    # docs/EXPERIMENT_DESIGN.md §2 and the Phase 1.0 verification at
+    # docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
+    # When Eagle is absent for a week, O4 and O8 DROP for that week
+    # (empty cells) with a per-output reason code recorded in
+    # stage3/provenance.json by the orchestrator. Refoss em:1 + em:7
+    # mains is a sanity-check / drift diagnostic; it is NEVER
+    # substituted as canonical and the two sources are never silently
+    # averaged. Other outcomes (O1, O3, O7) still emit normally.
     if hourly_eagle:
-        weekly_whole_home_dollars = weekly_actual_dollars(hourly_eagle)
-        weekly_whole_home_kwh = sum(float(r["hvac_kwh"]) for r in hourly_eagle)
+        weekly_whole_home_dollars: float | str = weekly_actual_dollars(hourly_eagle)
+        weekly_whole_home_kwh: float | str = sum(
+            float(r["hvac_kwh"]) for r in hourly_eagle
+        )
     else:
-        weekly_whole_home_dollars = weekly_actual_dollars(hourly_mains)
-        weekly_whole_home_kwh = sum(float(r["hvac_kwh"]) for r in hourly_mains)
+        weekly_whole_home_dollars = ""
+        weekly_whole_home_kwh = ""
 
     o3 = max((float(r["hvac_kwh"]) for r in hourly_hvac), default=0.0)
 
@@ -2417,6 +2422,18 @@ def eagle_hourly_kwh_from_delivered(
         else:
             boundary_values.append(None)
 
+    # First-hour edge case: if boundary 0 has no at-or-before sample
+    # but the window contains samples, use the earliest available
+    # sample as the boundary 0 estimate. This treats sub-30s
+    # positioning of the first sample as if it were at the hour
+    # boundary — small undercount of hour 0 (~30s × avg-rate, ≈ 1%
+    # of typical hourly energy). Without this fallback, hour 0 would
+    # be 0.0 whenever the Stage 1 export starts exactly at the week
+    # boundary (because the first Eagle sample lands a few seconds
+    # AFTER the boundary, so no sample exists at-or-before boundary 0).
+    if boundary_values[0] is None and len(values) > 0:
+        boundary_values[0] = float(values.iloc[0])
+
     # Differential: hour h kWh = boundary[h+1] - boundary[h]. Missing
     # boundary → 0.0. Cumulative-totalizer should be monotonic per
     # Phase 1.0 verification (zero negative diffs over 28-day history),
@@ -2545,6 +2562,7 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
 
     rows_written = 0
     eagle_vs_refoss_drift: list[dict] = []
+    eagle_missing_weeks: list[dict] = []
     with open(weekly_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(WEEKLY_CSV_LOCKED_COLUMNS))
         w.writeheader()
@@ -2579,14 +2597,31 @@ def stage3_weekly(stage1_dir: Path, stage2_dir: Path, out_dir: Path) -> Path:
                                 "exceeds_threshold": drift["exceeds_threshold"],
                                 "threshold_pct": drift["threshold_pct"],
                             })
+                        else:
+                            # No Eagle data for this week → O4 and O8
+                            # drop with a per-output reason code per
+                            # the locked behavior in docs/EXPERIMENT_DESIGN.md
+                            # §2 (Refoss is NOT substituted as canonical).
+                            eagle_missing_weeks.append({
+                                "week_start_ct": week_start_ct_str,
+                                "arm": arm,
+                                "reason": "no_eagle_meter_data_in_window",
+                                "dropped_outcomes": [
+                                    "weekly_whole_home_dollars",
+                                    "weekly_whole_home_kwh",
+                                ],
+                            })
                     w.writerow({col: row[col] for col in WEEKLY_CSV_LOCKED_COLUMNS})
                     rows_written += 1
 
-    # Provenance sidecar: per-week Eagle vs Refoss-mains drift records.
-    # Always written (even when empty) so downstream consumers can
-    # distinguish "Stage 3 ran with no drift records" from "file missing."
+    # Provenance sidecar: per-week Eagle vs Refoss-mains drift records
+    # PLUS per-week records of Eagle absence (which drops O4/O8 for
+    # that week). Always written (even when empty) so downstream
+    # consumers can distinguish "Stage 3 ran with no records" from
+    # "file missing."
     provenance = {
         "eagle_vs_refoss_drift": eagle_vs_refoss_drift,
+        "eagle_missing_weeks": eagle_missing_weeks,
         "drift_threshold_pct": EAGLE_REFOSS_DRIFT_THRESHOLD_PCT,
     }
     with open(stage_dir / "provenance.json", "w") as pf:
@@ -2704,6 +2739,24 @@ STAGE5_DOLLAR_OUTCOMES = frozenset({
     "weekly_whole_home_dollars",
 })
 
+# Per-outcome unit strings written to the stage5/effects.csv `unit`
+# column. Mirrors the Stage 8 STAGE8_OUTCOME_UNITS pattern so readers
+# can't misread a kWh value as dollars.
+# - dollars: O1 (HVAC) and O4 (whole-home) actual-$ outcomes
+# - kw: O3 peak HVAC kW
+# - kwh: O7 (HVAC) and O8 (whole-home) actual energy outcomes
+# - dollars_per_cdd: Phase 1 cross-validation scaffolding only;
+#   Phase 2 removes these entries when the columns are deleted.
+STAGE5_OUTCOME_UNITS = {
+    "weekly_hvac_dollars": "dollars",
+    "weekly_whole_home_dollars": "dollars",
+    "weekly_hvac_kwh": "kwh",
+    "weekly_whole_home_kwh": "kwh",
+    "o3_peak_hvac_kw": "kw",
+    "o1_dollars_per_cdd": "dollars_per_cdd",
+    "o4_dollars_per_cdd_whole_home": "dollars_per_cdd",
+}
+
 
 def _compute_pair_diffs(
     stage3_dir: Path, stage4_dir: Path,
@@ -2764,7 +2817,7 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
     with open(stage_dir / "effects.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow([
-            "outcome", "n_pairs", "median_diff",
+            "outcome", "unit", "n_pairs", "median_diff",
             "ci_low_95", "ci_high_95", "percent_of_arm_a",
         ])
         for i_outcome, outcome in enumerate(STAGE5_OUTCOMES):
@@ -2789,7 +2842,8 @@ def stage5_effects(stage3_dir: Path, stage4_dir: Path, out_dir: Path) -> Path:
                     percent_str = f"{float(np.median(percents)):.6f}"
 
             w.writerow(
-                [outcome, res["n"], f"{res['point']:.6f}",
+                [outcome, STAGE5_OUTCOME_UNITS[outcome],
+                 res["n"], f"{res['point']:.6f}",
                  f"{res['ci_low']:.6f}", f"{res['ci_high']:.6f}",
                  percent_str]
             )

@@ -73,9 +73,13 @@ def _stage3_week_inputs(week_start_ct: datetime.date, arm: str,
                         qualifies: bool, heat_offset: float = 0.0) -> dict:
     """Arm B uses 20% less HVAC than Arm A so Stage 5's matched-pair
     median effect lands non-zero in the expected direction (B − A < 0).
+    Whole-home (Eagle canonical) follows the same B<A pattern at a
+    slightly higher base level so Stage 5's O4/O8 outcomes also exercise
+    the new actual-$ + actual-kWh pipeline.
     """
     base_temp = 85.0 + heat_offset
     hvac_hourly_kwh = 0.4 if arm == "B" else 0.5
+    eagle_hourly_kwh = 1.4 if arm == "B" else 1.5
     return {
         "week_start_ct": week_start_ct,
         "arm": arm,
@@ -88,6 +92,15 @@ def _stage3_week_inputs(week_start_ct: datetime.date, arm: str,
         ],
         "hourly_mains_records": [
             {"hour_of_day_ct": h % 24, "hvac_kwh": hvac_hourly_kwh + 1.0,
+             "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        # Eagle is the canonical whole-home source per
+        # docs/EXPERIMENT_DESIGN.md §2. When this list is empty, Stage 3
+        # drops O4 and O8 for the week (no silent Refoss substitution);
+        # the e2e tests exercise the populated path here.
+        "hourly_eagle_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": eagle_hourly_kwh,
              "supply_c_per_kwh": 8.0}
             for h in range(168)
         ],

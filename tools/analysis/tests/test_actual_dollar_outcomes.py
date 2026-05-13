@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -84,6 +85,60 @@ def test_eagle_hourly_kwh_from_delivered_oracle():
     assert len(hourly_kwh) == 168
     for h, v in enumerate(hourly_kwh):
         assert v == pytest.approx(1.5, abs=1e-6), f"hour {h}: expected 1.5, got {v}"
+
+
+def test_eagle_hourly_kwh_first_hour_uses_first_sample_when_no_pre_boundary():
+    """Edge case (P2 finding 2026-05-13): the Stage 1 export typically
+    starts at the week boundary and the first Eagle sample lands a few
+    seconds AFTER the boundary, so no sample exists at-or-before
+    boundary 0. Without the fallback, hour 0 would be 0.0 — a silent
+    undercount.
+
+    Fixture: the first Eagle sample is at week_start + 30 seconds,
+    not at the boundary itself. Linear 1.5 kWh/h ramp continues from
+    there.
+
+    Expectation: hour 0's kWh is approximately 1.5 (treating the
+    boundary 0 baseline as the first available sample, ~30s/3600s ≈
+    0.8% undercount of the true hour 0 energy — within acceptable
+    edge-effect tolerance). Hours 1-167 are unaffected and exactly 1.5.
+    """
+    pd = pytest.importorskip("pandas")
+    week_start_ct = datetime.date(2026, 6, 8)
+    week_start_utc = datetime.datetime.combine(
+        week_start_ct, datetime.time(5, 0), tzinfo=datetime.timezone.utc,
+    )
+    rows = []
+    # First sample at +30s, not at the boundary. Subsequent samples
+    # at hour boundaries thereafter. Ramp: 10000 + 1.5 × elapsed_hours
+    # from the +30s base.
+    rows.append({
+        "_time": week_start_utc + datetime.timedelta(seconds=30),
+        "_field": "delivered_kwh",
+        "_value": 10000.0 + 1.5 * (30 / 3600),
+    })
+    for h in range(1, 169):
+        rows.append({
+            "_time": week_start_utc + datetime.timedelta(hours=h),
+            "_field": "delivered_kwh",
+            "_value": 10000.0 + 1.5 * h,
+        })
+    eagle_df = pd.DataFrame(rows)
+
+    hourly_kwh = pipeline.eagle_hourly_kwh_from_delivered(
+        eagle_df=eagle_df, week_start_ct=week_start_ct,
+    )
+    assert len(hourly_kwh) == 168
+    # Hour 0 uses the first sample (at +30s) as the boundary 0
+    # baseline. True energy in [0, 1h) = 1.5; reported = boundary[1]
+    # value − first-sample value = (10000 + 1.5) − (10000 + 1.5×30/3600)
+    # = 1.5 − 0.0125 ≈ 1.4875. ~0.8% undercount — much better than 0.0.
+    assert hourly_kwh[0] == pytest.approx(1.5 - 1.5 * 30 / 3600, abs=1e-6)
+    # Hours 1-167 are unaffected: full ramp differential.
+    for h in range(1, 168):
+        assert hourly_kwh[h] == pytest.approx(1.5, abs=1e-6), (
+            f"hour {h}: expected 1.5, got {hourly_kwh[h]}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -234,29 +289,34 @@ def test_stage5_effects_percent_of_arm_a_populated_for_dollar_outcomes_only(tmp_
 
     # O1 (weekly_hvac_dollars) — dollar outcome, percent populated.
     o1 = by_outcome["weekly_hvac_dollars"]
+    assert o1["unit"] == "dollars"
     assert float(o1["median_diff"]) == pytest.approx(-0.20, abs=1e-9)
     assert o1["percent_of_arm_a"] != "", "percent_of_arm_a must be populated for O1"
     assert float(o1["percent_of_arm_a"]) == pytest.approx(-20.0, abs=1e-9)
 
     # O4 (weekly_whole_home_dollars) — dollar outcome, percent populated.
     o4 = by_outcome["weekly_whole_home_dollars"]
+    assert o4["unit"] == "dollars"
     assert o4["percent_of_arm_a"] != "", "percent_of_arm_a must be populated for O4"
     assert float(o4["percent_of_arm_a"]) == pytest.approx(-20.0, abs=1e-9)
 
-    # O3 (peak HVAC kW) — non-dollar outcome, percent blank.
+    # O3 (peak HVAC kW) — non-dollar outcome, percent blank, unit kw.
     o3 = by_outcome["o3_peak_hvac_kw"]
+    assert o3["unit"] == "kw"
     assert o3["percent_of_arm_a"] == "", (
         "percent_of_arm_a must be blank for non-dollar outcome o3_peak_hvac_kw"
     )
 
     # O7 (weekly_hvac_kwh) — kWh outcome, percent blank.
     o7 = by_outcome["weekly_hvac_kwh"]
+    assert o7["unit"] == "kwh"
     assert o7["percent_of_arm_a"] == "", (
         "percent_of_arm_a must be blank for kWh outcome weekly_hvac_kwh"
     )
 
     # O8 (weekly_whole_home_kwh) — kWh outcome, percent blank.
     o8 = by_outcome["weekly_whole_home_kwh"]
+    assert o8["unit"] == "kwh"
     assert o8["percent_of_arm_a"] == "", (
         "percent_of_arm_a must be blank for kWh outcome weekly_whole_home_kwh"
     )
@@ -267,3 +327,203 @@ def test_stage5_effects_percent_of_arm_a_populated_for_dollar_outcomes_only(tmp_
     assert "o2_layer1" not in by_outcome, (
         "O2 must NOT appear in stage5/effects.csv; it lives in Stage 6"
     )
+
+
+# ---------------------------------------------------------------------------
+# P1 behavioral test — Eagle missing drops O4 / O8 with reason code
+# (no silent Refoss substitution)
+# ---------------------------------------------------------------------------
+
+
+def test_eagle_missing_drops_whole_home_outcomes_no_silent_refoss_substitution():
+    """When Eagle is absent for a week, weekly_whole_home_dollars and
+    weekly_whole_home_kwh DROP for that week (empty cells). Refoss
+    em:1 + em:7 mains is NOT silently substituted as canonical.
+
+    Per docs/EXPERIMENT_DESIGN.md §2 and the locked findings at
+    docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md.
+
+    Direct unit test of _compute_weekly_row with hourly_eagle_records=[].
+    Other outcomes (O1 HVAC dollars, O3 peak kW, O7 HVAC kWh) still
+    populate normally — only the whole-home pair drops.
+    """
+    inputs = {
+        "week_start_ct": datetime.date(2026, 6, 8),
+        "arm": "A",
+        "qualifies": True,
+        "daily_avg_temps_f": [75.0] * 7,
+        "hourly_hvac_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 0.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        "hourly_mains_records": [
+            {"hour_of_day_ct": h % 24, "hvac_kwh": 1.5, "supply_c_per_kwh": 8.0}
+            for h in range(168)
+        ],
+        # Eagle absent for this week — Refoss must NOT be substituted.
+        "hourly_eagle_records": [],
+        "hourly_weather": [
+            {"temp_f": 85.0, "dewpoint_f": 70.0, "pressure_inhg": 29.92,
+             "solar_wm2": 100.0, "wind_mph": 5.0}
+            for _ in range(168)
+        ],
+    }
+    row = pipeline._compute_weekly_row(inputs)
+
+    # O4 (whole-home dollars) and O8 (whole-home kWh) DROP — empty cells.
+    assert row["weekly_whole_home_dollars"] == "", (
+        "weekly_whole_home_dollars must drop when Eagle is absent; "
+        f"got {row['weekly_whole_home_dollars']!r} (Refoss-substitution "
+        "would have produced a numeric value)"
+    )
+    assert row["weekly_whole_home_kwh"] == "", (
+        "weekly_whole_home_kwh must drop when Eagle is absent; "
+        f"got {row['weekly_whole_home_kwh']!r}"
+    )
+
+    # Other outcomes still populate normally.
+    assert isinstance(row["weekly_hvac_dollars"], float)
+    assert row["weekly_hvac_dollars"] > 0
+    assert isinstance(row["weekly_hvac_kwh"], float)
+    assert row["weekly_hvac_kwh"] > 0
+    assert isinstance(row["o3_peak_hvac_kw"], float)
+    assert row["o3_peak_hvac_kw"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Real-loader integration test — addresses Chris's PR-review test gap
+# 2026-05-13. Builds a synthetic Stage 1 export (refoss + comed.prices +
+# ecowitt + eagle parquets via the fixture_real_shape helpers), runs the
+# full Stage 3 orchestrator, asserts the new columns are populated from
+# the real loader path AND that Eagle is canonical (not Refoss-mains
+# silently substituted) AND that the drift provenance fires.
+# ---------------------------------------------------------------------------
+
+
+def test_stage3_real_loader_eagle_canonical_with_drift_provenance(tmp_path: Path):
+    """Full Stage 3 orchestrator through _load_stage3_inputs_for_week
+    against a synthetic real-shape Stage 1 export. Proves:
+
+    - Eagle is canonical: weekly_whole_home_kwh equals Eagle's totalized
+      energy, NOT the Refoss-mains computed value (the two are
+      deliberately set to differ by ~25% in this fixture).
+    - weekly_hvac_dollars and weekly_hvac_kwh populate from Refoss HVAC
+      channels via the real loader (not zero).
+    - stage3/provenance.json carries a per-week drift record with the
+      correct drift_pct and exceeds_threshold=True (since the
+      fixture's drift is over the 10% threshold).
+    """
+    pytest.importorskip("pandas")
+    from tools.analysis.tests import fixture_real_shape as frs
+
+    # Week of 2026-06-08 (Mon) — CT midnight = UTC 05:00 (CDT).
+    week_start_ct = datetime.date(2026, 6, 8)
+    week_start_utc = datetime.datetime(2026, 6, 8, 5, 0, tzinfo=datetime.timezone.utc)
+    week_end_utc = week_start_utc + datetime.timedelta(days=7)
+
+    # Refoss mains: em:1 + em:7 sum to 1500 W = 1.5 kWh/h × 168 = 252 kWh/wk.
+    # Refoss HVAC: em:2 + em:8 + em:9 sum to 2000 W = 2.0 kWh/h × 168 = 336 kWh/wk.
+    refoss = frs.build_refoss_channel_df(
+        start_utc=week_start_utc,
+        end_utc=week_end_utc,
+        power_w_by_channel={
+            "em:1": 800.0,   # mains leg 1
+            "em:7": 700.0,   # mains leg 2  -> total mains 1500 W
+            "em:2": 1000.0,  # HVAC leg
+            "em:8": 950.0,   # HVAC leg
+            "em:9": 50.0,    # furnace blower -> total HVAC 2000 W
+        },
+        cadence_minutes=1,
+    )
+
+    # Eagle delivered_kwh totalizer: 2.0 kWh/h × 168 = 336 kWh/wk.
+    # Deliberately ~33% higher than Refoss mains (252 kWh) so the drift
+    # fires (>= 10% threshold). drift_pct = |252 - 336| / 336 × 100 = 25%.
+    eagle = frs.build_eagle_meter_df(
+        start_utc=week_start_utc,
+        end_utc=week_end_utc,
+        base_kwh=10000.0,
+        kwh_per_hour=2.0,
+        cadence_seconds=30,
+    )
+
+    prices = frs.build_comed_prices_df(
+        start_utc=week_start_utc,
+        end_utc=week_end_utc,
+        price_cents_fn=lambda ts: 5.0,
+        cadence_minutes=5,
+    )
+
+    ecowitt = frs.build_ecowitt_weather_df(
+        start_utc=week_start_utc,
+        end_utc=week_end_utc,
+        temp_f_fn=lambda ts: 80.0,
+        dewpoint_f_fn=lambda ts: 65.0,
+        cadence_minutes=5,
+    )
+
+    stage1_dir = tmp_path / "stage1"
+    frs.write_bundle(
+        stage1_dir=stage1_dir,
+        measurement_dataframes={
+            "refoss.channel": refoss,
+            "comed.prices": prices,
+            "ecowitt.weather": ecowitt,
+            "eagle.meter": eagle,
+        },
+        window_start_ct=week_start_utc.isoformat(),
+        window_end_ct=week_end_utc.isoformat(),
+    )
+
+    # Stage 2 qualifying_weeks.csv naming the one qualifying week.
+    stage2_dir = tmp_path
+    with open(stage2_dir / "qualifying_weeks.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["week_start_ct", "arm", "qualifying"])
+        w.writerow([week_start_ct.isoformat(), "A", "true"])
+
+    pipeline.stage3_weekly(
+        stage1_dir=stage1_dir, stage2_dir=stage2_dir, out_dir=tmp_path,
+    )
+
+    # Read the weekly.csv row produced by the real loader path.
+    with open(tmp_path / "stage3" / "weekly.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Eagle canonicality: weekly_whole_home_kwh must equal Eagle's
+    # totalized energy (~336 kWh), NOT the Refoss-mains-derived value
+    # (~252 kWh). 1% tolerance for first-hour edge effect (~0.8%
+    # undercount when the first sample is +30s rather than exactly at
+    # the boundary, per Phase 1.2 edge-case handling).
+    eagle_expected_kwh = 2.0 * 168
+    refoss_mains_expected_kwh = 1.5 * 168
+    actual_kwh = float(row["weekly_whole_home_kwh"])
+    assert abs(actual_kwh - eagle_expected_kwh) / eagle_expected_kwh < 0.01, (
+        f"weekly_whole_home_kwh ({actual_kwh:.2f}) must equal Eagle "
+        f"({eagle_expected_kwh:.2f}), NOT Refoss-mains "
+        f"({refoss_mains_expected_kwh:.2f}). A Refoss-substitution bug "
+        f"would land at the Refoss number."
+    )
+
+    # HVAC outcomes populated and non-zero via the real loader.
+    assert float(row["weekly_hvac_dollars"]) > 0
+    assert float(row["weekly_hvac_kwh"]) > 0
+    assert float(row["weekly_whole_home_dollars"]) > 0
+
+    # Drift provenance: drift_pct ~ 25%, exceeds_threshold = True.
+    with open(tmp_path / "stage3" / "provenance.json") as pf:
+        provenance = json.load(pf)
+    drift_records = provenance["eagle_vs_refoss_drift"]
+    assert len(drift_records) == 1
+    drift = drift_records[0]
+    assert drift["week_start_ct"] == week_start_ct.isoformat()
+    assert drift["arm"] == "A"
+    assert drift["exceeds_threshold"] is True
+    # |refoss - eagle| / eagle * 100 with the fixture's 1.5 vs 2.0 ratio
+    # is exactly 25% modulo the first-hour edge effect; allow 1% slack.
+    assert 24.0 < drift["drift_pct"] < 26.0
+    assert provenance["drift_threshold_pct"] == 10.0
+    # No Eagle-missing entries for this fixture (Eagle is present).
+    assert provenance["eagle_missing_weeks"] == []

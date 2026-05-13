@@ -54,7 +54,7 @@ Actual $ delta is the primary headline. Percent relative to Arm A matched cost i
 | Baseline covariance calibration | **Unchanged.** `min_cdd=5.0` filter on ERA5 stays unless separately revisited. | Calibration-set choice, not primary-analysis filter. Locked at OSF lock. |
 | Actual-kWh secondaries (HVAC + whole-home) | **Yes, secondary.** | Show mechanism — "used less" vs "smarter timing". |
 | Whole-home canonical source | **Eagle** (HAN smart meter). Refoss mains = sanity cross-check / backup. No silent averaging. | Eagle is the meter; bills reconcile against it. Refoss mains for drift detection. |
-| Eagle vs Refoss drift handling | **Provenance/reason emission + investigate** when drift exceeds threshold. | Don't swallow drift silently. Threshold TBD during Phase 1 from real-data noise characterization (recommend start at 5% weekly kWh). |
+| Eagle vs Refoss drift handling | **Provenance/reason emission + investigate** when drift exceeds threshold. Don't swallow drift silently. **Threshold locked at ≥10% weekly kWh delta** per Phase 1.0 verification at `docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md` (weekly drift in the 7-day spring window: 0.193%; daily range 0.21%-2.77%; the 10% threshold is ~50× the observed weekly noise floor). drift_pct = `abs(refoss_mains_kwh - eagle_kwh) / eagle_kwh × 100`; Eagle as denominator because Eagle is canonical. |
 | O3 (weekly peak HVAC kW) | **Unchanged.** | Already actual physical quantity. |
 | O6 | **Redefined** as all-day load-shift / rebound diagnostic. NOT efficiency / CDD / temp-delta / evening-only. | Arm B shifts load all day; O6 must measure that, not evening recovery. |
 | O6 price-tier thresholds | **10¢ elevated / 20¢ scarcity** — match the controller's locked overlay rule. No new analysis cutoffs. | Diagnostic is tied to the controller rule being evaluated. |
@@ -192,6 +192,6 @@ Estimated workload: 1-2 focused hours.
 ## Open questions (tactical, NOT pre-Phase-0 blockers)
 
 1. **Eagle whole-home energy formula.** Recommend (b) differential of `delivered_kwh` totalizer for bill-reconciliation alignment, but (a) mean(`demand_kw`) × hour mirrors Refoss pattern. Decide during Phase 1 after looking at Eagle data shape.
-2. **Eagle-vs-Refoss drift threshold value.** Recommend start at 5% weekly kWh; finalize during Phase 1 after characterizing real noise.
+2. ~~Eagle-vs-Refoss drift threshold value.~~ **Locked at ≥10% weekly kWh delta** per Phase 1.0 verification (see `docs/replay-validation/2026-05-12-eagle-shape-verification/findings.md`).
 3. **Eagle absence treatment.** If Eagle is missing for a week, do whole-home outcomes drop with a reason code (Stage 8-style per-output gating), or does the week fail Rule-8 qualifying-days entirely? Recommend per-output reason-code drop (don't fail the whole week for a whole-home-only gap).
 4. **O6 sub-component Phase 1 scope.** Recommend HVAC $ by price tier + HVAC $ during 5CP windows first; rebound/pre-cool diagnostics second if time allows. Phase 0 spec still defines all four for completeness.
