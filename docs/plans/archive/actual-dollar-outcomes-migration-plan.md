@@ -1,11 +1,14 @@
 ---
 date: 2026-05-12
 owner: chris
-status: draft-pending-review-rev2
+status: superseded-by-rebaseline-2026-05-13
 role-label: chris
+superseded-by: docs/plans/analysis-rebaseline-plan-2026-05-13.md
 ---
 
-# Actual-dollar outcomes migration plan
+> **SUPERSEDED 2026-05-13.** This plan was the patch-era migration driver for PR #109. PR #109 is paused (not merged) pending the analysis rebaseline at `docs/plans/analysis-rebaseline-plan-2026-05-13.md`. The migration's locked outcome contract (HVAC actual $, whole-home actual $, kWh secondaries, no $/CDD, no cooling-relevance gate, Eagle canonical whole-home) remains valid input to the rebaseline. The phasing structure (additive Phase 1, subtractive Phase 2) is what is being re-evaluated.
+
+# Actual-dollar outcomes migration plan [SUPERSEDED]
 
 ## Why
 

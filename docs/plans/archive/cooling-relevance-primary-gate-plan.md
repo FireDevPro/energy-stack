@@ -1,13 +1,13 @@
 ---
 date: 2026-05-12
 owner: chris
-status: superseded
+status: superseded-by-rebaseline-2026-05-13
 role-label: chris
-superseded-by: docs/plans/pipeline-recalibration-audit-2026-05-12.md
-superseded-by-2: docs/plans/actual-dollar-outcomes-migration-plan.md
+superseded-by: docs/plans/analysis-rebaseline-plan-2026-05-13.md
+superseded-by-historical: docs/plans/archive/pipeline-recalibration-audit-2026-05-12.md, docs/plans/archive/actual-dollar-outcomes-migration-plan.md
 ---
 
-> **SUPERSEDED 2026-05-12.** Chris's recalibration locks rule out the CDD ≥ 5 cooling-relevance gate entirely. The gate is being REMOVED from the spec, not added to the code. The original framing of this plan — "close a code-vs-spec gap by implementing the gate" — is no longer valid because the gate itself is being dropped. The source verification recorded below remains correct as evidence; the recommended action is superseded by the recalibration. See `docs/plans/actual-dollar-outcomes-migration-plan.md` Phase 0 for the spec amendment that deletes the cooling-relevance criterion from `EXPERIMENT_DESIGN.md:146-148, 152, 461`.
+> **SUPERSEDED 2026-05-12 (initially) and again 2026-05-13 (rebaseline).** Preserved as evidence. The CDD ≥ 5 gate was first ruled out by the recalibration audit (drop the gate from the spec rather than implement it); now the entire migration approach that decision was part of is being rebaselined. Source verification recorded below remains correct evidence; the recommended action was twice-superseded.
 
 # Cooling-relevance primary-gate fix — execution plan [SUPERSEDED]
 

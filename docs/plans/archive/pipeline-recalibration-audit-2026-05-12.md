@@ -1,11 +1,14 @@
 ---
 date: 2026-05-12
 owner: chris
-status: audit-complete-locks-applied-rev2
+status: superseded-by-rebaseline-2026-05-13
 role-label: chris
+superseded-by: docs/plans/analysis-rebaseline-plan-2026-05-13.md
 ---
 
-# Pipeline recalibration audit (2026-05-12)
+> **SUPERSEDED 2026-05-13.** Preserved as historical context only. The patch-style migration approach this audit produced is being rebaselined; the active source of truth is `docs/plans/analysis-rebaseline-plan-2026-05-13.md`. The audit's findings (drift from $/CDD to actual-$ framing; CDD-gate-spec'd-but-missing; Eagle-as-canonical-whole-home decision) remain valid evidence and feed into the rebaseline; the *recommended migration path* in this document is what was superseded.
+
+# Pipeline recalibration audit (2026-05-12) [SUPERSEDED]
 
 **Revision history:**
 - Initial audit 2026-05-12 morning.
