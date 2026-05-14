@@ -26,23 +26,25 @@ from tools.analysis.tests.fixtures.synth_rebaseline_dataset import (
     build_synth_dataset,
 )
 
-# The pipeline entry point lands progressively across Phases 1-6.
-# Until it exists, this test is SKIPPED. When `run_full_pipeline` is
-# importable, the test executes and must pass against the real impl.
-try:
-    from tools.analysis.arm_period_pipeline import run_full_pipeline  # noqa: F401
-    PIPELINE_AVAILABLE = True
-except ImportError:
-    PIPELINE_AVAILABLE = False
-
-
-@pytest.mark.skipif(
-    not PIPELINE_AVAILABLE,
+# Outside-in TDD per AGENTS.md: the feature-level acceptance test
+# must produce a VISIBLE signal at each phase-boundary (slice) PR,
+# not silently skip. `xfail(strict=True)` keeps the test red across
+# Phases 2-5 while showing in every test run, and forces removal of
+# the marker the moment the implementation is complete enough to
+# pass (strict=True flips XPASS to failure). The marker comes off
+# when this test passes against the real arm_period_pipeline with
+# zero scaffolding — that is the only definition of feature-complete
+# for the rebaseline.
+@pytest.mark.xfail(
+    strict=True,
     reason=(
-        "Outside-in: implementation lands across Phases 1-6. Test is "
-        "intentionally skipped until tools.analysis.arm_period_pipeline."
-        "run_full_pipeline exists. Feature is NOT complete until this "
-        "test passes with the real implementation."
+        "Outside-in: implementation lands progressively across "
+        "Phases 3-6 (Phase 3 introduces tools.analysis.arm_period_"
+        "pipeline.run_full_pipeline; Phases 4-6 replace its "
+        "scaffolding). Test stays xfail until the real "
+        "implementation passes every assertion with zero scaffolding. "
+        "When xfail flips to XPASS (strict=True triggers a failure), "
+        "remove this marker — that is feature-complete."
     ),
 )
 def test_rebaseline_end_to_end_acceptance():
