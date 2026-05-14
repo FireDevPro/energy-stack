@@ -169,7 +169,11 @@ services:
       CONTROL4_PASSWORD: ${CONTROL4_PASSWORD}
       CONTROL4_CONTROLLER_IP: ${CONTROL4_CONTROLLER_IP:-192.168.1.30}
       CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
-      SCHEDULER_DRY_RUN: ${SCHEDULER_DRY_RUN:-true}
+      # SCHEDULER_MODE replaces the retired SCHEDULER_DRY_RUN env var
+      # (spec §3 + plan standing rule). Module-import sys.exit(2) on
+      # missing/invalid; default `shadow` keeps behavior safe-by-default
+      # if the .env on a host hasn't been migrated yet.
+      SCHEDULER_MODE: ${SCHEDULER_MODE:-shadow}
       SCHEDULER_DECISION_HOUR: ${SCHEDULER_DECISION_HOUR:-21}
       SCHEDULER_REVISIT_HOURS: ${SCHEDULER_REVISIT_HOURS:-6,11}
       SCHEDULER_TZ: ${SCHEDULER_TZ:-America/Chicago}
@@ -179,6 +183,21 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
     volumes:
       - hvac_scheduler_data:/data
+
+  hvac-scheduler-watchdog:
+    build: ./hvac-scheduler-watchdog
+    container_name: hvac-scheduler-watchdog
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      WATCHDOG_INTERVAL_SECONDS: ${WATCHDOG_INTERVAL_SECONDS:-60}
+      WATCHDOG_THRESHOLD_MINUTES: ${WATCHDOG_THRESHOLD_MINUTES:-10}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   thermostat-poller:
     build: ./thermostat-poller
