@@ -1305,6 +1305,26 @@ def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
     return current_arm
 
 
+def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
+                              feeds: dict) -> None:
+    """Write one ``hvac.input_feed_health`` row per feed (spec §11 #4).
+
+    ``feeds`` is the FULL feed-health dict (every feed, regardless of
+    whether it is required for the current hour's B-active
+    classification). Per spec §5.1, PJM capacity-risk health is
+    logged here even outside the capacity-risk operating window so
+    reviewers can audit feed availability across the whole experiment;
+    the B-active classification (``write_arm_mode``) uses a separately
+    filtered ``required_feeds`` dict.
+    """
+    for feed_name, healthy in feeds.items():
+        p = (Point("hvac.input_feed_health")
+             .time(when_ct)
+             .tag("feed", feed_name)
+             .field("healthy", bool(healthy)))
+        write_api.write(bucket=bucket, record=p)
+
+
 def write_arm_mode(write_api, bucket: str, when_ct: datetime,
                     required_feeds: dict, controller_alive: bool) -> None:
     """Write one ``hvac.arm_mode`` row classifying the current cycle.
@@ -2092,15 +2112,18 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # whether a scheduled action fires this minute.
     layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
 
-    # ---- Per-cycle arm-mode + switch-event telemetry (spec §11 #2-3) ----
-    # Writes hvac.arm_mode at the same 5-min cadence as hvac.5cp_state so
-    # analysis sees a uniform 288-rows/day trace. Outside the locked
-    # experiment window (before 2026-06-01 or after 2026-11-16) the
-    # arm_mode write is a no-op inside ``write_arm_mode``.
+    # ---- Per-cycle arm-mode + switch-event + feed-health telemetry ----
+    # (spec §11 #2-4)
+    #
+    # arm_mode and input_feed_health share the 5-min cadence of
+    # hvac.5cp_state so analysis sees a uniform 288-rows/day trace.
+    # Outside the locked experiment window the arm_mode write is a
+    # no-op inside ``write_arm_mode``; input_feed_health still fires so
+    # feed-availability is audited across the whole observation period.
     #
     # ``maybe_log_arm_switch`` runs every tick (NOT throttled) so a
-    # boundary crossing is captured at minute resolution, not 5-min
-    # resolution. The function is a no-op when no transition occurred.
+    # boundary crossing is captured at minute resolution. The function
+    # is a no-op when no transition occurred.
     now_utc_for_audit = now_local.astimezone(timezone.utc)
     firing.last_observed_arm = maybe_log_arm_switch(
         write_api, cfg.influx_bucket, firing.last_observed_arm, now_local,
@@ -2113,14 +2136,27 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             and (now_utc_for_audit - firing.price_feed_last_ok_at_utc)
             <= PRICE_FEED_STALE_THRESHOLD
         )
-        feeds = required_feeds_for_arm_mode(
+        weather_ok = today_forecast is not None
+        pjm_ok = layer_inputs.fivecp_data_available
+        # FULL feed-health dict, written for audit regardless of
+        # required-status (spec §5.1).
+        all_feeds = {
+            "price": price_ok,
+            "weather": weather_ok,
+            "pjm_capacity_risk": pjm_ok,
+        }
+        write_input_feed_health(
+            write_api, cfg.influx_bucket, now_local, all_feeds,
+        )
+        # FILTERED dict for B-active classification (spec §5).
+        required_feeds = required_feeds_for_arm_mode(
             when_ct=now_local,
             price_ok=price_ok,
-            weather_ok=today_forecast is not None,
-            pjm_capacity_risk_ok=layer_inputs.fivecp_data_available,
+            weather_ok=weather_ok,
+            pjm_capacity_risk_ok=pjm_ok,
         )
         write_arm_mode(
-            write_api, cfg.influx_bucket, now_local, feeds,
+            write_api, cfg.influx_bucket, now_local, required_feeds,
             controller_alive=True,
         )
         firing.last_arm_mode_audit_at_utc = now_utc_for_audit

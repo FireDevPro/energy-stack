@@ -2577,3 +2577,50 @@ def test_switch_event_includes_actual_timestamp():
     # Planned ts is the calendar boundary (00:00); actual ts is the observation (00:01)
     assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
     assert 'boundary_actual_ts="2026-06-15T00:01:00"' in line
+
+
+# ---- hvac.input_feed_health telemetry (spec §11 #4) -----------------------
+
+
+def test_write_input_feed_health_writes_one_row_per_feed():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    app.write_input_feed_health(write_api, "energy", when_ct, feeds)
+    assert write_api.write.call_count == 3
+
+    lines = [
+        c.kwargs.get("record").to_line_protocol()
+        for c in write_api.write.call_args_list
+    ]
+    health_by_feed = {}
+    for line in lines:
+        # parse "hvac.input_feed_health,feed=NAME healthy=true|false ts"
+        assert line.startswith("hvac.input_feed_health,feed=")
+        feed = line.split("feed=", 1)[1].split(" ", 1)[0]
+        healthy = "healthy=true" in line
+        health_by_feed[feed] = healthy
+    assert health_by_feed == {"price": True, "weather": False, "pjm_capacity_risk": True}
+
+
+def test_write_input_feed_health_logs_pjm_outside_operating_window_too():
+    """Spec §5.1: PJM capacity-risk health is STILL logged in feed-health
+    provenance even outside the capacity-risk operating window. The
+    feed-health audit is independent of the B-active classification."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 10, 15, 13, 0)  # outside capacity-risk window
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": False}
+    app.write_input_feed_health(write_api, "energy", when_ct, feeds)
+    assert write_api.write.call_count == 3
+    lines = [
+        c.kwargs.get("record").to_line_protocol()
+        for c in write_api.write.call_args_list
+    ]
+    pjm_line = next(line for line in lines if "feed=pjm_capacity_risk" in line)
+    assert "healthy=false" in pjm_line
+
+
+def test_write_input_feed_health_empty_dict_is_noop():
+    write_api = MagicMock()
+    app.write_input_feed_health(write_api, "energy", datetime(2026, 6, 20, 13, 0), {})
+    write_api.write.assert_not_called()
