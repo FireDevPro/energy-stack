@@ -320,6 +320,56 @@ class TestPhase2LayerResolution:
         assert t3["level"] == "info"
 
     @pytest.mark.asyncio
+    async def test_layer_resolution_tie_warmer_wins(self, capsys, monkeypatch):
+        """When both the price overlay (scarcity-tier override 85F) AND
+        5CP (active, 85F shutoff) propose the same effective setpoint,
+        `winning_layer` must be `"tie"` and `reason_code` must be
+        `LAYER_RESOLUTION_TIE_WARMER_WINS`. Preserves the forensic
+        distinction between "schedule won alone" and "schedule matched
+        by a non-schedule layer at the warmest." """
+        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+        cfg = _make_schedule_check_cfg()
+        c4, _ = _mock_c4_client()
+        write_api = MagicMock()
+        firing = FiringState(
+            last_schedule_cool_f=75,
+            last_action_label="COAST",
+            last_pushed_effective_cool_f=None,
+        )
+        # Scarcity tier (override=85F) + 5CP active (85F shutoff). Both
+        # contribute at 85F effective.
+        layer_inputs = LayerInputs(
+            price_tier_name="scarcity", price_offset_f=0, price_override_f=85,
+            price_prev_tier="scarcity", current_price_cents=22.0,
+            fivecp_active=True, fivecp_scopes_fired=("comed_zone", "rto"),
+            fivecp_load_mw=20000.0, fivecp_derivative=0.5,
+            fivecp_forecast_peak=21000.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        now_local = datetime(2026, 7, 15, 17, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "HOT_5CP_RISK", layer_inputs,
+            today_dewpoint_f=70.0, override_note="",
+            now_local=now_local, tick_id="tick_tie",
+        )
+
+        traces = _parse_trace_lines(capsys.readouterr().out, LAYER_RESOLUTION_EVENT)
+        assert len(traces) == 1, f"expected 1 trace, got {len(traces)}: {traces}"
+        t = traces[0]
+        assert t["winning_layer"] == "tie"
+        assert t["reason_code"] == "LAYER_RESOLUTION_TIE_WARMER_WINS"
+        assert t["effective_cool_f"] == 85
+        assert t["price_cool_f"] == 85
+        assert t["fivecp_cool_f"] == 85
+        assert t["fivecp_active"] is True
+        # schedule_cool_f stays 75 (the baseline); only the warmer layers tied.
+        assert t["schedule_cool_f"] == 75
+        # Both scopes contributed to fivecp_active in this fixture.
+        assert set(t["fivecp_scopes_fired"]) == {"comed_zone", "rto"}
+
+    @pytest.mark.asyncio
     async def test_layer_resolution_trace_is_failure_isolated(self, capsys, monkeypatch):
         """Patching `app.log` to raise on `decision_trace.layer_resolution`
         events must NOT propagate into `_push_layer_change_mid_period`'s
@@ -353,16 +403,36 @@ class TestPhase2LayerResolution:
         )
         now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
 
-        # Primary assertion: control path completed without exception.
-        # `_trace`'s internal try/except swallows the synthetic failure,
-        # so `_trace_layer_resolution` returns normally and the
-        # mid-period push continues. No further assertion needed — if
-        # the exception had propagated, this await would have raised.
+        # Must not raise. `_trace`'s internal try/except swallows the
+        # synthetic failure, so `_trace_layer_resolution` returns
+        # normally and the mid-period push continues.
         await _push_layer_change_mid_period(
             cfg, c4, write_api, firing, "NORMAL", layer_inputs,
             today_dewpoint_f=60.0, override_note="",
             now_local=now_local, tick_id="tick_iso",
         )
+
+        # Stronger assertion: the existing thermostat-write path still
+        # executed under the trace fault. read_thermostat_snapshot,
+        # validate_setpoints, execute_action, and write_action must all
+        # run as if the trace was healthy.
+        # read_thermostat_snapshot called c4.get_climate at least once.
+        assert c4.get_climate.await_count >= 1, (
+            "read_thermostat_snapshot must still run under trace fault"
+        )
+        # write_action emitted at least one hvac.actions row for the
+        # mid-period repush event (effective changed schedule=75 ->
+        # elevated overlay 78F).
+        action_rows = [
+            c for c in write_api.write.call_args_list
+            if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+        ]
+        assert len(action_rows) >= 1, (
+            "hvac.actions write must still happen under trace fault"
+        )
+        # Guard updated to the new effective cool — proves the supervisor
+        # + push branch executed cleanly through to the end.
+        assert firing.last_pushed_effective_cool_f == 78
 
 
 # ---- Phase 3 — supervisor per invocation ---------------------------------
