@@ -18,13 +18,24 @@ poller's env (PJM_DM2_API_KEY, INFLUXDB_*):
     docker exec pjm-dm2-poller python backfill_rt_hrl_lmps.py
 
 Idempotent — re-runs upsert the same (pnode_id, timestamp) points.
-PJM rate limit (6 calls/min) honored via ``--sleep`` between dates;
-default 5s gives a 2x safety margin.
+
+PJM Non-Member API rate limit (6 calls / 60s rolling window) is
+respected via ``--sleep`` between dates. The live pjm-dm2-poller's
+inst_load + inst_load_rto feeds fire on a 5-min schedule, so up to 2
+of their calls can land in any 60s window; the backfill must reserve
+headroom for that co-tenancy. Math:
+
+    (60 / sleep) + 2 ≤ 6  ->  sleep ≥ 15.0
+
+``DEFAULT_SLEEP_SECONDS`` is pinned at 15.0 accordingly. Discovered
+2026-05-14 the hard way: an earlier 5.0s default produced 12 calls/min
+(2x the PJM ceiling) and yielded 66 HTTP 429 failures across 133
+dates on the first real backfill execution.
 
 Usage:
     python backfill_rt_hrl_lmps.py
     python backfill_rt_hrl_lmps.py --start 2026-03-01 --end 2026-05-13
-    python backfill_rt_hrl_lmps.py --sleep 2.0
+    python backfill_rt_hrl_lmps.py --sleep 20
     python backfill_rt_hrl_lmps.py --dry-run
 
 Environment:
@@ -61,6 +72,19 @@ from app import (
 # which has different query semantics — out of scope for Phase 2).
 DEFAULT_START_DATE = date(2026, 1, 1)
 
+# PJM Non-Member API ceiling is 6 calls / 60s rolling window. The live
+# pjm-dm2-poller's inst_load + inst_load_rto feeds fire every 5 min,
+# so up to 2 of their calls can fall in any 60s window during a
+# backfill. Reserve headroom for that co-tenancy:
+#
+#     (60 / DEFAULT_SLEEP_SECONDS) + 2 ≤ 6
+#     -> DEFAULT_SLEEP_SECONDS ≥ 15.0
+#
+# Pinned-by-test at 15.0; the earlier 5.0 default produced 12 calls/min
+# and triggered 66 HTTP 429 failures across the first real 133-date
+# backfill (2026-05-14).
+DEFAULT_SLEEP_SECONDS = 15.0
+
 
 def default_end_date(*, today: date | None = None) -> date:
     """Default end-date is yesterday: PJM settled data is T+1, and the
@@ -96,7 +120,7 @@ async def backfill_range(
     *,
     start_date: date,
     end_date: date,
-    sleep_s: float = 5.0,
+    sleep_s: float = DEFAULT_SLEEP_SECONDS,
 ) -> "BackfillResult":
     """Fetch + write rt_hrl_lmps for every date in [start_date, end_date].
 
@@ -105,8 +129,10 @@ async def backfill_range(
     window. Skips the influx write when PJM returns zero rows for a
     date — Influx dedups by timestamp so retrying later is idempotent.
 
-    ``sleep_s`` is the inter-date pacing margin; PJM Non-Member API is
-    6 calls/min so 5s pacing keeps us well under the ceiling.
+    ``sleep_s`` is the inter-date pacing margin; default is
+    ``DEFAULT_SLEEP_SECONDS`` (15.0s), which keeps backfill +
+    live-poller combined call rate under PJM Non-Member's 6/min
+    ceiling. See module docstring for the math.
 
     Per-date row count check: a complete day returns 23/24/25 rows
     (DST-aware). Anything else gets recorded in ``partial_dates`` so
@@ -187,8 +213,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="last date inclusive (default yesterday)",
     )
     parser.add_argument(
-        "--sleep", type=float, default=5.0,
-        help="seconds between PJM calls (default 5.0; PJM limit is 6 calls/min)",
+        "--sleep", type=float, default=DEFAULT_SLEEP_SECONDS,
+        help=(
+            f"seconds between PJM calls "
+            f"(default {DEFAULT_SLEEP_SECONDS}; PJM Non-Member ceiling "
+            f"is 6 calls/min and the live poller contributes ~2/min "
+            f"during backfill, so safe floor is 15.0)"
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true",
