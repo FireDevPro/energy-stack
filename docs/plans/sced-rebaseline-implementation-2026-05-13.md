@@ -1418,6 +1418,8 @@ Same flow as Task 1.8. Open PR `Phase 2: SCED rebaseline pricing infrastructure`
 
 **Days 6-10.**
 
+**DST fold caller contract (locked 2026-05-14, Phase 1 audit).** `tools/analysis/arm_calendar.hour_index_to_datetime` returns CT-naive datetimes. Arm 11 (2026-11-01 DST fall-back) produces two distinct hour-indices (k=265 and k=266) whose CT-naive representations are both `2026-11-01 01:00`, differing only by the Python `fold` bit. The fold bit is ignored by `==`, `hash()`, `str()`, and JSON serialization — using these datetimes as join keys would silently collapse two valid hours into one and lose the post-fall-back hour. **All Phase 3 joins MUST key on hour-index (preferred) or UTC instants. Never use the naive CT datetime as a dict/set key, DataFrame index, or join column.** Phase 1 covered this with a `datetime_to_hour_index` roundtrip-consistency guard; Phase 3 modules that fan out to per-hour records inherit the contract.
+
 ---
 
 ### Task 3.1: Mode classification module

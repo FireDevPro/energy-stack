@@ -79,6 +79,16 @@ def hour_index_to_datetime(arm: ArmPeriod, k: int) -> datetime.datetime:
     Uses UTC arithmetic so arm 11 (DST fall-back at 2026-11-01) maps
     hour-index 287 to 2026-11-01 22:00 CST per spec §2 (not 23:00,
     which is the DST-equalization-excluded hour).
+
+    **DST fold caveat (Phase 3 caller contract).** Two distinct
+    hour-indices in arm 11 — k=265 (2026-11-01 01:00 CDT) and k=266
+    (2026-11-01 01:00 CST) — return naive datetimes that compare
+    equal and hash equal. The Python ``fold`` bit (0 vs 1) is the
+    sole discriminator. ``str(dt)``, dict/set keying, and JSON
+    serialization all collide. Phase 3 joins MUST key on hour-index
+    or UTC instants, NEVER on the naive CT datetime returned here.
+    Stripping the tzinfo for display is fine; using the naive value
+    as a join key is a silent data loss bug.
     """
     if not 0 <= k < HOURS_PER_ARM:
         raise ValueError(f"hour_index {k} out of range [0, {HOURS_PER_ARM})")
