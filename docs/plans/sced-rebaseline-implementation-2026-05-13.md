@@ -60,7 +60,7 @@ These apply to every task and PR in this plan. Read once; enforced throughout.
 
 **Per-phase review gates (#6):** Before opening a phase PR as ready-for-review:
 1. All task-level tests pass (`bash deploy/energy-stack/run_tests.sh` green)
-2. Run `/codex:adversarial-review` against the phase branch
+2. ~~Run `/codex:adversarial-review` against the phase branch~~ **PARKED 2026-05-14** — the `codex-plugin-cc` PowerShell launcher fails on this Windows host (exit -1 / "Command declined"); direct `codex review --base main` floods output past 100k tokens before completion on multi-commit branches. Re-enable when the plugin is fixed OR adopt `codex review --commit <SHA>` per-commit as the supported workaround. Until then, the gate is Superpowers-only (item 3) plus operator-eyeball.
 3. Run `/superpowers:reviewer` or equivalent superpowers review (per existing project tooling)
 4. Address every HIGH-severity finding inline before PR-ready (commit fixes)
 5. Document any rejected findings in the PR body with rationale
@@ -81,8 +81,8 @@ These apply to every task and PR in this plan. Read once; enforced throughout.
 - This PR does NOT claim feature completion. The rebaseline is feature-complete only when the outside-in test passes with zero scaffolding.
 
 ### Reviews
-- Codex adversarial review: <link to output, summary of findings addressed>
 - Superpowers review: <link or note>
+- Codex adversarial review: PARKED — see standing-rule #6 (re-enable when codex-plugin-cc is fixed)
 - Rejected findings: <list with rationale, or "none">
 
 ### Replay / shadow validation
