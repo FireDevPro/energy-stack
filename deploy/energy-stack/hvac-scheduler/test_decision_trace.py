@@ -59,7 +59,6 @@ class TestPhase1PriceOverlay:
     """Trace fires once per `_evaluate_layer_inputs` invocation with
     enough context to reconstruct the price-overlay decision externally."""
 
-    @pytest.mark.xfail(strict=True, reason="Phase 1 trace emission not yet wired")
     def test_price_overlay_eval_emits_every_call(self, capsys, monkeypatch):
         """Three calls produce three trace lines. Outcomes and reason
         codes match the price-overlay state machine's behavior.
@@ -117,18 +116,28 @@ class TestPhase1PriceOverlay:
         for t in traces:
             assert t["scheduler_mode"] in ("shadow", "experiment", "production")
 
-    @pytest.mark.xfail(strict=True, reason="Phase 1 trace emission not yet wired")
     def test_price_overlay_trace_is_failure_isolated(self, capsys, monkeypatch):
-        """Trace helper raises -> `_evaluate_layer_inputs` still returns
-        a valid LayerInputs, the price-overlay state still updates, and
-        the existing hvac.price_overlay write still happens. The
-        exception does not propagate."""
+        """Trace failure (Loki down / stdout broken / bad field type)
+        must not propagate. `_evaluate_layer_inputs` still returns a
+        valid LayerInputs, the price-overlay state still updates, and
+        the existing hvac.price_overlay write still happens.
+
+        Fault-injection target is `app.log` (the actual outermost call
+        inside `_trace`), not `_trace` itself. `_trace` has an internal
+        try/except that swallows; replacing `_trace` directly tests a
+        scenario where the safety wrapper itself is gone — unrealistic.
+        Patching `log` exercises the realistic failure mode the wrapper
+        is designed to absorb."""
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
-        # Fault-inject the trace helper. The helper's outer try/except is
-        # what's under test: trace failure must be swallowed.
-        def _raise(*a, **kw):
-            raise RuntimeError("synthetic trace failure")
-        monkeypatch.setattr(app, "_trace", _raise)
+        # log() is also used for non-trace lines (warn / startup / etc.).
+        # Only raise when the caller is the trace helper — identified by
+        # the event-name prefix the trace emits.
+        original_log = app.log
+        def _maybe_raise(level, msg, **fields):
+            if isinstance(msg, str) and msg.startswith("decision_trace."):
+                raise RuntimeError("synthetic trace failure")
+            return original_log(level, msg, **fields)
+        monkeypatch.setattr(app, "log", _maybe_raise)
 
         cfg = _make_schedule_check_cfg()
         firing = FiringState()
@@ -169,7 +178,6 @@ class TestPhase1PriceOverlay:
             "locked decisions."
         )
 
-    @pytest.mark.xfail(strict=True, reason="Phase 1 trace emission not yet wired")
     def test_arm_field_present_only_inside_calendar_window(self, capsys, monkeypatch):
         """`arm` field emitted when current_arm_at(now_ct) returns A/B
         (i.e., inside the locked 2026-06-01..2026-11-16 calendar window);
