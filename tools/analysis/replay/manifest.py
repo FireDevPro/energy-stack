@@ -71,6 +71,7 @@ KNOWN_MEASUREMENTS: tuple[str, ...] = (
     "nws.forecast",
     "pjm.coincident_peak",
     "pjm.inst_load",
+    "pjm.lmp_rt_hourly",
     "pjm.metered_load",
     "refoss.channel",
 )
@@ -86,6 +87,10 @@ POST_2025_MEASUREMENTS: frozenset[str] = frozenset({
     "hvac.arm_transitions",
     "hvac.precool_window",
     "ecowitt.weather",
+    # Phase 2 SCED rebaseline (spec §8): rt_hrl_lmps polling stood
+    # up 2026-05; backfill begins 2026-01-01. No observed_historical
+    # for 2025.
+    "pjm.lmp_rt_hourly",
 })
 
 

@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py backfill_rt_hrl_lmps.py .
 
 RUN useradd --system --no-create-home --uid 1010 poller && chown -R poller /app
 USER poller

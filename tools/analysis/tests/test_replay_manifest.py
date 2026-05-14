@@ -262,6 +262,9 @@ def test_known_measurements_matches_analysis_pipeline_doc():
         "nws.forecast", "ecowitt.weather", "pjm.inst_load",
         "pjm.coincident_peak", "pjm.metered_load",
         "comed.bill", "comed.bill_lineitems",
+        # Phase 2 SCED rebaseline: bill-canonical settled hourly LMP
+        # for COMED zone (spec §8). Backfilled from 2026-01-01.
+        "pjm.lmp_rt_hourly",
     }
     assert set(KNOWN_MEASUREMENTS) == expected_subset
 
@@ -271,6 +274,9 @@ def test_post_2025_measurements_only_contains_new_services():
         "hvac.5cp_state", "hvac.price_overlay",
         "hvac.arm_transitions", "hvac.precool_window",
         "ecowitt.weather",
+        # Phase 2 SCED rebaseline: rt_hrl_lmps polling stood up
+        # 2026-05; no observed_historical for 2025.
+        "pjm.lmp_rt_hourly",
     }
 
 
