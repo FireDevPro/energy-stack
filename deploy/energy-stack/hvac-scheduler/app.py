@@ -886,6 +886,13 @@ class FiringState:
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
     last_5cp_audit_at_utc: datetime | None = None
+    # Throttle for hvac.arm_mode + hvac.switch_event + hvac.input_feed_health
+    # writes. Same ~5-min cadence as 5cp_state so analysis sees a uniform
+    # 288-rows/day arm-mode trace per spec §11 #2.
+    last_arm_mode_audit_at_utc: datetime | None = None
+    # Track the most recently observed arm letter so switch-event logging
+    # can detect transitions across ticks (spec §11 #3).
+    last_observed_arm: str | None = None
     # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
     # where ``fetch_latest_comed`` returned a real price. Used to release
     # a carried-forward price-overlay tier when the feed has been
@@ -1229,6 +1236,74 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict:
     return snapshot
 
 
+# Pre-registered capacity-risk operating window per spec §5.1. Outside
+# this window PJM capacity-risk inputs are not required for B-active
+# classification (the controller's capacity-risk overlay layer is
+# inactive by design). Inclusive of 2026-06-01 through 2026-09-30.
+CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
+CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
+
+
+def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
+                                  weather_ok: bool,
+                                  pjm_capacity_risk_ok: bool) -> dict:
+    """Return the dict of input-feed health flags REQUIRED for B-active
+    classification at ``when_ct`` (spec §5 + §5.1).
+
+    Price + weather are always required during Arm B. PJM
+    capacity-risk inputs are only required inside the locked
+    capacity-risk operating window; their absence outside the window
+    must NOT down-classify the hour to B-fallback.
+
+    The full feed-health audit (every feed, regardless of required-
+    status) is written separately by ``write_input_feed_health``.
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    feeds = {"price": price_ok, "weather": weather_ok}
+    if CAPACITY_RISK_WINDOW_START_CT <= when_naive < CAPACITY_RISK_WINDOW_END_CT:
+        feeds["pjm_capacity_risk"] = pjm_capacity_risk_ok
+    return feeds
+
+
+def write_arm_mode(write_api, bucket: str, when_ct: datetime,
+                    required_feeds: dict, controller_alive: bool) -> None:
+    """Write one ``hvac.arm_mode`` row classifying the current cycle.
+
+    Per spec §11 #2 + §5: ``mode_actual`` is one of A-active / B-active
+    / B-fallback / B-down. Outside the locked experiment window no row
+    is written (the controller has nothing to classify).
+
+    ``required_feeds`` is the dict of input-feed health flags that the
+    caller has already filtered to the feeds REQUIRED for this hour
+    (per spec §5.1, PJM capacity-risk inputs are only required during
+    the capacity-risk operating window). All-true = healthy. The
+    full feed-health audit (all feeds, regardless of required-status)
+    is written separately by ``write_input_feed_health`` so reviewers
+    can see staleness on optional feeds too.
+
+    ``controller_alive`` is normally True for in-process writes; the
+    out-of-band watchdog (Task 1.6) writes ``hvac.heartbeat`` rows
+    independently.
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    arm = current_arm_at(when_naive)
+    if arm is None:
+        return
+    if arm == "A":
+        mode_actual = "A-active"
+    elif not controller_alive:
+        mode_actual = "B-down"
+    elif not all(required_feeds.values()):
+        mode_actual = "B-fallback"
+    else:
+        mode_actual = "B-active"
+    p = (Point("hvac.arm_mode")
+         .time(when_ct)
+         .tag("arm", arm)
+         .field("mode_actual", mode_actual))
+    write_api.write(bucket=bucket, record=p)
+
+
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
                           heat_setpoint_to_apply: int,
@@ -1554,6 +1629,9 @@ class LayerInputs:
 
 
 _FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
+# Same 5-min cadence for arm-mode / feed-health / switch-event telemetry
+# (spec §11 #2-4) so analysis sees a uniform 288-rows/day trace.
+_ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 
 # P2.2 reviewer-flagged 2026-05-11: a carried-forward price-overlay
 # tier (preserved across a brief feed gap per PR #60's P2.A fix) must
@@ -1973,6 +2051,32 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # Always evaluate price overlay + 5CP, write audit rows, regardless of
     # whether a scheduled action fires this minute.
     layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
+
+    # ---- Per-cycle arm-mode telemetry (spec §11 #2) ----
+    # Writes hvac.arm_mode at the same 5-min cadence as hvac.5cp_state so
+    # analysis sees a uniform 288-rows/day trace. Outside the locked
+    # experiment window (before 2026-06-01 or after 2026-11-16) the
+    # write is a no-op inside ``write_arm_mode``.
+    now_utc_for_audit = now_local.astimezone(timezone.utc)
+    if (firing.last_arm_mode_audit_at_utc is None
+            or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
+            >= _ARM_MODE_AUDIT_INTERVAL):
+        price_ok = (
+            firing.price_feed_last_ok_at_utc is not None
+            and (now_utc_for_audit - firing.price_feed_last_ok_at_utc)
+            <= PRICE_FEED_STALE_THRESHOLD
+        )
+        feeds = required_feeds_for_arm_mode(
+            when_ct=now_local,
+            price_ok=price_ok,
+            weather_ok=today_forecast is not None,
+            pjm_capacity_risk_ok=layer_inputs.fivecp_data_available,
+        )
+        write_arm_mode(
+            write_api, cfg.influx_bucket, now_local, feeds,
+            controller_alive=True,
+        )
+        firing.last_arm_mode_audit_at_utc = now_utc_for_audit
 
     fired_anything = False
     now_minutes = now_local.hour * 60 + now_local.minute

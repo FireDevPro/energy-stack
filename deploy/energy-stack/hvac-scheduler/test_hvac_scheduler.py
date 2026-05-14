@@ -2373,3 +2373,134 @@ def test_writes_allowed_handles_tz_aware_datetime(monkeypatch):
 
     when_ct_arm_a = datetime(2026, 6, 5, 13, 0, tzinfo=tz)
     assert app._writes_allowed(when_ct_arm_a) is False
+
+
+# ---- hvac.arm_mode telemetry (spec §11 #2) --------------------------------
+
+
+def _line_protocol(write_api):
+    """Return the line-protocol body of the most recent write_api.write call."""
+    record = write_api.write.call_args.kwargs.get("record")
+    return record.to_line_protocol()
+
+
+def test_write_arm_mode_writes_a_active_during_arm_a():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 13, 0)  # Arm 1 (A)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.arm_mode,")
+    assert "arm=A" in line
+    assert 'mode_actual="A-active"' in line
+
+
+def test_write_arm_mode_writes_b_active_when_all_feeds_healthy():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert 'mode_actual="B-active"' in line
+
+
+def test_write_arm_mode_writes_b_fallback_when_feed_stale():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
+    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert 'mode_actual="B-fallback"' in line
+
+
+def test_write_arm_mode_writes_b_down_when_controller_not_alive():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=False)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert 'mode_actual="B-down"' in line
+
+
+def test_write_arm_mode_skips_outside_experiment_window():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 5, 25, 13, 0)  # before experiment start
+    feeds = {"price": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_not_called()
+
+
+def test_write_arm_mode_accepts_tz_aware_datetime():
+    write_api = MagicMock()
+    tz = ZoneInfo("America/Chicago")
+    when_ct = datetime(2026, 6, 5, 13, 0, tzinfo=tz)  # Arm 1 (A), tz-aware
+    feeds = {"price": True, "weather": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=A" in line
+    assert 'mode_actual="A-active"' in line
+
+
+# ---- Required-feeds-for-arm-mode helper (spec §5 + §5.1) ------------------
+
+
+def test_required_feeds_includes_pjm_inside_capacity_risk_window():
+    """Inside the pre-registered capacity-risk operating window
+    (2026-06-01 .. 2026-09-30 inclusive), pjm_capacity_risk is required."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 7, 15, 13, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=True,
+    )
+    assert feeds == {"price": True, "weather": True, "pjm_capacity_risk": True}
+
+
+def test_required_feeds_excludes_pjm_outside_capacity_risk_window():
+    """Outside the capacity-risk operating window (e.g., October arms),
+    pjm_capacity_risk staleness must NOT classify the hour as B-fallback
+    per spec §5.1. The feed is therefore omitted from the required set."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 10, 15, 13, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert feeds == {"price": True, "weather": True}
+
+
+def test_required_feeds_window_boundary_inclusive_of_september():
+    """Spec §5.1 locks the window as 2026-06-01 00:00 CT through
+    2026-09-30 23:59 CT. September 30 must still require pjm_capacity_risk."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 9, 30, 23, 59),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert "pjm_capacity_risk" in feeds
+    assert feeds["pjm_capacity_risk"] is False
+
+
+def test_required_feeds_window_boundary_excludes_october_first():
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 10, 1, 0, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert "pjm_capacity_risk" not in feeds
+
+
+def test_required_feeds_propagates_unhealthy_flags():
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 7, 15, 13, 0),
+        price_ok=False,
+        weather_ok=True,
+        pjm_capacity_risk_ok=True,
+    )
+    assert feeds == {"price": False, "weather": True, "pjm_capacity_risk": True}
