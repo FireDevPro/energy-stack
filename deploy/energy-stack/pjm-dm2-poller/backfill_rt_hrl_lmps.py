@@ -80,6 +80,15 @@ def iter_target_dates(start: date, end: date) -> Iterator[date]:
         current += timedelta(days=1)
 
 
+# Standard calendar dates produce 24 hourly LMP rows. DST spring-
+# forward (e.g., 2026-03-08) drops a wall-clock hour so PJM returns
+# 23; DST fall-back (e.g., 2026-11-01) duplicates one so PJM returns
+# 25. Any other count means rows are missing — either PJM hasn't
+# finished publishing, or rows were dropped by ``build_rt_lmp_points``
+# (e.g., null total_lmp_rt), or the response was truncated.
+COMPLETE_DAY_ROW_COUNTS: frozenset[int] = frozenset({23, 24, 25})
+
+
 async def backfill_range(
     client: PJMClient,
     write_api,
@@ -99,11 +108,15 @@ async def backfill_range(
     ``sleep_s`` is the inter-date pacing margin; PJM Non-Member API is
     6 calls/min so 5s pacing keeps us well under the ceiling.
 
+    Per-date row count check: a complete day returns 23/24/25 rows
+    (DST-aware). Anything else gets recorded in ``partial_dates`` so
+    the end-of-run summary surfaces it for follow-up — the rows that
+    did come back are still written (Influx dedups; retry is safe).
+
     Resilience: a transient PJM/aiohttp error (timeout, 429, 5xx) on
     one date is logged and recorded in ``failed_dates``; the loop
     continues to the next date so a single failure mid-backfill does
     not require the operator to manually compute the resume offset.
-    Failed dates can be re-run after the main backfill completes.
     """
     dates = list(iter_target_dates(start_date, end_date))
     result = BackfillResult()
@@ -117,16 +130,24 @@ async def backfill_range(
                 error_type=type(exc).__name__, error=str(exc))
             result.failed_dates.append(target)
         else:
-            if points:
-                write_api.write(bucket=cfg.influx_bucket, record=points)
-                log("info", "backfill_rt_lmp_date_ok",
-                    date=target.isoformat(), points=len(points))
-                result.total_points += len(points)
-            else:
+            n = len(points)
+            if n == 0:
                 log("warn", "backfill_rt_lmp_date_empty",
                     date=target.isoformat(),
                     note="PJM returned 0 rows; may not be posted yet")
                 result.empty_dates.append(target)
+            else:
+                write_api.write(bucket=cfg.influx_bucket, record=points)
+                result.total_points += n
+                if n in COMPLETE_DAY_ROW_COUNTS:
+                    log("info", "backfill_rt_lmp_date_ok",
+                        date=target.isoformat(), points=n)
+                else:
+                    log("warn", "backfill_rt_lmp_date_partial",
+                        date=target.isoformat(), points=n,
+                        expected="23 / 24 / 25 (DST-aware)",
+                        note="rows written; re-run later when PJM posts the remainder")
+                    result.partial_dates.append(target)
         result.dates_attempted += 1
         if i < len(dates) - 1:
             await asyncio.sleep(sleep_s)
@@ -142,10 +163,11 @@ class BackfillResult:
         self.dates_attempted: int = 0
         self.total_points: int = 0
         self.empty_dates: list[date] = []
+        self.partial_dates: list[date] = []
         self.failed_dates: list[date] = []
 
     def needs_followup(self) -> bool:
-        return bool(self.empty_dates or self.failed_dates)
+        return bool(self.empty_dates or self.partial_dates or self.failed_dates)
 
 
 def _parse_iso_date(s: str) -> date:
@@ -207,10 +229,11 @@ async def main_async(args: argparse.Namespace) -> int:
             dates_attempted=result.dates_attempted,
             total_points=result.total_points,
             empty_dates=[d.isoformat() for d in result.empty_dates],
+            partial_dates=[d.isoformat() for d in result.partial_dates],
             failed_dates=[d.isoformat() for d in result.failed_dates],
             note=(
-                "re-run with --start <date> --end <date> for any failed "
-                "or empty dates after PJM publishes them"
+                "re-run with --start <date> --end <date> for any partial, "
+                "empty, or failed dates after PJM publishes the remainder"
                 if result.needs_followup() else "all dates covered"
             ))
     finally:

@@ -185,20 +185,23 @@ def test_rt_lmp_dispatcher_points_at_recent_fetcher():
     assert FEED_DISPATCHERS["rt_hrl_lmps"] is fetch_rt_lmp_recent
 
 
-def test_rt_lmp_recent_lookback_days_pinned_to_3():
-    """3 days = T+2 worst-case latency + 1 day margin. Locks the
-    constant against drift; widening to 5+ days starts hitting
-    rate-limit pressure when other 12:00 CT feeds also fire."""
-    assert RT_LMP_RECENT_LOOKBACK_DAYS == 3
+def test_rt_lmp_recent_lookback_days_pinned_to_7():
+    """7 days covers the calendar-day worst case: a Monday holiday
+    delays Friday's settled data to Tuesday (T+4 calendar days). A
+    7-day window on Tuesday's run covers Wednesday-back-through-
+    Tuesday so Friday is still in range. Single PJM range query
+    either way; ~168 rows fits under rowCount=200."""
+    assert RT_LMP_RECENT_LOOKBACK_DAYS == 7
 
 
-def test_rt_lmp_recent_uses_3_day_range_window_in_ept():
-    """The 12:00 CT rt_hrl_lmps run pulls the last 3 days as a single
-    range query: yesterday (T-1) back through T-3 in EPT. A
+def test_rt_lmp_recent_uses_7_day_range_window_in_ept():
+    """The 12:00 CT rt_hrl_lmps run pulls the last 7 days as a single
+    range query: yesterday (T-1) back through T-7 in EPT. A
     2026-07-11T12:00 CT fetch must request
-    datetime_beginning_ept=2026-07-08T00:00:00.0to2026-07-10T23:59:59.0
-    so PJM's documented T+2 worst-case latency self-heals on the next
-    cycle without operator backfill."""
+    datetime_beginning_ept=2026-07-04T00:00:00.0to2026-07-10T23:59:59.0
+    so PJM's documented calendar-day worst case (Monday-holiday
+    Friday) self-heals on subsequent cycles without operator
+    backfill."""
     captured: dict[str, object] = {}
 
     class FakeClient:
@@ -216,7 +219,7 @@ def test_rt_lmp_recent_uses_3_day_range_window_in_ept():
     assert captured["feed"] == "rt_hrl_lmps"
     assert (
         captured["params"]["datetime_beginning_ept"]
-        == "2026-07-08T00:00:00.0to2026-07-10T23:59:59.0"
+        == "2026-07-04T00:00:00.0to2026-07-10T23:59:59.0"
     )
     assert captured["params"]["pnode_id"] == COMED_PNODE_ID
 
@@ -329,6 +332,37 @@ def test_rt_lmp_handles_missing_optional_fields():
     assert "marginal_loss_price_rt=0" in line
 
 
+def test_rt_lmp_skips_row_when_total_lmp_rt_is_null():
+    """total_lmp_rt is bill-canonical: null must NOT coerce to 0.0
+    silently — that would write a real-looking $0 price into Influx
+    and corrupt the HVAC$ outcome. The row is dropped (per-date count
+    check in backfill then flags the date as partial)."""
+    item = _rt_item(10)
+    item["total_lmp_rt"] = None
+    out = build_rt_lmp_points([item])
+    assert out == []
+
+
+def test_rt_lmp_skips_row_when_total_lmp_rt_key_missing():
+    """A PJM response with the key absent (not just null) must also
+    drop the row, not default to 0."""
+    item = _rt_item(10)
+    del item["total_lmp_rt"]
+    out = build_rt_lmp_points([item])
+    assert out == []
+
+
+def test_rt_lmp_skips_only_invalid_rows_in_mixed_batch():
+    """Mixed null + valid rows in one batch: only the null row drops;
+    valid rows still emit. Lets the backfill row-count check flag the
+    date as partial without losing recoverable data."""
+    items = [_rt_item(h) for h in range(24)]
+    items[5]["total_lmp_rt"] = None
+    items[14]["total_lmp_rt"] = None
+    out = build_rt_lmp_points(items)
+    assert len(out) == 22
+
+
 def test_rt_lmp_timestamp_is_ept_converted_to_utc():
     """Summer EPT = EDT = UTC-4. 13:00 EDT = 17:00 UTC.
     Expected UTC value hand-pinned (not derived from _parse_ept) so a
@@ -389,9 +423,19 @@ def test_default_end_date_is_yesterday():
     assert default_end_date(today=today) == today - timedelta(days=1)
 
 
+def _mock_points(n: int) -> list:
+    """n fake Point-like objects per date — backfill_range only counts
+    them and passes them to write_api.write, so MagicMocks suffice."""
+    return [MagicMock() for _ in range(n)]
+
+
 def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
     """Per-date fetcher call. Each date's points get written before the
-    next iteration to keep memory bounded over a multi-month range."""
+    next iteration to keep memory bounded over a multi-month range.
+
+    Fake fetch returns 24 points/date (a complete standard day) so this
+    test specifically exercises the happy path; partial-day cases live
+    in their own tests below."""
     from datetime import date
     import backfill_rt_hrl_lmps as bf
 
@@ -400,7 +444,7 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
 
     async def fake_fetch(client, cfg, target_date_ept):
         fetched_dates.append(target_date_ept.date())
-        return [MagicMock(), MagicMock()]  # 2 fake points per date
+        return _mock_points(24)
 
     write_api = MagicMock()
     write_api.write.side_effect = lambda **kw: write_calls.append(len(kw["record"]))
@@ -424,10 +468,11 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
 
     assert fetched_dates == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
     assert result.dates_attempted == 3
-    assert result.total_points == 6
+    assert result.total_points == 72
     assert result.empty_dates == []
+    assert result.partial_dates == []
     assert result.failed_dates == []
-    assert write_calls == [2, 2, 2]
+    assert write_calls == [24, 24, 24]
     # Sleep between dates (n-1 sleeps for n dates)
     assert sleeps == [5.0, 5.0]
 
@@ -444,7 +489,7 @@ def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
         # Return [] on the middle day
         if target_date_ept.day == 2:
             return []
-        return [MagicMock()]
+        return _mock_points(24)
 
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
@@ -458,10 +503,97 @@ def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
     ))
 
     assert result.dates_attempted == 3
-    assert result.total_points == 2  # day 1 + day 3
+    assert result.total_points == 48  # day 1 + day 3, 24 each
     assert result.empty_dates == [date(2026, 1, 2)]
+    assert result.partial_dates == []
     assert result.failed_dates == []
     assert write_api.write.call_count == 2  # day 2 skipped
+
+
+def test_backfill_range_flags_partial_day_when_row_count_below_24(monkeypatch):
+    """A date returning fewer than 23 rows is a partial day, not a
+    success. PJM publishes 23/24/25 rows per date (DST-aware: spring-
+    forward = 23, fall-back = 25, normal = 24). Anything else means
+    rows are missing (either PJM hasn't fully posted, or null totals
+    got dropped by build_rt_lmp_points). The date is written to
+    Influx (idempotent retry is safe) AND recorded as partial so the
+    end-of-run summary surfaces it for follow-up."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        if target_date_ept.day == 2:
+            return _mock_points(5)  # only 5 of 24 hours
+        return _mock_points(24)
+
+    write_api = MagicMock()
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+    async def no_sleep(s): pass
+    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+
+    result = asyncio.run(bf.backfill_range(
+        MagicMock(), write_api, MagicMock(influx_bucket="energy"),
+        start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
+        sleep_s=0.0,
+    ))
+
+    assert result.dates_attempted == 3
+    assert result.total_points == 53  # 24 + 5 + 24
+    assert result.empty_dates == []
+    assert result.partial_dates == [date(2026, 1, 2)]
+    assert result.failed_dates == []
+    assert write_api.write.call_count == 3
+    assert result.needs_followup() is True
+
+
+def test_backfill_range_accepts_23_hours_as_complete_dst_spring_forward(monkeypatch):
+    """2026-03-08 is the spring-forward day: clocks go 02:00 -> 03:00
+    so the calendar date has only 23 hours. PJM returns 23 rows; that
+    is COMPLETE, not partial."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        return _mock_points(23)
+
+    write_api = MagicMock()
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+    async def no_sleep(s): pass
+    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+
+    result = asyncio.run(bf.backfill_range(
+        MagicMock(), write_api, MagicMock(influx_bucket="energy"),
+        start_date=date(2026, 3, 8), end_date=date(2026, 3, 8),
+        sleep_s=0.0,
+    ))
+
+    assert result.partial_dates == []
+    assert result.total_points == 23
+
+
+def test_backfill_range_accepts_25_hours_as_complete_dst_fall_back(monkeypatch):
+    """2026-11-01 is the fall-back day: clocks go 02:00 -> 01:00 so
+    the calendar date has 25 hours. PJM returns 25 rows; that is
+    COMPLETE, not partial."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        return _mock_points(25)
+
+    write_api = MagicMock()
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+    async def no_sleep(s): pass
+    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+
+    result = asyncio.run(bf.backfill_range(
+        MagicMock(), write_api, MagicMock(influx_bucket="energy"),
+        start_date=date(2026, 11, 1), end_date=date(2026, 11, 1),
+        sleep_s=0.0,
+    ))
+
+    assert result.partial_dates == []
+    assert result.total_points == 25
 
 
 def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
@@ -476,7 +608,7 @@ def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
     async def fake_fetch(client, cfg, target_date_ept):
         if target_date_ept.day == 2:
             raise RuntimeError("PJM HTTP 503: temporarily unavailable")
-        return [MagicMock()]
+        return _mock_points(24)
 
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
@@ -490,9 +622,10 @@ def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
     ))
 
     assert result.dates_attempted == 3
-    assert result.total_points == 2  # day 1 + day 3
+    assert result.total_points == 48  # day 1 + day 3 = 24 each
     assert result.failed_dates == [date(2026, 1, 2)]
     assert result.empty_dates == []
+    assert result.partial_dates == []
     assert write_api.write.call_count == 2  # day 2 errored
     assert result.needs_followup() is True
 
@@ -503,6 +636,16 @@ def test_backfill_result_needs_followup_clean():
     r.dates_attempted = 130
     r.total_points = 3120
     assert r.needs_followup() is False
+
+
+def test_backfill_result_needs_followup_true_when_partial_dates_present():
+    from backfill_rt_hrl_lmps import BackfillResult
+    from datetime import date
+    r = BackfillResult()
+    r.dates_attempted = 130
+    r.total_points = 3105  # 15 missing rows somewhere
+    r.partial_dates = [date(2026, 5, 1)]
+    assert r.needs_followup() is True
 
 
 def test_load_forecast_fires_twice_daily():

@@ -314,16 +314,31 @@ def build_rt_lmp_points(items: list[dict]) -> list[Point]:
 
     Schema parallels ``build_da_lmp_points`` with `_rt` field suffixes
     and the ``pjm.lmp_rt_hourly`` measurement name.
+
+    Determinism guard: rows where ``total_lmp_rt`` is missing or null
+    are DROPPED (with a warn log) rather than coerced to 0.0. A
+    silent $0 would corrupt the HVAC$ outcome — Influx can't
+    distinguish "no data" from "real zero price" after the fact.
+    Dropped rows show up as missing hours in downstream count checks
+    (e.g., backfill_range's partial-day flag), so the operator can
+    decide to refetch.
     """
     out: list[Point] = []
     for it in items:
+        total_raw = it.get("total_lmp_rt")
+        if total_raw is None:
+            log("warn", "rt_lmp_null_total_dropped",
+                datetime_beginning_ept=it.get("datetime_beginning_ept"),
+                pnode_id=it.get("pnode_id"),
+                note="total_lmp_rt missing or null; row dropped to preserve bill-canonical determinism")
+            continue
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
             Point("pjm.lmp_rt_hourly")
             .tag("pnode_id", str(it.get("pnode_id", "")))
             .tag("pnode_name", it.get("pnode_name", "") or "")
             .tag("zone", it.get("zone") or it.get("pnode_name") or "")
-            .field("total_lmp_rt", float(it.get("total_lmp_rt") or 0.0))
+            .field("total_lmp_rt", float(total_raw))
             .field("system_energy_price_rt", float(it.get("system_energy_price_rt") or 0.0))
             .field("congestion_price_rt", float(it.get("congestion_price_rt") or 0.0))
             .field("marginal_loss_price_rt", float(it.get("marginal_loss_price_rt") or 0.0))
@@ -455,13 +470,16 @@ def build_nspl_points(items: list[dict]) -> list[Point]:
 # ---------------------------------------------------------------------------
 
 
-# Spec §8 documents settled-data latency as T+2 worst case. The
-# daily orchestrator looks back this many days so a single missed
-# Monday post (Sunday + holiday) self-heals on the next cycle without
-# needing the operator to re-run the backfill. Influx dedups by
-# (measurement, tag-set, timestamp) so re-fetching a previously-seen
-# row is idempotent.
-RT_LMP_RECENT_LOOKBACK_DAYS = 3
+# Spec §8 documents settled-data latency as T+2 *business days* worst
+# case. Calendar-day worst case is wider: PJM publishes on business
+# days only, so a Monday holiday means Friday's data lands Tuesday
+# (T+4 calendar days). With a 3-day lookback on Tuesday, Friday would
+# be outside the window and silently missed. 7 days covers a Monday-
+# holiday Friday on Tuesday's run with margin and still fits in a
+# single PJM range query (~168 rows, well under rowCount=200). Influx
+# dedups by (measurement, tag-set, timestamp) so re-fetching prior
+# days is idempotent.
+RT_LMP_RECENT_LOOKBACK_DAYS = 7
 
 
 async def fetch_rt_lmp_for_date(
@@ -531,7 +549,7 @@ async def fetch_rt_lmp_recent(
                 f"{end_ept.strftime('%Y-%m-%dT23:59:59')}.0"
             ),
             "row_is_current": "true",
-            "rowCount": 200,  # 3 days x 24 = 72 expected; 200 = ~2.7x margin
+            "rowCount": 200,  # 7 days x 24 = 168 expected; 200 = ~1.2x margin
             "startRow": 1,
         },
     )
