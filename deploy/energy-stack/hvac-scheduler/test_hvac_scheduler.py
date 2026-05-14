@@ -2395,7 +2395,8 @@ def _line_protocol(write_api):
     return record.to_line_protocol()
 
 
-def test_write_arm_mode_writes_a_active_during_arm_a():
+def test_write_arm_mode_writes_a_active_during_arm_a(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 5, 13, 0)  # Arm 1 (A)
     feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
@@ -2404,20 +2405,24 @@ def test_write_arm_mode_writes_a_active_during_arm_a():
     line = _line_protocol(write_api)
     assert line.startswith("hvac.arm_mode,")
     assert "arm=A" in line
+    assert "scheduler_mode=experiment" in line
     assert 'mode_actual="A-active"' in line
 
 
-def test_write_arm_mode_writes_b_active_when_all_feeds_healthy():
+def test_write_arm_mode_writes_b_active_when_all_feeds_healthy(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
     feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert "arm=B" in line
+    assert "scheduler_mode=experiment" in line
     assert 'mode_actual="B-active"' in line
 
 
-def test_write_arm_mode_writes_b_fallback_when_feed_stale():
+def test_write_arm_mode_writes_b_fallback_when_feed_stale(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
     feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
@@ -2427,7 +2432,8 @@ def test_write_arm_mode_writes_b_fallback_when_feed_stale():
     assert 'mode_actual="B-fallback"' in line
 
 
-def test_write_arm_mode_writes_b_down_when_controller_not_alive():
+def test_write_arm_mode_writes_b_down_when_controller_not_alive(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)
     feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
@@ -2437,24 +2443,55 @@ def test_write_arm_mode_writes_b_down_when_controller_not_alive():
     assert 'mode_actual="B-down"' in line
 
 
-def test_write_arm_mode_outside_experiment_window_emits_outside_window_row():
-    """Spec §5 lists 4 modes for in-window classification. Outside the
-    locked window the controller is still alive and ticking; we emit a
-    liveness row with mode_actual="outside-window" so the watchdog
-    (spec §11 #5, queries hvac.arm_mode) doesn't fire false controller_
-    alive=false during shadow weeks. Out-of-window rows are filtered
-    out by the analysis pipeline's date-range query."""
+def test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow(monkeypatch):
+    """Spec §3 mandates SCHEDULER_MODE=experiment during the locked
+    window. If the operator left the scheduler in shadow mode past
+    2026-06-01 00:00 CT (no thermostat writes), the spec §5 four-mode
+    classification does NOT apply: B-active would falsely claim the
+    smart controller delivered treatment when it didn't. Emit
+    mode_actual="off-protocol-shadow" so the analysis can EXCLUDE
+    these hours from the primary outcome."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm B period, but mode=shadow
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert 'mode_actual="off-protocol-shadow"' in line
+    assert "scheduler_mode=shadow" in line
+
+
+def test_write_arm_mode_in_window_production_emits_off_protocol_production(monkeypatch):
+    """Spec §3: production mode is for deliberate non-study operation
+    and is excluded from the analysis dataset. If active during the
+    locked window it MUST NOT be classified as A-active or B-active."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 13, 0)  # Arm A period, but mode=production
+    feeds = {"price": True, "weather": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert 'mode_actual="off-protocol-production"' in line
+    assert "scheduler_mode=production" in line
+
+
+def test_write_arm_mode_outside_experiment_window_emits_outside_window_row(monkeypatch):
+    """Outside the locked window we emit a liveness row with
+    mode_actual="outside-window" regardless of scheduler_mode so the
+    watchdog (spec §11 #5) sees recent rows during shadow weeks."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
     write_api = MagicMock()
     when_ct = datetime(2026, 5, 25, 13, 0)  # before experiment start
     feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     write_api.write.assert_called_once()
     line = _line_protocol(write_api)
-    assert line.startswith("hvac.arm_mode ")  # NO arm tag for outside-window
     assert 'mode_actual="outside-window"' in line
+    assert "scheduler_mode=shadow" in line
 
 
-def test_write_arm_mode_outside_window_after_experiment_end():
+def test_write_arm_mode_outside_window_after_experiment_end(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
     write_api = MagicMock()
     when_ct = datetime(2026, 11, 25, 13, 0)  # after experiment end
     feeds = {"price": True}
@@ -2464,7 +2501,8 @@ def test_write_arm_mode_outside_window_after_experiment_end():
     assert 'mode_actual="outside-window"' in line
 
 
-def test_write_arm_mode_accepts_tz_aware_datetime():
+def test_write_arm_mode_accepts_tz_aware_datetime(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     tz = ZoneInfo("America/Chicago")
     when_ct = datetime(2026, 6, 5, 13, 0, tzinfo=tz)  # Arm 1 (A), tz-aware

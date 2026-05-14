@@ -22,7 +22,11 @@ Design:
   * Every action also writes to `hvac.actions` for audit.
 
 Safety nets:
-  * DRY_RUN env var (default true) -- logs commands without pushing.
+  * SCHEDULER_MODE env var (REQUIRED, no default; spec §3): shadow =
+    never writes (logs only), experiment = writes ONLY during Arm B
+    inside the locked 2026-06-01..2026-11-16 calendar, production =
+    writes always (off-protocol). Module refuses to start on missing
+    or invalid value.
   * Skips setpoint changes when thermostat HVAC_MODE != Cool/Auto
     (i.e., heating-season no-op).
   * Director token persisted to /data/director_token.json -- one cloud
@@ -1357,13 +1361,26 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
 
     Per spec §11 #2 + §5: in-window classification is one of A-active
     / B-active / B-fallback / B-down (carried in ``mode_actual`` with
-    ``arm`` tag). Outside the locked experiment window the controller
-    is still alive and ticking; we emit a liveness-only row with
-    ``mode_actual="outside-window"`` (and no ``arm`` tag) so the
-    watchdog (spec §11 #5, queries ``hvac.arm_mode``) doesn't fire
-    false ``controller_alive=false`` during shadow weeks. Out-of-
-    window rows are filtered out by the analysis pipeline's date-
-    range query.
+    ``arm`` tag) — but ONLY when ``SCHEDULER_MODE=experiment`` (the
+    spec §3 mandated mode for the locked window). If the operator
+    leaves the scheduler in shadow or switches to production during
+    the experiment window, the spec §5 four-mode classification does
+    NOT apply: shadow means no thermostat writes (B-active would
+    falsely claim the smart controller delivered treatment when it
+    didn't), production is explicitly off-protocol (excluded from
+    analysis per spec §3). For those cases emit
+    ``mode_actual="off-protocol-shadow"`` / ``"off-protocol-production"``
+    so the analysis pipeline can EXCLUDE those hours from the primary
+    outcome rather than mis-attribute exposure.
+
+    Outside the locked window the controller is still alive and ticking;
+    we emit a liveness-only row with ``mode_actual="outside-window"``
+    so the watchdog (spec §11 #5, queries ``hvac.arm_mode``) doesn't
+    fire false ``controller_alive=false`` during shadow weeks.
+
+    Every emitted row carries a ``scheduler_mode`` tag so the analysis
+    pipeline can join arm-mode rows to the operator's mode setting
+    without re-deriving it.
 
     ``required_feeds`` is the dict of input-feed health flags that the
     caller has already filtered to the feeds REQUIRED for this hour
@@ -1379,10 +1396,22 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
     """
     when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
     arm = current_arm_at(when_naive)
+    scheduler_mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
     if arm is None:
         p = (Point("hvac.arm_mode")
              .time(when_ct)
+             .tag("scheduler_mode", scheduler_mode)
              .field("mode_actual", "outside-window"))
+        write_api.write(bucket=bucket, record=p)
+        return
+    if scheduler_mode != "experiment":
+        # In-window protocol deviation: the spec §5 four-mode
+        # classification only applies when SCHEDULER_MODE=experiment.
+        p = (Point("hvac.arm_mode")
+             .time(when_ct)
+             .tag("scheduler_mode", scheduler_mode)
+             .tag("arm", arm)
+             .field("mode_actual", f"off-protocol-{scheduler_mode}"))
         write_api.write(bucket=bucket, record=p)
         return
     if arm == "A":
@@ -1395,6 +1424,7 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
         mode_actual = "B-active"
     p = (Point("hvac.arm_mode")
          .time(when_ct)
+         .tag("scheduler_mode", scheduler_mode)
          .tag("arm", arm)
          .field("mode_actual", mode_actual))
     write_api.write(bucket=bucket, record=p)
