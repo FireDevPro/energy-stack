@@ -34,12 +34,15 @@ from app import (
     build_metered_load_points,
     build_nspl_points,
     build_peak_forecast_points,
+    build_rt_lmp_points,
     fetch_da_lmp_for_tomorrow,
     fetch_inst_load_recent,
     fetch_inst_load_recent_rto,
     fetch_metered_load_recent,
     fetch_metered_load_recent_rto,
     fetch_peak_forecast_rto,
+    fetch_rt_lmp_for_date,
+    fetch_rt_lmp_for_yesterday,
     poll_once,
     seconds_to_next_aligned_tick,
 )
@@ -155,6 +158,140 @@ def test_da_lmp_dispatcher_points_at_tomorrow_fetcher():
     not the historical 'for_today' name. Belt-and-braces pin that the
     rename in app.py also propagated to the dispatch table."""
     assert FEED_DISPATCHERS["da_hrl_lmps"] is fetch_da_lmp_for_tomorrow
+
+
+# =========================================================================
+# rt_hrl_lmps (Phase 2 SCED rebaseline; spec §8) — settled hourly LMP
+# =========================================================================
+#
+# Polls PJM's rt_hrl_lmps endpoint daily after the 11am-12pm ET publish
+# window for the COMED zone (pnode_id 33092371). Bill-canonical supply
+# price for ComEd Rate BESH — what the HVAC$ outcome rolls up against.
+
+
+def test_rt_lmp_fires_at_noon_ct():
+    """Schedule fires at 12:00 CT = 13:00 ET, ~1h after PJM's typical
+    11am-12pm ET publish window for settled data. The 1h margin
+    absorbs PJM's normal posting jitter without delaying the cycle
+    too long."""
+    assert FEED_SCHEDULE["rt_hrl_lmps"] == Schedule(hours=(12,))
+
+
+def test_rt_lmp_dispatcher_points_at_yesterday_fetcher():
+    """FEED_DISPATCHERS['rt_hrl_lmps'] orchestrates yesterday's fetch
+    on each scheduled run (settled data is T+1)."""
+    assert FEED_DISPATCHERS["rt_hrl_lmps"] is fetch_rt_lmp_for_yesterday
+
+
+def test_rt_lmp_fetcher_queries_yesterday_in_ept():
+    """The 12:00 CT rt_hrl_lmps run is for *yesterday's* settled
+    prices (T+1 publish window). A 2026-07-11T12:00 CT fetch must
+    request datetime_beginning_ept=2026-07-10T00:00:00.0 — the
+    "yesterday" date boundary is computed in Eastern, which can
+    differ from Chicago near midnight (1h offset)."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["feed"] = feed
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 11, 12, 0, tzinfo=CHICAGO)
+
+    asyncio.run(fetch_rt_lmp_for_yesterday(FakeClient(), cfg, now_local))
+
+    assert captured["feed"] == "rt_hrl_lmps"
+    assert captured["params"]["datetime_beginning_ept"] == "2026-07-10T00:00:00.0"
+    assert captured["params"]["pnode_id"] == COMED_PNODE_ID
+
+
+def test_rt_lmp_for_date_constructs_explicit_target():
+    """The for_date helper used by the backfill script accepts any
+    EPT date and queries that date specifically. Independent of
+    'yesterday' wall-clock semantics."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    target_date = datetime(2026, 1, 5, 0, 0)  # naive; treated as EPT date
+    asyncio.run(fetch_rt_lmp_for_date(FakeClient(), cfg, target_date))
+
+    assert captured["params"]["datetime_beginning_ept"] == "2026-01-05T00:00:00.0"
+    assert captured["params"]["pnode_id"] == COMED_PNODE_ID
+
+
+# ---- build_rt_lmp_points ------------------------------------------------
+
+
+def _rt_item(hour: int, lmp: float = 30.0) -> dict:
+    return {
+        "datetime_beginning_ept": f"2026-07-15T{hour:02d}:00:00",
+        "pnode_id": COMED_PNODE_ID,
+        "pnode_name": "COMED",
+        "zone": None,
+        "type": "ZONE",
+        "total_lmp_rt": lmp,
+        "system_energy_price_rt": lmp - 1.0,
+        "congestion_price_rt": 0.5,
+        "marginal_loss_price_rt": 0.5,
+    }
+
+
+def test_rt_lmp_points_count_matches_input():
+    items = [_rt_item(h, 25 + h) for h in range(24)]
+    assert len(build_rt_lmp_points(items)) == 24
+
+
+def test_rt_lmp_writes_to_pjm_lmp_rt_hourly_measurement():
+    [pt] = build_rt_lmp_points([_rt_item(10)])
+    line = pt.to_line_protocol()
+    assert line.startswith("pjm.lmp_rt_hourly,")
+
+
+def test_rt_lmp_carries_pnode_id_and_zone_tags():
+    [pt] = build_rt_lmp_points([_rt_item(10)])
+    line = pt.to_line_protocol()
+    assert f"pnode_id={COMED_PNODE_ID}" in line
+    # zone falls back to pnode_name when item['zone'] is None — same
+    # pattern as da_hrl_lmps
+    assert "zone=COMED" in line
+
+
+def test_rt_lmp_carries_all_four_price_fields():
+    [pt] = build_rt_lmp_points([_rt_item(10, lmp=42.5)])
+    line = pt.to_line_protocol()
+    assert "total_lmp_rt=42.5" in line
+    assert "system_energy_price_rt=41.5" in line
+    assert "congestion_price_rt=0.5" in line
+    assert "marginal_loss_price_rt=0.5" in line
+
+
+def test_rt_lmp_handles_missing_optional_fields():
+    item = _rt_item(10)
+    item["congestion_price_rt"] = None
+    item["marginal_loss_price_rt"] = None
+    [pt] = build_rt_lmp_points([item])
+    line = pt.to_line_protocol()
+    assert "congestion_price_rt=0" in line
+    assert "marginal_loss_price_rt=0" in line
+
+
+def test_rt_lmp_timestamp_is_ept_converted_to_utc():
+    """Summer EPT = EDT = UTC-4. 13:00 EDT = 17:00 UTC."""
+    [pt] = build_rt_lmp_points([_rt_item(13)])
+    # to_line_protocol's trailing ns timestamp encodes the UTC instant.
+    # Use _parse_ept to derive expected UTC.
+    line = pt.to_line_protocol()
+    expected_utc = _parse_ept("2026-07-15T13:00:00").astimezone(timezone.utc)
+    expected_ns = int(expected_utc.timestamp() * 1_000_000_000)
+    assert line.endswith(f" {expected_ns}")
 
 
 def test_load_forecast_fires_twice_daily():

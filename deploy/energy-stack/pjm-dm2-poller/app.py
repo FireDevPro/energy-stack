@@ -206,6 +206,7 @@ FEED_SCHEDULE: dict[str, Schedule] = {
     "inst_load_rto":          Schedule(hours=tuple(range(0, 24)), minutes=_EVERY_5_MIN),      # Every 5 min, area=PJM RTO (P1.1)
     "ops_sum_frcst_peak_rto": Schedule(hours=(6, 13), months=(6, 7, 8, 9)),                   # Cooling season only
     "annual_zonal_nspl":      Schedule(hours=(3,), months=(12,), days=(1,)),                  # Dec 1, 03:00 CT
+    "rt_hrl_lmps":            Schedule(hours=(12,)),                                          # 12:00 CT = 13:00 ET, ~1h after PJM 11-12 ET publish (Phase 2 spec §8)
 }
 
 
@@ -299,6 +300,37 @@ def _parse_ept(s: str) -> datetime:
     CDT in summer and wrote every PJM-derived row an hour late.
     """
     return datetime.fromisoformat(s).replace(tzinfo=EPT)
+
+
+def build_rt_lmp_points(items: list[dict]) -> list[Point]:
+    """Convert ``rt_hrl_lmps`` items to ``pjm.lmp_rt_hourly`` points.
+    One point per hourly settled LMP row for the COMED zone.
+
+    Bill-canonical supply price for ComEd Rate BESH (spec §8): the
+    bill charges PJM RT settled hourly LMP for COMED with no markup,
+    so this is what HVAC$ rolls up against. PJM publishes settled
+    rows 11am-12pm ET T+1, so the daily orchestrator pulls
+    *yesterday's* date.
+
+    Schema parallels ``build_da_lmp_points`` with `_rt` field suffixes
+    and the ``pjm.lmp_rt_hourly`` measurement name.
+    """
+    out: list[Point] = []
+    for it in items:
+        ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
+        p = (
+            Point("pjm.lmp_rt_hourly")
+            .tag("pnode_id", str(it.get("pnode_id", "")))
+            .tag("pnode_name", it.get("pnode_name", "") or "")
+            .tag("zone", it.get("zone") or it.get("pnode_name") or "")
+            .field("total_lmp_rt", float(it.get("total_lmp_rt") or 0.0))
+            .field("system_energy_price_rt", float(it.get("system_energy_price_rt") or 0.0))
+            .field("congestion_price_rt", float(it.get("congestion_price_rt") or 0.0))
+            .field("marginal_loss_price_rt", float(it.get("marginal_loss_price_rt") or 0.0))
+            .time(ts_utc)
+        )
+        out.append(p)
+    return out
 
 
 def build_da_lmp_points(items: list[dict]) -> list[Point]:
@@ -421,6 +453,57 @@ def build_nspl_points(items: list[dict]) -> list[Point]:
 # ---------------------------------------------------------------------------
 # Per-feed orchestration
 # ---------------------------------------------------------------------------
+
+
+async def fetch_rt_lmp_for_date(
+    client: PJMClient, cfg: Config, target_date_ept: datetime,
+) -> list[Point]:
+    """Pull 24 hourly settled RT LMPs for ComEd zone for ``target_date_ept``.
+
+    ``target_date_ept`` is treated as an EPT calendar date — only the
+    date portion is used. The PJM ``rt_hrl_lmps`` endpoint returns one
+    row per hour for the requested date (24 rows on standard days,
+    23 or 25 on DST transition days).
+
+    Used by both:
+      - The daily 12:00 CT orchestrator ``fetch_rt_lmp_for_yesterday``
+        (passes yesterday-in-EPT)
+      - The backfill script ``backfill_rt_hrl_lmps.py`` (iterates
+        2026-01-01 through yesterday)
+    """
+    target = target_date_ept.strftime("%Y-%m-%dT00:00:00.0")
+    items = await client.fetch(
+        "rt_hrl_lmps",
+        {
+            "pnode_id": COMED_PNODE_ID,
+            "datetime_beginning_ept": target,
+            "rowCount": 50,
+            "startRow": 1,
+        },
+    )
+    return build_rt_lmp_points(items)
+
+
+async def fetch_rt_lmp_for_yesterday(
+    client: PJMClient, cfg: Config, now_local: datetime,
+) -> list[Point]:
+    """Daily 12:00 CT orchestrator: pull yesterday's settled LMP rows.
+
+    PJM posts settled hourly data 11am-12pm ET on business days for
+    the prior calendar day. Firing at 12:00 CT (= 13:00 ET) gives a
+    ~1h margin past the typical publish window. The "yesterday" date
+    boundary is computed in EPT (not Chicago) since PJM's
+    ``datetime_beginning_ept`` filter is Eastern; near midnight the
+    two TZs disagree by 1h and a Chicago-based "yesterday" would ask
+    PJM for the wrong calendar date.
+
+    Weekend behavior: PJM publishes settled data on business days only,
+    so Monday's run for Sunday will see zero rows; Tuesday's run will
+    pick up Sunday + Monday (the backfill window covers the prior day,
+    but Influx dedups by timestamp so re-fetching is idempotent).
+    """
+    yesterday_ept = now_local.astimezone(EPT) - timedelta(days=1)
+    return await fetch_rt_lmp_for_date(client, cfg, yesterday_ept)
 
 
 async def fetch_da_lmp_for_tomorrow(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -658,6 +741,7 @@ FEED_DISPATCHERS: dict[
     "inst_load_rto": fetch_inst_load_recent_rto,  # P1.1
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,
     "annual_zonal_nspl": fetch_annual_nspl,
+    "rt_hrl_lmps": fetch_rt_lmp_for_yesterday,  # Phase 2 (spec §8)
 }
 
 
