@@ -112,7 +112,7 @@ from price_overlay import (
     offset_and_override_for_tier,
 )
 from safety_supervisor import validate_setpoints
-from decision_codes import PriceOverlayCode
+from decision_codes import LayerResolutionCode, PriceOverlayCode
 
 
 # ---- Config ----------------------------------------------------------------
@@ -387,6 +387,91 @@ def _price_overlay_hold_minutes_remaining(
     elapsed = (now_utc - state.triggered_at_utc).total_seconds() / 60.0
     remaining = DEFAULT_MINIMUM_HOLD_MINUTES - elapsed
     return max(0.0, remaining)
+
+
+def _classify_layer_resolution(
+    lr: "LayerResolution",
+) -> tuple[LayerResolutionCode, str]:
+    """Return (reason_code, winning_layer) from a LayerResolution.
+
+    "Warmer wins" — schedule, price overlay, and 5CP each propose a cool
+    setpoint; effective is `max` across them. A layer contributes when its
+    own proposal matches effective AND it is actually active:
+      * 5CP contributes when `fivecp_active=True` AND `fivecp_cool_f`
+        equals effective. (When inactive, `fivecp_cool_f` falls back to
+        `price_cool_f` per resolve_layer_priority's implementation — that
+        match is not a real contribution.)
+      * Price overlay contributes when the tier is non-normal AND
+        `price_cool_f` equals effective.
+      * Schedule contributes when `schedule_cool_f` equals effective.
+
+    If more than one non-schedule layer ties at the warmest, returns
+    `TIE_WARMER_WINS` (operator can inspect the per-layer fields on the
+    trace line to see which agreed). If only schedule's value matches
+    effective, returns `SCHEDULE_WINS`. The `winning_layer` string is a
+    coarser 4-value categorical for filtering.
+    """
+    eff = lr.effective_cool_f
+    contributors: list[str] = []
+    if lr.fivecp_active and lr.fivecp_cool_f == eff:
+        contributors.append("5cp")
+    if lr.price_overlay_tier != NORMAL_TIER_NAME and lr.price_cool_f == eff:
+        contributors.append("price_overlay")
+    schedule_matches = lr.schedule_cool_f == eff
+
+    if len(contributors) > 1:
+        return LayerResolutionCode.TIE_WARMER_WINS, "tie"
+    if contributors == ["5cp"]:
+        return LayerResolutionCode.FIVECP_WINS, "5cp"
+    if contributors == ["price_overlay"]:
+        return LayerResolutionCode.PRICE_OVERLAY_WINS, "price_overlay"
+    # Either schedule matches effective (no other contributor) OR — by
+    # the "warmer wins" max — effective equals schedule_cool_f. Either
+    # way schedule wins this resolution.
+    if schedule_matches:
+        return LayerResolutionCode.SCHEDULE_WINS, "schedule"
+    # Defense in depth: should be unreachable since effective = max of
+    # the three. Fall back to SCHEDULE_WINS rather than raise from a
+    # diagnostic helper.
+    return LayerResolutionCode.SCHEDULE_WINS, "schedule"
+
+
+def _trace_layer_resolution(
+    *,
+    tick_id: str, now_ct: datetime,
+    firing: FiringState, layer_resolution: "LayerResolution",
+    layer_inputs: "LayerInputs | None" = None,
+) -> None:
+    """Emit one `decision_trace.layer_resolution` line per
+    `resolve_layer_priority` call. Caller passes the `LayerResolution`
+    plus optional `LayerInputs` (used for the 5CP scope detail field).
+    `firing` is mutated to update `last_eval_effective_cool_f`."""
+    reason_code, winning_layer = _classify_layer_resolution(layer_resolution)
+    prev_eff = firing.last_eval_effective_cool_f
+    new_eff = layer_resolution.effective_cool_f
+    # info on effective change (operator-visible event); debug on
+    # no-change (suppressed unless verbose=true).
+    level = "info" if prev_eff != new_eff else "debug"
+    _trace(
+        "decision_trace.layer_resolution",
+        level=level,
+        tick_id=tick_id,
+        now_ct=now_ct,
+        schedule_cool_f=layer_resolution.schedule_cool_f,
+        price_overlay_tier=layer_resolution.price_overlay_tier,
+        price_cool_f=layer_resolution.price_cool_f,
+        fivecp_active=layer_resolution.fivecp_active,
+        fivecp_scopes_fired=(
+            list(layer_inputs.fivecp_scopes_fired)
+            if layer_inputs is not None else []
+        ),
+        fivecp_cool_f=layer_resolution.fivecp_cool_f,
+        effective_cool_f=new_eff,
+        prev_effective_cool_f=prev_eff,
+        winning_layer=winning_layer,
+        reason_code=reason_code.value,
+    )
+    firing.last_eval_effective_cool_f = new_eff
 
 
 # ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
@@ -965,6 +1050,13 @@ class FiringState:
     last_schedule_cool_f: int | None = None
     last_action_label: str = ""
     last_pushed_effective_cool_f: int | None = None
+    # Phase 2 decision-trace: the effective cool setpoint computed at the
+    # last layer-resolution evaluation. Distinct from
+    # ``last_pushed_effective_cool_f`` (post-supervisor + actually-pushed) —
+    # this is the pre-supervisor effective for the per-eval trace's
+    # info/debug level gating. None until the first resolve_layer_priority
+    # call lands.
+    last_eval_effective_cool_f: int | None = None
     # Throttle for hvac.5cp_state audit writes. Spec calls for ~every-5-min
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
@@ -1849,7 +1941,8 @@ ACTION_MAKEUP_WINDOW_MIN = 5
 
 
 def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
-                            firing: FiringState, now_local: datetime) -> LayerInputs:
+                            firing: FiringState, now_local: datetime,
+                            *, tick_id: str | None = None) -> LayerInputs:
     """Per-tick evaluation of the §2 price overlay and §3 5CP detector,
     independent of whether a scheduled action is firing this minute.
 
@@ -1872,14 +1965,16 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     fell through unobserved.
     """
     now_utc = now_local.astimezone(timezone.utc)
-    # tick_id is generated once per `_evaluate_layer_inputs` call so all
-    # decision-trace log lines emitted from this tick share a correlation
-    # id. JSON FIELD only — must NOT be promoted to a Loki label
-    # (cardinality, see decision-trace plan locked decisions). Phases 2-5
-    # will lift this to the outermost tick boundary so layer-resolution /
-    # supervisor / would-push trace lines share the same tick_id; in
-    # Phase 1 only the price-overlay trace uses it.
-    tick_id = uuid.uuid4().hex
+    # tick_id is the JSON FIELD correlation id shared across every
+    # decision-trace line emitted within one scheduler tick. Phase 2
+    # lifts the generation to `run_schedule_check` so layer-resolution
+    # traces share it with the price-overlay trace; this function
+    # generates a fresh one when called without one (test compatibility
+    # + defense in depth for any path that calls _evaluate_layer_inputs
+    # outside the main tick loop). Must NOT be promoted to a Loki label
+    # (cardinality, see decision-trace plan locked decisions).
+    if tick_id is None:
+        tick_id = uuid.uuid4().hex
 
     # ---- Price overlay (§2) ----
     current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
@@ -2139,6 +2234,7 @@ async def _push_layer_change_mid_period(
     firing: FiringState, day_type: str, layer_inputs: LayerInputs,
     today_dewpoint_f: float | None, override_note: str,
     now_local: datetime,
+    *, tick_id: str | None = None,
 ) -> None:
     """When the per-tick layer evaluation produces a different effective
     cool setpoint than the last value pushed, re-push without waiting for
@@ -2167,6 +2263,9 @@ async def _push_layer_change_mid_period(
     if firing.last_schedule_cool_f is None:
         return  # no baseline to layer on top of
 
+    if tick_id is None:
+        tick_id = uuid.uuid4().hex
+
     schedule_cool = firing.last_schedule_cool_f
     layer_resolution = resolve_layer_priority(
         schedule_cool,
@@ -2174,6 +2273,11 @@ async def _push_layer_change_mid_period(
         price_offset_f=layer_inputs.price_offset_f,
         price_override_f=layer_inputs.price_override_f,
         fivecp_active=layer_inputs.fivecp_active,
+    )
+    _trace_layer_resolution(
+        tick_id=tick_id, now_ct=now_local,
+        firing=firing, layer_resolution=layer_resolution,
+        layer_inputs=layer_inputs,
     )
 
     # P1.2: read thermostat snapshot and run supervisor BEFORE deciding
@@ -2271,6 +2375,14 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     setpoint differs from the last value pushed. The action-fire path is
     unchanged; it consumes the per-tick layer inputs.
     """
+    # Generate one decision-trace tick_id per scheduler tick. Every
+    # `decision_trace.*` log line emitted from this call share this id so
+    # downstream Loki / LogQL queries can correlate the price-overlay
+    # eval, layer resolutions, supervisor invocations, and would-push
+    # action firings of a single tick. JSON FIELD only — not promoted to
+    # a Loki label (cardinality).
+    tick_id = uuid.uuid4().hex
+
     today_iso = now_local.date().isoformat()
     overrides = load_overrides(cfg.overrides_file)
     active_override = find_active_override(overrides, today_iso)
@@ -2311,7 +2423,9 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # ---- Per-tick layer evaluation (Critical #2 fix) ----
     # Always evaluate price overlay + 5CP, write audit rows, regardless of
     # whether a scheduled action fires this minute.
-    layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
+    layer_inputs = _evaluate_layer_inputs(
+        query_api, write_api, cfg, firing, now_local, tick_id=tick_id,
+    )
 
     # ---- Per-cycle arm-mode + switch-event + feed-health telemetry ----
     # (spec §11 #2-4)
@@ -2407,6 +2521,11 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
                 price_offset_f=layer_inputs.price_offset_f,
                 price_override_f=layer_inputs.price_override_f,
                 fivecp_active=layer_inputs.fivecp_active,
+            )
+            _trace_layer_resolution(
+                tick_id=tick_id, now_ct=now_local,
+                firing=firing, layer_resolution=layer_resolution,
+                layer_inputs=layer_inputs,
             )
             cool_to_apply = layer_resolution.effective_cool_f
 
@@ -2508,6 +2627,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         await _push_layer_change_mid_period(
             cfg, c4, write_api, firing, day_type, layer_inputs,
             today_dewpoint_f, override_note, now_local,
+            tick_id=tick_id,
         )
 
     if fired_anything:

@@ -29,6 +29,7 @@ from app import FiringState, _evaluate_layer_inputs
 # tests drive the same caller surface the existing layer-input tests do.
 from test_hvac_scheduler import (  # noqa: E402
     _make_schedule_check_cfg,
+    _mock_c4_client,
     _stub_layer_eval_io,
 )
 
@@ -212,9 +213,156 @@ class TestPhase1PriceOverlay:
 
 
 class TestPhase2LayerResolution:
-    @pytest.mark.xfail(strict=True, reason="Phase 2 not yet implemented")
-    def test_layer_resolution_eval_emits_every_tick(self):
-        pytest.fail("Phase 2 — layer-resolution trace emission not yet wired")
+    """Trace fires once per `resolve_layer_priority` call. Three scenarios
+    cover the three winning layers (schedule / price overlay / 5cp);
+    failure-isolation test parallels Phase 1."""
+
+    @pytest.mark.asyncio
+    async def test_layer_resolution_eval_emits_every_tick(self, capsys, monkeypatch):
+        """Three calls to `_push_layer_change_mid_period` with distinct
+        layer inputs produce three trace lines with the right
+        `winning_layer` + `reason_code`:
+
+          1. price=normal, 5cp=inactive -> schedule wins
+          2. price=elevated tier (+3F), 5cp=inactive -> price overlay wins
+          3. price=normal, 5cp=active (85F shutoff) -> 5cp wins
+        """
+        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+        cfg = _make_schedule_check_cfg()
+        c4, _ = _mock_c4_client()
+        write_api = MagicMock()
+        firing = FiringState(
+            last_schedule_cool_f=75,  # baseline; needed so the mid-period path runs
+            last_action_label="COAST",
+            last_pushed_effective_cool_f=None,
+        )
+        now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        # 1: schedule wins (price normal, 5cp inactive)
+        li_schedule = LayerInputs(
+            price_tier_name="normal", price_offset_f=0, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=5.0,
+            fivecp_active=False, fivecp_scopes_fired=(),
+            fivecp_load_mw=0.0, fivecp_derivative=0.0,
+            fivecp_forecast_peak=0.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", li_schedule,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local, tick_id="tick_1",
+        )
+
+        # 2: price overlay wins (elevated tier, offset +3 -> 78F)
+        li_price = LayerInputs(
+            price_tier_name="elevated", price_offset_f=3, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=12.0,
+            fivecp_active=False, fivecp_scopes_fired=(),
+            fivecp_load_mw=0.0, fivecp_derivative=0.0,
+            fivecp_forecast_peak=0.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", li_price,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local + timedelta(minutes=1), tick_id="tick_2",
+        )
+
+        # 3: 5cp wins (active, 85F shutoff override)
+        li_5cp = LayerInputs(
+            price_tier_name="normal", price_offset_f=0, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=5.0,
+            fivecp_active=True, fivecp_scopes_fired=("comed_zone",),
+            fivecp_load_mw=20000.0, fivecp_derivative=0.5,
+            fivecp_forecast_peak=21000.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", li_5cp,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local + timedelta(minutes=2), tick_id="tick_3",
+        )
+
+        traces = _parse_trace_lines(capsys.readouterr().out, LAYER_RESOLUTION_EVENT)
+        assert len(traces) == 3, f"expected 3 traces, got {len(traces)}: {traces}"
+        t1, t2, t3 = traces
+
+        # Schedule wins
+        assert t1["winning_layer"] == "schedule"
+        assert t1["reason_code"] == "LAYER_RESOLUTION_SCHEDULE_WINS"
+        assert t1["schedule_cool_f"] == 75
+        assert t1["effective_cool_f"] == 75
+        assert t1["fivecp_active"] is False
+        assert t1["tick_id"] == "tick_1"
+        # First trace: prev_eff is None, new is 75 -> info level
+        assert t1["level"] == "info"
+
+        # Price overlay wins
+        assert t2["winning_layer"] == "price_overlay"
+        assert t2["reason_code"] == "LAYER_RESOLUTION_PRICE_OVERLAY_WINS"
+        assert t2["price_overlay_tier"] == "elevated"
+        assert t2["price_cool_f"] == 78
+        assert t2["effective_cool_f"] == 78
+        assert t2["tick_id"] == "tick_2"
+        # Effective changed 75 -> 78 -> info
+        assert t2["level"] == "info"
+        assert t2["prev_effective_cool_f"] == 75
+
+        # 5CP wins
+        assert t3["winning_layer"] == "5cp"
+        assert t3["reason_code"] == "LAYER_RESOLUTION_5CP_WINS"
+        assert t3["fivecp_active"] is True
+        assert t3["fivecp_cool_f"] == 85
+        assert t3["effective_cool_f"] == 85
+        assert t3["fivecp_scopes_fired"] == ["comed_zone"]
+        assert t3["tick_id"] == "tick_3"
+        assert t3["level"] == "info"
+
+    @pytest.mark.asyncio
+    async def test_layer_resolution_trace_is_failure_isolated(self, capsys, monkeypatch):
+        """Patching `app.log` to raise on `decision_trace.layer_resolution`
+        events must NOT propagate into `_push_layer_change_mid_period`'s
+        caller path. The mid-period push behavior continues normally."""
+        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        import app as app_mod
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+
+        original_log = app_mod.log
+        def _maybe_raise(level, msg, **fields):
+            if isinstance(msg, str) and msg == LAYER_RESOLUTION_EVENT:
+                raise RuntimeError("synthetic layer_resolution trace failure")
+            return original_log(level, msg, **fields)
+        monkeypatch.setattr(app_mod, "log", _maybe_raise)
+
+        cfg = _make_schedule_check_cfg()
+        c4, _ = _mock_c4_client()
+        write_api = MagicMock()
+        firing = FiringState(
+            last_schedule_cool_f=75,
+            last_action_label="COAST",
+            last_pushed_effective_cool_f=None,
+        )
+        layer_inputs = LayerInputs(
+            price_tier_name="elevated", price_offset_f=3, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=12.0,
+            fivecp_active=False, fivecp_scopes_fired=(),
+            fivecp_load_mw=0.0, fivecp_derivative=0.0,
+            fivecp_forecast_peak=0.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        # Primary assertion: control path completed without exception.
+        # `_trace`'s internal try/except swallows the synthetic failure,
+        # so `_trace_layer_resolution` returns normally and the
+        # mid-period push continues. No further assertion needed — if
+        # the exception had propagated, this await would have raised.
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", layer_inputs,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local, tick_id="tick_iso",
+        )
 
 
 # ---- Phase 3 — supervisor per invocation ---------------------------------
