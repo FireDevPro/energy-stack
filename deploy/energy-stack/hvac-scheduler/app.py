@@ -43,7 +43,15 @@ Environment variables:
     CONTROL4_PASSWORD           Control4 account password
     CONTROL4_CONTROLLER_IP      Director IP (default 192.168.1.30)
     CONTROL4_THERMOSTAT_ID      C4 item id (default 3231)
-    SCHEDULER_DRY_RUN           "true"|"false" (default "true")
+    SCHEDULER_MODE              "shadow" | "experiment" | "production" (REQUIRED;
+                                no default). shadow = never writes; experiment =
+                                writes during Arm B inside the locked
+                                2026-06-01..2026-11-16 calendar; production =
+                                writes always (excluded from study analysis).
+                                Module refuses to start (sys.exit(2)) on missing
+                                or invalid value. Spec §3 lock.
+    SCHEDULER_DRY_RUN           Retired by SCHEDULER_MODE. If still set in the
+                                env, it is logged-and-ignored at Config load.
     SCHEDULER_DECISION_HOUR     Hour-of-day to decide tomorrow (default 21)
     SCHEDULER_REVISIT_HOURS     Comma-separated local hours at which to re-poll
                                 today's forecast and re-classify if it shifted
@@ -375,6 +383,12 @@ def _writes_allowed(when_ct: datetime) -> bool:
     CT-local datetimes so we strip tzinfo before comparing.
     """
     mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+    # Defense in depth: if mode was mutated at runtime to something
+    # invalid (after import-time validation passed), fail closed
+    # rather than fall through to the experiment branch (which would
+    # silently consult the calendar and write on Arm B periods).
+    if mode not in VALID_SCHEDULER_MODES:
+        return False
     if mode == "shadow":
         return False
     if mode == "production":
@@ -891,8 +905,13 @@ class FiringState:
     # 288-rows/day arm-mode trace per spec §11 #2.
     last_arm_mode_audit_at_utc: datetime | None = None
     # Track the most recently observed arm letter so switch-event logging
-    # can detect transitions across ticks (spec §11 #3).
+    # can detect transitions across ticks (spec §11 #3). ``arm_observed``
+    # is False on cold start (process boot) and True once the first tick
+    # has populated ``last_observed_arm`` — this distinguishes a mid-arm
+    # restart (no boundary, don't log) from a real None->A transition at
+    # experiment start (boundary, log).
     last_observed_arm: str | None = None
+    arm_observed: bool = False
     # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
     # where ``fetch_latest_comed`` returned a real price. Used to release
     # a carried-forward price-overlay tier when the feed has been
@@ -1279,30 +1298,37 @@ def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
 
 
 def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
-                          when_ct: datetime) -> str | None:
+                          *, arm_observed: bool,
+                          when_ct: datetime) -> tuple[str | None, bool]:
     """Detect arm-boundary crossings (spec §11 #3) and write
     ``hvac.switch_event`` rows when the active arm differs from
-    ``last_arm``. Returns the current arm letter (or None) so the
+    ``last_arm``. Returns ``(current_arm, arm_observed=True)`` so the
     caller can update its FiringState.
 
-    Cold-start (last_arm is None) is NOT logged: switch events are
-    calendar boundaries, not initialization. The first transition the
-    controller observes after that seeds the next comparison.
+    ``arm_observed`` is the cold-start guard. False on first call after
+    process boot: the function seeds ``last_observed_arm`` without
+    logging (a mid-arm controller restart is not a calendar boundary).
+    True on every subsequent call: real changes between ``last_arm``
+    and ``current_arm`` ARE boundaries and ARE logged — including the
+    None -> A transition at experiment start (2026-06-01 00:00 CT).
     """
     when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
     current_arm = current_arm_at(when_naive)
-    if last_arm is None or current_arm == last_arm:
-        return current_arm
+    if not arm_observed:
+        # Cold start: seed FiringState, no log.
+        return current_arm, True
+    if current_arm == last_arm:
+        return current_arm, True
 
     planned_ts = _planned_boundary_ts(when_naive)
     p = (Point("hvac.switch_event")
          .time(when_ct)
-         .field("from_arm", last_arm)
+         .field("from_arm", last_arm or "")
          .field("to_arm", current_arm or "")
          .field("boundary_planned_ts", planned_ts.isoformat() if planned_ts else "")
          .field("boundary_actual_ts", when_naive.isoformat()))
     write_api.write(bucket=bucket, record=p)
-    return current_arm
+    return current_arm, True
 
 
 def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
@@ -1329,9 +1355,15 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
                     required_feeds: dict, controller_alive: bool) -> None:
     """Write one ``hvac.arm_mode`` row classifying the current cycle.
 
-    Per spec §11 #2 + §5: ``mode_actual`` is one of A-active / B-active
-    / B-fallback / B-down. Outside the locked experiment window no row
-    is written (the controller has nothing to classify).
+    Per spec §11 #2 + §5: in-window classification is one of A-active
+    / B-active / B-fallback / B-down (carried in ``mode_actual`` with
+    ``arm`` tag). Outside the locked experiment window the controller
+    is still alive and ticking; we emit a liveness-only row with
+    ``mode_actual="outside-window"`` (and no ``arm`` tag) so the
+    watchdog (spec §11 #5, queries ``hvac.arm_mode``) doesn't fire
+    false ``controller_alive=false`` during shadow weeks. Out-of-
+    window rows are filtered out by the analysis pipeline's date-
+    range query.
 
     ``required_feeds`` is the dict of input-feed health flags that the
     caller has already filtered to the feeds REQUIRED for this hour
@@ -1348,6 +1380,10 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
     when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
     arm = current_arm_at(when_naive)
     if arm is None:
+        p = (Point("hvac.arm_mode")
+             .time(when_ct)
+             .field("mode_actual", "outside-window"))
+        write_api.write(bucket=bucket, record=p)
         return
     if arm == "A":
         mode_actual = "A-active"
@@ -2125,8 +2161,9 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # boundary crossing is captured at minute resolution. The function
     # is a no-op when no transition occurred.
     now_utc_for_audit = now_local.astimezone(timezone.utc)
-    firing.last_observed_arm = maybe_log_arm_switch(
-        write_api, cfg.influx_bucket, firing.last_observed_arm, now_local,
+    firing.last_observed_arm, firing.arm_observed = maybe_log_arm_switch(
+        write_api, cfg.influx_bucket, firing.last_observed_arm,
+        arm_observed=firing.arm_observed, when_ct=now_local,
     )
     if (firing.last_arm_mode_audit_at_utc is None
             or now_utc_for_audit - firing.last_arm_mode_audit_at_utc

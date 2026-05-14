@@ -89,3 +89,20 @@ def test_check_uses_threshold_minutes_in_query():
     assert "-15m" in flux
     assert 'r._measurement == "hvac.arm_mode"' in flux
     assert 'bucket: "energy"' in flux
+
+
+def test_check_propagates_query_exception_to_caller():
+    """When InfluxDB itself is down, query() raises. The check function
+    should propagate (not swallow) so the main loop can log the error
+    via its except handler. Swallowing here would silently mark the
+    controller as alive when in fact the watchdog can't see anything.
+    """
+    query_api = MagicMock()
+    query_api.query.side_effect = ConnectionError("influx unreachable")
+    write_api = MagicMock()
+    with pytest.raises(ConnectionError):
+        check.check_controller_alive(
+            query_api, write_api, bucket="energy", threshold_minutes=10,
+        )
+    # No spurious heartbeat false on a query error.
+    write_api.write.assert_not_called()

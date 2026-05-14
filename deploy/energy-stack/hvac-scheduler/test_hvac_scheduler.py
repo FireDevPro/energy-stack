@@ -2375,6 +2375,17 @@ def test_writes_allowed_handles_tz_aware_datetime(monkeypatch):
     assert app._writes_allowed(when_ct_arm_a) is False
 
 
+def test_writes_allowed_fails_closed_on_runtime_invalid_mode(monkeypatch):
+    """Defense in depth: if SCHEDULER_MODE is mutated to an invalid
+    value at runtime (after the import-time validation passed), the
+    gate must fail closed (return False) rather than fall through to
+    the experiment branch and consult the calendar. Spec §3 fail-
+    closed lock applies at all times, not just startup."""
+    monkeypatch.setenv("SCHEDULER_MODE", "bogus_runtime_value")
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm B - would write under experiment
+    assert app._writes_allowed(when_ct) is False
+
+
 # ---- hvac.arm_mode telemetry (spec §11 #2) --------------------------------
 
 
@@ -2426,12 +2437,31 @@ def test_write_arm_mode_writes_b_down_when_controller_not_alive():
     assert 'mode_actual="B-down"' in line
 
 
-def test_write_arm_mode_skips_outside_experiment_window():
+def test_write_arm_mode_outside_experiment_window_emits_outside_window_row():
+    """Spec §5 lists 4 modes for in-window classification. Outside the
+    locked window the controller is still alive and ticking; we emit a
+    liveness row with mode_actual="outside-window" so the watchdog
+    (spec §11 #5, queries hvac.arm_mode) doesn't fire false controller_
+    alive=false during shadow weeks. Out-of-window rows are filtered
+    out by the analysis pipeline's date-range query."""
     write_api = MagicMock()
     when_ct = datetime(2026, 5, 25, 13, 0)  # before experiment start
     feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
-    write_api.write.assert_not_called()
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.arm_mode ")  # NO arm tag for outside-window
+    assert 'mode_actual="outside-window"' in line
+
+
+def test_write_arm_mode_outside_window_after_experiment_end():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 11, 25, 13, 0)  # after experiment end
+    feeds = {"price": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert 'mode_actual="outside-window"' in line
 
 
 def test_write_arm_mode_accepts_tz_aware_datetime():
@@ -2513,8 +2543,11 @@ def test_switch_event_logged_at_a_to_b_boundary():
     write_api = MagicMock()
     # 2026-06-15 00:00 CT is the Arm 1 (A) -> Arm 2 (B) boundary
     when_ct = datetime(2026, 6, 15, 0, 0)
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
     assert new_arm == "B"
+    assert observed is True
     write_api.write.assert_called_once()
     line = _line_protocol(write_api)
     assert line.startswith("hvac.switch_event ")
@@ -2526,28 +2559,56 @@ def test_switch_event_logged_at_a_to_b_boundary():
 def test_switch_event_not_logged_within_arm():
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 5, 14, 0)  # mid-Arm-1
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
     assert new_arm == "A"
+    assert observed is True
     write_api.write.assert_not_called()
 
 
 def test_switch_event_cold_start_does_not_log():
-    """First observation has last_arm=None; the function returns the
-    current arm to seed FiringState but does NOT write a switch row.
-    Switch events are calendar boundaries, not initialization events."""
+    """Cold start (arm_observed=False): the function seeds FiringState
+    by returning the current arm + arm_observed=True but does NOT
+    write a switch row. Mid-arm controller restart should not produce
+    a phantom "boundary" event."""
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 5, 14, 0)
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", None, when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", None, arm_observed=False, when_ct=when_ct,
+    )
     assert new_arm == "A"
+    assert observed is True
     write_api.write.assert_not_called()
+
+
+def test_switch_event_logs_experiment_start_boundary_from_observed_none():
+    """Once arm_observed=True (post-cold-start), a transition from
+    None (previously observed = outside window) to a real arm IS a
+    spec §11 #3 boundary and MUST log. Without this, the controller's
+    first observation of June 1 00:00 CT is silently swallowed."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 1, 0, 0)  # experiment start
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", None, arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "A"
+    assert observed is True
+    line = _line_protocol(write_api)
+    assert 'from_arm=""' in line
+    assert 'to_arm="A"' in line
+    assert 'boundary_planned_ts="2026-06-01T00:00:00"' in line
 
 
 def test_switch_event_logged_at_b_to_a_boundary():
     write_api = MagicMock()
     # 2026-06-29 00:00 CT is the Arm 2 (B) -> Arm 3 (A) boundary
     when_ct = datetime(2026, 6, 29, 0, 0)
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", "B", when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "B", arm_observed=True, when_ct=when_ct,
+    )
     assert new_arm == "A"
+    assert observed is True
     line = _line_protocol(write_api)
     assert 'from_arm="B"' in line
     assert 'to_arm="A"' in line
@@ -2559,8 +2620,11 @@ def test_switch_event_logged_at_experiment_end():
     empty to_arm and the experiment-end timestamp."""
     write_api = MagicMock()
     when_ct = datetime(2026, 11, 16, 0, 0)  # experiment end (exclusive)
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", "B", when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "B", arm_observed=True, when_ct=when_ct,
+    )
     assert new_arm is None
+    assert observed is True
     line = _line_protocol(write_api)
     assert 'from_arm="B"' in line
     assert 'to_arm=""' in line
@@ -2571,8 +2635,11 @@ def test_switch_event_includes_actual_timestamp():
     write_api = MagicMock()
     # Observation slightly after the boundary (e.g., next 1-min tick)
     when_ct = datetime(2026, 6, 15, 0, 1)
-    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
     assert new_arm == "B"
+    assert observed is True
     line = _line_protocol(write_api)
     # Planned ts is the calendar boundary (00:00); actual ts is the observation (00:01)
     assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
