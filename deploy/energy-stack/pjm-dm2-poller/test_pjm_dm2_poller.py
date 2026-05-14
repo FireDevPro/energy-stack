@@ -413,6 +413,61 @@ def test_default_start_date_is_spec_locked():
     assert DEFAULT_START_DATE == date(2026, 1, 1)
 
 
+def test_default_sleep_seconds_pinned_to_15():
+    """Discovered 2026-05-14 during live backfill execution: the
+    original default of 5.0s yielded 12 calls/min — exactly 2x PJM
+    Non-Member's 6 calls/min ceiling — and produced 66 HTTP 429
+    failures across 133 dates. Pin to 15.0 so the math is visibly
+    correct in source AND can't silently regress via a quick edit."""
+    from backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
+    assert DEFAULT_SLEEP_SECONDS == 15.0
+
+
+def test_default_sleep_keeps_combined_rate_under_pjm_ceiling():
+    """The math the previous default failed: PJM Non-Member API
+    enforces 6 calls / 60s rolling window. The pjm-dm2-poller's
+    live inst_load + inst_load_rto feeds fire on a 5-min schedule
+    so in the worst-case 60s window 2 of their calls land inside
+    the window (when a :00/:05/:10/... tick falls in it). The
+    backfill must reserve enough headroom for that co-tenancy:
+
+        max_backfill_calls_per_min + live_co_tenancy_calls ≤ 6
+        (60 / DEFAULT_SLEEP_SECONDS) + 2 ≤ 6
+        60 / DEFAULT_SLEEP_SECONDS ≤ 4
+        DEFAULT_SLEEP_SECONDS ≥ 15.0
+    """
+    from backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
+    PJM_NON_MEMBER_CEILING_PER_MIN = 6
+    LIVE_POLLER_CO_TENANCY_CALLS_PER_MIN = 2  # inst_load + inst_load_rto
+    max_backfill_per_min = 60.0 / DEFAULT_SLEEP_SECONDS
+    combined = max_backfill_per_min + LIVE_POLLER_CO_TENANCY_CALLS_PER_MIN
+    assert combined <= PJM_NON_MEMBER_CEILING_PER_MIN, (
+        f"DEFAULT_SLEEP_SECONDS={DEFAULT_SLEEP_SECONDS} produces "
+        f"{max_backfill_per_min} backfill calls/min + "
+        f"{LIVE_POLLER_CO_TENANCY_CALLS_PER_MIN} live = {combined}, "
+        f"exceeding PJM's {PJM_NON_MEMBER_CEILING_PER_MIN}/min ceiling"
+    )
+
+
+def test_argparse_sleep_default_uses_module_constant():
+    """Belt-and-braces: the CLI default and the module constant must
+    agree. A future edit that changes one without the other would
+    leave a discrepancy that this test catches."""
+    import backfill_rt_hrl_lmps as bf
+    args = bf._parse_args([])
+    assert args.sleep == bf.DEFAULT_SLEEP_SECONDS
+
+
+def test_backfill_range_default_sleep_uses_module_constant():
+    """Same belt-and-braces for the library-call path: callers that
+    do not pass sleep_s must inherit the module constant, not a
+    locally-baked-in 5.0 from the function signature."""
+    import inspect
+    import backfill_rt_hrl_lmps as bf
+    sig = inspect.signature(bf.backfill_range)
+    assert sig.parameters["sleep_s"].default == bf.DEFAULT_SLEEP_SECONDS
+
+
 def test_default_end_date_is_yesterday():
     """Settled data is T+1; the live poller covers yesterday onward.
     The backfill default ends at yesterday so the two together cover
