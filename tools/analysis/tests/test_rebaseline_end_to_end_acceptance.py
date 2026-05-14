@@ -17,6 +17,8 @@ feature-complete only when the real implementation produces these outputs.
 """
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from tools.analysis.tests.fixtures.synth_rebaseline_dataset import (
@@ -197,6 +199,143 @@ def test_fixture_is_importable_and_builds():
     )
     assert len(synth.expected_arms_passed_validity) > 0
     assert len(synth.injected_modes) > 0
+
+
+def test_fixture_actually_injects_claimed_scenarios():
+    """Fixture-input self-consistency (P2 reviewer fix).
+
+    Independence verifies the fixture doesn't import the implementation,
+    but doesn't catch the case where expected values are disconnected
+    from the actual synthetic inputs. This test verifies the raw fixture
+    REALLY CONTAINS the scenarios it claims:
+    - All declared INJECTED_MODES appear in hvac_arm_mode_df
+    - Weather-outlier arm (Arm 6 in scenarios) has materially distinct weather
+    - Telemetry-invalid scenarios (Arms 7, 8) have OMITTED Refoss data for
+      the claimed invalid-hour count
+
+    This is the P2 fix: prevent expected values from claiming behavior
+    the inputs don't actually produce.
+    """
+    from tools.analysis.tests.fixtures.synth_rebaseline_dataset import (
+        CALENDAR,
+        SCENARIOS,
+        WEATHER_OUTLIER_SHIFT_F,
+        BASE_TEMP_F,
+    )
+
+    synth = build_synth_dataset()
+
+    # 1. All declared INJECTED_MODES are present in hvac_arm_mode_df
+    observed_modes = set(synth.hvac_arm_mode_df["mode_actual"].unique())
+    missing_modes = synth.injected_modes - observed_modes
+    assert not missing_modes, (
+        f"Fixture claims to inject {synth.injected_modes} but "
+        f"hvac_arm_mode_df only contains {observed_modes}. "
+        f"Missing: {missing_modes}. "
+        "Either inject these modes in the data builder OR remove them "
+        "from INJECTED_MODES."
+    )
+
+    # 2. Weather-outlier arms have distinct temperature stats vs non-outlier arms.
+    arm_idx_to_dates = {idx: (start, end) for idx, _, start, end in CALENDAR}
+    outlier_arms = [s[2] for s in SCENARIOS if s[8]]  # arm_b indices where weather_outlier=True
+    nonoutlier_arms = [a for a in arm_idx_to_dates if a not in outlier_arms]
+    assert outlier_arms, "Test design error: SCENARIOS has no weather_outlier"
+
+    def arm_mean_temp(arm_idx):
+        start, end = arm_idx_to_dates[arm_idx]
+        in_arm = (
+            (synth.ecowitt_df["_time"] >= start) &
+            (synth.ecowitt_df["_time"] < end)
+        )
+        return synth.ecowitt_df.loc[in_arm, "ch1_temp_f"].mean()
+
+    for outlier_arm in outlier_arms:
+        outlier_mean = arm_mean_temp(outlier_arm)
+        # Compare to a non-outlier arm
+        nonoutlier_mean = arm_mean_temp(nonoutlier_arms[0])
+        delta = abs(outlier_mean - nonoutlier_mean)
+        # Expect delta close to WEATHER_OUTLIER_SHIFT_F
+        assert delta >= WEATHER_OUTLIER_SHIFT_F - 1.0, (
+            f"Arm {outlier_arm} is declared weather_outlier=True but its "
+            f"mean temp ({outlier_mean:.1f}°F) is only {delta:.1f}°F from "
+            f"non-outlier Arm {nonoutlier_arms[0]} ({nonoutlier_mean:.1f}°F). "
+            f"Expected shift ~{WEATHER_OUTLIER_SHIFT_F}°F."
+        )
+
+    # 3. Telemetry-invalid scenarios actually have OMITTED Refoss data.
+    #    For each arm with claimed telemetry-invalid count, count distinct
+    #    UTC hours where Refoss has data; missing hours = ARM_TOTAL_HOURS minus
+    #    distinct-hour count. The post-washout invalid count should match.
+    for scenario in SCENARIOS:
+        (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+         ti_a, ti_b, weather_outlier_b, dst) = scenario
+        for arm_idx, expected_ti in ((arm_a, ti_a), (arm_b, ti_b)):
+            if expected_ti == 0:
+                continue
+            start, end = arm_idx_to_dates[arm_idx]
+            in_arm = (
+                (synth.refoss_df["_time"] >= start) &
+                (synth.refoss_df["_time"] < end)
+            )
+            # Distinct UTC hours present in Refoss for this arm
+            present_hours = synth.refoss_df.loc[in_arm, "_time"].dt.floor("h").unique()
+            # Expected: ARM_TOTAL_HOURS minus expected_ti
+            expected_present = 14 * 24 - expected_ti
+            assert len(present_hours) == expected_present, (
+                f"Arm {arm_idx} ({label}) claims {expected_ti} "
+                f"telemetry-invalid hours, but Refoss data has "
+                f"{len(present_hours)} distinct hours present "
+                f"(expected {expected_present}). "
+                "Either inject the omissions OR adjust the expected count."
+            )
+
+    # 4. B-fallback hours: count B-fallback rows in hvac_arm_mode_df for each
+    #    arm that claims B-fallback injection. There are 12 mode rows per hour
+    #    (every 5 min), so the expected count is fallback_hours_b * 12.
+    for scenario in SCENARIOS:
+        (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+         ti_a, ti_b, weather_outlier_b, dst) = scenario
+        if fallback_hours_b == 0:
+            continue
+        start, end = arm_idx_to_dates[arm_b]
+        in_arm_b = (
+            (synth.hvac_arm_mode_df["_time"] >= start) &
+            (synth.hvac_arm_mode_df["_time"] < end)
+        )
+        fallback_count = (
+            (synth.hvac_arm_mode_df.loc[in_arm_b, "mode_actual"] == "B-fallback")
+            .sum()
+        )
+        expected_fallback_rows = fallback_hours_b * 12  # 12 rows per hour
+        assert fallback_count == expected_fallback_rows, (
+            f"Arm {arm_b} ({label}) claims {fallback_hours_b} B-fallback "
+            f"hours but hvac_arm_mode_df has {fallback_count} B-fallback "
+            f"rows (expected {expected_fallback_rows}). Inject correctly."
+        )
+
+    # 5. Cooling-active hours actually have nonzero em:2+em:8 power.
+    # Use post-washout day 11 hour 12 = offset 276. That's past any injected
+    # fallback/telemetry-invalid offsets (which come from the first
+    # fallback_hours_b + ti hours of the cooling-active list).
+    for scenario in SCENARIOS:
+        (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+         ti_a, ti_b, weather_outlier_b, dst) = scenario
+        if cooling_per_day == 0:
+            continue
+        start, _ = arm_idx_to_dates[arm_a]
+        cooling_hour = start + datetime.timedelta(hours=11 * 24 + 12)
+        mask = (
+            (synth.refoss_df["_time"] >= cooling_hour) &
+            (synth.refoss_df["_time"] < cooling_hour + datetime.timedelta(hours=1)) &
+            (synth.refoss_df["channel"].isin(["em:2", "em:8"]))
+        )
+        total_w = synth.refoss_df.loc[mask, "_value"].sum()
+        assert total_w > 1000.0, (
+            f"Arm {arm_a} ({label}) claims {cooling_per_day} cooling-active "
+            f"hours/day but em:2+em:8 power at day-11 cooling hour is "
+            f"only {total_w}W. Expected >1000W."
+        )
 
 
 def test_fixture_expected_values_do_not_import_implementation():

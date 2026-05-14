@@ -20,10 +20,14 @@ this file. THIS FIXTURE DOES NOT IMPORT FROM `tools.analysis.*` for expected
 output computation. If a reviewer finds an `from tools.analysis.X import Y`
 used to derive an expected value, that is a bug.
 
-Phase 0 scaffold scope: this fixture provides the API + schema + expected
-values needed by the acceptance test. Data generation is intentionally
-simple; later phases (3-6) progressively elaborate it as real implementation
-lands and the test de-scaffolds.
+SCENARIO INJECTION (P1 reviewer fix): each scenario in SCENARIOS is actually
+injected into the generated data — not just claimed in the expected table.
+- B-fallback hours: written as `mode_actual = "B-fallback"` in hvac_arm_mode_df
+- Telemetry-invalid hours: Refoss rows OMITTED for those hours (validity check
+  treats missing-hour data as invalid per spec §7)
+- Weather-outlier arm: ch1_temp_f shifted +20°F vs other arms
+- Cooling-active hours: em:2/em:8/em:9 set to non-zero only during
+  cooling_active_hours_per_day window (default 12:00-12+N:00 CT)
 
 If spec §2 (arm calendar) changes, update CALENDAR below to match.
 """
@@ -45,6 +49,8 @@ import numpy as np
 
 # Locked SCED arm calendar per spec §2. Hardcoded here for fixture
 # independence; do NOT import from tools.analysis.arm_calendar.
+# Tuple = (arm_period_idx_1based, arm_letter, start_utc, end_utc).
+# Phase 0 scaffold treats timestamps as UTC throughout for simplicity.
 CALENDAR: tuple[tuple[int, str, datetime.datetime, datetime.datetime], ...] = (
     (1,  "A", datetime.datetime(2026,  6,  1, 0, 0), datetime.datetime(2026,  6, 15, 0, 0)),
     (2,  "B", datetime.datetime(2026,  6, 15, 0, 0), datetime.datetime(2026,  6, 29, 0, 0)),
@@ -62,126 +68,159 @@ CALENDAR: tuple[tuple[int, str, datetime.datetime, datetime.datetime], ...] = (
 
 WASHOUT_HOURS = 48
 POST_WASHOUT_HOURS = 12 * 24  # 288 per spec §2 (UTC-elapsed)
+ARM_TOTAL_HOURS = 14 * 24      # 336 — full arm including washout
 
-# Injected scenario constants. Used both to construct inputs and to compute
-# expected outputs. Independence rule means expected values below are derived
-# from THESE constants, not from running pipeline code.
-SAVINGS_PCT = 0.15                # Arm B uses 15% less HVAC kWh than Arm A in cooling-active hours
-BASELINE_HVAC_KW = 2.5            # average HVAC power when running, in cooling-active hours
-COOLING_ACTIVE_HOURS_PER_DAY = 8  # default cooling-active hours per analysis day (mid-summer pairs)
-KNOWN_LMP_C_PER_KWH = 5.0         # flat synthetic LMP for hand-computable HVAC$
-KNOWN_DELIVERY_C_PER_KWH = 4.5    # flat synthetic delivery (DTOD + IEDT + riders combined)
-TOTAL_RATE_C_PER_KWH = KNOWN_LMP_C_PER_KWH + KNOWN_DELIVERY_C_PER_KWH  # 9.5 cents/kWh
+# Injected scenario constants.
+SAVINGS_PCT = 0.15
+BASELINE_HVAC_KW = 2.5             # em:2 + em:8 sum when AC running
+BLOWER_W_WHEN_RUNNING = 100.0      # em:9 when AC active
+KNOWN_LMP_C_PER_KWH = 5.0
+KNOWN_DELIVERY_C_PER_KWH = 4.5
+TOTAL_RATE_C_PER_KWH = KNOWN_LMP_C_PER_KWH + KNOWN_DELIVERY_C_PER_KWH  # 9.5
 
-# Per-pair injected scenarios. Each tuple is one synthesis scenario.
-# (pair_id, arm_a_period, arm_b_period, label, cooling_active_hours_per_day,
-#  arm_b_fallback_hours, telemetry_invalid_hours_a, telemetry_invalid_hours_b,
-#  weather_outlier, dst_crossing)
-SCENARIOS = (
-    # Pair 1: mild June, fully-valid, B saves 15%
+# Outlier-arm temperature shift, applied to ch1_temp_f for the entire arm.
+WEATHER_OUTLIER_SHIFT_F = 20.0
+BASE_TEMP_F = 78.0
+BASE_DEWPOINT_F = 60.0
+
+# Per-pair injected scenarios. Each row = one synthesis scenario.
+# (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+#  telemetry_invalid_a, telemetry_invalid_b, weather_outlier_on_b, dst_crossing)
+SCENARIOS: tuple = (
     (1, 1, 2,  "mild_summer",     6,  0,  0,  0, False, False),
-    # Pair 2: heat wave, B has 20 B-fallback hours mid-period
     (2, 3, 4,  "heat_wave",       10, 20, 0,  0, False, False),
-    # Pair 3: weather outlier on Arm 6 -> poor_weather_match_flag
     (3, 5, 6,  "weather_outlier", 8,  0,  0,  0, True,  False),
-    # Pair 4: telemetry-invalid hours in both arms
     (4, 7, 8,  "telemetry_gap",   8,  0,  15, 18, False, False),
-    # Pair 5: shoulder, low cooling (denominator-small)
-    (5, 9, 10, "shoulder",        1,  0,  0,  0, False, False),
-    # Pair 6: arm 11 spans DST; cool weather
+    (5, 9, 10, "shoulder",        0,  0,  0,  0, False, False),
     (6, 11, 12, "dst_cool",       2,  0,  0,  0, False, True),
 )
 
-# Modes the fixture INJECTS via mode_telemetry construction. The acceptance
-# test asserts only these modes are observed in the pipeline output. Does NOT
-# claim all 4 modes will be present in every run (per Chris's M-tier guidance).
+# Modes the fixture INJECTS via mode_telemetry construction. Acceptance test
+# asserts these modes are observed in the pipeline output. Does NOT require
+# all 4 modes to be present universally (per Chris's M-tier guidance).
 INJECTED_MODES = {"A-active", "B-active", "B-fallback", "telemetry-invalid"}
+
+COOLING_START_HOUR_CT = 12  # cooling-active window starts at 12:00 CT
+
+
+# ---------------------------------------------------------------------------
+# Per-arm scenario lookup
+# ---------------------------------------------------------------------------
+
+
+def _build_arm_state() -> dict[int, dict]:
+    """Returns {arm_period_idx: state_dict}.
+
+    state_dict keys:
+    - role: "A" or "B"
+    - pair_id, label
+    - cooling_per_day
+    - fallback_hour_set_in_arm:   set of hour-offsets-from-arm-start where mode=B-fallback (only for B arms)
+    - telemetry_invalid_hour_set: set of hour-offsets-from-arm-start where Refoss data is OMITTED
+    - weather_outlier: bool (only meaningful on the arm with the outlier shift)
+    """
+    state = {}
+    for (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+         ti_a, ti_b, weather_outlier_b, dst) in SCENARIOS:
+        # cooling-active hour offsets within the post-washout window of an arm
+        cooling_offsets = _cooling_active_offsets(cooling_per_day)
+        # Available cooling-active hours we can "spend" on fallback / invalid
+        # injection. Pull from the start of the list deterministically.
+        fallback_set_b = set(cooling_offsets[:fallback_hours_b])
+        # Telemetry-invalid hours follow after fallback in the same list to
+        # avoid overlap. Each arm has its own injected indices.
+        ti_set_a = set(cooling_offsets[fallback_hours_b:fallback_hours_b + ti_a])
+        ti_set_b = set(cooling_offsets[fallback_hours_b:fallback_hours_b + ti_b])
+        state[arm_a] = {
+            "role": "A",
+            "pair_id": pair_id,
+            "label": label,
+            "cooling_per_day": cooling_per_day,
+            "fallback_hour_set": set(),
+            "telemetry_invalid_hour_set": ti_set_a,
+            "weather_outlier": False,
+            "dst_crossing": dst,
+        }
+        state[arm_b] = {
+            "role": "B",
+            "pair_id": pair_id,
+            "label": label,
+            "cooling_per_day": cooling_per_day,
+            "fallback_hour_set": fallback_set_b,
+            "telemetry_invalid_hour_set": ti_set_b,
+            "weather_outlier": weather_outlier_b,
+            "dst_crossing": dst,
+        }
+    return state
+
+
+def _cooling_active_offsets(cooling_per_day: int) -> list[int]:
+    """Hour-offsets-from-arm-start where cooling is active.
+
+    Cooling window: 12:00-(12+cooling_per_day):00 each day, post-washout only.
+    Arm starts Monday 00:00; washout = first 48h (Mon 00:00 -> Wed 00:00).
+    Post-washout days = days 2..13 (Wed through Sun next-week before Mon switch).
+    """
+    if cooling_per_day <= 0:
+        return []
+    offsets = []
+    # Day 0 = Mon (washout day 1)
+    # Day 1 = Tue (washout day 2)
+    # Day 2 = Wed (post-washout day 1) - first cooling-active day
+    # Day 13 = Sun (post-washout day 12) - last cooling-active day
+    for day in range(2, 14):  # 12 post-washout days
+        for hour in range(COOLING_START_HOUR_CT,
+                          COOLING_START_HOUR_CT + cooling_per_day):
+            offsets.append(day * 24 + hour)
+    return offsets
 
 
 # ---------------------------------------------------------------------------
 # Hand-computed expected outputs (oracle-independence #8 rule)
 # ---------------------------------------------------------------------------
 
-def _arm_a_dollars(scenario_label: str, cooling_active_hours_per_day: int) -> float:
-    """Independent calculation of Arm A HVAC$ for a scenario.
 
-    Per-day cooling: COOLING_ACTIVE_HOURS_PER_DAY * BASELINE_HVAC_KW kWh.
-    Per analysis-window (12 days): * 12.
-    Cost: * TOTAL_RATE_C_PER_KWH / 100 = dollars.
+def _expected_per_pair_row(scenario_tuple: tuple) -> dict:
+    """Hand-computed expected per-pair row from scenario parameters."""
+    (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+     ti_a, ti_b, weather_outlier, dst) = scenario_tuple
 
-    NOTE: simplified model. Real pipeline uses per-hour rate variation;
-    fixture uses flat rate per the constant above so expected math is
-    arithmetic-checkable.
-    """
-    cooling_hours_total = cooling_active_hours_per_day * 12  # 12-day post-washout window
-    kwh = cooling_hours_total * BASELINE_HVAC_KW
-    return kwh * TOTAL_RATE_C_PER_KWH / 100.0
+    cooling_hours_total = cooling_per_day * 12  # 12 post-washout days
 
+    # Cost-matched symmetric exclusion drops:
+    # - B-fallback hours from B + symmetric matched-drops from A
+    # - A's telemetry-invalid hours + symmetric matched-drops from B
+    # - B's telemetry-invalid hours + symmetric matched-drops from A
+    # In the fixture, injected sets are DISJOINT within an arm (fallback then
+    # invalid pulled from sequential cooling-active offsets), so total
+    # cooling-active hours dropped per arm = (fallback_hours_b + ti_a + ti_b)
+    # clamped to cooling_hours_total.
+    cooling_hours_dropped = min(cooling_hours_total,
+                                fallback_hours_b + ti_a + ti_b)
+    effective_cooling = cooling_hours_total - cooling_hours_dropped
+    kwh_per_arm = effective_cooling * BASELINE_HVAC_KW
+    hvac_dollars_a = kwh_per_arm * TOTAL_RATE_C_PER_KWH / 100.0
+    hvac_dollars_b = kwh_per_arm * (1 - SAVINGS_PCT) * TOTAL_RATE_C_PER_KWH / 100.0
+    diff = hvac_dollars_b - hvac_dollars_a
 
-def _arm_b_dollars(scenario_label: str, cooling_active_hours_per_day: int,
-                   fallback_hours: int) -> float:
-    """Independent calculation of Arm B HVAC$ for a scenario.
-
-    Arm B saves SAVINGS_PCT in B-active cooling hours.
-    Hours in B-fallback are EXCLUDED from primary aggregation per spec §5
-    (per-protocol estimand). After symmetric cost-matched exclusion, both
-    arms have the same number of fully-valid hours.
-
-    For this scaffold: assume cost-matched exclusion drops the same
-    fallback_hours count from Arm A symmetrically. The remaining
-    fully-valid hours then have Arm B at (1 - SAVINGS_PCT) of Arm A's kWh.
-    """
-    cooling_hours_total = cooling_active_hours_per_day * 12
-    valid_cooling_hours = cooling_hours_total  # post-cost-matched exclusion
-    # Note: fallback_hours falls in cooling-active periods, so they reduce
-    # the valid cooling hour count proportionally
-    if cooling_hours_total > 0:
-        # Proportional reduction: if fallback covers N hours, X of which
-        # were cooling-active, valid cooling drops by X. Simplification:
-        # assume fallback distributes evenly across hours.
-        fraction_cooling = cooling_hours_total / (12 * 24)
-        cooling_fallback = int(fallback_hours * fraction_cooling)
-        valid_cooling_hours = cooling_hours_total - cooling_fallback
-    kwh = valid_cooling_hours * BASELINE_HVAC_KW * (1 - SAVINGS_PCT)
-    return kwh * TOTAL_RATE_C_PER_KWH / 100.0
-
-
-def _expected_per_pair_row(pair_id: int, arm_a: int, arm_b: int, label: str,
-                           cooling_per_day: int, fallback_hours: int,
-                           telemetry_invalid_a: int, telemetry_invalid_b: int,
-                           weather_outlier: bool, dst_crossing: bool) -> dict:
-    """Hand-computed expected per-pair row from scenario parameters.
-
-    All values derived from the constants at the top of this file. NO IMPORTS
-    from tools.analysis here.
-    """
-    hvac_dollars_a = _arm_a_dollars(label, cooling_per_day)
-    hvac_dollars_b = _arm_b_dollars(label, cooling_per_day, fallback_hours)
-    diff_dollars_b_minus_a = hvac_dollars_b - hvac_dollars_a
-
-    # Cost-matched symmetric exclusion: both arms end up with equal valid
-    # hour counts after symmetric drop.
-    # Telemetry-invalid hours in either arm get matched-excluded from both.
-    # B-fallback hours in Arm B get matched-excluded from both (per spec §5).
-    excluded_hours = max(telemetry_invalid_a + telemetry_invalid_b,
-                         fallback_hours)  # symmetric drop magnitude
-    valid_pair_hours = POST_WASHOUT_HOURS - excluded_hours
+    # valid_pair_hours: total 288 minus union of all exclusions.
+    # Fallback/invalid hours are disjoint per construction.
+    excluded_total = fallback_hours_b + ti_a + ti_b
+    valid_pair_hours = POST_WASHOUT_HOURS - excluded_total
 
     return {
         "pair_id": pair_id,
+        "scenario_label": label,
         "arm_a_id": f"A{arm_a}",
         "arm_b_id": f"B{arm_b}",
-        "scenario_label": label,
         "valid_pair_hours": valid_pair_hours,
         "hvac_dollars_a": round(hvac_dollars_a, 2),
         "hvac_dollars_b": round(hvac_dollars_b, 2),
-        "diff_dollars_b_minus_a": round(diff_dollars_b_minus_a, 2),
+        "diff_dollars_b_minus_a": round(diff, 2),
         "poor_weather_match_flag": weather_outlier,
-        "low_cooling_exposure_flag": cooling_per_day < 6,
-        # Computed savings percent (rounded for assertion stability)
+        "low_cooling_exposure_flag": cooling_hours_total < 6,
         "expected_savings_pct": (SAVINGS_PCT if hvac_dollars_a > 5.0 else None),
-        # Mark DST scenario for assertions about hour-index handling
-        "dst_crossing_arm": dst_crossing,
+        "dst_crossing_arm": dst,
     }
 
 
@@ -193,43 +232,31 @@ def _expected_per_pair_row(pair_id: int, arm_a: int, arm_b: int, label: str,
 @dataclass
 class SynthDataset:
     """Synthetic inputs + hand-pinned expected outputs."""
-    refoss_df: "pd.DataFrame"
-    eagle_df: "pd.DataFrame"
-    ecowitt_df: "pd.DataFrame"
-    rt_hrl_lmps_df: "pd.DataFrame"
-    comed_prices_df: "pd.DataFrame"
-    hvac_arm_mode_df: "pd.DataFrame"
-    bills_df: "pd.DataFrame"
-    expected_per_pair_table: "pd.DataFrame"
+    refoss_df: pd.DataFrame
+    eagle_df: pd.DataFrame
+    ecowitt_df: pd.DataFrame
+    rt_hrl_lmps_df: pd.DataFrame
+    comed_prices_df: pd.DataFrame
+    hvac_arm_mode_df: pd.DataFrame
+    bills_df: pd.DataFrame
+    expected_per_pair_table: pd.DataFrame
     expected_arms_passed_validity: set = field(default_factory=set)
     injected_modes: set = field(default_factory=lambda: set(INJECTED_MODES))
-
-
-def _hourly_index_for_arm(arm_period_idx: int) -> "pd.DatetimeIndex":
-    """All UTC hours covering the full arm period (washout + analysis).
-
-    Phase 0 scaffold: returns hourly index. Later phases may need finer
-    cadence (30s for Refoss, 5-min for prices) — extend as needed.
-    """
-    _, _, start, end = CALENDAR[arm_period_idx - 1]
-    # Treat all timestamps as UTC for simplicity in the scaffold. Real data
-    # would have CT-local boundaries; the pipeline handles tz conversion.
-    return pd.date_range(start=start, end=end, freq="1h", inclusive="left")
 
 
 def build_synth_dataset() -> SynthDataset:
     """Construct the synthetic dataset and its hand-pinned expected outputs.
 
-    Phase 0 scaffold: builds STRUCTURE with simple, importable data. Later
-    phases progressively elaborate data generation as the real pipeline
-    starts consuming it.
+    Each scenario in SCENARIOS is actually INJECTED into the data:
+    - cooling-active power patterns per arm
+    - B-fallback mode telemetry for Arm 4 (20 hours)
+    - telemetry-invalid (Refoss-omitted) hours for Arms 7/8 (15/18 hours)
+    - weather outlier (+20°F) for Arm 6
 
-    Independence: this function does NOT import from tools.analysis. All
-    expected values come from the SCENARIOS table and the constants above.
+    Test `test_fixture_actually_injects_claimed_scenarios` verifies this.
     """
-    # Build dataframes with correct schemas. Phase 0 scaffold:
-    # the structure is what matters; the test currently SKIPS because the
-    # pipeline doesn't exist yet, so data values aren't asserted here.
+    arm_state = _build_arm_state()
+
     refoss_rows = []
     eagle_rows = []
     ecowitt_rows = []
@@ -237,50 +264,104 @@ def build_synth_dataset() -> SynthDataset:
     comed_prices_rows = []
     arm_mode_rows = []
 
-    for arm_idx, arm_letter, start, end in CALENDAR:
-        hours = _hourly_index_for_arm(arm_idx)
-        for ts in hours:
-            # Refoss: 5 channels per hour (scaffold: 1 row per channel per hour;
-            # real poller writes ~120/hour. Later phases elaborate to 30s.)
-            for ch, watts in (("em:1", 800.0), ("em:2", 100.0), ("em:7", 1200.0),
-                              ("em:8", 100.0), ("em:9", 30.0)):
-                refoss_rows.append({"_time": ts, "channel": ch,
-                                    "_value": watts, "_field": "power_w"})
-            # Eagle hourly delivered kWh
-            eagle_rows.append({"_time": ts, "delivered_kwh": 2.0,
-                               "_measurement": "eagle.meter"})
+    for arm_idx, arm_letter, start, _ in CALENDAR:
+        state = arm_state[arm_idx]
+        # Build full arm timeline at hourly resolution
+        for hour_offset in range(ARM_TOTAL_HOURS):
+            ts = start + datetime.timedelta(hours=hour_offset)
+            is_post_washout = hour_offset >= WASHOUT_HOURS
+            offset_in_post_washout = hour_offset  # used to look up injected sets
+            is_cooling_active = (
+                is_post_washout and
+                offset_in_post_washout in set(_cooling_active_offsets(state["cooling_per_day"]))
+            )
+            is_telemetry_invalid = offset_in_post_washout in state["telemetry_invalid_hour_set"]
+            is_fallback = offset_in_post_washout in state["fallback_hour_set"]
+
+            # Refoss: OMIT the hour entirely if telemetry-invalid (validity
+            # check treats missing-hour data as invalid per spec §7).
+            if not is_telemetry_invalid:
+                if is_cooling_active and not is_fallback:
+                    # Arm B during B-active cooling: 15% less power
+                    if arm_letter == "B":
+                        em2_w = 1500.0 * (1 - SAVINGS_PCT)
+                        em8_w = 1000.0 * (1 - SAVINGS_PCT)
+                    else:
+                        em2_w = 1500.0
+                        em8_w = 1000.0
+                    em9_w = BLOWER_W_WHEN_RUNNING
+                elif is_cooling_active and is_fallback:
+                    # B-fallback during cooling: controller in fallback;
+                    # data shows AC running at thermostat-like behavior
+                    # (equivalent to Arm A power level).
+                    em2_w = 1500.0
+                    em8_w = 1000.0
+                    em9_w = BLOWER_W_WHEN_RUNNING
+                else:
+                    em2_w = em8_w = em9_w = 0.0
+
+                # em:1 / em:7 (mains): always have some baseline household load
+                em1_w = 800.0
+                em7_w = 1200.0
+                # Mains must accommodate HVAC load (mains-sanity check)
+                em1_w += em2_w + em8_w + em9_w  # ensure mains >= HVAC
+
+                for ch, watts in (("em:1", em1_w), ("em:2", em2_w),
+                                  ("em:7", em7_w), ("em:8", em8_w),
+                                  ("em:9", em9_w)):
+                    refoss_rows.append({
+                        "_time": ts, "channel": ch, "_value": watts,
+                        "_field": "power_w",
+                    })
+
+            # Eagle hourly delivered kWh (whole-home; close to em:1+em:7+em:2+em:8+em:9)
+            eagle_kwh = (em1_w + em2_w + em7_w + em8_w + em9_w) / 1000.0 if not is_telemetry_invalid else 0.0
+            eagle_rows.append({
+                "_time": ts, "delivered_kwh": eagle_kwh,
+                "_measurement": "eagle.meter",
+            })
+
             # Ecowitt hourly weather
-            ecowitt_rows.append({"_time": ts, "ch1_temp_f": 78.0,
-                                 "ch1_dewpoint_f": 60.0})
-            # rt_hrl_lmps hourly settled (synthetic flat rate)
-            rt_lmps_rows.append({"_time": ts,
-                                 "total_lmp_rt": KNOWN_LMP_C_PER_KWH * 10.0,
-                                 "pnode_id": "33092371"})
-            # comed.prices 5-min stream (scaffold: 12 rows per hour)
+            temp_f = BASE_TEMP_F + (WEATHER_OUTLIER_SHIFT_F if state["weather_outlier"] else 0.0)
+            ecowitt_rows.append({
+                "_time": ts, "ch1_temp_f": temp_f,
+                "ch1_dewpoint_f": BASE_DEWPOINT_F,
+            })
+
+            # rt_hrl_lmps hourly settled (flat synthetic rate)
+            rt_lmps_rows.append({
+                "_time": ts,
+                "total_lmp_rt": KNOWN_LMP_C_PER_KWH * 10.0,
+                "pnode_id": "33092371",
+            })
+
+            # comed.prices 5-min stream (12 rows per hour)
             for minute in range(0, 60, 5):
                 comed_prices_rows.append({
                     "_time": ts + datetime.timedelta(minutes=minute),
                     "price_cents_per_kwh": KNOWN_LMP_C_PER_KWH,
                     "period_type": "5min",
                 })
-            # hvac.arm_mode 5-min (scaffold: 12 rows per hour)
-            # Default mode: A-active in A arms, B-active in B arms
-            default_mode = "A-active" if arm_letter == "A" else "B-active"
+
+            # hvac.arm_mode 5-min (12 rows per hour)
+            if is_post_washout:
+                if is_telemetry_invalid:
+                    mode = "telemetry-invalid"
+                elif arm_letter == "A":
+                    mode = "A-active"
+                elif is_fallback:
+                    mode = "B-fallback"
+                else:
+                    mode = "B-active"
+            else:
+                # Washout hours: arm-letter-based default, no fallback markers
+                mode = "A-active" if arm_letter == "A" else "B-active"
             for minute in range(0, 60, 5):
                 arm_mode_rows.append({
                     "_time": ts + datetime.timedelta(minutes=minute),
                     "arm": arm_letter,
-                    "mode_actual": default_mode,
+                    "mode_actual": mode,
                 })
-
-    # Inject scenario perturbations: B-fallback hours, telemetry-invalid hours,
-    # weather outliers, etc. Scaffold leaves this as TODO — later phases will
-    # add scenario-specific perturbations as pipeline components materialize.
-    # (Marking with explicit TODO comments rather than silent omission so a
-    # reviewer can see what's scoped out for Phase 0.)
-    # TODO Phase 3+: inject B-fallback hours per SCENARIOS table
-    # TODO Phase 3+: inject telemetry-invalid hours
-    # TODO Phase 6: inject weather outlier for Pair 3 scenario
 
     # Bills: 6 monthly summaries (June-November 2026)
     bill_rows = []
@@ -295,15 +376,13 @@ def build_synth_dataset() -> SynthDataset:
             "_field": "amount",
         })
 
-    # Hand-pinned expected per-pair table from SCENARIOS
-    expected_rows = [_expected_per_pair_row(*s) for s in SCENARIOS]
+    expected_rows = [_expected_per_pair_row(s) for s in SCENARIOS]
 
-    # All 12 arms expected to pass validity gate in the Phase 0 scaffold
-    # (with simplified data, no arm exceeds the invalid-hours threshold).
-    # Real scenarios with telemetry-invalid hours may flip this for some arms;
-    # later phases update this set.
-    expected_arms_passed = {f"A{i}" if a == "A" else f"B{i}"
-                            for i, a, _, _ in CALENDAR}
+    # All 12 arms expected to pass the validity gate in the scaffold (the
+    # injected telemetry-invalid hours are << the 90% threshold).
+    expected_arms_passed = set()
+    for arm_idx, arm_letter, _, _ in CALENDAR:
+        expected_arms_passed.add(f"{arm_letter}{arm_idx}")
 
     return SynthDataset(
         refoss_df=pd.DataFrame(refoss_rows),
