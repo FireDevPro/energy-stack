@@ -6,6 +6,7 @@ Run from this directory:
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -2174,3 +2175,201 @@ def test_health_marker_gating_pattern_in_main_loop():
     # And it must appear AFTER the schedule_check_failed line (i.e.
     # inside its except handler, not before).
     assert tick_ok_false_idx > sched_check_idx
+
+
+# ---- SCHEDULER_MODE arm-mode gating (spec §3) -----------------------------
+#
+# Spec §3 controls whether the setpoint-write path can run via three
+# explicit top-level modes set by SCHEDULER_MODE:
+#   - shadow     : never writes (logs only)
+#   - experiment : writes ONLY during Arm B periods inside the locked
+#                  2026-06-01..2026-11-16 calendar; outside the window =
+#                  no writes (no implicit "preserve pre-experiment" fallback)
+#   - production : writes always; ignores A/B calendar (excluded from study)
+# Unknown / missing values: refuse to start (sys.exit(2)).
+#
+# conftest.py sets SCHEDULER_MODE=production as the default so existing
+# tests' dry_run-only assertions pass through the gate; per-mode tests
+# below override via monkeypatch.setenv.
+
+
+def _reload_app_with_mode(mode: str | None) -> None:
+    """Reload the app module with SCHEDULER_MODE set to ``mode`` (or
+    deleted when ``mode`` is None). Used for startup-validation tests.
+    """
+    import importlib
+    if mode is None:
+        os.environ.pop("SCHEDULER_MODE", None)
+    else:
+        os.environ["SCHEDULER_MODE"] = mode
+    importlib.reload(app)
+
+
+@pytest.fixture
+def restore_app_after_reload():
+    """Ensure subsequent tests see a healthy app module. Use on tests
+    that call importlib.reload(app) with a deliberately-bad
+    SCHEDULER_MODE — the module ends up partially loaded after sys.exit
+    propagates out of pytest.raises.
+    """
+    yield
+    _reload_app_with_mode("production")
+
+
+async def test_shadow_mode_never_writes_even_with_dry_run_false(monkeypatch):
+    """Spec §3 shadow: top-level mode gate blocks writes regardless of
+    the dry_run parameter. Defense in depth."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78,
+                             fan_mode="Circulate")
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B) — irrelevant in shadow
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_experiment_mode_arm_a_does_not_write(monkeypatch):
+    """Spec §3 experiment: Arm A periods = scheduler in passive/no-write
+    mode. CTK04AE thermostat program runs autonomously."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    when_ct = datetime(2026, 6, 5, 13, 0)  # mid-Arm-1 (Arm A)
+
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+
+async def test_experiment_mode_arm_b_writes(monkeypatch):
+    """Spec §3 experiment: Arm B periods = scheduler active, writes pushed."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B)
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is True
+    assert error is None
+    climate.set_cool_setpoint_f.assert_awaited_once_with(78)
+
+
+async def test_experiment_mode_outside_window_does_not_write(monkeypatch):
+    """Spec §3 experiment outside the 2026-06-01..2026-11-16 window:
+    no writes. No implicit "preserve pre-experiment" fallback."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+
+    # Before experiment start
+    pre_when = datetime(2026, 5, 25, 13, 0)
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=pre_when,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+    # After experiment end (2026-11-16 00:00 exclusive)
+    post_when = datetime(2026, 11, 25, 13, 0)
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=post_when,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+
+async def test_production_mode_writes_regardless_of_calendar(monkeypatch):
+    """Spec §3 production: ignores A/B calendar entirely. Used for
+    deliberate non-study operation. Excluded from analysis dataset."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    # During what would be Arm A in experiment mode, production still writes.
+    when_ct = datetime(2026, 6, 5, 13, 0)
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is True
+    assert error is None
+    climate.set_cool_setpoint_f.assert_awaited_once_with(78)
+
+
+def test_invalid_scheduler_mode_fails_startup(restore_app_after_reload):
+    """Spec §3: unknown SCHEDULER_MODE = refuse to start (sys.exit(2))."""
+    with pytest.raises(SystemExit) as exc_info:
+        _reload_app_with_mode("bogus")
+    assert exc_info.value.code == 2
+
+
+def test_missing_scheduler_mode_fails_startup(restore_app_after_reload):
+    """Spec §3: no default. SCHEDULER_MODE must be set explicitly."""
+    with pytest.raises(SystemExit) as exc_info:
+        _reload_app_with_mode(None)
+    assert exc_info.value.code == 2
+
+
+def test_scheduler_dry_run_env_is_ignored_with_warning(monkeypatch, capsys):
+    """Plan standing rule: SCHEDULER_DRY_RUN is retired; if both env
+    vars are present, SCHEDULER_DRY_RUN is ignored with a warning."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    monkeypatch.setenv("SCHEDULER_DRY_RUN", "true")
+    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
+    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+
+    cfg = app.Config.from_env()
+    captured = capsys.readouterr().out
+    assert "scheduler_dry_run_ignored" in captured
+    # Production mode -> dry_run derived as False (writes allowed by the gate).
+    assert cfg.dry_run is False
+    assert cfg.mode == "production"
+
+
+def test_config_dry_run_derived_from_shadow_mode(monkeypatch):
+    """In shadow mode, cfg.dry_run is True (the existing dry_run check
+    inside execute_action acts as defense in depth alongside the
+    SCHEDULER_MODE gate)."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
+    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    monkeypatch.delenv("SCHEDULER_DRY_RUN", raising=False)
+
+    cfg = app.Config.from_env()
+    assert cfg.dry_run is True
+    assert cfg.mode == "shadow"
+
+
+def test_writes_allowed_handles_tz_aware_datetime(monkeypatch):
+    """The main loop computes ``now_local = datetime.now(tz)`` (tz-aware).
+    The gate must accept that without raising; arm_calendar uses
+    naive CT-local datetimes."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    tz = ZoneInfo("America/Chicago")
+    when_ct = datetime(2026, 6, 20, 13, 0, tzinfo=tz)  # tz-aware Arm B
+    assert app._writes_allowed(when_ct) is True
+
+    when_ct_arm_a = datetime(2026, 6, 5, 13, 0, tzinfo=tz)
+    assert app._writes_allowed(when_ct_arm_a) is False

@@ -74,6 +74,7 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
+from arm_calendar import current_arm_at  # local copy, hash-sync-checked in CI
 from pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
@@ -320,6 +321,70 @@ def log(level: str, msg: str, **fields: Any) -> None:
     print(json.dumps(rec, default=str), flush=True)
 
 
+# ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
+#
+# Three explicit top-level modes gate the setpoint-write path:
+#   - shadow     : never writes; logs decisions/telemetry only
+#   - experiment : writes ONLY during Arm B periods inside the locked
+#                  2026-06-01..2026-11-16 calendar; outside the window =
+#                  no writes (no implicit "preserve pre-experiment"
+#                  fallback per spec §3 lock)
+#   - production : writes always; ignores A/B calendar (deliberate
+#                  non-study operation; excluded from analysis dataset)
+#
+# Unknown / missing values: refuse to start (sys.exit(2)). Validation
+# runs at module import so misconfiguration is visible BEFORE any write
+# path could run.
+#
+# The legacy SCHEDULER_DRY_RUN env var is retired; if present alongside
+# SCHEDULER_MODE it is ignored with a warning logged in Config.from_env.
+VALID_SCHEDULER_MODES = ("shadow", "experiment", "production")
+
+
+def _validate_scheduler_mode_or_exit() -> str:
+    mode = os.environ.get("SCHEDULER_MODE")
+    if mode not in VALID_SCHEDULER_MODES:
+        log(
+            "error",
+            "scheduler_mode_invalid",
+            value=mode,
+            valid=VALID_SCHEDULER_MODES,
+            message=(
+                "SCHEDULER_MODE must be set explicitly to one of: "
+                "shadow, experiment, production. Refusing to start."
+            ),
+        )
+        sys.exit(2)
+    log("info", "scheduler_mode_active", mode=mode)
+    return mode
+
+
+SCHEDULER_MODE = _validate_scheduler_mode_or_exit()
+
+
+def _writes_allowed(when_ct: datetime) -> bool:
+    """Per spec §3 SCHEDULER_MODE gating.
+
+    Reads os.environ on each call (not the module-level constant) so
+    tests can ``monkeypatch.setenv("SCHEDULER_MODE", ...)`` without
+    reloading the module. Module-level validation guarantees the env
+    var was valid at startup; tests are expected to use only valid
+    values when overriding.
+
+    ``when_ct`` may be tz-aware; the locked arm calendar uses naive
+    CT-local datetimes so we strip tzinfo before comparing.
+    """
+    mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+    if mode == "shadow":
+        return False
+    if mode == "production":
+        return True
+    # mode == "experiment"
+    if when_ct.tzinfo is not None:
+        when_ct = when_ct.replace(tzinfo=None)
+    return current_arm_at(when_ct) == "B"
+
+
 @dataclass(frozen=True)
 class Config:
     email: str
@@ -327,6 +392,7 @@ class Config:
     controller_ip: str
     thermostat_id: int
     dry_run: bool
+    mode: str
     decision_hour: int
     tz_name: str
     influx_url: str
@@ -355,12 +421,35 @@ class Config:
             log("error", "invalid_revisit_hours", raw=revisit_raw)
             sys.exit(2)
 
+        # SCHEDULER_DRY_RUN retired in favor of SCHEDULER_MODE (spec §3,
+        # plan standing rule). If both are set, ignore SCHEDULER_DRY_RUN
+        # with a warning so the misconfiguration is visible. Read mode
+        # from os.environ (not the module-level SCHEDULER_MODE constant)
+        # so the value reflects the current process state — startup
+        # validation already guaranteed it was valid at import.
+        mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+        legacy_dry_run = os.environ.get("SCHEDULER_DRY_RUN")
+        if legacy_dry_run is not None:
+            log(
+                "warn",
+                "scheduler_dry_run_ignored",
+                value=legacy_dry_run,
+                scheduler_mode=mode,
+                message=(
+                    "SCHEDULER_DRY_RUN is retired; SCHEDULER_MODE is the "
+                    "single source of truth for write-gating. Ignoring."
+                ),
+            )
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
             controller_ip=os.environ.get("CONTROL4_CONTROLLER_IP", "192.168.1.30"),
             thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
-            dry_run=os.environ.get("SCHEDULER_DRY_RUN", "true").lower() in ("1", "true", "yes"),
+            # dry_run derived from mode — defense in depth alongside the
+            # SCHEDULER_MODE gate inside execute_action.
+            dry_run=(mode == "shadow"),
+            mode=mode,
             decision_hour=int(os.environ.get("SCHEDULER_DECISION_HOUR", "21")),
             tz_name=os.environ.get("SCHEDULER_TZ", "America/Chicago"),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
@@ -1143,7 +1232,9 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict:
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
                           heat_setpoint_to_apply: int,
-                          state: dict, dry_run: bool) -> tuple[bool, str | None]:
+                          state: dict, dry_run: bool,
+                          when_ct: datetime | None = None,
+                          ) -> tuple[bool, str | None]:
     """Apply the action to the thermostat. Returns (applied, error).
 
     Both setpoints are passed in explicitly (rather than read from
@@ -1159,7 +1250,20 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         then HOLD_MODE='Permanent' to pin the override against the
         thermostat's own schedule. Skipped when hvac_mode is not Cool/Auto
         (so we don't accidentally fight a heating-season furnace).
+
+    Two write-gates (defense in depth):
+      1. SCHEDULER_MODE gate (spec §3, this top-level check) — blocks
+         shadow mode, blocks experiment mode outside Arm B periods,
+         blocks experiment mode outside the locked window.
+      2. Legacy ``dry_run`` parameter — kept for the comprehensive
+         dry-run audit (plan Task 1.7).
     """
+    if when_ct is None:
+        when_ct = datetime.now()
+
+    if not _writes_allowed(when_ct):
+        return False, None
+
     if dry_run:
         return False, None  # logged as not-applied with no error
 
@@ -1778,6 +1882,7 @@ async def _push_layer_change_mid_period(
 
     applied, error = await execute_action(
         c4, synthetic_action, sup_cool, sup_heat, snapshot, cfg.dry_run,
+        when_ct=now_local,
     )
     write_action(
         write_api, cfg.influx_bucket, day_type, synthetic_action,
@@ -1938,7 +2043,8 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             firing.last_action_label = action.label
 
         applied, error = await execute_action(c4, action, sup_cool, sup_heat,
-                                               snapshot, cfg.dry_run)
+                                               snapshot, cfg.dry_run,
+                                               when_ct=now_local)
         write_action(write_api, cfg.influx_bucket, day_type, action,
                       sup_cool, sup_heat, action.fan_mode, setpoint_reason,
                       cfg.dry_run, applied, snapshot, error,
