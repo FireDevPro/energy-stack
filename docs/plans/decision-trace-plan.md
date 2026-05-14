@@ -27,7 +27,7 @@ This plan does NOT introduce shadow mode — that already exists via `SCHEDULER_
 | Storage | **Loki only.** No new Influx measurement. No new service. Mirror to Influx only if a later phase needs aggregation. |
 | Cadence | **Every evaluation**, not every transition or every action fire. Per-tick price overlay + per-tick 5CP + per-tick layer resolution + per-invocation supervisor (not per-tick). ~500-1500 log lines / day in commissioning. |
 | Verbosity gate | `SCHEDULER_DECISION_TRACE_VERBOSE` env var (default `false`). Orthogonal to `SCHEDULER_MODE`. When `true`: per-evaluation "no-change" emissions land at `debug` level. Transitions, fires, decisions, rejections, errors always emit at `info`. Loki/LogQL filters by `level`. Commissioning runs with `true`; experiment defaults `false`. |
-| Failure isolation | Every trace `log()` wrapped in try/except that swallows. Trace never raises into the control path. Tested per phase BOTH at the trace-helper level AND at the caller level (`run_per_tick_overlays`, `run_decision`, supervisor call site, etc.) — the guarantee that matters is "trace failure cannot interrupt the calling control path." |
+| Failure isolation | Every trace `log()` wrapped in try/except that swallows. Trace never raises into the control path. Tested per phase BOTH at the trace-helper level AND at the caller level (`_evaluate_layer_inputs`, `run_decision`, supervisor call site, etc.) — the guarantee that matters is "trace failure cannot interrupt the calling control path." |
 | Rule-code touch | No return-shape changes. Two additive touches only:<br>1. `decide_day_type` mutates its existing `reasons` dict to add `reasons["evaluation_tape"] = [...]`. Return signature unchanged.<br>2. New wrapper `compute_price_aware_precool_window_with_trace(...) -> (dict \| None, reason_code)` lives alongside the original pure function. Original function and existing callers untouched.<br>Both made once before OSF filing and pinned. |
 | Cross-correlation fields on every trace line | `tick_id` (UUID4 per scheduler tick, JSON FIELD only — **NOT a Loki label**, would explode cardinality). `scheduler_mode` always emitted as its own field (independent of arm context). `arm` emitted when `arm_calendar.current_arm_at(now_ct)` returns `"A"` or `"B"`; omitted when it returns `None` (outside the locked calendar window). This matches the semantics of `write_arm_mode` and the existing `hvac.arm_mode` rows — `arm` reflects calendar membership, not protocol mode. Off-protocol shadow/production operation inside the calendar window therefore still carries an `arm` field, which is correct: it documents which calendar period the tick fell in, regardless of whether the scheduler was acting on it. |
 | reason_code taxonomy | Coded enums in `deploy/energy-stack/hvac-scheduler/decision_codes.py`. Append-only forever. Locked at OSF commit hash. Phase 1 establishes the file with the price-overlay subset; later phases extend it. |
@@ -59,20 +59,18 @@ Smallest end-to-end cut through every layer this feature touches (env var plumbi
 
 Changes:
 
-- New `deploy/energy-stack/hvac-scheduler/decision_codes.py`. Initial enum:
-  - `PRICE_OVERLAY_HELD_NORMAL_BELOW_TRIGGER`
-  - `PRICE_OVERLAY_HELD_ELEVATED_HOLD_ACTIVE`
-  - `PRICE_OVERLAY_HELD_ELEVATED_PRICE_ABOVE_RELEASE`
-  - `PRICE_OVERLAY_HELD_SCARCITY_HOLD_ACTIVE`
-  - `PRICE_OVERLAY_HELD_SCARCITY_PRICE_ABOVE_RELEASE`
+- New `deploy/energy-stack/hvac-scheduler/decision_codes.py`. Initial enum (caller-observable state only — no internal state-machine knowledge re-implemented; finer-grained "hold-active vs price-above-release" distinctions are NOT exposed as separate codes because doing so would require either re-implementing the state machine or changing `evaluate_price_overlay`'s return shape, neither of which is permitted):
+  - `PRICE_OVERLAY_NORMAL_BELOW_TRIGGER` — tier unchanged at normal, price below all triggers
+  - `PRICE_OVERLAY_HELD_IN_TIER` — tier unchanged at elevated/scarcity; reason (hold-active vs price-above-release) reconstructable from `hold_minutes_remaining` + `price_cents` fields on the trace line
   - `PRICE_OVERLAY_UPGRADED_TO_ELEVATED`
   - `PRICE_OVERLAY_UPGRADED_TO_SCARCITY`
   - `PRICE_OVERLAY_DOWNGRADED_TO_ELEVATED`
   - `PRICE_OVERLAY_RELEASED_TO_NORMAL`
-  - `PRICE_OVERLAY_STALE_FEED_RELEASED` (covers the existing `price_feed_stale_tier_released` log path)
+  - `PRICE_OVERLAY_FEED_UNAVAILABLE_TIER_PRESERVED` — price feed null, tier carried forward, stale-threshold NOT exceeded
+  - `PRICE_OVERLAY_STALE_FEED_RELEASED` — covers the existing `price_feed_stale_tier_released` log path; tier forcibly released to normal after the stale-feed window
 - New trace helper `_trace(event, level, verbose, **fields)` in `app.py` (one place; try/except wraps `log()`; honours `SCHEDULER_DECISION_TRACE_VERBOSE`; auto-inlines `tick_id`, `scheduler_mode`, and `arm` (when `current_arm_at(now_ct)` returns A/B) into every emitted line).
 - New env `SCHEDULER_DECISION_TRACE_VERBOSE` (default `false`). Wire through `Config.decision_trace_verbose`. Compose env passthrough `${SCHEDULER_DECISION_TRACE_VERBOSE:-false}`. Pi `.env` sets `true` for commissioning.
-- New log emission at the caller side in `app.py:run_per_tick_overlays`, immediately after `evaluate_price_overlay` returns. `price_overlay.py` stays pure (zero `log()` calls — the module already has that property, worth preserving). Emit one line per call with:
+- New log emission at the caller side in `app.py:_evaluate_layer_inputs`, immediately after `evaluate_price_overlay` returns. `price_overlay.py` stays pure (zero `log()` calls — the module already has that property, worth preserving). Emit one line per call with:
   - `event="decision_trace.price_overlay_eval"`
   - `tick_id` (one per scheduler tick; UUID4 generated at top of tick loop)
   - `scheduler_mode` (one of `shadow` / `experiment` / `production`; always emitted)
@@ -86,12 +84,10 @@ Changes:
 
 Acceptance:
 
-- `test_price_overlay_eval_emits_every_call` — drive `run_per_tick_overlays` (the caller, not the pure function) through three input scenarios producing held / upgrade / downgrade outcomes; capture stdout; assert exactly three trace lines with the expected `outcome` + `reason_code`. `evaluate_price_overlay` is exercised transitively but is not the unit under test for the trace assertions.
-- `test_price_overlay_trace_is_failure_isolated` — two tiers:
-  1. Monkeypatch the trace helper's underlying `log()` to raise; assert `run_per_tick_overlays` still completes, `evaluate_price_overlay` still returns the correct `(tier, state)` tuple, and the existing `hvac.price_overlay` transition write still happens.
-  2. Same fault injection; assert `run_per_tick_overlays` does not propagate the exception to its caller (`run_schedule_check`-side path).
+- `test_price_overlay_eval_emits_every_call` — drive `_evaluate_layer_inputs` (the caller, not the pure function) through three input scenarios producing held / upgrade / downgrade outcomes; capture stdout; assert exactly three trace lines with the expected `outcome` + `reason_code`. `evaluate_price_overlay` is exercised transitively but is not the unit under test for the trace assertions.
+- `test_price_overlay_trace_is_failure_isolated` — fault-injects `app.log` (the realistic outermost failure mode the `_trace` wrapper is designed to absorb: Loki down / stdout broken / bad field type). Asserts that with `log()` raising on every `decision_trace.*` event: `_evaluate_layer_inputs` still completes; the price-overlay state machine still updates correctly; the existing `hvac.price_overlay` transition write still happens; the exception does not propagate to `_evaluate_layer_inputs`'s caller. Patching `app._trace` directly tests an unrealistic scenario where the safety wrapper itself is replaced with a broken implementation, so we don't.
 - `test_tick_id_not_in_loki_labels` — read `deploy/energy-stack/promtail/config.yml`; assert no pipeline stage promotes `tick_id` to a Loki label.
-- `test_arm_field_present_only_inside_calendar_window` — drive `run_per_tick_overlays` with two synthetic `now_ct` values: one inside the locked calendar window (e.g., 2026-07-04 12:00 CT, where `current_arm_at` returns `"A"` or `"B"`) and one outside it (e.g., 2026-05-14 12:00 CT pre-experiment, where `current_arm_at` returns `None`). Assert `arm` present (with the correct A/B value) in the first case, absent in the second. `scheduler_mode` is independently asserted in a separate test (varied across `shadow`/`experiment`/`production` regardless of calendar position).
+- `test_arm_field_present_only_inside_calendar_window` — drive `_evaluate_layer_inputs` with two synthetic `now_ct` values: one inside the locked calendar window (e.g., 2026-07-04 12:00 CT, where `current_arm_at` returns `"A"` or `"B"`) and one outside it (e.g., 2026-05-14 12:00 CT pre-experiment, where `current_arm_at` returns `None`). Assert `arm` present (with the correct A/B value) in the first case, absent in the second. `scheduler_mode` is independently asserted in a separate test (varied across `shadow`/`experiment`/`production` regardless of calendar position).
 - Verify on Pi after merge: `docker compose logs --since 1h hvac-scheduler | jq 'select(.event=="decision_trace.price_overlay_eval")'` shows a line per scheduler tick.
 
 Demoable: tail the log during a real ComEd 5-min arrival, see the eval roll past with current price + held/upgrade reason. That's the live tracer experience.

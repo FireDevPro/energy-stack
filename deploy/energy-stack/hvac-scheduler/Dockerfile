@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py safety_supervisor.py pjm_5cp.py price_overlay.py precool.py arm_calendar.py .
+COPY app.py safety_supervisor.py pjm_5cp.py price_overlay.py precool.py arm_calendar.py decision_codes.py .
 
 # UID 1007 -- one above the other pollers
 RUN useradd --system --no-create-home --uid 1007 scheduler && mkdir -p /data && chown -R scheduler /app /data
