@@ -74,7 +74,7 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
-from arm_calendar import current_arm_at  # local copy, hash-sync-checked in CI
+from arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
 from pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
@@ -1265,6 +1265,46 @@ def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
     return feeds
 
 
+def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
+    """Return the calendar's intended boundary timestamp covering
+    ``when_naive``: the start_ct of the arm period containing it, or
+    the experiment end if past the last arm.
+    """
+    for arm in ARM_CALENDAR:
+        if arm.start_ct <= when_naive < arm.end_ct:
+            return arm.start_ct
+    if when_naive >= ARM_CALENDAR[-1].end_ct:
+        return ARM_CALENDAR[-1].end_ct
+    return None
+
+
+def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
+                          when_ct: datetime) -> str | None:
+    """Detect arm-boundary crossings (spec §11 #3) and write
+    ``hvac.switch_event`` rows when the active arm differs from
+    ``last_arm``. Returns the current arm letter (or None) so the
+    caller can update its FiringState.
+
+    Cold-start (last_arm is None) is NOT logged: switch events are
+    calendar boundaries, not initialization. The first transition the
+    controller observes after that seeds the next comparison.
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    current_arm = current_arm_at(when_naive)
+    if last_arm is None or current_arm == last_arm:
+        return current_arm
+
+    planned_ts = _planned_boundary_ts(when_naive)
+    p = (Point("hvac.switch_event")
+         .time(when_ct)
+         .field("from_arm", last_arm)
+         .field("to_arm", current_arm or "")
+         .field("boundary_planned_ts", planned_ts.isoformat() if planned_ts else "")
+         .field("boundary_actual_ts", when_naive.isoformat()))
+    write_api.write(bucket=bucket, record=p)
+    return current_arm
+
+
 def write_arm_mode(write_api, bucket: str, when_ct: datetime,
                     required_feeds: dict, controller_alive: bool) -> None:
     """Write one ``hvac.arm_mode`` row classifying the current cycle.
@@ -2052,12 +2092,19 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # whether a scheduled action fires this minute.
     layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
 
-    # ---- Per-cycle arm-mode telemetry (spec §11 #2) ----
+    # ---- Per-cycle arm-mode + switch-event telemetry (spec §11 #2-3) ----
     # Writes hvac.arm_mode at the same 5-min cadence as hvac.5cp_state so
     # analysis sees a uniform 288-rows/day trace. Outside the locked
     # experiment window (before 2026-06-01 or after 2026-11-16) the
-    # write is a no-op inside ``write_arm_mode``.
+    # arm_mode write is a no-op inside ``write_arm_mode``.
+    #
+    # ``maybe_log_arm_switch`` runs every tick (NOT throttled) so a
+    # boundary crossing is captured at minute resolution, not 5-min
+    # resolution. The function is a no-op when no transition occurred.
     now_utc_for_audit = now_local.astimezone(timezone.utc)
+    firing.last_observed_arm = maybe_log_arm_switch(
+        write_api, cfg.influx_bucket, firing.last_observed_arm, now_local,
+    )
     if (firing.last_arm_mode_audit_at_utc is None
             or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
             >= _ARM_MODE_AUDIT_INTERVAL):

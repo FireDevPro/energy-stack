@@ -2504,3 +2504,76 @@ def test_required_feeds_propagates_unhealthy_flags():
         pjm_capacity_risk_ok=True,
     )
     assert feeds == {"price": False, "weather": True, "pjm_capacity_risk": True}
+
+
+# ---- hvac.switch_event boundary logging (spec §11 #3) ---------------------
+
+
+def test_switch_event_logged_at_a_to_b_boundary():
+    write_api = MagicMock()
+    # 2026-06-15 00:00 CT is the Arm 1 (A) -> Arm 2 (B) boundary
+    when_ct = datetime(2026, 6, 15, 0, 0)
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    assert new_arm == "B"
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.switch_event ")
+    assert 'from_arm="A"' in line
+    assert 'to_arm="B"' in line
+    assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
+
+
+def test_switch_event_not_logged_within_arm():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 14, 0)  # mid-Arm-1
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    assert new_arm == "A"
+    write_api.write.assert_not_called()
+
+
+def test_switch_event_cold_start_does_not_log():
+    """First observation has last_arm=None; the function returns the
+    current arm to seed FiringState but does NOT write a switch row.
+    Switch events are calendar boundaries, not initialization events."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 14, 0)
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", None, when_ct)
+    assert new_arm == "A"
+    write_api.write.assert_not_called()
+
+
+def test_switch_event_logged_at_b_to_a_boundary():
+    write_api = MagicMock()
+    # 2026-06-29 00:00 CT is the Arm 2 (B) -> Arm 3 (A) boundary
+    when_ct = datetime(2026, 6, 29, 0, 0)
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", "B", when_ct)
+    assert new_arm == "A"
+    line = _line_protocol(write_api)
+    assert 'from_arm="B"' in line
+    assert 'to_arm="A"' in line
+    assert 'boundary_planned_ts="2026-06-29T00:00:00"' in line
+
+
+def test_switch_event_logged_at_experiment_end():
+    """End of experiment window: B -> None. Logged as a boundary with
+    empty to_arm and the experiment-end timestamp."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 11, 16, 0, 0)  # experiment end (exclusive)
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", "B", when_ct)
+    assert new_arm is None
+    line = _line_protocol(write_api)
+    assert 'from_arm="B"' in line
+    assert 'to_arm=""' in line
+    assert 'boundary_planned_ts="2026-11-16T00:00:00"' in line
+
+
+def test_switch_event_includes_actual_timestamp():
+    write_api = MagicMock()
+    # Observation slightly after the boundary (e.g., next 1-min tick)
+    when_ct = datetime(2026, 6, 15, 0, 1)
+    new_arm = app.maybe_log_arm_switch(write_api, "energy", "A", when_ct)
+    assert new_arm == "B"
+    line = _line_protocol(write_api)
+    # Planned ts is the calendar boundary (00:00); actual ts is the observation (00:01)
+    assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
+    assert 'boundary_actual_ts="2026-06-15T00:01:00"' in line
