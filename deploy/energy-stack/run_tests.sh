@@ -25,6 +25,7 @@ services=(
     ecowitt-ingest
     haven-ingest
     hvac-scheduler
+    hvac-scheduler-watchdog
     nws-poller
     pjm-dm2-poller
     refoss-poller

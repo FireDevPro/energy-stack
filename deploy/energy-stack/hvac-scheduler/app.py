@@ -22,7 +22,11 @@ Design:
   * Every action also writes to `hvac.actions` for audit.
 
 Safety nets:
-  * DRY_RUN env var (default true) -- logs commands without pushing.
+  * SCHEDULER_MODE env var (REQUIRED, no default; spec §3): shadow =
+    never writes (logs only), experiment = writes ONLY during Arm B
+    inside the locked 2026-06-01..2026-11-16 calendar, production =
+    writes always (off-protocol). Module refuses to start on missing
+    or invalid value.
   * Skips setpoint changes when thermostat HVAC_MODE != Cool/Auto
     (i.e., heating-season no-op).
   * Director token persisted to /data/director_token.json -- one cloud
@@ -43,7 +47,15 @@ Environment variables:
     CONTROL4_PASSWORD           Control4 account password
     CONTROL4_CONTROLLER_IP      Director IP (default 192.168.1.30)
     CONTROL4_THERMOSTAT_ID      C4 item id (default 3231)
-    SCHEDULER_DRY_RUN           "true"|"false" (default "true")
+    SCHEDULER_MODE              "shadow" | "experiment" | "production" (REQUIRED;
+                                no default). shadow = never writes; experiment =
+                                writes during Arm B inside the locked
+                                2026-06-01..2026-11-16 calendar; production =
+                                writes always (excluded from study analysis).
+                                Module refuses to start (sys.exit(2)) on missing
+                                or invalid value. Spec §3 lock.
+    SCHEDULER_DRY_RUN           Retired by SCHEDULER_MODE. If still set in the
+                                env, it is logged-and-ignored at Config load.
     SCHEDULER_DECISION_HOUR     Hour-of-day to decide tomorrow (default 21)
     SCHEDULER_REVISIT_HOURS     Comma-separated local hours at which to re-poll
                                 today's forecast and re-classify if it shifted
@@ -74,6 +86,7 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
+from arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
 from pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
@@ -320,6 +333,76 @@ def log(level: str, msg: str, **fields: Any) -> None:
     print(json.dumps(rec, default=str), flush=True)
 
 
+# ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
+#
+# Three explicit top-level modes gate the setpoint-write path:
+#   - shadow     : never writes; logs decisions/telemetry only
+#   - experiment : writes ONLY during Arm B periods inside the locked
+#                  2026-06-01..2026-11-16 calendar; outside the window =
+#                  no writes (no implicit "preserve pre-experiment"
+#                  fallback per spec §3 lock)
+#   - production : writes always; ignores A/B calendar (deliberate
+#                  non-study operation; excluded from analysis dataset)
+#
+# Unknown / missing values: refuse to start (sys.exit(2)). Validation
+# runs at module import so misconfiguration is visible BEFORE any write
+# path could run.
+#
+# The legacy SCHEDULER_DRY_RUN env var is retired; if present alongside
+# SCHEDULER_MODE it is ignored with a warning logged in Config.from_env.
+VALID_SCHEDULER_MODES = ("shadow", "experiment", "production")
+
+
+def _validate_scheduler_mode_or_exit() -> str:
+    mode = os.environ.get("SCHEDULER_MODE")
+    if mode not in VALID_SCHEDULER_MODES:
+        log(
+            "error",
+            "scheduler_mode_invalid",
+            value=mode,
+            valid=VALID_SCHEDULER_MODES,
+            message=(
+                "SCHEDULER_MODE must be set explicitly to one of: "
+                "shadow, experiment, production. Refusing to start."
+            ),
+        )
+        sys.exit(2)
+    log("info", "scheduler_mode_active", mode=mode)
+    return mode
+
+
+SCHEDULER_MODE = _validate_scheduler_mode_or_exit()
+
+
+def _writes_allowed(when_ct: datetime) -> bool:
+    """Per spec §3 SCHEDULER_MODE gating.
+
+    Reads os.environ on each call (not the module-level constant) so
+    tests can ``monkeypatch.setenv("SCHEDULER_MODE", ...)`` without
+    reloading the module. Module-level validation guarantees the env
+    var was valid at startup; tests are expected to use only valid
+    values when overriding.
+
+    ``when_ct`` may be tz-aware; the locked arm calendar uses naive
+    CT-local datetimes so we strip tzinfo before comparing.
+    """
+    mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+    # Defense in depth: if mode was mutated at runtime to something
+    # invalid (after import-time validation passed), fail closed
+    # rather than fall through to the experiment branch (which would
+    # silently consult the calendar and write on Arm B periods).
+    if mode not in VALID_SCHEDULER_MODES:
+        return False
+    if mode == "shadow":
+        return False
+    if mode == "production":
+        return True
+    # mode == "experiment"
+    if when_ct.tzinfo is not None:
+        when_ct = when_ct.replace(tzinfo=None)
+    return current_arm_at(when_ct) == "B"
+
+
 @dataclass(frozen=True)
 class Config:
     email: str
@@ -327,6 +410,7 @@ class Config:
     controller_ip: str
     thermostat_id: int
     dry_run: bool
+    mode: str
     decision_hour: int
     tz_name: str
     influx_url: str
@@ -355,12 +439,35 @@ class Config:
             log("error", "invalid_revisit_hours", raw=revisit_raw)
             sys.exit(2)
 
+        # SCHEDULER_DRY_RUN retired in favor of SCHEDULER_MODE (spec §3,
+        # plan standing rule). If both are set, ignore SCHEDULER_DRY_RUN
+        # with a warning so the misconfiguration is visible. Read mode
+        # from os.environ (not the module-level SCHEDULER_MODE constant)
+        # so the value reflects the current process state — startup
+        # validation already guaranteed it was valid at import.
+        mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+        legacy_dry_run = os.environ.get("SCHEDULER_DRY_RUN")
+        if legacy_dry_run is not None:
+            log(
+                "warn",
+                "scheduler_dry_run_ignored",
+                value=legacy_dry_run,
+                scheduler_mode=mode,
+                message=(
+                    "SCHEDULER_DRY_RUN is retired; SCHEDULER_MODE is the "
+                    "single source of truth for write-gating. Ignoring."
+                ),
+            )
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
             controller_ip=os.environ.get("CONTROL4_CONTROLLER_IP", "192.168.1.30"),
             thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
-            dry_run=os.environ.get("SCHEDULER_DRY_RUN", "true").lower() in ("1", "true", "yes"),
+            # dry_run derived from mode — defense in depth alongside the
+            # SCHEDULER_MODE gate inside execute_action.
+            dry_run=(mode == "shadow"),
+            mode=mode,
             decision_hour=int(os.environ.get("SCHEDULER_DECISION_HOUR", "21")),
             tz_name=os.environ.get("SCHEDULER_TZ", "America/Chicago"),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
@@ -797,6 +904,18 @@ class FiringState:
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
     last_5cp_audit_at_utc: datetime | None = None
+    # Throttle for hvac.arm_mode + hvac.switch_event + hvac.input_feed_health
+    # writes. Same ~5-min cadence as 5cp_state so analysis sees a uniform
+    # 288-rows/day arm-mode trace per spec §11 #2.
+    last_arm_mode_audit_at_utc: datetime | None = None
+    # Track the most recently observed arm letter so switch-event logging
+    # can detect transitions across ticks (spec §11 #3). ``arm_observed``
+    # is False on cold start (process boot) and True once the first tick
+    # has populated ``last_observed_arm`` — this distinguishes a mid-arm
+    # restart (no boundary, don't log) from a real None->A transition at
+    # experiment start (boundary, log).
+    last_observed_arm: str | None = None
+    arm_observed: bool = False
     # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
     # where ``fetch_latest_comed`` returned a real price. Used to release
     # a carried-forward price-overlay tier when the feed has been
@@ -1140,10 +1259,183 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict:
     return snapshot
 
 
+# Pre-registered capacity-risk operating window per spec §5.1. Outside
+# this window PJM capacity-risk inputs are not required for B-active
+# classification (the controller's capacity-risk overlay layer is
+# inactive by design). Inclusive of 2026-06-01 through 2026-09-30.
+CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
+CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
+
+
+def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
+                                  weather_ok: bool,
+                                  pjm_capacity_risk_ok: bool) -> dict:
+    """Return the dict of input-feed health flags REQUIRED for B-active
+    classification at ``when_ct`` (spec §5 + §5.1).
+
+    Price + weather are always required during Arm B. PJM
+    capacity-risk inputs are only required inside the locked
+    capacity-risk operating window; their absence outside the window
+    must NOT down-classify the hour to B-fallback.
+
+    The full feed-health audit (every feed, regardless of required-
+    status) is written separately by ``write_input_feed_health``.
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    feeds = {"price": price_ok, "weather": weather_ok}
+    if CAPACITY_RISK_WINDOW_START_CT <= when_naive < CAPACITY_RISK_WINDOW_END_CT:
+        feeds["pjm_capacity_risk"] = pjm_capacity_risk_ok
+    return feeds
+
+
+def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
+    """Return the calendar's intended boundary timestamp covering
+    ``when_naive``: the start_ct of the arm period containing it, or
+    the experiment end if past the last arm.
+    """
+    for arm in ARM_CALENDAR:
+        if arm.start_ct <= when_naive < arm.end_ct:
+            return arm.start_ct
+    if when_naive >= ARM_CALENDAR[-1].end_ct:
+        return ARM_CALENDAR[-1].end_ct
+    return None
+
+
+def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
+                          *, arm_observed: bool,
+                          when_ct: datetime) -> tuple[str | None, bool]:
+    """Detect arm-boundary crossings (spec §11 #3) and write
+    ``hvac.switch_event`` rows when the active arm differs from
+    ``last_arm``. Returns ``(current_arm, arm_observed=True)`` so the
+    caller can update its FiringState.
+
+    ``arm_observed`` is the cold-start guard. False on first call after
+    process boot: the function seeds ``last_observed_arm`` without
+    logging (a mid-arm controller restart is not a calendar boundary).
+    True on every subsequent call: real changes between ``last_arm``
+    and ``current_arm`` ARE boundaries and ARE logged — including the
+    None -> A transition at experiment start (2026-06-01 00:00 CT).
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    current_arm = current_arm_at(when_naive)
+    if not arm_observed:
+        # Cold start: seed FiringState, no log.
+        return current_arm, True
+    if current_arm == last_arm:
+        return current_arm, True
+
+    planned_ts = _planned_boundary_ts(when_naive)
+    p = (Point("hvac.switch_event")
+         .time(when_ct)
+         .field("from_arm", last_arm or "")
+         .field("to_arm", current_arm or "")
+         .field("boundary_planned_ts", planned_ts.isoformat() if planned_ts else "")
+         .field("boundary_actual_ts", when_naive.isoformat()))
+    write_api.write(bucket=bucket, record=p)
+    return current_arm, True
+
+
+def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
+                              feeds: dict) -> None:
+    """Write one ``hvac.input_feed_health`` row per feed (spec §11 #4).
+
+    ``feeds`` is the FULL feed-health dict (every feed, regardless of
+    whether it is required for the current hour's B-active
+    classification). Per spec §5.1, PJM capacity-risk health is
+    logged here even outside the capacity-risk operating window so
+    reviewers can audit feed availability across the whole experiment;
+    the B-active classification (``write_arm_mode``) uses a separately
+    filtered ``required_feeds`` dict.
+    """
+    for feed_name, healthy in feeds.items():
+        p = (Point("hvac.input_feed_health")
+             .time(when_ct)
+             .tag("feed", feed_name)
+             .field("healthy", bool(healthy)))
+        write_api.write(bucket=bucket, record=p)
+
+
+def write_arm_mode(write_api, bucket: str, when_ct: datetime,
+                    required_feeds: dict, controller_alive: bool) -> None:
+    """Write one ``hvac.arm_mode`` row classifying the current cycle.
+
+    Per spec §11 #2 + §5: in-window classification is one of A-active
+    / B-active / B-fallback / B-down (carried in ``mode_actual`` with
+    ``arm`` tag) — but ONLY when ``SCHEDULER_MODE=experiment`` (the
+    spec §3 mandated mode for the locked window). If the operator
+    leaves the scheduler in shadow or switches to production during
+    the experiment window, the spec §5 four-mode classification does
+    NOT apply: shadow means no thermostat writes (B-active would
+    falsely claim the smart controller delivered treatment when it
+    didn't), production is explicitly off-protocol (excluded from
+    analysis per spec §3). For those cases emit
+    ``mode_actual="off-protocol-shadow"`` / ``"off-protocol-production"``
+    so the analysis pipeline can EXCLUDE those hours from the primary
+    outcome rather than mis-attribute exposure.
+
+    Outside the locked window the controller is still alive and ticking;
+    we emit a liveness-only row with ``mode_actual="outside-window"``
+    so the watchdog (spec §11 #5, queries ``hvac.arm_mode``) doesn't
+    fire false ``controller_alive=false`` during shadow weeks.
+
+    Every emitted row carries a ``scheduler_mode`` tag so the analysis
+    pipeline can join arm-mode rows to the operator's mode setting
+    without re-deriving it.
+
+    ``required_feeds`` is the dict of input-feed health flags that the
+    caller has already filtered to the feeds REQUIRED for this hour
+    (per spec §5.1, PJM capacity-risk inputs are only required during
+    the capacity-risk operating window). All-true = healthy. The
+    full feed-health audit (all feeds, regardless of required-status)
+    is written separately by ``write_input_feed_health`` so reviewers
+    can see staleness on optional feeds too.
+
+    ``controller_alive`` is normally True for in-process writes; the
+    out-of-band watchdog (Task 1.6) writes ``hvac.heartbeat`` rows
+    independently.
+    """
+    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
+    arm = current_arm_at(when_naive)
+    scheduler_mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+    if arm is None:
+        p = (Point("hvac.arm_mode")
+             .time(when_ct)
+             .tag("scheduler_mode", scheduler_mode)
+             .field("mode_actual", "outside-window"))
+        write_api.write(bucket=bucket, record=p)
+        return
+    if scheduler_mode != "experiment":
+        # In-window protocol deviation: the spec §5 four-mode
+        # classification only applies when SCHEDULER_MODE=experiment.
+        p = (Point("hvac.arm_mode")
+             .time(when_ct)
+             .tag("scheduler_mode", scheduler_mode)
+             .tag("arm", arm)
+             .field("mode_actual", f"off-protocol-{scheduler_mode}"))
+        write_api.write(bucket=bucket, record=p)
+        return
+    if arm == "A":
+        mode_actual = "A-active"
+    elif not controller_alive:
+        mode_actual = "B-down"
+    elif not all(required_feeds.values()):
+        mode_actual = "B-fallback"
+    else:
+        mode_actual = "B-active"
+    p = (Point("hvac.arm_mode")
+         .time(when_ct)
+         .tag("scheduler_mode", scheduler_mode)
+         .tag("arm", arm)
+         .field("mode_actual", mode_actual))
+    write_api.write(bucket=bucket, record=p)
+
+
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
                           heat_setpoint_to_apply: int,
-                          state: dict, dry_run: bool) -> tuple[bool, str | None]:
+                          state: dict, dry_run: bool,
+                          when_ct: datetime | None = None,
+                          ) -> tuple[bool, str | None]:
     """Apply the action to the thermostat. Returns (applied, error).
 
     Both setpoints are passed in explicitly (rather than read from
@@ -1159,7 +1451,20 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         then HOLD_MODE='Permanent' to pin the override against the
         thermostat's own schedule. Skipped when hvac_mode is not Cool/Auto
         (so we don't accidentally fight a heating-season furnace).
+
+    Two write-gates (defense in depth):
+      1. SCHEDULER_MODE gate (spec §3, this top-level check) — blocks
+         shadow mode, blocks experiment mode outside Arm B periods,
+         blocks experiment mode outside the locked window.
+      2. Legacy ``dry_run`` parameter — kept for the comprehensive
+         dry-run audit (plan Task 1.7).
     """
+    if when_ct is None:
+        when_ct = datetime.now()
+
+    if not _writes_allowed(when_ct):
+        return False, None
+
     if dry_run:
         return False, None  # logged as not-applied with no error
 
@@ -1450,6 +1755,9 @@ class LayerInputs:
 
 
 _FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
+# Same 5-min cadence for arm-mode / feed-health / switch-event telemetry
+# (spec §11 #2-4) so analysis sees a uniform 288-rows/day trace.
+_ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 
 # P2.2 reviewer-flagged 2026-05-11: a carried-forward price-overlay
 # tier (preserved across a brief feed gap per PR #60's P2.A fix) must
@@ -1778,6 +2086,7 @@ async def _push_layer_change_mid_period(
 
     applied, error = await execute_action(
         c4, synthetic_action, sup_cool, sup_heat, snapshot, cfg.dry_run,
+        when_ct=now_local,
     )
     write_action(
         write_api, cfg.influx_bucket, day_type, synthetic_action,
@@ -1869,6 +2178,56 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     # whether a scheduled action fires this minute.
     layer_inputs = _evaluate_layer_inputs(query_api, write_api, cfg, firing, now_local)
 
+    # ---- Per-cycle arm-mode + switch-event + feed-health telemetry ----
+    # (spec §11 #2-4)
+    #
+    # arm_mode and input_feed_health share the 5-min cadence of
+    # hvac.5cp_state so analysis sees a uniform 288-rows/day trace.
+    # Outside the locked experiment window the arm_mode write is a
+    # no-op inside ``write_arm_mode``; input_feed_health still fires so
+    # feed-availability is audited across the whole observation period.
+    #
+    # ``maybe_log_arm_switch`` runs every tick (NOT throttled) so a
+    # boundary crossing is captured at minute resolution. The function
+    # is a no-op when no transition occurred.
+    now_utc_for_audit = now_local.astimezone(timezone.utc)
+    firing.last_observed_arm, firing.arm_observed = maybe_log_arm_switch(
+        write_api, cfg.influx_bucket, firing.last_observed_arm,
+        arm_observed=firing.arm_observed, when_ct=now_local,
+    )
+    if (firing.last_arm_mode_audit_at_utc is None
+            or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
+            >= _ARM_MODE_AUDIT_INTERVAL):
+        price_ok = (
+            firing.price_feed_last_ok_at_utc is not None
+            and (now_utc_for_audit - firing.price_feed_last_ok_at_utc)
+            <= PRICE_FEED_STALE_THRESHOLD
+        )
+        weather_ok = today_forecast is not None
+        pjm_ok = layer_inputs.fivecp_data_available
+        # FULL feed-health dict, written for audit regardless of
+        # required-status (spec §5.1).
+        all_feeds = {
+            "price": price_ok,
+            "weather": weather_ok,
+            "pjm_capacity_risk": pjm_ok,
+        }
+        write_input_feed_health(
+            write_api, cfg.influx_bucket, now_local, all_feeds,
+        )
+        # FILTERED dict for B-active classification (spec §5).
+        required_feeds = required_feeds_for_arm_mode(
+            when_ct=now_local,
+            price_ok=price_ok,
+            weather_ok=weather_ok,
+            pjm_capacity_risk_ok=pjm_ok,
+        )
+        write_arm_mode(
+            write_api, cfg.influx_bucket, now_local, required_feeds,
+            controller_alive=True,
+        )
+        firing.last_arm_mode_audit_at_utc = now_utc_for_audit
+
     fired_anything = False
     now_minutes = now_local.hour * 60 + now_local.minute
     for action in schedule:
@@ -1938,7 +2297,8 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             firing.last_action_label = action.label
 
         applied, error = await execute_action(c4, action, sup_cool, sup_heat,
-                                               snapshot, cfg.dry_run)
+                                               snapshot, cfg.dry_run,
+                                               when_ct=now_local)
         write_action(write_api, cfg.influx_bucket, day_type, action,
                       sup_cool, sup_heat, action.fan_mode, setpoint_reason,
                       cfg.dry_run, applied, snapshot, error,

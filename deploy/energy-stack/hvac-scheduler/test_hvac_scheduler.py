@@ -6,6 +6,7 @@ Run from this directory:
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -2174,3 +2175,653 @@ def test_health_marker_gating_pattern_in_main_loop():
     # And it must appear AFTER the schedule_check_failed line (i.e.
     # inside its except handler, not before).
     assert tick_ok_false_idx > sched_check_idx
+
+
+# ---- SCHEDULER_MODE arm-mode gating (spec §3) -----------------------------
+#
+# Spec §3 controls whether the setpoint-write path can run via three
+# explicit top-level modes set by SCHEDULER_MODE:
+#   - shadow     : never writes (logs only)
+#   - experiment : writes ONLY during Arm B periods inside the locked
+#                  2026-06-01..2026-11-16 calendar; outside the window =
+#                  no writes (no implicit "preserve pre-experiment" fallback)
+#   - production : writes always; ignores A/B calendar (excluded from study)
+# Unknown / missing values: refuse to start (sys.exit(2)).
+#
+# conftest.py sets SCHEDULER_MODE=production as the default so existing
+# tests' dry_run-only assertions pass through the gate; per-mode tests
+# below override via monkeypatch.setenv.
+
+
+def _reload_app_with_mode(mode: str | None) -> None:
+    """Reload the app module with SCHEDULER_MODE set to ``mode`` (or
+    deleted when ``mode`` is None). Used for startup-validation tests.
+    """
+    import importlib
+    if mode is None:
+        os.environ.pop("SCHEDULER_MODE", None)
+    else:
+        os.environ["SCHEDULER_MODE"] = mode
+    importlib.reload(app)
+
+
+@pytest.fixture
+def restore_app_after_reload():
+    """Ensure subsequent tests see a healthy app module. Use on tests
+    that call importlib.reload(app) with a deliberately-bad
+    SCHEDULER_MODE — the module ends up partially loaded after sys.exit
+    propagates out of pytest.raises.
+    """
+    yield
+    _reload_app_with_mode("production")
+
+
+async def test_shadow_mode_never_writes_even_with_dry_run_false(monkeypatch):
+    """Spec §3 shadow: top-level mode gate blocks writes regardless of
+    the dry_run parameter. Defense in depth."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78,
+                             fan_mode="Circulate")
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B) — irrelevant in shadow
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_experiment_mode_arm_a_does_not_write(monkeypatch):
+    """Spec §3 experiment: Arm A periods = scheduler in passive/no-write
+    mode. CTK04AE thermostat program runs autonomously."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    when_ct = datetime(2026, 6, 5, 13, 0)  # mid-Arm-1 (Arm A)
+
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+
+async def test_experiment_mode_arm_b_writes(monkeypatch):
+    """Spec §3 experiment: Arm B periods = scheduler active, writes pushed."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B)
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is True
+    assert error is None
+    climate.set_cool_setpoint_f.assert_awaited_once_with(78)
+
+
+async def test_experiment_mode_outside_window_does_not_write(monkeypatch):
+    """Spec §3 experiment outside the 2026-06-01..2026-11-16 window:
+    no writes. No implicit "preserve pre-experiment" fallback."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+
+    # Before experiment start
+    pre_when = datetime(2026, 5, 25, 13, 0)
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=pre_when,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+    # After experiment end (2026-11-16 00:00 exclusive)
+    post_when = datetime(2026, 11, 25, 13, 0)
+    applied, _ = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=post_when,
+    )
+    assert applied is False
+    climate.set_cool_setpoint_f.assert_not_awaited()
+
+
+async def test_production_mode_writes_regardless_of_calendar(monkeypatch):
+    """Spec §3 production: ignores A/B calendar entirely. Used for
+    deliberate non-study operation. Excluded from analysis dataset."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    # During what would be Arm A in experiment mode, production still writes.
+    when_ct = datetime(2026, 6, 5, 13, 0)
+
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+    )
+    assert applied is True
+    assert error is None
+    climate.set_cool_setpoint_f.assert_awaited_once_with(78)
+
+
+def test_invalid_scheduler_mode_fails_startup(restore_app_after_reload):
+    """Spec §3: unknown SCHEDULER_MODE = refuse to start (sys.exit(2))."""
+    with pytest.raises(SystemExit) as exc_info:
+        _reload_app_with_mode("bogus")
+    assert exc_info.value.code == 2
+
+
+def test_missing_scheduler_mode_fails_startup(restore_app_after_reload):
+    """Spec §3: no default. SCHEDULER_MODE must be set explicitly."""
+    with pytest.raises(SystemExit) as exc_info:
+        _reload_app_with_mode(None)
+    assert exc_info.value.code == 2
+
+
+def test_scheduler_dry_run_env_is_ignored_with_warning(monkeypatch, capsys):
+    """Plan standing rule: SCHEDULER_DRY_RUN is retired; if both env
+    vars are present, SCHEDULER_DRY_RUN is ignored with a warning."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    monkeypatch.setenv("SCHEDULER_DRY_RUN", "true")
+    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
+    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+
+    cfg = app.Config.from_env()
+    captured = capsys.readouterr().out
+    assert "scheduler_dry_run_ignored" in captured
+    # Production mode -> dry_run derived as False (writes allowed by the gate).
+    assert cfg.dry_run is False
+    assert cfg.mode == "production"
+
+
+def test_config_dry_run_derived_from_shadow_mode(monkeypatch):
+    """In shadow mode, cfg.dry_run is True (the existing dry_run check
+    inside execute_action acts as defense in depth alongside the
+    SCHEDULER_MODE gate)."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
+    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "x")
+    monkeypatch.setenv("INFLUXDB_ORG", "x")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "x")
+    monkeypatch.delenv("SCHEDULER_DRY_RUN", raising=False)
+
+    cfg = app.Config.from_env()
+    assert cfg.dry_run is True
+    assert cfg.mode == "shadow"
+
+
+def test_writes_allowed_handles_tz_aware_datetime(monkeypatch):
+    """The main loop computes ``now_local = datetime.now(tz)`` (tz-aware).
+    The gate must accept that without raising; arm_calendar uses
+    naive CT-local datetimes."""
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    tz = ZoneInfo("America/Chicago")
+    when_ct = datetime(2026, 6, 20, 13, 0, tzinfo=tz)  # tz-aware Arm B
+    assert app._writes_allowed(when_ct) is True
+
+    when_ct_arm_a = datetime(2026, 6, 5, 13, 0, tzinfo=tz)
+    assert app._writes_allowed(when_ct_arm_a) is False
+
+
+def test_writes_allowed_fails_closed_on_runtime_invalid_mode(monkeypatch):
+    """Defense in depth: if SCHEDULER_MODE is mutated to an invalid
+    value at runtime (after the import-time validation passed), the
+    gate must fail closed (return False) rather than fall through to
+    the experiment branch and consult the calendar. Spec §3 fail-
+    closed lock applies at all times, not just startup."""
+    monkeypatch.setenv("SCHEDULER_MODE", "bogus_runtime_value")
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm B - would write under experiment
+    assert app._writes_allowed(when_ct) is False
+
+
+# ---- hvac.arm_mode telemetry (spec §11 #2) --------------------------------
+
+
+def _line_protocol(write_api):
+    """Return the line-protocol body of the most recent write_api.write call."""
+    record = write_api.write.call_args.kwargs.get("record")
+    return record.to_line_protocol()
+
+
+def test_write_arm_mode_writes_a_active_during_arm_a(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 13, 0)  # Arm 1 (A)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.arm_mode,")
+    assert "arm=A" in line
+    assert "scheduler_mode=experiment" in line
+    assert 'mode_actual="A-active"' in line
+
+
+def test_write_arm_mode_writes_b_active_when_all_feeds_healthy(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert "scheduler_mode=experiment" in line
+    assert 'mode_actual="B-active"' in line
+
+
+def test_write_arm_mode_writes_b_fallback_when_feed_stale(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
+    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert 'mode_actual="B-fallback"' in line
+
+
+def test_write_arm_mode_writes_b_down_when_controller_not_alive(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=False)
+    line = _line_protocol(write_api)
+    assert "arm=B" in line
+    assert 'mode_actual="B-down"' in line
+
+
+def test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow(monkeypatch):
+    """Spec §3 mandates SCHEDULER_MODE=experiment during the locked
+    window. If the operator left the scheduler in shadow mode past
+    2026-06-01 00:00 CT (no thermostat writes), the spec §5 four-mode
+    classification does NOT apply: B-active would falsely claim the
+    smart controller delivered treatment when it didn't. Emit
+    mode_actual="off-protocol-shadow" so the analysis can EXCLUDE
+    these hours from the primary outcome."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # Arm B period, but mode=shadow
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert 'mode_actual="off-protocol-shadow"' in line
+    assert "scheduler_mode=shadow" in line
+
+
+def test_write_arm_mode_in_window_production_emits_off_protocol_production(monkeypatch):
+    """Spec §3: production mode is for deliberate non-study operation
+    and is excluded from the analysis dataset. If active during the
+    locked window it MUST NOT be classified as A-active or B-active."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 13, 0)  # Arm A period, but mode=production
+    feeds = {"price": True, "weather": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert 'mode_actual="off-protocol-production"' in line
+    assert "scheduler_mode=production" in line
+
+
+def test_write_arm_mode_outside_experiment_window_emits_outside_window_row(monkeypatch):
+    """Outside the locked window we emit a liveness row with
+    mode_actual="outside-window" regardless of scheduler_mode so the
+    watchdog (spec §11 #5) sees recent rows during shadow weeks."""
+    monkeypatch.setenv("SCHEDULER_MODE", "shadow")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 5, 25, 13, 0)  # before experiment start
+    feeds = {"price": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert 'mode_actual="outside-window"' in line
+    assert "scheduler_mode=shadow" in line
+
+
+def test_write_arm_mode_outside_window_after_experiment_end(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    write_api = MagicMock()
+    when_ct = datetime(2026, 11, 25, 13, 0)  # after experiment end
+    feeds = {"price": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert 'mode_actual="outside-window"' in line
+
+
+def test_write_arm_mode_accepts_tz_aware_datetime(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_MODE", "experiment")
+    write_api = MagicMock()
+    tz = ZoneInfo("America/Chicago")
+    when_ct = datetime(2026, 6, 5, 13, 0, tzinfo=tz)  # Arm 1 (A), tz-aware
+    feeds = {"price": True, "weather": True}
+    app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
+    line = _line_protocol(write_api)
+    assert "arm=A" in line
+    assert 'mode_actual="A-active"' in line
+
+
+# ---- Required-feeds-for-arm-mode helper (spec §5 + §5.1) ------------------
+
+
+def test_required_feeds_includes_pjm_inside_capacity_risk_window():
+    """Inside the pre-registered capacity-risk operating window
+    (2026-06-01 .. 2026-09-30 inclusive), pjm_capacity_risk is required."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 7, 15, 13, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=True,
+    )
+    assert feeds == {"price": True, "weather": True, "pjm_capacity_risk": True}
+
+
+def test_required_feeds_excludes_pjm_outside_capacity_risk_window():
+    """Outside the capacity-risk operating window (e.g., October arms),
+    pjm_capacity_risk staleness must NOT classify the hour as B-fallback
+    per spec §5.1. The feed is therefore omitted from the required set."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 10, 15, 13, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert feeds == {"price": True, "weather": True}
+
+
+def test_required_feeds_window_boundary_inclusive_of_september():
+    """Spec §5.1 locks the window as 2026-06-01 00:00 CT through
+    2026-09-30 23:59 CT. September 30 must still require pjm_capacity_risk."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 9, 30, 23, 59),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert "pjm_capacity_risk" in feeds
+    assert feeds["pjm_capacity_risk"] is False
+
+
+def test_required_feeds_window_boundary_excludes_october_first():
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 10, 1, 0, 0),
+        price_ok=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=False,
+    )
+    assert "pjm_capacity_risk" not in feeds
+
+
+def test_required_feeds_propagates_unhealthy_flags():
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 7, 15, 13, 0),
+        price_ok=False,
+        weather_ok=True,
+        pjm_capacity_risk_ok=True,
+    )
+    assert feeds == {"price": False, "weather": True, "pjm_capacity_risk": True}
+
+
+# ---- hvac.switch_event boundary logging (spec §11 #3) ---------------------
+
+
+def test_switch_event_logged_at_a_to_b_boundary():
+    write_api = MagicMock()
+    # 2026-06-15 00:00 CT is the Arm 1 (A) -> Arm 2 (B) boundary
+    when_ct = datetime(2026, 6, 15, 0, 0)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "B"
+    assert observed is True
+    write_api.write.assert_called_once()
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.switch_event ")
+    assert 'from_arm="A"' in line
+    assert 'to_arm="B"' in line
+    assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
+
+
+def test_switch_event_not_logged_within_arm():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 14, 0)  # mid-Arm-1
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "A"
+    assert observed is True
+    write_api.write.assert_not_called()
+
+
+def test_switch_event_cold_start_does_not_log():
+    """Cold start (arm_observed=False): the function seeds FiringState
+    by returning the current arm + arm_observed=True but does NOT
+    write a switch row. Mid-arm controller restart should not produce
+    a phantom "boundary" event."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 5, 14, 0)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", None, arm_observed=False, when_ct=when_ct,
+    )
+    assert new_arm == "A"
+    assert observed is True
+    write_api.write.assert_not_called()
+
+
+def test_switch_event_logs_experiment_start_boundary_from_observed_none():
+    """Once arm_observed=True (post-cold-start), a transition from
+    None (previously observed = outside window) to a real arm IS a
+    spec §11 #3 boundary and MUST log. Without this, the controller's
+    first observation of June 1 00:00 CT is silently swallowed."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 1, 0, 0)  # experiment start
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", None, arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "A"
+    assert observed is True
+    line = _line_protocol(write_api)
+    assert 'from_arm=""' in line
+    assert 'to_arm="A"' in line
+    assert 'boundary_planned_ts="2026-06-01T00:00:00"' in line
+
+
+def test_switch_event_logged_at_b_to_a_boundary():
+    write_api = MagicMock()
+    # 2026-06-29 00:00 CT is the Arm 2 (B) -> Arm 3 (A) boundary
+    when_ct = datetime(2026, 6, 29, 0, 0)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "B", arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "A"
+    assert observed is True
+    line = _line_protocol(write_api)
+    assert 'from_arm="B"' in line
+    assert 'to_arm="A"' in line
+    assert 'boundary_planned_ts="2026-06-29T00:00:00"' in line
+
+
+def test_switch_event_logged_at_experiment_end():
+    """End of experiment window: B -> None. Logged as a boundary with
+    empty to_arm and the experiment-end timestamp."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 11, 16, 0, 0)  # experiment end (exclusive)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "B", arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm is None
+    assert observed is True
+    line = _line_protocol(write_api)
+    assert 'from_arm="B"' in line
+    assert 'to_arm=""' in line
+    assert 'boundary_planned_ts="2026-11-16T00:00:00"' in line
+
+
+def test_switch_event_includes_actual_timestamp():
+    write_api = MagicMock()
+    # Observation slightly after the boundary (e.g., next 1-min tick)
+    when_ct = datetime(2026, 6, 15, 0, 1)
+    new_arm, observed = app.maybe_log_arm_switch(
+        write_api, "energy", "A", arm_observed=True, when_ct=when_ct,
+    )
+    assert new_arm == "B"
+    assert observed is True
+    line = _line_protocol(write_api)
+    # Planned ts is the calendar boundary (00:00); actual ts is the observation (00:01)
+    assert 'boundary_planned_ts="2026-06-15T00:00:00"' in line
+    assert 'boundary_actual_ts="2026-06-15T00:01:00"' in line
+
+
+# ---- hvac.input_feed_health telemetry (spec §11 #4) -----------------------
+
+
+def test_write_input_feed_health_writes_one_row_per_feed():
+    write_api = MagicMock()
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    app.write_input_feed_health(write_api, "energy", when_ct, feeds)
+    assert write_api.write.call_count == 3
+
+    lines = [
+        c.kwargs.get("record").to_line_protocol()
+        for c in write_api.write.call_args_list
+    ]
+    health_by_feed = {}
+    for line in lines:
+        # parse "hvac.input_feed_health,feed=NAME healthy=true|false ts"
+        assert line.startswith("hvac.input_feed_health,feed=")
+        feed = line.split("feed=", 1)[1].split(" ", 1)[0]
+        healthy = "healthy=true" in line
+        health_by_feed[feed] = healthy
+    assert health_by_feed == {"price": True, "weather": False, "pjm_capacity_risk": True}
+
+
+def test_write_input_feed_health_logs_pjm_outside_operating_window_too():
+    """Spec §5.1: PJM capacity-risk health is STILL logged in feed-health
+    provenance even outside the capacity-risk operating window. The
+    feed-health audit is independent of the B-active classification."""
+    write_api = MagicMock()
+    when_ct = datetime(2026, 10, 15, 13, 0)  # outside capacity-risk window
+    feeds = {"price": True, "weather": True, "pjm_capacity_risk": False}
+    app.write_input_feed_health(write_api, "energy", when_ct, feeds)
+    assert write_api.write.call_count == 3
+    lines = [
+        c.kwargs.get("record").to_line_protocol()
+        for c in write_api.write.call_args_list
+    ]
+    pjm_line = next(line for line in lines if "feed=pjm_capacity_risk" in line)
+    assert "healthy=false" in pjm_line
+
+
+def test_write_input_feed_health_empty_dict_is_noop():
+    write_api = MagicMock()
+    app.write_input_feed_health(write_api, "energy", datetime(2026, 6, 20, 13, 0), {})
+    write_api.write.assert_not_called()
+
+
+# ---- Comprehensive dry-run guard audit (spec §11 #9) ----------------------
+#
+# Every execute_action branch MUST short-circuit before any Control4
+# write when dry_run=True, regardless of action label, hvac_mode, or
+# release-hold flag. This parametrized test enumerates every action
+# in every schedule (NORMAL/HOT/MILD/HOT_STREAK_DAY1) plus
+# synthetic mid-period-repush and vacation actions and asserts no
+# Control4 mutator was awaited.
+#
+# Tests run with SCHEDULER_MODE=production so the top-level mode gate
+# (Task 1.2) doesn't pre-empt the audit; the dry_run gate is what we
+# are stress-testing here.
+
+
+def _all_schedule_actions() -> list:
+    """Every ScheduleAction across every locked schedule, plus
+    synthetic actions used in mid-period repush and vacation paths.
+    Each entry is (label, action, cool_setpoint_to_apply, hvac_mode).
+    """
+    out = []
+    for sched in (
+        app.NORMAL_SCHEDULE,
+        app.HOT_SCHEDULE,
+        app.MILD_SCHEDULE,
+        app.HOT_STREAK_DAY1_SCHEDULE,
+    ):
+        for action in sched:
+            cool = action.cool_setpoint_f if action.cool_setpoint_f is not None else 0
+            out.append((action.label, action, cool, "Cool"))
+    # Synthetic mid-period repush (constructed in
+    # _push_layer_change_mid_period at line ~2002)
+    repush = app.ScheduleAction(13, 0, "MID_PERIOD_REPUSH:COAST",
+                                  cool_setpoint_f=82, fan_mode=None)
+    out.append(("MID_PERIOD_REPUSH:COAST", repush, 82, "Cool"))
+    # Synthetic vacation action (vacation_schedule helper)
+    vac = app.ScheduleAction(0, 0, "VACATION_HOLD", cool_setpoint_f=80)
+    out.append(("VACATION_HOLD", vac, 80, "Cool"))
+    # Auto mode hits the same setpoint branch
+    auto_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    out.append(("COAST_AUTO_MODE", auto_action, 79, "Auto"))
+    # Heating/Off mode short-circuits ("hvac_mode_not_cooling") - dry_run
+    # gate must still pre-empt that path.
+    heat_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    out.append(("COAST_HEAT_MODE", heat_action, 79, "Heat"))
+    return out
+
+
+@pytest.mark.parametrize(
+    "label,action,cool_to_apply,hvac_mode",
+    _all_schedule_actions(),
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+async def test_dry_run_never_calls_control4_for_any_action(
+    monkeypatch, label, action, cool_to_apply, hvac_mode,
+):
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (irrelevant in production)
+
+    applied, error = await app.execute_action(
+        c4, action,
+        cool_setpoint_to_apply=cool_to_apply,
+        heat_setpoint_to_apply=app.HEAT_SETPOINT_FLOOR_F,
+        state={"hvac_mode": hvac_mode},
+        dry_run=True,
+        when_ct=when_ct,
+    )
+
+    assert applied is False, (
+        f"{label}: dry_run=True must return applied=False, got applied={applied}"
+    )
+    assert error is None, (
+        f"{label}: dry_run=True must return error=None, got error={error!r}"
+    )
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_fan_mode.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
+    """Production mode + dry_run=True: mode gate would allow but the
+    dry_run gate must still pre-empt. Defense in depth."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=True, when_ct=when_ct,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
