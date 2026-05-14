@@ -294,6 +294,124 @@ def test_rt_lmp_timestamp_is_ept_converted_to_utc():
     assert line.endswith(f" {expected_ns}")
 
 
+# =========================================================================
+# rt_hrl_lmps backfill script (Phase 2 Task 2.3)
+# =========================================================================
+#
+# One-shot fill of pjm.lmp_rt_hourly for the 2026-01-01..yesterday window.
+# Run inside the pjm-dm2-poller container so it shares the live poller's
+# env (PJM_DM2_API_KEY, INFLUXDB_*).
+
+
+def test_iter_target_dates_inclusive_range():
+    from datetime import date
+    from backfill_rt_hrl_lmps import iter_target_dates
+    out = list(iter_target_dates(date(2026, 1, 1), date(2026, 1, 3)))
+    assert out == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
+
+
+def test_iter_target_dates_single_day():
+    from datetime import date
+    from backfill_rt_hrl_lmps import iter_target_dates
+    out = list(iter_target_dates(date(2026, 5, 15), date(2026, 5, 15)))
+    assert out == [date(2026, 5, 15)]
+
+
+def test_iter_target_dates_empty_when_start_after_end():
+    from datetime import date
+    from backfill_rt_hrl_lmps import iter_target_dates
+    out = list(iter_target_dates(date(2026, 5, 15), date(2026, 5, 14)))
+    assert out == []
+
+
+def test_default_start_date_is_spec_locked():
+    """Spec §8 + plan Task 2.3: backfill from 2026-01-01 (minimum;
+    24-month retention is aspirational)."""
+    from datetime import date
+    from backfill_rt_hrl_lmps import DEFAULT_START_DATE
+    assert DEFAULT_START_DATE == date(2026, 1, 1)
+
+
+def test_default_end_date_is_yesterday():
+    """Settled data is T+1; the live poller covers yesterday onward.
+    The backfill default ends at yesterday so the two together cover
+    everything without a gap or double-write."""
+    from datetime import date, timedelta
+    from backfill_rt_hrl_lmps import default_end_date
+    today = date.today()
+    assert default_end_date(today=today) == today - timedelta(days=1)
+
+
+def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
+    """Per-date fetcher call. Each date's points get written before the
+    next iteration to keep memory bounded over a multi-month range."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    fetched_dates: list[date] = []
+    write_calls: list[int] = []
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        fetched_dates.append(target_date_ept.date())
+        return [MagicMock(), MagicMock()]  # 2 fake points per date
+
+    write_api = MagicMock()
+    write_api.write.side_effect = lambda **kw: write_calls.append(len(kw["record"]))
+
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+
+    sleeps: list[float] = []
+    async def fake_sleep(s):
+        sleeps.append(s)
+    monkeypatch.setattr(bf.asyncio, "sleep", fake_sleep)
+
+    cfg = MagicMock()
+    cfg.influx_bucket = "energy"
+    client = MagicMock()
+
+    dates_done, total_pts = asyncio.run(bf.backfill_range(
+        client, write_api, cfg,
+        start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
+        sleep_s=5.0,
+    ))
+
+    assert fetched_dates == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
+    assert dates_done == 3
+    assert total_pts == 6
+    assert write_calls == [2, 2, 2]
+    # Sleep between dates (n-1 sleeps for n dates)
+    assert sleeps == [5.0, 5.0]
+
+
+def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
+    """If PJM returns zero rows for a date (e.g., not yet posted),
+    skip the influx write rather than calling write with an empty
+    list. Idempotent: a follow-up run on the next day picks it up."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        # Return [] on the middle day
+        if target_date_ept.day == 2:
+            return []
+        return [MagicMock()]
+
+    write_api = MagicMock()
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+    async def no_sleep(s): pass
+    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+
+    dates_done, total_pts = asyncio.run(bf.backfill_range(
+        MagicMock(), write_api, MagicMock(influx_bucket="energy"),
+        start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
+        sleep_s=0.0,
+    ))
+
+    assert dates_done == 3
+    assert total_pts == 2  # day 1 + day 3
+    assert write_api.write.call_count == 2  # day 2 skipped
+
+
 def test_load_forecast_fires_twice_daily():
     assert FEED_SCHEDULE["load_frcstd_7_day"] == Schedule(hours=(6, 13))
 
