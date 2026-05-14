@@ -2689,7 +2689,66 @@ git commit -m "feat(analysis): wire bill reconciliation into pipeline output (sp
 
 ---
 
-### Task 3.15: Phase 3 PR + merge
+### Task 3.15: De-scaffold Phase 0 fixture to real-shape inputs
+
+**Files:**
+- Modify: `tools/analysis/tests/fixtures/synth_rebaseline_dataset.py`
+- Modify: `tools/analysis/tests/test_rebaseline_end_to_end_acceptance.py` (if needed)
+
+Phase 0 deliberately used scaffolded input shapes that diverge from production schemas. Before the outside-in acceptance test goes live (i.e., before `run_full_pipeline` is importable), the fixture must be tightened to match real-shape data — otherwise the acceptance test will quietly teach the implementation a fake schema.
+
+**Known scaffolding gaps to close in Phase 3:**
+
+1. **Eagle data shape.** Phase 0 fixture writes `eagle_df` as hourly rows with a `delivered_kwh` column. Real Eagle (HAN-to-meter) is a **monotonically-increasing meter totalizer** (cumulative kWh since meter install), polled at the Eagle's native cadence. The pipeline derives per-hour kWh from totalizer differences with rollover/zeroing safety. The fixture should emit totalizer values that, after diff, produce the same hourly kWh the Phase 0 scaffold currently writes directly.
+
+2. **Refoss cadence.** Phase 0 fixture writes one `power_w` row per channel per hour. Production refoss-poller writes at ~30s cadence → ~120 samples per channel per hour. The validity check (≥110 samples per channel per hour, per spec §7) cannot run meaningfully against the hourly scaffold. Fixture must be elaborated to 30s cadence at minimum for hours that should pass validity, and to deliberately-insufficient cadence for hours that should fail.
+
+3. **Bill ingestion shape.** Phase 0 writes 1 generic delivery-charge row per month. Real bills have ~15+ line items per bill across SUPPLY / DELIVERY / TAXES_FEES_CREDITS categories (see `comed.bill_lineitems` in InfluxDB). Fixture should include the line items the bill-reconciliation reconstruction actually consumes (Distribution Facility Charge, Electricity Supply Charge, Purchased Electricity Adjustment, Transmission Services, IL Electricity Distribution Charge, per-kWh riders, Carbon-Free Energy Resource Adj).
+
+- [ ] **Step 1: Convert Eagle scaffold from hourly delivered_kwh to monotonic meter totalizer**
+
+```python
+# Real Eagle schema: totalizer column, monotonically non-decreasing,
+# resets handled in the loader. Example:
+eagle_rows.append({
+    "_time": ts,
+    "delivered_kwh_totalizer": running_total,   # cumulative since some epoch
+    "_measurement": "eagle.meter",
+})
+```
+
+Update `eagle_coverage_pct` test fixtures + the bill-reconciliation reconstruction to expect totalizer-diff inputs.
+
+- [ ] **Step 2: Elaborate Refoss to 30s cadence**
+
+Generate 120 rows per channel per hour for valid hours; <110 (or with a >2min gap) for telemetry-invalid scenarios. This makes the validity gate testable against the synthetic data.
+
+- [ ] **Step 3: Add full bill line-item set**
+
+For each month, write line items matching the production `comed.bill_lineitems` schema. Hand-pin amounts per the constants in the fixture so the bill-reconciliation expected values stay independently computable.
+
+- [ ] **Step 4: Update self-consistency tests**
+
+The existing `test_fixture_actually_injects_claimed_scenarios` checks must continue to pass with the new shape. Add an additional check that Refoss row count per cooling-active hour is in the valid range (>=110), and that Eagle totalizer is strictly non-decreasing.
+
+- [ ] **Step 5: Verify acceptance test still SKIPS (not failing)**
+
+```bash
+python -m pytest tools/analysis/tests/test_rebaseline_end_to_end_acceptance.py -v
+```
+
+The outside-in test should still be SKIPPED at this point (pipeline isn't yet importable in this task). The self-consistency tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tools/analysis/tests/fixtures/synth_rebaseline_dataset.py
+git commit -m "fix(phase3): de-scaffold Phase 0 fixture to real-shape Eagle totalizer + 30s Refoss"
+```
+
+---
+
+### Task 3.16: Phase 3 PR + merge
 
 Open PR `Phase 3: SCED rebaseline analysis pipeline`. Substantial diff; expect extensive review. Include PR body template per "Standing rules for every phase" above.
 

@@ -314,6 +314,43 @@ def test_fixture_actually_injects_claimed_scenarios():
             f"rows (expected {expected_fallback_rows}). Inject correctly."
         )
 
+    # 4b. B-active cooling hours actually show the injected SAVINGS_PCT
+    #     reduction vs matched-arm A cooling hours. Verifies the data builder
+    #     INJECTS the savings effect, not just claims it in expected values.
+    from tools.analysis.tests.fixtures.synth_rebaseline_dataset import SAVINGS_PCT
+    for scenario in SCENARIOS:
+        (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
+         ti_a, ti_b, weather_outlier_b, dst) = scenario
+        if cooling_per_day == 0:
+            continue
+        # Day 11 hour 12: cooling-active and past any injected
+        # fallback/telemetry-invalid hours (same anchor as check #5 below)
+        a_start, _ = arm_idx_to_dates[arm_a]
+        b_start, _ = arm_idx_to_dates[arm_b]
+        cool_a_ts = a_start + datetime.timedelta(hours=11 * 24 + 12)
+        cool_b_ts = b_start + datetime.timedelta(hours=11 * 24 + 12)
+
+        def _hvac_w(when):
+            mask = (
+                (synth.refoss_df["_time"] >= when) &
+                (synth.refoss_df["_time"] < when + datetime.timedelta(hours=1)) &
+                (synth.refoss_df["channel"].isin(["em:2", "em:8"]))
+            )
+            return synth.refoss_df.loc[mask, "_value"].sum()
+
+        a_w = _hvac_w(cool_a_ts)
+        b_w = _hvac_w(cool_b_ts)
+        expected_b_w = a_w * (1 - SAVINGS_PCT)
+        rel_err = abs(b_w - expected_b_w) / max(expected_b_w, 1.0)
+        assert rel_err < 0.01, (
+            f"Pair {pair_id} ({label}): Arm A em:2+em:8 at day-11 cooling "
+            f"hour = {a_w}W, Arm B = {b_w}W (expected {expected_b_w:.1f}W "
+            f"= A * (1 - {SAVINGS_PCT})). Relative error {rel_err:.4f}. "
+            "Data builder is not injecting the savings effect; later phases "
+            "will see B looking the same as A and the acceptance test will "
+            "silently confirm 0% savings."
+        )
+
     # 5. Cooling-active hours actually have nonzero em:2+em:8 power.
     # Use post-washout day 11 hour 12 = offset 276. That's past any injected
     # fallback/telemetry-invalid offsets (which come from the first
