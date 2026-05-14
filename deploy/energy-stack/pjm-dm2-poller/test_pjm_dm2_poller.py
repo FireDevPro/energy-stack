@@ -41,8 +41,9 @@ from app import (
     fetch_metered_load_recent,
     fetch_metered_load_recent_rto,
     fetch_peak_forecast_rto,
+    RT_LMP_RECENT_LOOKBACK_DAYS,
     fetch_rt_lmp_for_date,
-    fetch_rt_lmp_for_yesterday,
+    fetch_rt_lmp_recent,
     poll_once,
     seconds_to_next_aligned_tick,
 )
@@ -177,18 +178,27 @@ def test_rt_lmp_fires_at_noon_ct():
     assert FEED_SCHEDULE["rt_hrl_lmps"] == Schedule(hours=(12,))
 
 
-def test_rt_lmp_dispatcher_points_at_yesterday_fetcher():
-    """FEED_DISPATCHERS['rt_hrl_lmps'] orchestrates yesterday's fetch
-    on each scheduled run (settled data is T+1)."""
-    assert FEED_DISPATCHERS["rt_hrl_lmps"] is fetch_rt_lmp_for_yesterday
+def test_rt_lmp_dispatcher_points_at_recent_fetcher():
+    """FEED_DISPATCHERS['rt_hrl_lmps'] orchestrates a multi-day
+    'recent' fetch on each scheduled run; settled data is T+1 with
+    documented T+2 worst-case latency (spec §8)."""
+    assert FEED_DISPATCHERS["rt_hrl_lmps"] is fetch_rt_lmp_recent
 
 
-def test_rt_lmp_fetcher_queries_yesterday_in_ept():
-    """The 12:00 CT rt_hrl_lmps run is for *yesterday's* settled
-    prices (T+1 publish window). A 2026-07-11T12:00 CT fetch must
-    request datetime_beginning_ept=2026-07-10T00:00:00.0 — the
-    "yesterday" date boundary is computed in Eastern, which can
-    differ from Chicago near midnight (1h offset)."""
+def test_rt_lmp_recent_lookback_days_pinned_to_3():
+    """3 days = T+2 worst-case latency + 1 day margin. Locks the
+    constant against drift; widening to 5+ days starts hitting
+    rate-limit pressure when other 12:00 CT feeds also fire."""
+    assert RT_LMP_RECENT_LOOKBACK_DAYS == 3
+
+
+def test_rt_lmp_recent_uses_3_day_range_window_in_ept():
+    """The 12:00 CT rt_hrl_lmps run pulls the last 3 days as a single
+    range query: yesterday (T-1) back through T-3 in EPT. A
+    2026-07-11T12:00 CT fetch must request
+    datetime_beginning_ept=2026-07-08T00:00:00.0to2026-07-10T23:59:59.0
+    so PJM's documented T+2 worst-case latency self-heals on the next
+    cycle without operator backfill."""
     captured: dict[str, object] = {}
 
     class FakeClient:
@@ -201,17 +211,38 @@ def test_rt_lmp_fetcher_queries_yesterday_in_ept():
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 11, 12, 0, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_rt_lmp_for_yesterday(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_rt_lmp_recent(FakeClient(), cfg, now_local))
 
     assert captured["feed"] == "rt_hrl_lmps"
-    assert captured["params"]["datetime_beginning_ept"] == "2026-07-10T00:00:00.0"
+    assert (
+        captured["params"]["datetime_beginning_ept"]
+        == "2026-07-08T00:00:00.0to2026-07-10T23:59:59.0"
+    )
     assert captured["params"]["pnode_id"] == COMED_PNODE_ID
+
+
+def test_rt_lmp_recent_filters_to_current_revisions_only():
+    """row_is_current=true filters out PJM's superseded revisions.
+    RT LMP is bill-canonical; non-deterministic upserts on revision
+    rows would compromise the OSF-pre-registered HVAC$ outcome."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    cfg.tz = CHICAGO
+    now_local = datetime(2026, 7, 11, 12, 0, tzinfo=CHICAGO)
+    asyncio.run(fetch_rt_lmp_recent(FakeClient(), cfg, now_local))
+    assert captured["params"]["row_is_current"] == "true"
 
 
 def test_rt_lmp_for_date_constructs_explicit_target():
     """The for_date helper used by the backfill script accepts any
     EPT date and queries that date specifically. Independent of
-    'yesterday' wall-clock semantics."""
+    'recent' wall-clock semantics."""
     captured: dict[str, object] = {}
 
     class FakeClient:
@@ -225,6 +256,21 @@ def test_rt_lmp_for_date_constructs_explicit_target():
 
     assert captured["params"]["datetime_beginning_ept"] == "2026-01-05T00:00:00.0"
     assert captured["params"]["pnode_id"] == COMED_PNODE_ID
+
+
+def test_rt_lmp_for_date_includes_row_is_current_filter():
+    """Backfill must also filter to current revisions only — same
+    determinism rationale as the live fetcher."""
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def fetch(self, feed: str, params: dict) -> list[dict]:
+            captured["params"] = params
+            return []
+
+    cfg = MagicMock()
+    asyncio.run(fetch_rt_lmp_for_date(FakeClient(), cfg, datetime(2026, 1, 5, 0, 0)))
+    assert captured["params"]["row_is_current"] == "true"
 
 
 # ---- build_rt_lmp_points ------------------------------------------------
@@ -284,13 +330,14 @@ def test_rt_lmp_handles_missing_optional_fields():
 
 
 def test_rt_lmp_timestamp_is_ept_converted_to_utc():
-    """Summer EPT = EDT = UTC-4. 13:00 EDT = 17:00 UTC."""
+    """Summer EPT = EDT = UTC-4. 13:00 EDT = 17:00 UTC.
+    Expected UTC value hand-pinned (not derived from _parse_ept) so a
+    TZ bug in the parser would surface as a test failure rather than
+    self-confirming."""
     [pt] = build_rt_lmp_points([_rt_item(13)])
-    # to_line_protocol's trailing ns timestamp encodes the UTC instant.
-    # Use _parse_ept to derive expected UTC.
     line = pt.to_line_protocol()
-    expected_utc = _parse_ept("2026-07-15T13:00:00").astimezone(timezone.utc)
-    expected_ns = int(expected_utc.timestamp() * 1_000_000_000)
+    # 2026-07-15 13:00 EDT == 2026-07-15 17:00 UTC == 1784134800 epoch
+    expected_ns = 1784134800 * 1_000_000_000
     assert line.endswith(f" {expected_ns}")
 
 
@@ -369,15 +416,17 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
     cfg.influx_bucket = "energy"
     client = MagicMock()
 
-    dates_done, total_pts = asyncio.run(bf.backfill_range(
+    result = asyncio.run(bf.backfill_range(
         client, write_api, cfg,
         start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
         sleep_s=5.0,
     ))
 
     assert fetched_dates == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
-    assert dates_done == 3
-    assert total_pts == 6
+    assert result.dates_attempted == 3
+    assert result.total_points == 6
+    assert result.empty_dates == []
+    assert result.failed_dates == []
     assert write_calls == [2, 2, 2]
     # Sleep between dates (n-1 sleeps for n dates)
     assert sleeps == [5.0, 5.0]
@@ -386,7 +435,8 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
 def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
     """If PJM returns zero rows for a date (e.g., not yet posted),
     skip the influx write rather than calling write with an empty
-    list. Idempotent: a follow-up run on the next day picks it up."""
+    list. Track the date in empty_dates so the end-of-run summary
+    can flag it for follow-up."""
     from datetime import date
     import backfill_rt_hrl_lmps as bf
 
@@ -401,15 +451,58 @@ def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
     async def no_sleep(s): pass
     monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
 
-    dates_done, total_pts = asyncio.run(bf.backfill_range(
+    result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
         start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
         sleep_s=0.0,
     ))
 
-    assert dates_done == 3
-    assert total_pts == 2  # day 1 + day 3
+    assert result.dates_attempted == 3
+    assert result.total_points == 2  # day 1 + day 3
+    assert result.empty_dates == [date(2026, 1, 2)]
+    assert result.failed_dates == []
     assert write_api.write.call_count == 2  # day 2 skipped
+
+
+def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
+    """A PJM HTTP error on one date must not abort the whole backfill —
+    log + record the date in failed_dates + continue. Otherwise a
+    single 5xx mid-run leaves a partial backfill the operator has to
+    manually compute the resume offset for. Spec §8 retention is
+    bill-canonical input; resilience here matters."""
+    from datetime import date
+    import backfill_rt_hrl_lmps as bf
+
+    async def fake_fetch(client, cfg, target_date_ept):
+        if target_date_ept.day == 2:
+            raise RuntimeError("PJM HTTP 503: temporarily unavailable")
+        return [MagicMock()]
+
+    write_api = MagicMock()
+    monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
+    async def no_sleep(s): pass
+    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+
+    result = asyncio.run(bf.backfill_range(
+        MagicMock(), write_api, MagicMock(influx_bucket="energy"),
+        start_date=date(2026, 1, 1), end_date=date(2026, 1, 3),
+        sleep_s=0.0,
+    ))
+
+    assert result.dates_attempted == 3
+    assert result.total_points == 2  # day 1 + day 3
+    assert result.failed_dates == [date(2026, 1, 2)]
+    assert result.empty_dates == []
+    assert write_api.write.call_count == 2  # day 2 errored
+    assert result.needs_followup() is True
+
+
+def test_backfill_result_needs_followup_clean():
+    from backfill_rt_hrl_lmps import BackfillResult
+    r = BackfillResult()
+    r.dates_attempted = 130
+    r.total_points = 3120
+    assert r.needs_followup() is False
 
 
 def test_load_forecast_fires_twice_daily():

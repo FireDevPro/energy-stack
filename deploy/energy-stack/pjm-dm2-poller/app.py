@@ -455,6 +455,15 @@ def build_nspl_points(items: list[dict]) -> list[Point]:
 # ---------------------------------------------------------------------------
 
 
+# Spec §8 documents settled-data latency as T+2 worst case. The
+# daily orchestrator looks back this many days so a single missed
+# Monday post (Sunday + holiday) self-heals on the next cycle without
+# needing the operator to re-run the backfill. Influx dedups by
+# (measurement, tag-set, timestamp) so re-fetching a previously-seen
+# row is idempotent.
+RT_LMP_RECENT_LOOKBACK_DAYS = 3
+
+
 async def fetch_rt_lmp_for_date(
     client: PJMClient, cfg: Config, target_date_ept: datetime,
 ) -> list[Point]:
@@ -465,11 +474,16 @@ async def fetch_rt_lmp_for_date(
     row per hour for the requested date (24 rows on standard days,
     23 or 25 on DST transition days).
 
-    Used by both:
-      - The daily 12:00 CT orchestrator ``fetch_rt_lmp_for_yesterday``
-        (passes yesterday-in-EPT)
-      - The backfill script ``backfill_rt_hrl_lmps.py`` (iterates
-        2026-01-01 through yesterday)
+    ``row_is_current=true`` filters out superseded revisions when PJM
+    re-posts a settled price for an hour. Same pattern as
+    ``fetch_da_lmp_for_tomorrow``; without it the builder would
+    process every revision and Influx would non-deterministically
+    upsert whichever PJM returned last. RT LMP is bill-canonical, so
+    determinism here matters for the OSF-pre-registered HVAC$ outcome.
+
+    Used by:
+      - ``backfill_rt_hrl_lmps.py`` (iterates 2026-01-01 through
+        yesterday for one-shot backfill)
     """
     target = target_date_ept.strftime("%Y-%m-%dT00:00:00.0")
     items = await client.fetch(
@@ -477,33 +491,51 @@ async def fetch_rt_lmp_for_date(
         {
             "pnode_id": COMED_PNODE_ID,
             "datetime_beginning_ept": target,
-            "rowCount": 50,
+            "row_is_current": "true",
+            "rowCount": 200,  # 24 rows expected; 200 = ~8x margin
             "startRow": 1,
         },
     )
     return build_rt_lmp_points(items)
 
 
-async def fetch_rt_lmp_for_yesterday(
+async def fetch_rt_lmp_recent(
     client: PJMClient, cfg: Config, now_local: datetime,
 ) -> list[Point]:
-    """Daily 12:00 CT orchestrator: pull yesterday's settled LMP rows.
+    """Daily 12:00 CT orchestrator: pull the last
+    ``RT_LMP_RECENT_LOOKBACK_DAYS`` days of settled LMP rows in one
+    range query.
 
     PJM posts settled hourly data 11am-12pm ET on business days for
     the prior calendar day. Firing at 12:00 CT (= 13:00 ET) gives a
-    ~1h margin past the typical publish window. The "yesterday" date
-    boundary is computed in EPT (not Chicago) since PJM's
+    ~1h margin past the typical publish window. Spec §8 documents T+2
+    worst-case latency — a Monday holiday's data can land Wednesday.
+    A 3-day lookback handles that case without operator intervention;
+    Influx dedups by timestamp so re-fetching prior days is idempotent.
+
+    Date boundaries are computed in EPT (not Chicago) since PJM's
     ``datetime_beginning_ept`` filter is Eastern; near midnight the
     two TZs disagree by 1h and a Chicago-based "yesterday" would ask
     PJM for the wrong calendar date.
 
-    Weekend behavior: PJM publishes settled data on business days only,
-    so Monday's run for Sunday will see zero rows; Tuesday's run will
-    pick up Sunday + Monday (the backfill window covers the prior day,
-    but Influx dedups by timestamp so re-fetching is idempotent).
+    ``row_is_current=true`` filters PJM revisions (see fetch_rt_lmp_for_date).
     """
-    yesterday_ept = now_local.astimezone(EPT) - timedelta(days=1)
-    return await fetch_rt_lmp_for_date(client, cfg, yesterday_ept)
+    end_ept = now_local.astimezone(EPT) - timedelta(days=1)
+    start_ept = end_ept - timedelta(days=RT_LMP_RECENT_LOOKBACK_DAYS - 1)
+    items = await client.fetch(
+        "rt_hrl_lmps",
+        {
+            "pnode_id": COMED_PNODE_ID,
+            "datetime_beginning_ept": (
+                f"{start_ept.strftime('%Y-%m-%dT00:00:00')}.0to"
+                f"{end_ept.strftime('%Y-%m-%dT23:59:59')}.0"
+            ),
+            "row_is_current": "true",
+            "rowCount": 200,  # 3 days x 24 = 72 expected; 200 = ~2.7x margin
+            "startRow": 1,
+        },
+    )
+    return build_rt_lmp_points(items)
 
 
 async def fetch_da_lmp_for_tomorrow(client: PJMClient, cfg: Config, now_local: datetime) -> list[Point]:
@@ -741,7 +773,7 @@ FEED_DISPATCHERS: dict[
     "inst_load_rto": fetch_inst_load_recent_rto,  # P1.1
     "ops_sum_frcst_peak_rto": fetch_peak_forecast_rto,
     "annual_zonal_nspl": fetch_annual_nspl,
-    "rt_hrl_lmps": fetch_rt_lmp_for_yesterday,  # Phase 2 (spec §8)
+    "rt_hrl_lmps": fetch_rt_lmp_recent,  # Phase 2 (spec §8)
 }
 
 

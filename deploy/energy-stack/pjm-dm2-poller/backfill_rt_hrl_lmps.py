@@ -42,8 +42,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections.abc import Iterator
 from datetime import date, datetime, timedelta
-from typing import Iterator
 
 from influxdb_client import InfluxDBClient
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -88,36 +88,64 @@ async def backfill_range(
     start_date: date,
     end_date: date,
     sleep_s: float = 5.0,
-) -> tuple[int, int]:
+) -> "BackfillResult":
     """Fetch + write rt_hrl_lmps for every date in [start_date, end_date].
 
-    Returns ``(dates_done, total_points)``. Writes per-date (not
-    batched across dates) to bound memory over a multi-month window.
-    Skips the influx write when PJM returns zero rows for a date —
-    Influx dedups by timestamp so retrying later is idempotent.
+    Returns a ``BackfillResult`` with per-date counts. Writes per-date
+    (not batched across dates) to bound memory over a multi-month
+    window. Skips the influx write when PJM returns zero rows for a
+    date — Influx dedups by timestamp so retrying later is idempotent.
 
-    ``sleep_s`` is the inter-date pacing margin; PJM Non-Member API
-    is 6 calls/min so 5s pacing keeps us well under the ceiling.
+    ``sleep_s`` is the inter-date pacing margin; PJM Non-Member API is
+    6 calls/min so 5s pacing keeps us well under the ceiling.
+
+    Resilience: a transient PJM/aiohttp error (timeout, 429, 5xx) on
+    one date is logged and recorded in ``failed_dates``; the loop
+    continues to the next date so a single failure mid-backfill does
+    not require the operator to manually compute the resume offset.
+    Failed dates can be re-run after the main backfill completes.
     """
     dates = list(iter_target_dates(start_date, end_date))
-    dates_done = 0
-    total_points = 0
+    result = BackfillResult()
     for i, target in enumerate(dates):
         target_dt = datetime(target.year, target.month, target.day)
-        points = await fetch_rt_lmp_for_date(client, cfg, target_dt)
-        if points:
-            write_api.write(bucket=cfg.influx_bucket, record=points)
-            log("info", "backfill_rt_lmp_date_ok",
-                date=target.isoformat(), points=len(points))
-        else:
-            log("warn", "backfill_rt_lmp_date_empty",
+        try:
+            points = await fetch_rt_lmp_for_date(client, cfg, target_dt)
+        except Exception as exc:
+            log("error", "backfill_rt_lmp_date_failed",
                 date=target.isoformat(),
-                note="PJM returned 0 rows; may not be posted yet")
-        dates_done += 1
-        total_points += len(points)
+                error_type=type(exc).__name__, error=str(exc))
+            result.failed_dates.append(target)
+        else:
+            if points:
+                write_api.write(bucket=cfg.influx_bucket, record=points)
+                log("info", "backfill_rt_lmp_date_ok",
+                    date=target.isoformat(), points=len(points))
+                result.total_points += len(points)
+            else:
+                log("warn", "backfill_rt_lmp_date_empty",
+                    date=target.isoformat(),
+                    note="PJM returned 0 rows; may not be posted yet")
+                result.empty_dates.append(target)
+        result.dates_attempted += 1
         if i < len(dates) - 1:
             await asyncio.sleep(sleep_s)
-    return dates_done, total_points
+    return result
+
+
+class BackfillResult:
+    """Per-run summary; aggregated and logged at end so the operator
+    sees one summary line listing dates that need follow-up rather
+    than scanning 130+ per-date log lines."""
+
+    def __init__(self) -> None:
+        self.dates_attempted: int = 0
+        self.total_points: int = 0
+        self.empty_dates: list[date] = []
+        self.failed_dates: list[date] = []
+
+    def needs_followup(self) -> bool:
+        return bool(self.empty_dates or self.failed_dates)
 
 
 def _parse_iso_date(s: str) -> date:
@@ -171,12 +199,20 @@ async def main_async(args: argparse.Namespace) -> int:
     write_api = influx.write_api(write_options=SYNCHRONOUS)
     try:
         async with PJMClient(cfg) as client:
-            dates_done, total = await backfill_range(
+            result = await backfill_range(
                 client, write_api, cfg,
                 start_date=args.start, end_date=end, sleep_s=args.sleep,
             )
         log("info", "backfill_rt_lmp_done",
-            dates_done=dates_done, total_points=total)
+            dates_attempted=result.dates_attempted,
+            total_points=result.total_points,
+            empty_dates=[d.isoformat() for d in result.empty_dates],
+            failed_dates=[d.isoformat() for d in result.failed_dates],
+            note=(
+                "re-run with --start <date> --end <date> for any failed "
+                "or empty dates after PJM publishes them"
+                if result.needs_followup() else "all dates covered"
+            ))
     finally:
         influx.close()
     return 0
