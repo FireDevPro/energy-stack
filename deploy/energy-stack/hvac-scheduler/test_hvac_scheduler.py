@@ -2624,3 +2624,99 @@ def test_write_input_feed_health_empty_dict_is_noop():
     write_api = MagicMock()
     app.write_input_feed_health(write_api, "energy", datetime(2026, 6, 20, 13, 0), {})
     write_api.write.assert_not_called()
+
+
+# ---- Comprehensive dry-run guard audit (spec §11 #9) ----------------------
+#
+# Every execute_action branch MUST short-circuit before any Control4
+# write when dry_run=True, regardless of action label, hvac_mode, or
+# release-hold flag. This parametrized test enumerates every action
+# in every schedule (NORMAL/HOT/MILD/HOT_STREAK_DAY1) plus
+# synthetic mid-period-repush and vacation actions and asserts no
+# Control4 mutator was awaited.
+#
+# Tests run with SCHEDULER_MODE=production so the top-level mode gate
+# (Task 1.2) doesn't pre-empt the audit; the dry_run gate is what we
+# are stress-testing here.
+
+
+def _all_schedule_actions() -> list:
+    """Every ScheduleAction across every locked schedule, plus
+    synthetic actions used in mid-period repush and vacation paths.
+    Each entry is (label, action, cool_setpoint_to_apply, hvac_mode).
+    """
+    out = []
+    for sched in (
+        app.NORMAL_SCHEDULE,
+        app.HOT_SCHEDULE,
+        app.MILD_SCHEDULE,
+        app.HOT_STREAK_DAY1_SCHEDULE,
+    ):
+        for action in sched:
+            cool = action.cool_setpoint_f if action.cool_setpoint_f is not None else 0
+            out.append((action.label, action, cool, "Cool"))
+    # Synthetic mid-period repush (constructed in
+    # _push_layer_change_mid_period at line ~2002)
+    repush = app.ScheduleAction(13, 0, "MID_PERIOD_REPUSH:COAST",
+                                  cool_setpoint_f=82, fan_mode=None)
+    out.append(("MID_PERIOD_REPUSH:COAST", repush, 82, "Cool"))
+    # Synthetic vacation action (vacation_schedule helper)
+    vac = app.ScheduleAction(0, 0, "VACATION_HOLD", cool_setpoint_f=80)
+    out.append(("VACATION_HOLD", vac, 80, "Cool"))
+    # Auto mode hits the same setpoint branch
+    auto_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    out.append(("COAST_AUTO_MODE", auto_action, 79, "Auto"))
+    # Heating/Off mode short-circuits ("hvac_mode_not_cooling") - dry_run
+    # gate must still pre-empt that path.
+    heat_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    out.append(("COAST_HEAT_MODE", heat_action, 79, "Heat"))
+    return out
+
+
+@pytest.mark.parametrize(
+    "label,action,cool_to_apply,hvac_mode",
+    _all_schedule_actions(),
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+async def test_dry_run_never_calls_control4_for_any_action(
+    monkeypatch, label, action, cool_to_apply, hvac_mode,
+):
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (irrelevant in production)
+
+    applied, error = await app.execute_action(
+        c4, action,
+        cool_setpoint_to_apply=cool_to_apply,
+        heat_setpoint_to_apply=app.HEAT_SETPOINT_FLOOR_F,
+        state={"hvac_mode": hvac_mode},
+        dry_run=True,
+        when_ct=when_ct,
+    )
+
+    assert applied is False, (
+        f"{label}: dry_run=True must return applied=False, got applied={applied}"
+    )
+    assert error is None, (
+        f"{label}: dry_run=True must return error=None, got error={error!r}"
+    )
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_fan_mode.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
+    """Production mode + dry_run=True: mode gate would allow but the
+    dry_run gate must still pre-empt. Defense in depth."""
+    monkeypatch.setenv("SCHEDULER_MODE", "production")
+    c4, climate = _mock_c4_client()
+    action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    when_ct = datetime(2026, 6, 20, 13, 0)
+    applied, error = await app.execute_action(
+        c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=65,
+        state={"hvac_mode": "Cool"}, dry_run=True, when_ct=when_ct,
+    )
+    assert applied is False
+    assert error is None
+    climate.set_cool_setpoint_f.assert_not_awaited()
