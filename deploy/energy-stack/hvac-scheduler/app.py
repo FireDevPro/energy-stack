@@ -74,6 +74,7 @@ import json
 import os
 import signal
 import sys
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timezone, timedelta
 from pathlib import Path
@@ -104,12 +105,14 @@ from precool import (
     should_deepen_precool,
 )
 from price_overlay import (
+    DEFAULT_MINIMUM_HOLD_MINUTES,
     NORMAL_TIER_NAME,
     PriceOverlayState,
     evaluate_price_overlay,
     offset_and_override_for_tier,
 )
 from safety_supervisor import validate_setpoints
+from decision_codes import PriceOverlayCode
 
 
 # ---- Config ----------------------------------------------------------------
@@ -333,6 +336,59 @@ def log(level: str, msg: str, **fields: Any) -> None:
     print(json.dumps(rec, default=str), flush=True)
 
 
+def _trace(event_name: str, *, level: str, tick_id: str,
+           now_ct: datetime, **fields: Any) -> None:
+    """Best-effort decision-trace emission. Wraps `log()` and never raises.
+
+    Per `docs/plans/decision-trace-plan.md` Phase 1:
+      * Reads `SCHEDULER_DECISION_TRACE_VERBOSE` from os.environ on each
+        call (orthogonal to `SCHEDULER_MODE`; tests can monkeypatch.setenv).
+        When false, `debug`-level lines are suppressed.
+      * Auto-inlines `tick_id`, `scheduler_mode`, and `arm` (when
+        `current_arm_at(now_ct)` returns A/B; omitted otherwise) into every
+        emitted line so trace lines correlate with the canonical
+        `hvac.arm_mode` rows.
+      * Failure isolation: any exception (Loki down, stdout closed, bad
+        field type) is swallowed. Trace failure must not interrupt the
+        calling control path.
+    """
+    try:
+        verbose = os.environ.get(
+            "SCHEDULER_DECISION_TRACE_VERBOSE", "false"
+        ).lower() in ("1", "true", "yes")
+        if level == "debug" and not verbose:
+            return
+        mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
+        # current_arm_at expects naive CT; strip tzinfo if present.
+        when_naive = now_ct.replace(tzinfo=None) if now_ct.tzinfo else now_ct
+        arm = current_arm_at(when_naive)
+        extras: dict[str, Any] = {
+            "tick_id": tick_id,
+            "scheduler_mode": mode,
+            **fields,
+        }
+        if arm is not None:
+            extras["arm"] = arm
+        log(level, event_name, **extras)
+    except Exception:
+        # Trace failure must never propagate into the control path.
+        return
+
+
+def _price_overlay_hold_minutes_remaining(
+    state: PriceOverlayState, now_utc: datetime,
+) -> float | None:
+    """Minutes left on the price-overlay minimum-hold window, or None
+    when in NORMAL tier / no triggered_at timestamp. Surfaces internal
+    state-machine timing to the trace caller without re-implementing
+    the state machine."""
+    if state.triggered_at_utc is None:
+        return None
+    elapsed = (now_utc - state.triggered_at_utc).total_seconds() / 60.0
+    remaining = DEFAULT_MINIMUM_HOLD_MINUTES - elapsed
+    return max(0.0, remaining)
+
+
 # ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
 #
 # Three explicit top-level modes gate the setpoint-write path:
@@ -411,6 +467,7 @@ class Config:
     thermostat_id: int
     dry_run: bool
     mode: str
+    decision_trace_verbose: bool
     decision_hour: int
     tz_name: str
     influx_url: str
@@ -459,6 +516,10 @@ class Config:
                 ),
             )
 
+        decision_trace_verbose = os.environ.get(
+            "SCHEDULER_DECISION_TRACE_VERBOSE", "false"
+        ).lower() in ("1", "true", "yes")
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
@@ -468,6 +529,10 @@ class Config:
             # SCHEDULER_MODE gate inside execute_action.
             dry_run=(mode == "shadow"),
             mode=mode,
+            # Documents the env var at startup. Runtime gating is in
+            # `_trace`, which reads os.environ on each call so tests can
+            # monkeypatch.setenv without reloading the module.
+            decision_trace_verbose=decision_trace_verbose,
             decision_hour=int(os.environ.get("SCHEDULER_DECISION_HOUR", "21")),
             tz_name=os.environ.get("SCHEDULER_TZ", "America/Chicago"),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
@@ -1807,10 +1872,22 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     fell through unobserved.
     """
     now_utc = now_local.astimezone(timezone.utc)
+    # tick_id is generated once per `_evaluate_layer_inputs` call so all
+    # decision-trace log lines emitted from this tick share a correlation
+    # id. JSON FIELD only — must NOT be promoted to a Loki label
+    # (cardinality, see decision-trace plan locked decisions). Phases 2-5
+    # will lift this to the outermost tick boundary so layer-resolution /
+    # supervisor / would-push trace lines share the same tick_id; in
+    # Phase 1 only the price-overlay trace uses it.
+    tick_id = uuid.uuid4().hex
 
     # ---- Price overlay (§2) ----
     current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
     prev_tier = firing.price_overlay_state.current_tier
+    # Tracks the §2 stale-release branch (line below) so the trace
+    # emission at the end of the block can pick the correct reason code
+    # without re-deriving the stale condition.
+    stale_release_fired = False
     if current_price_cents is None:
         # Price feed unavailable: preserve the active tier's effective
         # setpoint contributions UNTIL the feed has been stale for too
@@ -1847,6 +1924,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_offset_f = 0
             price_override_f = None
             price_tier_name = NORMAL_TIER_NAME
+            stale_release_fired = True
         else:
             active_tier = None
             price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
@@ -1866,6 +1944,63 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_offset_f = active_tier.cool_setpoint_offset_f
             price_override_f = active_tier.cool_setpoint_override_f
             price_tier_name = active_tier.name
+
+    # ---- Phase 1 decision-trace: price overlay per-eval ---------------
+    # One trace line per `_evaluate_layer_inputs` call. Classifies the
+    # outcome from caller-observable state (prev_tier, new_tier,
+    # current_price, stale_release_fired) — never re-implements the
+    # internal state machine. Held outcomes go at `debug` level (gated
+    # on `SCHEDULER_DECISION_TRACE_VERBOSE`); transitions and releases at
+    # `info`. See `docs/plans/decision-trace-plan.md` Phase 1.
+    new_tier = price_tier_name
+    if current_price_cents is None and stale_release_fired:
+        po_outcome = "released"
+        po_reason = PriceOverlayCode.STALE_FEED_RELEASED
+        po_level = "info"
+    elif current_price_cents is None:
+        po_outcome = "held"
+        po_reason = PriceOverlayCode.FEED_UNAVAILABLE_TIER_PRESERVED
+        po_level = "debug"
+    elif prev_tier == new_tier:
+        po_outcome = "held"
+        po_reason = (
+            PriceOverlayCode.NORMAL_BELOW_TRIGGER
+            if new_tier == NORMAL_TIER_NAME
+            else PriceOverlayCode.HELD_IN_TIER
+        )
+        po_level = "debug"
+    elif new_tier == "scarcity":
+        po_outcome = "upgraded"
+        po_reason = PriceOverlayCode.UPGRADED_TO_SCARCITY
+        po_level = "info"
+    elif new_tier == "elevated":
+        if prev_tier == NORMAL_TIER_NAME:
+            po_outcome = "upgraded"
+            po_reason = PriceOverlayCode.UPGRADED_TO_ELEVATED
+        else:  # scarcity -> elevated
+            po_outcome = "downgraded"
+            po_reason = PriceOverlayCode.DOWNGRADED_TO_ELEVATED
+        po_level = "info"
+    else:  # new_tier == NORMAL_TIER_NAME, prev_tier != NORMAL_TIER_NAME
+        po_outcome = "released"
+        po_reason = PriceOverlayCode.RELEASED_TO_NORMAL
+        po_level = "info"
+
+    _trace(
+        "decision_trace.price_overlay_eval",
+        level=po_level,
+        tick_id=tick_id,
+        now_ct=now_local,
+        price_cents=current_price_cents,
+        price_is_stale=(current_price_cents is None),
+        prev_tier=prev_tier,
+        new_tier=new_tier,
+        outcome=po_outcome,
+        reason_code=po_reason.value,
+        hold_minutes_remaining=_price_overlay_hold_minutes_remaining(
+            firing.price_overlay_state, now_utc,
+        ),
+    )
 
     # ---- 5CP detection (§3) ----
     # Two detectors run in parallel: ComEd-zone (catches ComEd 5CPs)

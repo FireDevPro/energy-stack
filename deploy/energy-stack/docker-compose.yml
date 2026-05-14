@@ -174,6 +174,12 @@ services:
       # missing/invalid; default `shadow` keeps behavior safe-by-default
       # if the .env on a host hasn't been migrated yet.
       SCHEDULER_MODE: ${SCHEDULER_MODE:-shadow}
+      # Phase 1 decision-trace verbosity gate. When true, per-evaluation
+      # "no-change" trace lines emit at debug level; transitions / fires /
+      # rejections / decisions / errors always emit at info regardless.
+      # Orthogonal to SCHEDULER_MODE. Pi `.env` sets true during
+      # commissioning; default false for experiment.
+      SCHEDULER_DECISION_TRACE_VERBOSE: ${SCHEDULER_DECISION_TRACE_VERBOSE:-false}
       SCHEDULER_DECISION_HOUR: ${SCHEDULER_DECISION_HOUR:-21}
       SCHEDULER_REVISIT_HOURS: ${SCHEDULER_REVISIT_HOURS:-6,11}
       SCHEDULER_TZ: ${SCHEDULER_TZ:-America/Chicago}
