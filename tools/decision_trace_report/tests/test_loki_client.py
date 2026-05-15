@@ -37,3 +37,61 @@ def test_query_range_builds_correct_url_and_params(monkeypatch, loki_url):
     assert captured["params"]["start"] == "2026-05-15T00:00:00Z"
     assert captured["params"]["end"] == "2026-05-15T23:59:59Z"
     assert captured["params"]["limit"] == 500
+
+
+def test_parse_trace_lines_extracts_json_from_loki_response(loki_url):
+    """parse_trace_lines pulls each log line's JSON payload out of Loki's
+    streams/values wire format."""
+    raw_response = {
+        "status": "success",
+        "data": {
+            "resultType": "streams",
+            "result": [
+                {
+                    "stream": {"container": "hvac-scheduler"},
+                    "values": [
+                        ("1779328800000000000",
+                         '{"msg": "decision_trace.day_type_decision", '
+                         '"decision_for_date": "2026-05-15", "winning_day_type": "NORMAL"}'),
+                        ("1779328900000000000",
+                         '{"msg": "decision_trace.day_type_decision", '
+                         '"decision_for_date": "2026-05-15", "winning_day_type": "NORMAL"}'),
+                    ],
+                },
+            ],
+        },
+    }
+
+    client = LokiClient(loki_url)
+    parsed = client.parse_trace_lines(raw_response)
+
+    assert len(parsed) == 2
+    assert parsed[0]["msg"] == "decision_trace.day_type_decision"
+    assert parsed[0]["decision_for_date"] == "2026-05-15"
+    assert parsed[0]["_loki_ts_ns"] == 1779328800000000000
+
+
+def test_parse_trace_lines_skips_non_json(loki_url):
+    """Malformed JSON lines are silently skipped — we don't want one bad
+    line to crash the entire report rendering."""
+    raw_response = {
+        "status": "success",
+        "data": {
+            "resultType": "streams",
+            "result": [
+                {
+                    "stream": {},
+                    "values": [
+                        ("1779328800000000000", '{"msg": "ok"}'),
+                        ("1779328900000000000", "not json at all"),
+                        ("1779329000000000000", '{"msg": "also ok"}'),
+                    ],
+                },
+            ],
+        },
+    }
+    client = LokiClient(loki_url)
+    parsed = client.parse_trace_lines(raw_response)
+    assert len(parsed) == 2
+    assert parsed[0]["msg"] == "ok"
+    assert parsed[1]["msg"] == "also ok"
