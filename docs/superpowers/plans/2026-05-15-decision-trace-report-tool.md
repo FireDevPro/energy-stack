@@ -668,13 +668,15 @@ git commit -m "feat(report-tool): LokiClient.fetch_decision_traces convenience m
 Append to `test_loki_client.py`:
 
 ```python
-def test_count_reason_codes_aggregates_across_events(monkeypatch, loki_url):
-    """count_reason_codes queries all decision_trace.* events in a time
-    range and returns a dict mapping reason_code -> count."""
-    captured = {}
+def test_count_reason_codes_aggregates_across_chunks(monkeypatch, loki_url):
+    """count_reason_codes chunks by day and accumulates. A 7-day query
+    must issue 7 separate query_range calls (one per day) and sum the
+    per-chunk results."""
+    calls: list[dict] = []
 
     def fake_get(url, params=None, timeout=None, **kwargs):
-        captured["params"] = params
+        calls.append({"params": dict(params)})
+        # Return 2 PRICE + 1 SUPERVISOR per chunk
         response = MagicMock()
         response.status_code = 200
         response.json.return_value = {
@@ -709,10 +711,44 @@ def test_count_reason_codes_aggregates_across_events(monkeypatch, loki_url):
         end="2026-05-15T00:00:00Z",
     )
 
-    # Query matches `decision_trace.` events broadly
-    assert "decision_trace" in captured["params"]["query"]
-    assert counts["PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"] == 2
-    assert counts["SUPERVISOR_APPROVED"] == 1
+    # 7-day window with 24h chunks -> 7 separate Loki queries
+    assert len(calls) == 7
+    # Query matches `decision_trace.` events
+    assert "decision_trace" in calls[0]["params"]["query"]
+    # Each chunk's 2 PRICE + 1 SUPERVISOR rows accumulated across 7 chunks
+    assert counts["PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"] == 14
+    assert counts["SUPERVISOR_APPROVED"] == 7
+
+
+def test_count_reason_codes_handles_partial_day_at_edges(monkeypatch, loki_url):
+    """A non-day-aligned range still works — final chunk is sub-day,
+    no extra calls past `end`."""
+    calls: list[dict] = []
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        calls.append({"params": dict(params)})
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {"resultType": "streams", "result": []},
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    # 1.5-day window -> 2 chunks (24h + 12h)
+    client.count_reason_codes(
+        start="2026-05-08T00:00:00Z",
+        end="2026-05-09T12:00:00Z",
+    )
+    assert len(calls) == 2
+    # First chunk full day, second chunk 12h
+    assert calls[0]["params"]["start"] == "2026-05-08T00:00:00Z"
+    assert calls[0]["params"]["end"] == "2026-05-09T00:00:00Z"
+    assert calls[1]["params"]["start"] == "2026-05-09T00:00:00Z"
+    assert calls[1]["params"]["end"] == "2026-05-09T12:00:00Z"
 
 
 def test_count_reason_codes_ignores_events_without_reason_code(monkeypatch, loki_url):
@@ -746,18 +782,54 @@ def test_count_reason_codes_ignores_events_without_reason_code(monkeypatch, loki
     monkeypatch.setattr("requests.get", fake_get)
     client = LokiClient(loki_url)
     counts = client.count_reason_codes(
-        start="2026-05-08T00:00:00Z",
+        # Single-day window so we still get exactly 1 query
+        start="2026-05-14T00:00:00Z",
         end="2026-05-15T00:00:00Z",
     )
     assert counts == {"SUPERVISOR_APPROVED": 1}
+
+
+def test_count_reason_codes_warns_on_chunk_at_limit(monkeypatch, loki_url, caplog):
+    """If a single-day chunk returns exactly `per_chunk_limit` events,
+    the function logs a warning so the operator knows the count for
+    that day may be partial."""
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        response = MagicMock()
+        response.status_code = 200
+        # Build per_chunk_limit synthetic events
+        n = 5  # use a tiny limit to keep the fixture small
+        values = [
+            (str(1779328800000000000 + i),
+             '{"msg": "decision_trace.x", "reason_code": "FAKE_CODE"}')
+            for i in range(n)
+        ]
+        response.json.return_value = {
+            "status": "success",
+            "data": {"resultType": "streams",
+                      "result": [{"stream": {}, "values": values}]},
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    import logging
+    with caplog.at_level(logging.WARNING):
+        client.count_reason_codes(
+            start="2026-05-14T00:00:00Z",
+            end="2026-05-15T00:00:00Z",
+            per_chunk_limit=5,
+        )
+    # Limit was hit -> warning emitted
+    assert any("hit limit" in rec.message for rec in caplog.records)
 ```
 
 - [ ] **Step 2: Run to verify fail**
 
 ```
-python -m pytest tools/decision_trace_report/tests/test_loki_client.py::test_count_reason_codes_aggregates_across_events tools/decision_trace_report/tests/test_loki_client.py::test_count_reason_codes_ignores_events_without_reason_code -v
+python -m pytest tools/decision_trace_report/tests/test_loki_client.py -k count_reason_codes -v
 ```
-Expected: 2 FAIL on missing method.
+Expected: 4 FAIL on missing method.
 
 - [ ] **Step 3: Implement**
 
@@ -768,7 +840,7 @@ Append to `loki_client.py`:
         self,
         start: str,
         end: str,
-        limit: int = 50000,
+        per_chunk_limit: int = 10000,
     ) -> dict[str, int]:
         """Count occurrences of each `reason_code` value across
         `decision_trace.*` events in `[start, end]`.
@@ -777,19 +849,52 @@ Append to `loki_client.py`:
         field are ignored (some decision_trace.* events may not carry
         one — defensive). Used by §5 coverage scorecard.
 
-        `limit` defaults to 50k because verbose commissioning emits
-        ~3500 lines/day and a 30-day cumulative window is ~100k. Loki
-        capped at its own server limit if 50k is exceeded.
+        **Chunked by day** to avoid silent truncation. Verbose
+        commissioning emits ~3500 lines/day; a single 30-day query at
+        50k would silently truncate. Instead, we walk the [start, end]
+        range one CT day at a time and accumulate. Each day fits well
+        under `per_chunk_limit` (10k) with headroom for unusually
+        chatty days. If any single day's response is AT the limit, a
+        warning is logged so the operator knows the count for that day
+        may be partial — but the cumulative number still avoids the
+        cliff a single oversized query would produce.
+
+        `start` and `end` must be RFC3339 UTC timestamps (e.g.,
+        `2026-05-08T00:00:00Z`). The chunking step is 24 hours; partial
+        days at the edges are queried with their actual sub-day spans.
         """
+        from datetime import datetime, timedelta
+        import logging
+        log = logging.getLogger(__name__)
+
+        def _parse(ts: str) -> datetime:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        def _fmt(dt: datetime) -> str:
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         query = '{container="hvac-scheduler"} |= "decision_trace"'
-        raw = self.query_range(query, start, end, limit=limit)
-        events = self.parse_trace_lines(raw)
+        start_dt = _parse(start)
+        end_dt = _parse(end)
+
         counts: dict[str, int] = {}
-        for event in events:
-            code = event.get("reason_code")
-            if not isinstance(code, str):
-                continue
-            counts[code] = counts.get(code, 0) + 1
+        cur = start_dt
+        while cur < end_dt:
+            nxt = min(cur + timedelta(days=1), end_dt)
+            raw = self.query_range(query, _fmt(cur), _fmt(nxt), limit=per_chunk_limit)
+            events = self.parse_trace_lines(raw)
+            if len(events) >= per_chunk_limit:
+                log.warning(
+                    "count_reason_codes: chunk %s..%s hit limit %d — "
+                    "single-day count may be partial",
+                    _fmt(cur), _fmt(nxt), per_chunk_limit,
+                )
+            for event in events:
+                code = event.get("reason_code")
+                if not isinstance(code, str):
+                    continue
+                counts[code] = counts.get(code, 0) + 1
+            cur = nxt
         return counts
 ```
 
@@ -798,7 +903,7 @@ Append to `loki_client.py`:
 ```
 python -m pytest tools/decision_trace_report/tests/test_loki_client.py -v
 ```
-Expected: 6 PASSED (4 prior + 2 new).
+Expected: 8 PASSED (4 prior + 4 new).
 
 - [ ] **Step 5: Commit**
 
@@ -1040,10 +1145,9 @@ Append to `influx_client.py`:
     def fetch_hvac_actions(self, target_date_iso: str) -> list[dict[str, Any]]:
         """All hvac.actions rows for the CT day `target_date_iso`.
 
-        The CT day spans UTC 05:00 → 05:00 next day during CDT (and
-        06:00 → 06:00 during CST). Using a fixed CDT offset here is
-        acceptable for the May-Sep cooling season the report targets;
-        revisit if winter-season reports are ever needed.
+        Uses `ZoneInfo("America/Chicago")` to compute UTC bounds, so
+        CDT (summer, UTC-5) and CST (winter, UTC-6) are handled
+        symmetrically. Test coverage in Task 2.2 includes both seasons.
         """
         from datetime import datetime, timedelta, timezone
         from zoneinfo import ZoneInfo
@@ -2709,6 +2813,8 @@ git commit -m "feat(report-tool): renderer + AnomalySummary dataclass"
 """Tests for the CLI entry point (argparse + default behavior)."""
 from datetime import date, timedelta
 
+import pytest
+
 from tools.decision_trace_report.cli import parse_args, default_target_date
 
 
@@ -2716,6 +2822,8 @@ def test_parse_args_defaults():
     """No flags -> target=None (resolves to yesterday CT), output=default."""
     args = parse_args([])
     assert args.date is None
+    assert args.from_ct is None
+    assert args.to_ct is None
     assert args.no_telegram is False
     assert args.verbose is False
 
@@ -2723,6 +2831,12 @@ def test_parse_args_defaults():
 def test_parse_args_date_flag():
     args = parse_args(["--date", "2026-05-14"])
     assert args.date == "2026-05-14"
+
+
+def test_parse_args_from_to_flags():
+    args = parse_args(["--from", "2026-05-14T13:00", "--to", "2026-05-14T19:00"])
+    assert args.from_ct == "2026-05-14T13:00"
+    assert args.to_ct == "2026-05-14T19:00"
 
 
 def test_parse_args_no_telegram():
@@ -2735,6 +2849,82 @@ def test_default_target_date_is_yesterday_ct():
     day = run day - 1)."""
     target = default_target_date(now=date(2026, 5, 16))
     assert target == "2026-05-15"
+
+
+def test_validate_args_rejects_partial_range():
+    """--from without --to (or vice versa) is invalid."""
+    from tools.decision_trace_report.cli import validate_args
+    args = parse_args(["--from", "2026-05-14T13:00"])
+    with pytest.raises(SystemExit):
+        validate_args(args)
+
+
+def test_validate_args_rejects_date_with_range():
+    """--date and --from/--to are mutually exclusive."""
+    from tools.decision_trace_report.cli import validate_args
+    args = parse_args([
+        "--date", "2026-05-14",
+        "--from", "2026-05-14T13:00",
+        "--to", "2026-05-14T19:00",
+    ])
+    with pytest.raises(SystemExit):
+        validate_args(args)
+
+
+def test_resolve_window_default_yesterday_ct():
+    """No --date / --from / --to -> yesterday CT, 00:00 to 24:00."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.decision_trace_report.cli import resolve_window
+
+    args = parse_args([])
+    label, start_ct, end_ct = resolve_window(args, now=date(2026, 5, 16))
+    ct = ZoneInfo("America/Chicago")
+    assert label == "2026-05-15"
+    assert start_ct == datetime(2026, 5, 15, 0, 0, tzinfo=ct)
+    assert end_ct == datetime(2026, 5, 16, 0, 0, tzinfo=ct)
+
+
+def test_resolve_window_date_flag():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.decision_trace_report.cli import resolve_window
+
+    args = parse_args(["--date", "2026-05-10"])
+    label, start_ct, end_ct = resolve_window(args, now=date(2026, 5, 16))
+    ct = ZoneInfo("America/Chicago")
+    assert label == "2026-05-10"
+    assert start_ct == datetime(2026, 5, 10, 0, 0, tzinfo=ct)
+    assert end_ct == datetime(2026, 5, 11, 0, 0, tzinfo=ct)
+
+
+def test_resolve_window_from_to_arbitrary_range():
+    """--from / --to use CT-local clock values, ZoneInfo handles DST."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.decision_trace_report.cli import resolve_window
+
+    args = parse_args(["--from", "2026-05-14T13:00", "--to", "2026-05-14T19:30"])
+    label, start_ct, end_ct = resolve_window(args, now=date(2026, 5, 16))
+    ct = ZoneInfo("America/Chicago")
+    assert start_ct == datetime(2026, 5, 14, 13, 0, tzinfo=ct)
+    assert end_ct == datetime(2026, 5, 14, 19, 30, tzinfo=ct)
+    # Label includes both endpoints for non-day-aligned ranges so the
+    # output filename + headers reflect the actual window queried.
+    assert "2026-05-14T13:00" in label and "2026-05-14T19:30" in label
+
+
+def test_resolve_window_from_to_winter_cst_no_dst_drift():
+    """Winter (CST) range computes correctly — DST hygiene."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.decision_trace_report.cli import resolve_window
+
+    args = parse_args(["--from", "2026-01-15T00:00", "--to", "2026-01-16T00:00"])
+    label, start_ct, end_ct = resolve_window(args, now=date(2026, 1, 17))
+    ct = ZoneInfo("America/Chicago")
+    assert start_ct == datetime(2026, 1, 15, 0, 0, tzinfo=ct)
+    assert end_ct == datetime(2026, 1, 16, 0, 0, tzinfo=ct)
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -2752,8 +2942,9 @@ Expected: FAIL.
 import argparse
 import logging
 import os
+import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -2794,6 +2985,48 @@ def default_target_date(*, now: date | None = None) -> str:
     if now is None:
         now = datetime.now(CT).date()
     return (now - timedelta(days=1)).isoformat()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    """Check mutual exclusion + completeness of --date / --from / --to.
+
+    Exits with status 2 (argparse-style usage error) on violation.
+    Called by main() after parse_args, before any work."""
+    if (args.from_ct and not args.to_ct) or (args.to_ct and not args.from_ct):
+        log.error("--from and --to must be used together")
+        sys.exit(2)
+    if args.date and (args.from_ct or args.to_ct):
+        log.error("--date is mutually exclusive with --from/--to")
+        sys.exit(2)
+
+
+def resolve_window(
+    args: argparse.Namespace,
+    *,
+    now: date | None = None,
+) -> tuple[str, datetime, datetime]:
+    """Resolve CLI args into (label, start_ct, end_ct).
+
+    `label` is used for the output filename + report header. For a
+    day-aligned query (default or --date) the label is the CT
+    `YYYY-MM-DD` date. For a custom range (--from/--to) the label
+    embeds both endpoints so the filename reflects the actual window.
+
+    `start_ct` and `end_ct` are timezone-aware datetimes in
+    `America/Chicago` — ZoneInfo handles DST symmetrically (CDT in
+    summer, CST in winter). Callers pass these through
+    `.astimezone(timezone.utc)` for Loki/Influx query parameters.
+    """
+    if args.from_ct and args.to_ct:
+        start_ct = datetime.fromisoformat(args.from_ct).replace(tzinfo=CT)
+        end_ct = datetime.fromisoformat(args.to_ct).replace(tzinfo=CT)
+        label = f"{args.from_ct}__to__{args.to_ct}"
+        return label, start_ct, end_ct
+
+    target = args.date or default_target_date(now=now)
+    start_ct = datetime.fromisoformat(target).replace(tzinfo=CT)
+    end_ct = start_ct + timedelta(days=1)
+    return target, start_ct, end_ct
 
 
 def load_env_file(path: str) -> None:
@@ -2874,13 +3107,13 @@ if __name__ == "__main__":
 ```
 python -m pytest tools/decision_trace_report/tests/test_cli.py -v
 ```
-Expected: 4 PASSED.
+Expected: 11 PASSED (parse_args defaults + date flag + from/to flags + no_telegram + default_target_date + 2× validate_args + 4× resolve_window covering default-yesterday, --date, --from/--to arbitrary range, and winter CST DST-hygiene).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add tools/decision_trace_report/cli.py tools/decision_trace_report/__main__.py tools/decision_trace_report/tests/test_cli.py
-git commit -m "feat(report-tool): CLI scaffold (argparse + defaults)"
+git commit -m "feat(report-tool): CLI scaffold (argparse + defaults + --from/--to window resolution)"
 ```
 
 ### Task 6.2: CLI end-to-end — wire all sections together
@@ -2939,6 +3172,64 @@ def test_cli_renders_and_writes_file(monkeypatch, tmp_path):
     assert "Decision-trace commissioning report" in content
     assert "2026-05-15" in content
     assert "§1" in content or "Night-before" in content
+
+
+def test_cli_renders_custom_from_to_range(monkeypatch, tmp_path):
+    """--from / --to render an arbitrary CT-local range, NOT silently
+    fall back to --date or yesterday. The label embeds both endpoints
+    so the operator can tell at a glance what window the report
+    covers."""
+    from unittest.mock import MagicMock
+    from tools.decision_trace_report.cli import main
+
+    captured_loki_ranges: list[tuple[str, str]] = []
+
+    fake_loki = MagicMock()
+    def record_range(event_name, start, end, limit=5000):
+        captured_loki_ranges.append((start, end))
+        return []
+    fake_loki.fetch_decision_traces.side_effect = record_range
+    fake_loki.count_reason_codes.return_value = {}
+
+    fake_influx = MagicMock()
+    fake_influx.fetch_hvac_decisions.return_value = []
+    fake_influx.fetch_precool_window.return_value = None
+    fake_influx.fetch_hvac_actions.return_value = []
+    fake_influx.fetch_comed_prices_above.return_value = []
+    fake_influx.last_write_time.return_value = None
+
+    import tools.decision_trace_report.cli as cli_mod
+    monkeypatch.setattr(cli_mod, "LokiClient", lambda *a, **kw: fake_loki)
+    monkeypatch.setattr(cli_mod, "InfluxClient", lambda *a, **kw: fake_influx)
+    monkeypatch.setattr(cli_mod, "TelegramClient", lambda *a, **kw: MagicMock())
+
+    monkeypatch.setenv("LOKI_URL", "http://loki.test")
+    monkeypatch.setenv("INFLUXDB_URL", "http://influx.test")
+    monkeypatch.setenv("INFLUXDB_TOKEN", "t")
+    monkeypatch.setenv("INFLUXDB_ORG", "o")
+    monkeypatch.setenv("INFLUXDB_BUCKET", "energy")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+    output = tmp_path / "custom-range.md"
+    rc = main([
+        "--from", "2026-05-14T13:00",
+        "--to", "2026-05-14T19:30",
+        "--output", str(output),
+        "--no-telegram",
+    ])
+
+    assert rc == 0
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    # Report header / filename includes both endpoints, not just a date
+    assert "2026-05-14T13:00" in content
+    assert "2026-05-14T19:30" in content
+
+    # At least one Loki call uses the custom range (not the default
+    # CT-day boundaries) — verifies --from/--to is actually consumed.
+    # CT 13:00 CDT = UTC 18:00; CT 19:30 CDT = UTC 00:30 next day.
+    assert ("2026-05-14T18:00:00Z", "2026-05-15T00:30:00Z") in captured_loki_ranges
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -2972,14 +3263,23 @@ def main(argv: list[str] | None = None) -> int:
     from tools.decision_trace_report.telegram_client import TelegramClient
 
     args = parse_args(argv)
+    validate_args(args)
     if args.env_file:
         load_env_file(args.env_file)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    target = args.date or default_target_date()
-    log.info("rendering decision-trace report for target CT day %s", target)
+
+    # Resolve CLI args into a CT-local window. `label` is used for the
+    # output filename + report header; for day-aligned runs it's the
+    # YYYY-MM-DD date, for custom --from/--to ranges it embeds both
+    # endpoints.
+    label, start_ct, end_ct = resolve_window(args)
+    is_custom_range = bool(args.from_ct and args.to_ct)
+    target = label  # passed to sections that key on target_date
+    log.info("rendering decision-trace report for window %s (%s)",
+              label, "custom range" if is_custom_range else "CT day")
 
     loki = LokiClient(args.loki_url or os.environ["LOKI_URL"])
     influx = InfluxClient(
@@ -2992,10 +3292,6 @@ def main(argv: list[str] | None = None) -> int:
     sections_md: dict[str, str] = {}
     query_errors = 0
 
-    # CT-day UTC range for Loki queries
-    from datetime import timedelta as td
-    start_ct = datetime.fromisoformat(target).replace(tzinfo=CT)
-    end_ct = start_ct + td(days=1)
     start_utc = start_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     end_utc = end_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -3005,7 +3301,7 @@ def main(argv: list[str] | None = None) -> int:
             e for e in loki.fetch_decision_traces(
                 "day_type_decision",
                 # Cover prior-night 21:00 + revisits
-                start=(start_ct - td(hours=4)).astimezone(timezone.utc)
+                start=(start_ct - timedelta(hours=4)).astimezone(timezone.utc)
                       .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 end=end_utc,
             ) if e.get("decision_for_date") == target
@@ -3013,7 +3309,7 @@ def main(argv: list[str] | None = None) -> int:
         precool_events = [
             e for e in loki.fetch_decision_traces(
                 "precool_decision",
-                start=(start_ct - td(hours=4)).astimezone(timezone.utc)
+                start=(start_ct - timedelta(hours=4)).astimezone(timezone.utc)
                       .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 end=end_utc,
             ) if e.get("decision_for_date") == target
@@ -3187,8 +3483,12 @@ def main(argv: list[str] | None = None) -> int:
         anomaly_summary=summary,
     )
 
+    # Sanitize label for Windows filesystems — colons (in custom-range
+    # labels like "2026-05-14T13:00__to__2026-05-14T19:30") and other
+    # path-hostile chars become underscores.
+    safe_label = re.sub(r'[\\/:*?"<>|]', "_", label)
     output_path = Path(args.output) if args.output else (
-        DEFAULT_OUTPUT_DIR / f"{target}-decision-trace.md"
+        DEFAULT_OUTPUT_DIR / f"{safe_label}-decision-trace.md"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(full_md, encoding="utf-8")
@@ -3233,7 +3533,7 @@ And remove the duplicated imports inside `main()`.
 ```
 python -m pytest tools/decision_trace_report/tests/test_cli.py -v
 ```
-Expected: 5 PASSED.
+Expected: 13 PASSED (11 from Task 6.1 + 2 end-to-end: day-aligned default + custom --from/--to range).
 
 Full suite:
 ```
@@ -3245,7 +3545,7 @@ Expected: all PASS.
 
 ```bash
 git add tools/decision_trace_report/cli.py tools/decision_trace_report/tests/test_cli.py
-git commit -m "feat(report-tool): wire CLI end-to-end + per-section error isolation"
+git commit -m "feat(report-tool): wire CLI end-to-end (--from/--to + per-section error isolation)"
 ```
 
 ---
@@ -3355,11 +3655,18 @@ Use `gh pr create --base main` with a body summarizing:
 
 **Type consistency:** method names used consistently across tasks (e.g., `fetch_decision_traces`, `count_reason_codes`, `render`, `count_*`). `AnomalySummary` field names match between dataclass definition and consumer. Feed-dict shape consistent across `_classify_feed`, `render`, `count_stale`.
 
-**Review-finding fixes applied (P1/P1/P2/P3):**
+**Review-finding fixes applied:**
+
+Round 1 (P1/P1/P2/P3):
 - P1 (§5 wiring): Task 1.4 adds `count_reason_codes` to LokiClient; Task 6.2 calls it for cumulative + 7d counts instead of empty dicts.
 - P1 (§4 missing feeds + loud missing): Task 6.2 includes `pjm.lmp_da_hourly` + `pjm.metered_load` with event-feed expected-fire timestamps via `_last_da_lmp_fire_utc` / `_last_metered_load_fire_utc` helpers; Task 4.2 `_classify_feed` renders `last_write=None` as `🔴 stale — missing — no data found in Influx`; Task 6.2 no longer filters such feeds out.
 - P2 (§2 reconciliation): Task 4.4 `count_action_fire_mismatches` now matches by `(action_label, +/- 2-min ts window)` with row-consumption tracking so one Influx row can't satisfy two same-label trace events.
 - P3 (DST hygiene): Task 2.2 has both CDT (summer) and CST (winter) test cases proving the tz arithmetic isn't hardcoded.
+
+Round 2 (--from/--to wiring, §5 chunking, stale InfluxClient docstring):
+- (1) `--from`/`--to` actually consumed: Task 6.1 adds `validate_args` (rejects partial range + mutual exclusion with `--date`) and `resolve_window` (returns `(label, start_ct, end_ct)` honoring the three modes). Task 6.2 `main()` calls both, derives UTC range from the resolved CT window, and uses a sanitized `safe_label` for the output filename so colons in custom-range labels don't break Windows paths. Task 6.1 adds 7 new tests (from/to flags, validate_args x2, resolve_window x4) covering arbitrary CT ranges + winter CST hygiene; Task 6.2 adds an end-to-end test asserting the custom range actually reaches Loki (`captured_loki_ranges` check), NOT silently falling back to default-yesterday.
+- (2) §5 counting cannot silently truncate: Task 1.4 now **chunks `count_reason_codes` by day**, accumulating per-chunk counts. `per_chunk_limit` defaults to 10k (well above ~3500/day verbose estimate); if any single chunk hits the limit a warning is logged so the partial-count case is loud, not silent. Test coverage includes 7-day window producing 7 calls, partial-day edge handling, and the limit-hit warning path.
+- (3) InfluxClient docstring: Task 2.2's `fetch_hvac_actions` docstring now states `ZoneInfo("America/Chicago")` handles CDT + CST symmetrically. The "fixed CDT offset acceptable for May-Sep cooling season" language is gone; Task 2.2 still has both CDT and CST tests to back it up.
 
 ---
 
