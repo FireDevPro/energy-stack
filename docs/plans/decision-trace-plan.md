@@ -144,25 +144,31 @@ Today: window selected → row written. Window rejected → silent.
 
 Changes:
 
-- `decision_codes.py` extended:
+- `decision_codes.py` extended with `PrecoolCode` enum reflecting the **actual branches in production code**, not aspiration:
   - `PRECOOL_SELECTED`
   - `PRECOOL_REJECTED_NO_DA_LMP_DATA`
+  - `PRECOOL_REJECTED_NO_FORECAST` (real branch in `compute_price_aware_precool_window`)
+  - `PRECOOL_REJECTED_DA_LMP_INCOMPLETE` (real branch in `should_add_price_aware_precool` when `len(prices) < 24`)
   - `PRECOOL_REJECTED_NO_CHEAP_WINDOW`
-  - `PRECOOL_REJECTED_NO_EVENING_SPIKE`
-  - `PRECOOL_REJECTED_GAP_TOO_SHORT`
-  - `PRECOOL_REJECTED_DAY_TYPE_NOT_ELIGIBLE`
-  - `PRECOOL_REJECTED_ALREADY_DEEPER_VIA_HOT_STREAK`
-- New wrapper `compute_price_aware_precool_window_with_trace(...) -> (dict | None, reason_code)` in `app.py` (or a sibling module). The original `compute_price_aware_precool_window` keeps its `dict | None` signature and its existing call sites are untouched. The wrapper re-implements the rejection decision tree as a thin shell around the pure function, returning the appropriate `reason_code` for each None-yielding branch.
-- `app.py:run_decision` switches from calling `compute_price_aware_precool_window` directly to calling the new wrapper, so the trace line carries the reason code.
-- New trace at the call site in `app.py:run_decision`. Always fires once at 21:00; always logs `info` level (one row / night is not noisy).
-- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `decision_for_date`, `day_type`, `selected` (bool), `hour_ct`, `depth_f`, `reason_code`.
+  - `PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP` (collapses planned NO_EVENING_SPIKE + GAP_TOO_SHORT — both produce the same observable rejection path)
+
+  Plan-aspirational codes DROPPED (no matching branch in current production code):
+  - `GAP_TOO_SHORT` — collapsed into `NO_SPIKE_WINDOW_AFTER_GAP`. The gap requirement is enforced by starting the spike search after `cheap_start + MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS`; the only observable outcome is "no spike found beyond the gap."
+  - `DAY_TYPE_NOT_ELIGIBLE` — no day-type gate exists in the function. `compute_price_aware_precool_window` is called at 21:00 regardless of day_type.
+  - `ALREADY_DEEPER_VIA_HOT_STREAK` — that interaction is handled by `merge_same_hour_actions_deepest_wins` AFTER selection, not as a precool rejection inside the §7 path.
+
+  Same reconciliation pattern as Phase 1's `HELD_IN_TIER` and Phase 3's `CLAMPED_MULTIPLE`. Codes are append-only / OSF-bound, so the enum must describe production behaviour.
+- **Design pattern revision**: plan originally called for a NEW wrapper `compute_price_aware_precool_window_with_trace(...)` that re-implements the rejection decision tree as a thin shell. Shipped instead: an additive optional kwarg `trace_reason: list[str] | None = None` on the EXISTING `compute_price_aware_precool_window` and `should_add_price_aware_precool` functions. The functions append exactly one `PrecoolCode` value to the list on the way out. Default `None` means no overhead and no behaviour change — existing callers unaffected. This is the same dict/list-mutation pattern Phase 1 user-approved for `decide_day_type["evaluation_tape"]` (Phase 5). The change is minimal (one optional kwarg per function) and avoids the rejection-tree-duplication risk the wrapper approach carried.
+- `app.py:run_decision` passes a fresh `trace_reason` list to `compute_price_aware_precool_window`, reads the appended code, emits the trace.
+- New `_trace_precool` helper emission. Always fires once at 21:00 per night; always logs `info` level (one row / night is not noisy). `run_decision` generates a fresh `tick_id` since it runs outside the `run_schedule_check` tick loop and has no shared `tick_id`.
+- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `decision_for_date`, `day_type`, `selected` (bool), `hour_ct` (int or null), `depth_f` (int or null), `reason_code`.
 
 Acceptance:
 
-- `test_precool_rejection_emits_with_reason` — drive each rejection branch by calling the wrapper with synthetic inputs; assert correct `reason_code` on each.
-- `test_precool_selection_emits` — drive the happy path via the wrapper; assert `PRECOOL_SELECTED` with hour and depth.
-- Existing `compute_price_aware_precool_window` tests unchanged (function signature is unchanged).
-- Caller-level failure-isolation test parallel to Phase 1.
+- `test_precool_emits_with_reason` — parametrized over the 6 PrecoolCode outcomes by driving `compute_price_aware_precool_window` with mocked fetch helpers + capturing the `trace_reason` list. Asserts correct code for each branch.
+- `test_trace_precool_emits_trace_line` — drives `_trace_precool` directly with both happy-path and rejection inputs; asserts well-formed `decision_trace.precool_decision` line with all expected fields.
+- `test_precool_trace_is_failure_isolated` — fault-injects `app.log` on precool events; asserts no exception propagates.
+- Existing `should_add_price_aware_precool` and `compute_price_aware_precool_window` tests unchanged (callers that don't pass `trace_reason` are unaffected).
 
 ### Phase 5 — day-type negative branches
 

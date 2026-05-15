@@ -112,7 +112,12 @@ from price_overlay import (
     offset_and_override_for_tier,
 )
 from safety_supervisor import validate_setpoints
-from decision_codes import LayerResolutionCode, PriceOverlayCode, SupervisorCode
+from decision_codes import (
+    LayerResolutionCode,
+    PrecoolCode,
+    PriceOverlayCode,
+    SupervisorCode,
+)
 
 
 # ---- Config ----------------------------------------------------------------
@@ -513,6 +518,31 @@ def _trace_supervisor(
         supervisor_reason=decision.reason,
         final_cool_f=int(decision.cool_setpoint_f),
         final_heat_f=int(decision.heat_setpoint_f),
+    )
+
+
+def _trace_precool(
+    *,
+    tick_id: str, now_ct: datetime,
+    decision_for_date: str, day_type: str,
+    window: dict | None, reason_code: str,
+) -> None:
+    """Emit one `decision_trace.precool_decision` line per call to the
+    Phase 4 wrapper (one per night, at 21:00). Always `info` level — the
+    cadence is too low to be noisy. `window` is the selected dict on
+    happy path or None on rejection; the trace surfaces hour_ct + depth_f
+    when present so a SELECTED row carries the chosen window inline."""
+    _trace(
+        "decision_trace.precool_decision",
+        level="info",
+        tick_id=tick_id,
+        now_ct=now_ct,
+        decision_for_date=decision_for_date,
+        day_type=day_type,
+        selected=(window is not None),
+        hour_ct=(int(window["hour_ct"]) if window is not None else None),
+        depth_f=(int(window["depth_f"]) if window is not None else None),
+        reason_code=reason_code,
     )
 
 
@@ -1207,6 +1237,7 @@ def fetch_day_ahead_prices_for_date(
 def compute_price_aware_precool_window(
     query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
     *, forecast_period: str = "tomorrow",
+    trace_reason: list[str] | None = None,
 ) -> dict | None:
     """Resolve the §7 day-ahead price-aware pre-cool window for the
     target date. Composes fetch_day_ahead_prices_for_date,
@@ -1218,6 +1249,13 @@ def compute_price_aware_precool_window(
     re-evaluation in run_schedule_check). Returns None when either
     input is unavailable or the decision rule says no window applies.
 
+    Optional ``trace_reason``: when caller passes a mutable list, the
+    function appends ONE PrecoolCode value reflecting the outcome
+    ("PRECOOL_SELECTED" on happy path; one of the rejection codes
+    otherwise). Default ``None`` means no overhead and no behaviour
+    change. This is the Phase 4 dict-mutation-via-out-param pattern,
+    propagated from the inner ``should_add_price_aware_precool`` call.
+
     The ComEd Delivery TOD rate schedule (P2.6) is always layered on
     top of the supply prices for cheap-window *ranking*. Chris is
     enrolled in DTOD; the schedule is fixed year-round and identical
@@ -1226,12 +1264,17 @@ def compute_price_aware_precool_window(
     """
     prices = fetch_day_ahead_prices_for_date(query_api, bucket, target_date_iso, tz)
     if prices is None:
+        if trace_reason is not None:
+            trace_reason.append(PrecoolCode.REJECTED_NO_DA_LMP_DATA.value)
         return None
     forecast = fetch_latest_forecast(query_api, bucket, forecast_period)
     if forecast is None:
+        if trace_reason is not None:
+            trace_reason.append(PrecoolCode.REJECTED_NO_FORECAST.value)
         return None
     return should_add_price_aware_precool(
         prices, forecast, delivery_rates_cents=dtod_delivery_rates_24h(),
+        trace_reason=trace_reason,
     )
 
 
@@ -1817,12 +1860,37 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
     # night before per ARM_B_IMPLEMENTATION; if a qualifying cheap+spike
     # pattern exists, persist a hvac.precool_window row so run_schedule_check
     # can inject the synthetic ScheduleAction tomorrow.
+    #
+    # Phase 4 decision-trace: pass a fresh trace_reason list and emit
+    # one decision_trace.precool_decision line per call (happy path OR
+    # rejection). Trace fires regardless of which branch the wrapper
+    # took, so a silent rejection is no longer silent.
+    precool_trace: list[str] = []
     precool_window = compute_price_aware_precool_window(
         query_api, cfg.influx_bucket, decision_date, tz,
         forecast_period="tomorrow",
+        trace_reason=precool_trace,
     )
     if precool_window is not None:
         write_precool_window(write_api, cfg.influx_bucket, decision_date, precool_window)
+    # Pick the reason code: the wrapper always appends exactly one
+    # value, but fall back to a defensive default if the contract was
+    # ever violated. Generate a fresh tick_id per run_decision call —
+    # this entry point runs at 21:00 outside the run_schedule_check
+    # tick loop and has no shared tick_id.
+    precool_reason = (
+        precool_trace[-1] if precool_trace
+        else PrecoolCode.SELECTED.value if precool_window is not None
+        else PrecoolCode.REJECTED_NO_DA_LMP_DATA.value
+    )
+    _trace_precool(
+        tick_id=uuid.uuid4().hex,
+        now_ct=datetime.now(tz),
+        decision_for_date=decision_date,
+        day_type=day_type,
+        window=precool_window,
+        reason_code=precool_reason,
+    )
 
     firing.last_decision_date = decision_date
     log("info", "decision_made",

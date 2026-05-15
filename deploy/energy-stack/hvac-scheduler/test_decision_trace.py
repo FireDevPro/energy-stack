@@ -626,9 +626,128 @@ class TestPhase3Supervisor:
 
 
 class TestPhase4PrecoolRejection:
-    @pytest.mark.xfail(strict=True, reason="Phase 4 not yet implemented")
-    def test_precool_rejection_emits_with_reason(self):
-        pytest.fail("Phase 4 — precool-rejection trace emission not yet wired")
+    """Trace fires once per `compute_price_aware_precool_window` call —
+    one row per night at 21:00. All 6 PrecoolCode outcomes covered by
+    driving the wrapper with mocked fetch helpers + the trace_reason
+    out-param. The trace_reason mutation pattern matches Phase 5's
+    decide_day_type[evaluation_tape] approach — single optional keyword
+    arg, no return-shape change, no rule-tree re-implementation."""
+
+    @pytest.mark.parametrize(
+        "scenario_id,prices,forecast,expected_reason,expected_selected",
+        [
+            # Rejection: day-ahead LMP fetch returns None.
+            ("no_da_lmp_data", None, None,
+             "PRECOOL_REJECTED_NO_DA_LMP_DATA", False),
+            # Rejection: prices present but forecast missing.
+            ("no_forecast", [3.0] * 24, None,
+             "PRECOOL_REJECTED_NO_FORECAST", False),
+            # Rejection: DA vector incomplete (< 24 hours).
+            ("da_lmp_incomplete", [3.0] * 20, {"high_f": 80.0},
+             "PRECOOL_REJECTED_DA_LMP_INCOMPLETE", False),
+            # Rejection: no consecutive cheap-hour window. All hours
+            # above CHEAP_PRICE_THRESHOLD_C (= 4¢ supply baseline).
+            ("no_cheap_window", [9.0] * 24, {"high_f": 80.0},
+             "PRECOOL_REJECTED_NO_CHEAP_WINDOW", False),
+            # Rejection: cheap window present (hours 6-12 at 2¢), but no
+            # spike window after the minimum gap.
+            ("no_spike_window_after_gap",
+             [9.0] * 6 + [2.0] * 6 + [5.0] * 12,
+             {"high_f": 80.0},
+             "PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP", False),
+            # Happy path: cheap window 06:00-12:00 at 2¢, evening spike
+            # 17:00-20:00 at 15¢. Selected.
+            ("selected",
+             [9.0] * 6 + [2.0] * 6 + [5.0] * 5 + [15.0] * 4 + [5.0] * 3,
+             {"high_f": 92.0},
+             "PRECOOL_SELECTED", True),
+        ],
+    )
+    def test_precool_emits_with_reason(
+        self, monkeypatch,
+        scenario_id, prices, forecast, expected_reason, expected_selected,
+    ):
+        """Drive compute_price_aware_precool_window with mocked fetch
+        helpers; capture trace_reason; assert the wrapper's out-list
+        contains exactly one entry matching the expected PrecoolCode."""
+        import app
+        from zoneinfo import ZoneInfo as _ZoneInfo
+        monkeypatch.setattr(app, "fetch_day_ahead_prices_for_date",
+                            lambda q, b, d, tz: prices)
+        monkeypatch.setattr(app, "fetch_latest_forecast",
+                            lambda q, b, period: forecast)
+
+        trace = []
+        result = app.compute_price_aware_precool_window(
+            MagicMock(), "energy", "2026-07-15", _ZoneInfo("America/Chicago"),
+            forecast_period="tomorrow", trace_reason=trace,
+        )
+        assert len(trace) == 1, f"{scenario_id}: expected 1 trace entry, got {trace}"
+        assert trace[0] == expected_reason, scenario_id
+        assert (result is not None) is expected_selected, (
+            f"{scenario_id}: expected selected={expected_selected}, got result={result}"
+        )
+
+    def test_trace_precool_emits_trace_line(self, capsys, monkeypatch):
+        """Confirm the _trace_precool helper emits a well-formed
+        decision_trace.precool_decision line with expected fields for
+        both happy-path and rejection inputs."""
+        from app import _trace_precool
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+        now_ct = datetime(2026, 7, 14, 21, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        # Selected.
+        _trace_precool(
+            tick_id="tick_selected", now_ct=now_ct,
+            decision_for_date="2026-07-15", day_type="HOT_5CP_RISK",
+            window={"hour_ct": 6, "depth_f": 67},
+            reason_code="PRECOOL_SELECTED",
+        )
+        # Rejection.
+        _trace_precool(
+            tick_id="tick_rejected", now_ct=now_ct,
+            decision_for_date="2026-07-15", day_type="NORMAL",
+            window=None,
+            reason_code="PRECOOL_REJECTED_NO_CHEAP_WINDOW",
+        )
+
+        traces = _parse_trace_lines(capsys.readouterr().out, PRECOOL_EVENT)
+        assert len(traces) == 2
+        t_sel, t_rej = traces
+        assert t_sel["tick_id"] == "tick_selected"
+        assert t_sel["selected"] is True
+        assert t_sel["hour_ct"] == 6
+        assert t_sel["depth_f"] == 67
+        assert t_sel["day_type"] == "HOT_5CP_RISK"
+        assert t_sel["reason_code"] == "PRECOOL_SELECTED"
+        assert t_sel["level"] == "info"
+
+        assert t_rej["selected"] is False
+        assert t_rej["hour_ct"] is None
+        assert t_rej["depth_f"] is None
+        assert t_rej["reason_code"] == "PRECOOL_REJECTED_NO_CHEAP_WINDOW"
+        assert t_rej["level"] == "info"
+
+    def test_precool_trace_is_failure_isolated(self, capsys, monkeypatch):
+        """Patching `app.log` to raise on `decision_trace.precool_decision`
+        events must NOT propagate. _trace_precool returns normally."""
+        from app import _trace_precool
+        import app as app_mod
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+        original_log = app_mod.log
+        def _maybe_raise(level, msg, **fields):
+            if isinstance(msg, str) and msg == PRECOOL_EVENT:
+                raise RuntimeError("synthetic precool trace failure")
+            return original_log(level, msg, **fields)
+        monkeypatch.setattr(app_mod, "log", _maybe_raise)
+
+        now_ct = datetime(2026, 7, 14, 21, 0, tzinfo=ZoneInfo("America/Chicago"))
+        # Must not raise.
+        _trace_precool(
+            tick_id="tick_iso", now_ct=now_ct,
+            decision_for_date="2026-07-15", day_type="NORMAL",
+            window=None, reason_code="PRECOOL_REJECTED_NO_DA_LMP_DATA",
+        )
 
 
 # ---- Phase 5 — day-type negative branches --------------------------------
