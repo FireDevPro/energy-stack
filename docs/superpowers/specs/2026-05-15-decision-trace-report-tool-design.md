@@ -42,7 +42,7 @@ Five sections, all rendered every run:
 - Runs on **Windows workstation** (desktop, mostly always-on). Queries Pi-lab Loki (port 3100) + InfluxDB (port 8086) over the homelab LAN.
 - Daily automated run via Windows Task Scheduler at 08:00 CT — renders **yesterday's CT day** (the rendered day = the day before the run day; e.g., 08:00 run on 2026-05-16 writes `2026-05-15-decision-trace.md`).
 - On-demand CLI for ad-hoc investigation (specific date or arbitrary time range).
-- If desktop is off at 08:00 CT, the daily run is skipped silently. Operator re-renders manually with `--date`. Source data persists on Pi indefinitely.
+- If desktop is off at 08:00 CT, the daily run is skipped silently. Operator re-renders manually with `--date`. Source data persists on Pi within Loki/Influx retention windows (Influx is long-lived; Loki retention is shorter — exact threshold depends on `loki-config.yml`. Re-rendering deep historical days may hit Loki retention before it hits Influx.)
 
 ### Module structure
 
@@ -140,12 +140,14 @@ If any anomaly count > 0, status reads `open the report` instead of `all green`.
 ### §1 — Night-before decision audit
 
 **Loki queries:**
-- `{container="hvac-scheduler"} |= "decision_trace.day_type_decision"` filtered to target CT day 21:00 + 06:00/11:00 revisits
-- `{container="hvac-scheduler"} |= "decision_trace.precool_decision"` filtered to target CT day 21:00
+- `{container="hvac-scheduler"} |= "decision_trace.day_type_decision"` — **key on the `decision_for_date` JSON field** matching `target_date_iso`. The night-before 21:00 decision fires on CT day `target - 1`; the 06:00 + 11:00 revisits fire on CT day `target`. Querying by `decision_for_date` content (not by `_time`-of-emission) captures all four events regardless of which CT day they emitted on.
+- `{container="hvac-scheduler"} |= "decision_trace.precool_decision"` — same approach: filter by `decision_for_date == target_date_iso`. The trace line for precool also fires on CT day `target - 1` at 21:00.
+
+Backup time-range envelope (defensive, in case Loki LogQL JSON-field filtering misses any edge case): query `_time` in `[target - 1 @ 20:00 CT, target @ 12:00 CT]` and then filter by `decision_for_date` field client-side.
 
 **InfluxDB cross-reference:**
-- `hvac.decisions` row(s) with `decision_for_date = target` (one per decision firing, multiple if revisits revised)
-- `hvac.precool_window` row with `target_date = target`
+- `hvac.decisions` row(s) tagged `decision_for_date = target` (one per decision firing, multiple if revisits revised)
+- `hvac.precool_window` row tagged `target_date = target`
 
 **Rendered:**
 - Day-type winner with `winning_reason`
@@ -165,7 +167,17 @@ If any anomaly count > 0, status reads `open the report` instead of `all green`.
 **Rendered:**
 - Chronological table, one row per event. Columns: time (CT), `tick_id` (truncated to 8 chars), event type, `winning_layer`, `schedule_cool_f`, `price_cool_f`, `fivecp_cool_f`, `effective_cool_f`, supervisor `decision` (if event = supervisor), supervisor `reason_code` (if non-approved).
 - Group consecutive events sharing the same `tick_id` (so one tick's chain reads as a unit).
-- Reconciliation: any `tick_id` with a layer_resolution + supervisor event where `hvac.actions` doesn't have a matching row → flag as anomaly.
+
+**Reconciliation (narrowed to avoid mid-period-no-op false positives):**
+
+`hvac.actions` rows are written only on (a) a scheduled action firing or (b) a mid-period repush where `effective_cool_f` changed since the last push. Most ticks emit `layer_resolution` + `supervisor` trace events but write NO `hvac.actions` row — that is normal idempotent mid-period behavior, NOT an anomaly.
+
+v1 reconciliation rule applies only to action-fire events:
+- An action-fire trace (identified by surrounding `action_fired` log line OR an `action_label` field on the layer_resolution event other than `MID_PERIOD_REPUSH:*`) MUST have a matching `hvac.actions` row tagged with the same `action_label` for the target CT day.
+- Mid-period-repush traces are NOT reconciled — too many normal no-op cases to discriminate without re-implementing the scheduler's push-or-skip logic.
+- `SCHEDULER_MODE=shadow` does not change the rule: `hvac.actions` audit rows are written regardless of mode (with `applied=0` + `dry_run=true` tags in shadow). The row's presence is what's checked, not its `applied` value.
+
+Future tightening (post-v1) could reconcile mid-period repushes by recomputing the "should-push" predicate, but that's the kind of rule-re-implementation we're explicitly avoiding in v1.
 
 ### §3 — Price-spike reaction audit
 
@@ -203,7 +215,7 @@ Critical feed list:
 - `nws.forecast` (continuous, ~30min)
 - `pjm.lmp_da_hourly` (event — daily at 17:00 CT)
 - `pjm.inst_load` (continuous, ~5min)
-- `pjm.hrl_load_metered` (event — Sunday 02:00 CT)
+- `pjm.metered_load` (event — Sunday 02:00 CT; this is the Influx measurement name the poller writes; the PJM API endpoint that feeds it is `hrl_load_metered`)
 - `refoss.channel` (continuous, 30s)
 - `hvac.thermostat` (continuous, 10min)
 - `haven.indoor` (continuous, ~5min)
@@ -309,7 +321,7 @@ Daily Task Scheduler does **not** retry on exit 0; it relies on the operator ope
   - Feed synthetic Loki + Influx fixtures end-to-end via mocked clients.
   - Assert the full assembled output markdown matches a fixture file.
   - One per "happy day" scenario (normal MILD day) + one per "anomaly" scenario.
-- **No live HTTP in tests.** Every test mocks. Live verification is the operator running the tool against the real Pi.
+- **No live Pi/LAN HTTP in tests.** Tests use mocks; local fake HTTP fixtures (e.g., `pytest-httpserver`, local stubbed FastAPI app, or a fake server inside the test process) are allowed if a fixture is cleaner than mocking the client. Live HTTP to the real Pi or any remote endpoint is forbidden in CI. Live verification is the operator running the tool against the real Pi.
 - **Snapshot fixtures kept small** — under ~100 lines each so PR review can actually read them. Larger fixtures broken into per-section files.
 
 ## 10. Markdown format
