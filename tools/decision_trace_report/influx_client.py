@@ -141,3 +141,22 @@ class InfluxClient:
         return self.fetch_comed_prices_above_by_range(
             start_ct=start_ct, end_ct=end_ct, threshold_cents=threshold_cents,
         )
+
+    def last_write_time(self, measurement: str) -> "datetime | None":
+        """`max(_time)` for `measurement` over the last 7 days, or None.
+
+        7-day window is wide enough to catch event feeds (e.g., PJM
+        DA LMP fires once a day) but bounded so Flux isn't scanning
+        forever.
+        """
+        from datetime import datetime
+        flux = f"""
+            from(bucket: "{self.bucket}")
+              |> range(start: -7d)
+              |> filter(fn: (r) => r._measurement == "{measurement}")
+              |> last()
+        """
+        for table in self._query_api.query(flux):
+            for record in table.records:
+                return record.get_time()
+        return None

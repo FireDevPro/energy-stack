@@ -133,3 +133,31 @@ def test_fetch_comed_prices_above_by_range_accepts_arbitrary_window(influx_url):
     assert "r._value >= 10.0" in flux
     assert "2026-05-14T18:00:00Z" in flux
     assert "2026-05-15T00:30:00Z" in flux
+
+
+def test_last_write_time_returns_utc_datetime(influx_url):
+    """last_write_time queries max(_time) of a measurement and returns
+    a timezone-aware UTC datetime, or None if no rows."""
+    from datetime import datetime, timezone
+    fake_record = MagicMock()
+    fake_record.values = {}
+    fake_record.get_time.return_value = datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
+    fake_table = MagicMock()
+    fake_table.records = [fake_record]
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = [fake_table]
+
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    last = client.last_write_time("comed.prices")
+
+    flux = fake_query_api.query.call_args[0][0]
+    assert 'r._measurement == "comed.prices"' in flux
+    assert "|> last()" in flux
+    assert last == datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
+
+
+def test_last_write_time_returns_none_for_empty_result(influx_url):
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = []
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    assert client.last_write_time("nws.forecast") is None
