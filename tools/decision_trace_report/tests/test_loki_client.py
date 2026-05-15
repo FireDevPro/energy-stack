@@ -138,3 +138,159 @@ def test_fetch_decision_traces_filters_by_event_name(monkeypatch, loki_url):
     assert '{container="hvac-scheduler"}' in captured["params"]["query"]
     assert len(events) == 1
     assert events[0]["decision_for_date"] == "2026-05-15"
+
+
+def test_count_reason_codes_aggregates_across_chunks(monkeypatch, loki_url):
+    """count_reason_codes chunks by day and accumulates. A 7-day query
+    must issue 7 separate query_range calls (one per day) and sum the
+    per-chunk results."""
+    calls: list[dict] = []
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        calls.append({"params": dict(params)})
+        # Return 2 PRICE + 1 SUPERVISOR per chunk
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.price_overlay_eval", '
+                             '"reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"}'),
+                            ("1779328860000000000",
+                             '{"msg": "decision_trace.price_overlay_eval", '
+                             '"reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"}'),
+                            ("1779328920000000000",
+                             '{"msg": "decision_trace.supervisor", '
+                             '"reason_code": "SUPERVISOR_APPROVED"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    counts = client.count_reason_codes(
+        start="2026-05-08T00:00:00Z",
+        end="2026-05-15T00:00:00Z",
+    )
+
+    # 7-day window with 24h chunks -> 7 separate Loki queries
+    assert len(calls) == 7
+    # Query matches `decision_trace.` events
+    assert "decision_trace" in calls[0]["params"]["query"]
+    # Each chunk's 2 PRICE + 1 SUPERVISOR rows accumulated across 7 chunks
+    assert counts["PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"] == 14
+    assert counts["SUPERVISOR_APPROVED"] == 7
+
+
+def test_count_reason_codes_handles_partial_day_at_edges(monkeypatch, loki_url):
+    """A non-day-aligned range still works — final chunk is sub-day,
+    no extra calls past `end`."""
+    calls: list[dict] = []
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        calls.append({"params": dict(params)})
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {"resultType": "streams", "result": []},
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    # 1.5-day window -> 2 chunks (24h + 12h)
+    client.count_reason_codes(
+        start="2026-05-08T00:00:00Z",
+        end="2026-05-09T12:00:00Z",
+    )
+    assert len(calls) == 2
+    # First chunk full day, second chunk 12h
+    assert calls[0]["params"]["start"] == "2026-05-08T00:00:00Z"
+    assert calls[0]["params"]["end"] == "2026-05-09T00:00:00Z"
+    assert calls[1]["params"]["start"] == "2026-05-09T00:00:00Z"
+    assert calls[1]["params"]["end"] == "2026-05-09T12:00:00Z"
+
+
+def test_count_reason_codes_ignores_events_without_reason_code(monkeypatch, loki_url):
+    """Some trace lines may not carry reason_code (defensive); skip them
+    rather than counting blank as a 'code'."""
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.startup"}'),  # no reason_code
+                            ("1779328860000000000",
+                             '{"msg": "decision_trace.supervisor", '
+                             '"reason_code": "SUPERVISOR_APPROVED"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    counts = client.count_reason_codes(
+        # Single-day window so we still get exactly 1 query
+        start="2026-05-14T00:00:00Z",
+        end="2026-05-15T00:00:00Z",
+    )
+    assert counts == {"SUPERVISOR_APPROVED": 1}
+
+
+def test_count_reason_codes_warns_on_chunk_at_limit(monkeypatch, loki_url, caplog):
+    """If a single-day chunk returns exactly `per_chunk_limit` events,
+    the function logs a warning so the operator knows the count for
+    that day may be partial."""
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        response = MagicMock()
+        response.status_code = 200
+        # Build per_chunk_limit synthetic events
+        n = 5  # use a tiny limit to keep the fixture small
+        values = [
+            (str(1779328800000000000 + i),
+             '{"msg": "decision_trace.x", "reason_code": "FAKE_CODE"}')
+            for i in range(n)
+        ]
+        response.json.return_value = {
+            "status": "success",
+            "data": {"resultType": "streams",
+                      "result": [{"stream": {}, "values": values}]},
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    import logging
+    with caplog.at_level(logging.WARNING):
+        client.count_reason_codes(
+            start="2026-05-14T00:00:00Z",
+            end="2026-05-15T00:00:00Z",
+            per_chunk_limit=5,
+        )
+    # Limit was hit -> warning emitted
+    assert any("hit limit" in rec.message for rec in caplog.records)

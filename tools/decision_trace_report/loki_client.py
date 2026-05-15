@@ -72,3 +72,64 @@ class LokiClient:
         # Sort by trace's own `ts` if present, else Loki ingest time.
         events.sort(key=lambda e: e.get("ts", "") or e["_loki_ts_ns"])
         return events
+
+    def count_reason_codes(
+        self,
+        start: str,
+        end: str,
+        per_chunk_limit: int = 10000,
+    ) -> dict[str, int]:
+        """Count occurrences of each `reason_code` value across
+        `decision_trace.*` events in `[start, end]`.
+
+        Returns `{reason_code: count}`. Events without a `reason_code`
+        field are ignored (some decision_trace.* events may not carry
+        one — defensive). Used by §5 coverage scorecard.
+
+        **Chunked by day** to avoid silent truncation. Verbose
+        commissioning emits ~3500 lines/day; a single 30-day query at
+        50k would silently truncate. Instead, we walk the [start, end]
+        range one CT day at a time and accumulate. Each day fits well
+        under `per_chunk_limit` (10k) with headroom for unusually
+        chatty days. If any single day's response is AT the limit, a
+        warning is logged so the operator knows the count for that day
+        may be partial — but the cumulative number still avoids the
+        cliff a single oversized query would produce.
+
+        `start` and `end` must be RFC3339 UTC timestamps (e.g.,
+        `2026-05-08T00:00:00Z`). The chunking step is 24 hours; partial
+        days at the edges are queried with their actual sub-day spans.
+        """
+        from datetime import datetime, timedelta
+        import logging
+        log = logging.getLogger(__name__)
+
+        def _parse(ts: str) -> datetime:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        def _fmt(dt: datetime) -> str:
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        query = '{container="hvac-scheduler"} |= "decision_trace"'
+        start_dt = _parse(start)
+        end_dt = _parse(end)
+
+        counts: dict[str, int] = {}
+        cur = start_dt
+        while cur < end_dt:
+            nxt = min(cur + timedelta(days=1), end_dt)
+            raw = self.query_range(query, _fmt(cur), _fmt(nxt), limit=per_chunk_limit)
+            events = self.parse_trace_lines(raw)
+            if len(events) >= per_chunk_limit:
+                log.warning(
+                    "count_reason_codes: chunk %s..%s hit limit %d — "
+                    "single-day count may be partial",
+                    _fmt(cur), _fmt(nxt), per_chunk_limit,
+                )
+            for event in events:
+                code = event.get("reason_code")
+                if not isinstance(code, str):
+                    continue
+                counts[code] = counts.get(code, 0) + 1
+            cur = nxt
+        return counts
