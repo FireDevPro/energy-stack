@@ -113,6 +113,7 @@ from price_overlay import (
 )
 from safety_supervisor import validate_setpoints
 from decision_codes import (
+    DayTypeCode,
     LayerResolutionCode,
     PrecoolCode,
     PriceOverlayCode,
@@ -521,6 +522,42 @@ def _trace_supervisor(
     )
 
 
+def _trace_day_type(
+    *,
+    tick_id: str, now_ct: datetime,
+    decision_for_date: str, winning_day_type: str,
+    reasons: dict,
+) -> None:
+    """Emit one `decision_trace.day_type_decision` line per call to
+    `decide_day_type`. Fires at 21:00 nightly (`run_decision`) and at
+    each revisit hour (`run_decision_revisit`). Always `info` level —
+    the cadence is too low to be noisy.
+
+    Inlines the `evaluation_tape` from the reasons dict so operators can
+    see which rules were considered and which fired without having to
+    cross-reference any other measurement. The tape is the negative-
+    branch reasoning Chris asked for during the grilling: 'HOT_STREAK
+    was considered but day2_high_f=81, didn't fire' becomes a single
+    log-line lookup."""
+    _trace(
+        "decision_trace.day_type_decision",
+        level="info",
+        tick_id=tick_id,
+        now_ct=now_ct,
+        decision_for_date=decision_for_date,
+        winning_day_type=winning_day_type,
+        evaluation_tape=reasons.get("evaluation_tape", []),
+        # Surface the existing reasons fields too so the trace is
+        # self-contained for forensics.
+        winning_reason=reasons.get("reason"),
+        high_f=reasons.get("high_f"),
+        apparent_max_f=reasons.get("apparent_max_f"),
+        max_dewpoint_f=reasons.get("max_dewpoint_f"),
+        is_heat_advisory=reasons.get("is_heat_advisory"),
+        day2_high_f=reasons.get("day2_high_f"),
+    )
+
+
 def _trace_precool(
     *,
     tick_id: str, now_ct: datetime,
@@ -876,6 +913,98 @@ def _classify_one_day(forecast: dict | None) -> str:
     return DAYTYPE_MILD
 
 
+def _classify_with_tape(forecast: dict | None) -> tuple[str, list[dict]]:
+    """Phase-5 helper: same classification logic as `_classify_one_day`
+    but also returns an evaluation tape — one entry per rule branch
+    evaluated, recording threshold/actual/fired/reason_code. Used by
+    `decide_day_type` to populate `reasons["evaluation_tape"]`.
+
+    Kept in lock-step with `_classify_one_day` (same thresholds, same
+    precedence, same fallbacks). A drift between the two would surface
+    as an existing-test failure on `_classify_one_day`'s call sites OR
+    a new-test failure on the tape's `fired` flags. Both functions
+    consult the same module-level threshold constants so threshold
+    drift is structurally prevented."""
+    tape: list[dict] = []
+    if not forecast:
+        tape.append({
+            "rule": "no_forecast_fallback",
+            "threshold": None, "actual": None, "fired": True,
+            "reason_code": DayTypeCode.NORMAL_NO_FORECAST_FALLBACK.value,
+        })
+        return DAYTYPE_NORMAL, tape
+
+    high_f = forecast.get("high_f")
+    apparent_max_f = forecast.get("apparent_max_f")
+    is_heat_adv = bool(forecast.get("is_heat_advisory", 0))
+
+    # Rule 1: heat advisory (highest priority HOT trigger).
+    fired = is_heat_adv
+    tape.append({
+        "rule": "heat_advisory",
+        "threshold": True, "actual": is_heat_adv, "fired": fired,
+        "reason_code": DayTypeCode.HOT_HEAT_ADVISORY.value,
+    })
+    if fired:
+        return DAYTYPE_HOT, tape
+
+    # Rule 2: high_f >= HOT threshold.
+    fired = high_f is not None and high_f >= HOT_TEMP_THRESHOLD_F
+    tape.append({
+        "rule": "high_ge_hot",
+        "threshold": HOT_TEMP_THRESHOLD_F, "actual": high_f, "fired": fired,
+        "reason_code": DayTypeCode.HOT_HIGH_GE_85.value,
+    })
+    if fired:
+        return DAYTYPE_HOT, tape
+
+    # Rule 3: apparent_max_f >= HOT_APPARENT threshold.
+    fired = apparent_max_f is not None and apparent_max_f >= HOT_APPARENT_THRESHOLD_F
+    tape.append({
+        "rule": "apparent_ge_hot",
+        "threshold": HOT_APPARENT_THRESHOLD_F, "actual": apparent_max_f, "fired": fired,
+        "reason_code": DayTypeCode.HOT_APPARENT_GE_90.value,
+    })
+    if fired:
+        return DAYTYPE_HOT, tape
+
+    # Rule 4: high_f >= NORMAL threshold (and < HOT, by precedence).
+    fired = high_f is not None and high_f >= NORMAL_TEMP_THRESHOLD_F
+    tape.append({
+        "rule": "high_ge_normal",
+        "threshold": NORMAL_TEMP_THRESHOLD_F, "actual": high_f, "fired": fired,
+        "reason_code": DayTypeCode.NORMAL_HIGH_75_TO_84.value,
+    })
+    if fired:
+        return DAYTYPE_NORMAL, tape
+
+    # Rule 5: missing-temps fallback (P2.7 safe NORMAL not MILD).
+    fired = high_f is None and apparent_max_f is None
+    tape.append({
+        "rule": "missing_temps_fallback",
+        "threshold": None, "actual": None, "fired": fired,
+        "reason_code": DayTypeCode.NORMAL_MISSING_TEMPS_FALLBACK.value,
+    })
+    if fired:
+        # Preserve the existing P2.7 warn log that `_classify_one_day`
+        # emits on this path. The plan's "no removal of existing log
+        # lines" rule applies — `decide_day_type` now consumes this
+        # helper instead of `_classify_one_day`, so the warn must fire
+        # here too or the production log stream silently loses the
+        # degraded-forecast alert.
+        log("warn", "forecast_no_temperature_fields_falling_back_to_normal",
+            forecast_keys=sorted(forecast.keys()) if hasattr(forecast, "keys") else [])
+        return DAYTYPE_NORMAL, tape
+
+    # Rule 6: MILD default (high_f present and < NORMAL threshold).
+    tape.append({
+        "rule": "mild_default",
+        "threshold": NORMAL_TEMP_THRESHOLD_F, "actual": high_f, "fired": True,
+        "reason_code": DayTypeCode.MILD_HIGH_LT_75.value,
+    })
+    return DAYTYPE_MILD, tape
+
+
 def decide_day_type(forecast: dict | None,
                     day2_forecast: dict | None = None,
                     *,
@@ -899,11 +1028,26 @@ def decide_day_type(forecast: dict | None,
         aren't part of a multi-day heat streak.
     """
     if not forecast:
-        return DAYTYPE_NORMAL, {"reason": "no_forecast_available", "fallback": True}
+        # Phase 5: even the no-forecast fallback gets a tape entry so
+        # the trace can show "NO_FORECAST_FALLBACK fired" rather than
+        # implying no rules were evaluated.
+        _, no_forecast_tape = _classify_with_tape(forecast)
+        return DAYTYPE_NORMAL, {
+            "reason": "no_forecast_available",
+            "fallback": True,
+            "evaluation_tape": no_forecast_tape,
+        }
     high_f = forecast.get("high_f")
     apparent_max_f = forecast.get("apparent_max_f")
     is_heat_adv = bool(forecast.get("is_heat_advisory", 0))
     dewpoint_f = forecast.get("max_dewpoint_f")
+
+    # Phase 5: evaluation tape — one entry per rule branch evaluated.
+    # `_classify_with_tape` runs the same rule precedence as
+    # `_classify_one_day` and stops as soon as one rule fires; the tape
+    # records the rules that ran (both fired-True and fired-False up to
+    # the winner). Streak-path rules are appended below.
+    base_type, evaluation_tape = _classify_with_tape(forecast)
 
     reasons = {
         "high_f": high_f,
@@ -913,28 +1057,48 @@ def decide_day_type(forecast: dict | None,
         "alert_summary": forecast.get("alert_summary", ""),
     }
 
-    base_type = _classify_one_day(forecast)
     if base_type == DAYTYPE_HOT:
-        # Lookahead: if day-after is ALSO HOT, escalate to streak
+        # Lookahead: if day-after is ALSO HOT, escalate to streak.
         day2_type = _classify_one_day(day2_forecast) if day2_forecast else None
-        if day2_type == DAYTYPE_HOT:
+        multi_day_fired = (day2_type == DAYTYPE_HOT)
+        evaluation_tape.append({
+            "rule": "streak_multi_day",
+            "threshold": DAYTYPE_HOT, "actual": day2_type, "fired": multi_day_fired,
+            "reason_code": DayTypeCode.HOT_STREAK_MULTI_DAY.value,
+        })
+        if multi_day_fired:
             reasons["reason"] = "hot_streak_starting"
             reasons["day2_high_f"] = (day2_forecast or {}).get("high_f")
             reasons["day2_apparent_max_f"] = (day2_forecast or {}).get("apparent_max_f")
             reasons["day2_is_heat_advisory"] = bool((day2_forecast or {}).get("is_heat_advisory", 0))
+            reasons["evaluation_tape"] = evaluation_tape
             return DAYTYPE_HOT_STREAK_DAY1, reasons
         # §7 single-day forecast 5CP-risk path: deepen pre-cool when PJM
         # peak forecast clearly exceeds the season-to-date 5th highest
         # AND tomorrow's high reaches 90F.
-        if (tomorrow_peak_load_mw is not None
-                and season_5th_highest_mw is not None
-                and should_deepen_precool(
-                    {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
-                    season_5th_highest_mw,
-                )):
+        risk_inputs_present = (
+            tomorrow_peak_load_mw is not None
+            and season_5th_highest_mw is not None
+        )
+        risk_fired = risk_inputs_present and should_deepen_precool(
+            {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
+            season_5th_highest_mw,
+        )
+        evaluation_tape.append({
+            "rule": "streak_5cp_risk",
+            "threshold": "should_deepen_precool",
+            "actual": {
+                "tomorrow_peak_load_mw": tomorrow_peak_load_mw,
+                "season_5th_highest_mw": season_5th_highest_mw,
+            } if risk_inputs_present else None,
+            "fired": risk_fired,
+            "reason_code": DayTypeCode.HOT_STREAK_5CP_RISK.value,
+        })
+        if risk_fired:
             reasons["reason"] = "forecast_5cp_risk_single_day"
             reasons["tomorrow_peak_load_mw"] = tomorrow_peak_load_mw
             reasons["season_5th_highest_mw"] = season_5th_highest_mw
+            reasons["evaluation_tape"] = evaluation_tape
             return DAYTYPE_HOT_STREAK_DAY1, reasons
         if is_heat_adv:
             reasons["reason"] = "heat_advisory"
@@ -942,11 +1106,32 @@ def decide_day_type(forecast: dict | None,
             reasons["reason"] = f"high_ge_{HOT_TEMP_THRESHOLD_F}"
         else:
             reasons["reason"] = f"apparent_ge_{HOT_APPARENT_THRESHOLD_F}"
+        reasons["evaluation_tape"] = evaluation_tape
         return DAYTYPE_HOT, reasons
     if base_type == DAYTYPE_NORMAL:
-        reasons["reason"] = f"high_{NORMAL_TEMP_THRESHOLD_F}_to_{HOT_TEMP_THRESHOLD_F - 1}"
+        # Pre-Phase-5 this branch always wrote "high_75_to_84" — but
+        # base_type == DAYTYPE_NORMAL can be reached via TWO paths:
+        # the real "high in [75, 84]" range OR the P2.7 missing-temps
+        # safe fallback (forecast row present but both temp fields
+        # None). The pre-Phase-5 reason string lied about the second
+        # case. Phase 5 surfaces the distinction via the tape; this
+        # branch checks the last-fired tape entry to write a reason
+        # that matches the actual rule that fired, so the trace's
+        # `winning_reason` and `reason_code` don't contradict.
+        last_fired = next(
+            (e for e in reversed(evaluation_tape) if e["fired"]),
+            None,
+        )
+        if (last_fired is not None
+                and last_fired["reason_code"]
+                == DayTypeCode.NORMAL_MISSING_TEMPS_FALLBACK.value):
+            reasons["reason"] = "missing_temps_fallback"
+        else:
+            reasons["reason"] = f"high_{NORMAL_TEMP_THRESHOLD_F}_to_{HOT_TEMP_THRESHOLD_F - 1}"
+        reasons["evaluation_tape"] = evaluation_tape
         return DAYTYPE_NORMAL, reasons
     reasons["reason"] = f"high_lt_{NORMAL_TEMP_THRESHOLD_F}"
+    reasons["evaluation_tape"] = evaluation_tape
     return DAYTYPE_MILD, reasons
 
 
@@ -1820,6 +2005,17 @@ def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> N
         tomorrow_peak_load_mw=target_peak_mw,
         season_5th_highest_mw=season_5th_mw,
     )
+    # Phase 5 decision-trace: emit one decision_trace.day_type_decision
+    # line per revisit call (~2/day at 06:00 + 11:00 CT) with the full
+    # evaluation_tape. Fresh tick_id — revisit runs outside the
+    # run_schedule_check tick loop and has no shared tick_id.
+    _trace_day_type(
+        tick_id=uuid.uuid4().hex,
+        now_ct=datetime.now(ZoneInfo(cfg.tz_name)),
+        decision_for_date=today_iso,
+        winning_day_type=new_day_type,
+        reasons=reasons,
+    )
 
     if stored == new_day_type:
         log("info", "revisit_no_change",
@@ -1849,10 +2045,23 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
     target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
         query_api, cfg.influx_bucket, decision_date, tz,
     )
+    # Phase 5: one tick_id for this entire 21:00 decision call, shared
+    # across the day_type trace and the §7 precool trace below. Lets
+    # operators correlate "day_type=NORMAL was decided AND precool was
+    # rejected for X reason" via a single LogQL filter on tick_id.
+    decision_tick_id = uuid.uuid4().hex
+    decision_now_ct = datetime.now(tz)
+
     day_type, reasons = decide_day_type(
         forecast, day2_forecast=day2,
         tomorrow_peak_load_mw=target_peak_mw,
         season_5th_highest_mw=season_5th_mw,
+    )
+    _trace_day_type(
+        tick_id=decision_tick_id, now_ct=decision_now_ct,
+        decision_for_date=decision_date,
+        winning_day_type=day_type,
+        reasons=reasons,
     )
     write_decision(write_api, cfg.influx_bucket, decision_date, day_type, reasons, comed_price)
 
@@ -1875,17 +2084,17 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
         write_precool_window(write_api, cfg.influx_bucket, decision_date, precool_window)
     # Pick the reason code: the wrapper always appends exactly one
     # value, but fall back to a defensive default if the contract was
-    # ever violated. Generate a fresh tick_id per run_decision call —
-    # this entry point runs at 21:00 outside the run_schedule_check
-    # tick loop and has no shared tick_id.
+    # ever violated. Phase 5: reuse the same `decision_tick_id` as the
+    # day_type trace above so both lines from this 21:00 call share a
+    # correlation id.
     precool_reason = (
         precool_trace[-1] if precool_trace
         else PrecoolCode.SELECTED.value if precool_window is not None
         else PrecoolCode.REJECTED_NO_DA_LMP_DATA.value
     )
     _trace_precool(
-        tick_id=uuid.uuid4().hex,
-        now_ct=datetime.now(tz),
+        tick_id=decision_tick_id,
+        now_ct=decision_now_ct,
         decision_for_date=decision_date,
         day_type=day_type,
         window=precool_window,

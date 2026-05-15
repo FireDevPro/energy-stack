@@ -6,8 +6,8 @@ added in subsequent phases without breaking downstream Loki / LogQL
 consumers.
 
 Phase 1 shipped `PriceOverlayCode`. Phase 2 shipped `LayerResolutionCode`.
-Phase 3 shipped `SupervisorCode`. Phase 4 (this PR) adds `PrecoolCode`.
-Phase 5 will extend with `DayTypeCode`.
+Phase 3 shipped `SupervisorCode`. Phase 4 shipped `PrecoolCode`. Phase 5
+(this PR) adds `DayTypeCode` and completes the decision-trace feature.
 
 The codes are derived from caller-observable state (prev tier, new tier,
 current price, stale-feed flag) — NOT from the internal price-overlay
@@ -127,3 +127,49 @@ class PrecoolCode(str, Enum):
     REJECTED_DA_LMP_INCOMPLETE = "PRECOOL_REJECTED_DA_LMP_INCOMPLETE"
     REJECTED_NO_CHEAP_WINDOW = "PRECOOL_REJECTED_NO_CHEAP_WINDOW"
     REJECTED_NO_SPIKE_WINDOW_AFTER_GAP = "PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP"
+
+
+class DayTypeCode(str, Enum):
+    """Reason codes for one `decide_day_type` invocation, one code per
+    evaluated rule branch.
+
+    The evaluation tape records EVERY rule the function checked, with
+    `fired: bool` indicating whether that rule's predicate triggered.
+    This surfaces "negative branches" — rules considered and rejected —
+    so the operator can see "HOT_STREAK was considered but day2_high_f=
+    81 < 85 so it didn't fire" rather than just "winning day_type =
+    NORMAL".
+
+    Each tape entry carries one of these codes plus `threshold` and
+    `actual` fields so the trace is self-explanatory without re-reading
+    the rule code. Codes are append-only / OSF-bound.
+
+    Shipped codes reflect the rule branches actually present in
+    `decide_day_type` and its `_classify_with_tape` helper:
+
+      * HOT path:
+        - HOT_HEAT_ADVISORY — `is_heat_advisory == True`
+        - HOT_HIGH_GE_85 — `high_f >= HOT_TEMP_THRESHOLD_F`
+        - HOT_APPARENT_GE_90 — `apparent_max_f >= HOT_APPARENT_THRESHOLD_F`
+      * HOT_STREAK_DAY1 escalation paths:
+        - HOT_STREAK_MULTI_DAY — base=HOT AND day2=HOT
+        - HOT_STREAK_5CP_RISK — base=HOT AND §7 PJM peak-forecast risk
+      * NORMAL paths:
+        - NORMAL_HIGH_75_TO_84 — `NORMAL_TEMP_THRESHOLD_F <= high_f < HOT_TEMP_THRESHOLD_F`
+        - NORMAL_MISSING_TEMPS_FALLBACK — forecast present but
+          high_f + apparent_max_f both None (P2.7 safe fallback,
+          NORMAL not MILD)
+        - NORMAL_NO_FORECAST_FALLBACK — forecast itself None/empty
+      * MILD path:
+        - MILD_HIGH_LT_75 — `high_f < NORMAL_TEMP_THRESHOLD_F`
+    """
+
+    HOT_HEAT_ADVISORY = "DAY_TYPE_HOT_HEAT_ADVISORY"
+    HOT_HIGH_GE_85 = "DAY_TYPE_HOT_HIGH_GE_85"
+    HOT_APPARENT_GE_90 = "DAY_TYPE_HOT_APPARENT_GE_90"
+    HOT_STREAK_MULTI_DAY = "DAY_TYPE_HOT_STREAK_MULTI_DAY"
+    HOT_STREAK_5CP_RISK = "DAY_TYPE_HOT_STREAK_5CP_RISK"
+    NORMAL_HIGH_75_TO_84 = "DAY_TYPE_NORMAL_HIGH_75_TO_84"
+    NORMAL_MISSING_TEMPS_FALLBACK = "DAY_TYPE_NORMAL_MISSING_TEMPS_FALLBACK"
+    NORMAL_NO_FORECAST_FALLBACK = "DAY_TYPE_NORMAL_NO_FORECAST_FALLBACK"
+    MILD_HIGH_LT_75 = "DAY_TYPE_MILD_HIGH_LT_75"
