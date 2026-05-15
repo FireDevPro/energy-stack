@@ -40,7 +40,7 @@ def render(
     lines.append("|---|---|---|---|---|---|")
     for evt in all_events:
         ts = evt.get("ts", "")[-14:]  # HH:MM:SS.xxx-zz suffix-ish
-        tick = (evt.get("tick_id") or "")[:12]
+        tick = (evt.get("tick_id") or "")[:8]
         kind = "layer" if evt.get("msg") == "decision_trace.layer_resolution" else "sup"
         if kind == "layer":
             secondary = evt.get("winning_layer", "")

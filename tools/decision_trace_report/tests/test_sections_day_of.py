@@ -35,7 +35,7 @@ def test_chronological_timeline_grouped_by_tick_id():
         supervisor_events=supervisor_events,
         hvac_actions=[],
     )
-    assert "tick_aaaa" in out
+    assert "tick_aaa" in out
     assert "schedule" in out
     assert "SUPERVISOR_APPROVED" in out
 
