@@ -135,9 +135,47 @@ def test_fetch_comed_prices_above_by_range_accepts_arbitrary_window(influx_url):
     assert "2026-05-15T00:30:00Z" in flux
 
 
+def test_fetch_comed_prices_normalizes_value_to_price_cents(influx_url):
+    """The §3 contract: rows MUST expose `price_cents` (semantic field name)
+    + `_time` as a datetime — not the raw `_value` / `_field` shape that
+    comed.prices stores in InfluxDB.
+
+    This is the regression guard for the Codex P1 row-shape bug: §3 was
+    written against `{_time: ISO str, price_cents: float}` but the unpivoted
+    comed.prices query actually returns `{_time: datetime, _value: float,
+    _field: "price_cents_per_kwh"}`. Without this test, §3 hard-crashes
+    in production.
+    """
+    from datetime import datetime, timezone
+    fake_record = MagicMock()
+    fake_record.values = {
+        "_field": "price_cents_per_kwh",
+        "_value": 12.5,
+        "_measurement": "comed.prices",
+        "result": "_result",
+        "table": 0,
+    }
+    fake_record.get_time.return_value = datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
+    fake_table = MagicMock()
+    fake_table.records = [fake_record]
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = [fake_table]
+
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    rows = client.fetch_comed_prices_above("2026-05-15", threshold_cents=10.0)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["price_cents"] == 12.5
+    assert isinstance(row["_time"], datetime)
+    assert row["_time"] == datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
+    # `_value` MUST NOT survive — sections speak `price_cents`.
+    assert "_value" not in row
+
+
 def test_last_write_time_returns_utc_datetime(influx_url):
-    """last_write_time queries max(_time) of a measurement and returns
-    a timezone-aware UTC datetime, or None if no rows."""
+    """last_write_time queries `max(_time)` across the measurement and
+    returns a timezone-aware UTC datetime, or None if no rows."""
     from datetime import datetime, timezone
     fake_record = MagicMock()
     fake_record.values = {}
@@ -152,7 +190,42 @@ def test_last_write_time_returns_utc_datetime(influx_url):
 
     flux = fake_query_api.query.call_args[0][0]
     assert 'r._measurement == "comed.prices"' in flux
-    assert "|> last()" in flux
+    # Flux `last()` is per-table-per-series — for multi-series
+    # measurements like refoss.channel (one series per channel tag)
+    # it returns the last point of whichever series Flux processes
+    # first, NOT the latest write across the measurement. We need
+    # `group()` to collapse series + `max(column: "_time")` to pick
+    # the genuinely-latest timestamp.
+    assert "|> group()" in flux
+    assert 'max(column: "_time")' in flux
+    assert "|> last()" not in flux
+    assert last == datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
+
+
+def test_last_write_time_returns_max_across_multiple_tables(influx_url):
+    """Codex P2 regression: with multiple tables (multi-series
+    measurement, no group()) the OLDER timestamp can appear in the
+    first table. We must return the maximum across ALL tables, not
+    the first record we see."""
+    from datetime import datetime, timezone
+    older = MagicMock()
+    older.values = {}
+    older.get_time.return_value = datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc)
+    newer = MagicMock()
+    newer.values = {}
+    newer.get_time.return_value = datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
+    # First table has the OLDER record — Flux's iteration order can be
+    # this way for multi-series. group() in the query collapses to one
+    # table; this test asserts that even WITHOUT trusting the query
+    # collapse, the Python side picks max across whatever it receives.
+    t_old = MagicMock(); t_old.records = [older]
+    t_new = MagicMock(); t_new.records = [newer]
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = [t_old, t_new]
+
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    last = client.last_write_time("refoss.channel")
+
     assert last == datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
 
 

@@ -99,14 +99,35 @@ def count_discrepancies(
     hvac_decisions: list[dict[str, Any]],
     hvac_precool_window: dict[str, Any] | None,
 ) -> int:
+    """Count §1 anomalies for the top summary / heartbeat.
+
+    Two distinct anomaly classes per side:
+      1. Both present + disagree
+      2. Trace missing while Influx row exists (silent skip — scheduler
+         wrote the decision but never emitted the trace; commissioning
+         must catch this)
+
+    "Neither present" is NOT a §1 anomaly — §4 feed health and §5
+    coverage handle the "scheduler never ran" case.
+    """
     n = 0
+
+    # Day-type side
     trace_dt = day_type_events[0]["winning_day_type"] if day_type_events else None
     influx_dt = hvac_decisions[0]["day_type"] if hvac_decisions else None
     if trace_dt and influx_dt and trace_dt != influx_dt:
         n += 1
-    if precool_events and hvac_precool_window is not None:
+    elif influx_dt and not trace_dt:
+        n += 1
+
+    # Precool side
+    influx_precool_present = hvac_precool_window is not None
+    if precool_events and influx_precool_present:
         trace_sel = precool_events[0].get("selected")
         influx_sel = "hour_ct" in hvac_precool_window
         if trace_sel != influx_sel:
             n += 1
+    elif influx_precool_present and not precool_events:
+        n += 1
+
     return n

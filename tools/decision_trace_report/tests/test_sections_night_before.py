@@ -101,3 +101,45 @@ def test_no_day_type_events_renders_gracefully():
         hvac_precool_window=None,
     )
     assert "no decision_trace.day_type_decision" in out.lower()
+
+
+def test_missing_trace_with_influx_row_counts_as_discrepancy():
+    """Codex P1 #2 regression: when the trace is missing but Influx has
+    the row, that's a real anomaly. The §1 body warns about it but the
+    pre-fix `count_discrepancies` returned 0 — heartbeat went "all
+    green" while the body said missing trace.
+    """
+    hvac_decisions = [
+        {"decision_for_date": "2026-05-15", "day_type": "NORMAL"},
+    ]
+    assert count_discrepancies(
+        day_type_events=[],
+        precool_events=[],
+        hvac_decisions=hvac_decisions,
+        hvac_precool_window=None,
+    ) == 1
+
+
+def test_missing_precool_trace_with_influx_row_counts_as_discrepancy():
+    """Same anomaly class for precool: missing trace + present
+    hvac.precool_window row -> count = 1."""
+    assert count_discrepancies(
+        day_type_events=[
+            {"winning_day_type": "NORMAL"},  # day_type side green
+        ],
+        precool_events=[],  # but no precool trace
+        hvac_decisions=[{"day_type": "NORMAL"}],
+        hvac_precool_window={"hour_ct": 14, "depth_f": 2.0},
+    ) == 1
+
+
+def test_both_sides_missing_no_discrepancy():
+    """No trace AND no Influx row -> not a discrepancy. There's nothing
+    to disagree about. Other checks (feed health, coverage) handle the
+    "scheduler never ran" case."""
+    assert count_discrepancies(
+        day_type_events=[],
+        precool_events=[],
+        hvac_decisions=[],
+        hvac_precool_window=None,
+    ) == 0

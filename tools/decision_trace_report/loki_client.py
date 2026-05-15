@@ -64,11 +64,26 @@ class LokiClient:
 
         `event_name` is the suffix after `decision_trace.` (e.g.,
         `"day_type_decision"`, `"price_overlay_eval"`).
+
+        Logs a warning if the response saturates `limit` — a chatty
+        event like `price_overlay_eval` over a multi-day `--from`/`--to`
+        range can exceed 5000 lines (1/min ≈ 1440/day), and a silent
+        truncation would skew downstream stats. Operator should re-run
+        with a higher `limit` or narrower window when the warning fires.
         """
+        import logging
+        log = logging.getLogger(__name__)
+
         full_event = f"decision_trace.{event_name}"
         query = f'{{container="hvac-scheduler"}} |= "{full_event}"'
         raw = self.query_range(query, start, end, limit=limit)
         events = self.parse_trace_lines(raw)
+        if len(events) >= limit:
+            log.warning(
+                "fetch_decision_traces: %s %s..%s saturated limit=%d — "
+                "results may be truncated; widen limit or narrow range",
+                full_event, start, end, limit,
+            )
         # Sort by trace's own `ts` if present, else Loki ingest time.
         events.sort(key=lambda e: e.get("ts", "") or e["_loki_ts_ns"])
         return events

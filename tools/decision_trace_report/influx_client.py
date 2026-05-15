@@ -113,7 +113,12 @@ class InfluxClient:
     ) -> list[dict[str, Any]]:
         """Range-mode primitive: ComEd 5-min prices in CT window
         `[start_ct, end_ct)` with value >= `threshold_cents`. Field
-        name is `price_cents_per_kwh`."""
+        name in Influx is `price_cents_per_kwh`; returned rows expose
+        it as `price_cents` so §3 speaks one semantic shape.
+
+        Returned row contract (section-facing, NOT raw Influx):
+            {"_time": tz-aware datetime, "price_cents": float}
+        """
         from datetime import timezone
         start_utc = start_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         end_utc = end_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -124,7 +129,8 @@ class InfluxClient:
                                     and r._field == "price_cents_per_kwh"
                                     and r._value >= {threshold_cents})
         """
-        return self._flatten_query(flux)
+        raw = self._flatten_query(flux)
+        return [{"_time": r["_time"], "price_cents": r["_value"]} for r in raw]
 
     def fetch_comed_prices_above(
         self,
@@ -145,18 +151,28 @@ class InfluxClient:
     def last_write_time(self, measurement: str) -> "datetime | None":
         """`max(_time)` for `measurement` over the last 7 days, or None.
 
+        Uses `group() |> max(column: "_time")` instead of `last()`:
+        `last()` is per-series, so for multi-tag measurements like
+        `refoss.channel` it would return the latest point of one
+        channel rather than the latest write across the measurement.
+
         7-day window is wide enough to catch event feeds (e.g., PJM
         DA LMP fires once a day) but bounded so Flux isn't scanning
         forever.
         """
-        from datetime import datetime
         flux = f"""
             from(bucket: "{self.bucket}")
               |> range(start: -7d)
               |> filter(fn: (r) => r._measurement == "{measurement}")
-              |> last()
+              |> group()
+              |> max(column: "_time")
         """
+        # Defensive on the Python side too: take max across all returned
+        # records in case the Flux engine ever ships them un-collapsed.
+        latest = None
         for table in self._query_api.query(flux):
             for record in table.records:
-                return record.get_time()
-        return None
+                ts = record.get_time()
+                if ts is not None and (latest is None or ts > latest):
+                    latest = ts
+        return latest

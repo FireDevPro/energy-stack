@@ -43,27 +43,44 @@ def is_explained(spike: dict[str, Any], trace: dict[str, Any]) -> bool:
 
 
 def _nearest_trace(
-    spike_time_iso: str,
+    spike_time: Any,
     overlay_events: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Find the overlay event closest in time to spike_time_iso."""
+    """Find the overlay event closest in time to `spike_time`.
+
+    `spike_time` is whatever the InfluxClient.fetch_comed_prices_above*
+    contract returns in the `_time` slot — a tz-aware datetime in
+    production. Overlay events come from Loki with `ts` as an ISO
+    string. We collapse both to epoch seconds for distance compare.
+    """
     if not overlay_events:
         return None
-    # Lexicographic compare on ISO timestamps works for same-tz strings.
+    spike_epoch = _to_epoch(spike_time)
     nearest = min(
         overlay_events,
-        key=lambda e: abs(_iso_to_sortable(e.get("ts", "")) -
-                          _iso_to_sortable(spike_time_iso)),
+        key=lambda e: abs(_to_epoch(e.get("ts", "")) - spike_epoch),
     )
     return nearest
 
 
-def _iso_to_sortable(s: str) -> float:
+def _to_epoch(value: Any) -> float:
+    """Coerce datetime or ISO-8601 string to epoch seconds."""
     from datetime import datetime
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError):
-        return 0.0
+    if hasattr(value, "timestamp"):
+        return value.timestamp()
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _render_time(value: Any) -> str:
+    """Stringify a `_time` value for the rendered table cell."""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
 
 
 def render(
@@ -81,10 +98,12 @@ def render(
     lines.append("| spike time | price ¢/kWh | nearest trace | tier | reason_code | explained |")
     lines.append("|---|---:|---|---|---|---|")
     for spike in spikes:
-        trace = _nearest_trace(spike.get("_time", ""), overlay_events)
+        spike_t = spike.get("_time", "")
+        trace = _nearest_trace(spike_t, overlay_events)
+        spike_display = _render_time(spike_t)
         if trace is None:
             lines.append(
-                f"| {spike.get('_time')} | {spike.get('price_cents'):.2f} | "
+                f"| {spike_display} | {spike.get('price_cents'):.2f} | "
                 "(no nearby trace) | — | — | ❌ no trace |"
             )
             continue
@@ -93,7 +112,7 @@ def render(
         ok = is_explained(spike, trace)
         icon = "✅" if ok else "❌"
         lines.append(
-            f"| {spike.get('_time')} | {spike.get('price_cents'):.2f} | "
+            f"| {spike_display} | {spike.get('price_cents'):.2f} | "
             f"{trace.get('ts', '')[-14:]} | `{tier}` | `{code}` | {icon} |"
         )
     lines.append("")

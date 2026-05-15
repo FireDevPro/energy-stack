@@ -140,6 +140,52 @@ def test_fetch_decision_traces_filters_by_event_name(monkeypatch, loki_url):
     assert events[0]["decision_for_date"] == "2026-05-15"
 
 
+def test_fetch_decision_traces_warns_on_limit_hit(monkeypatch, caplog, loki_url):
+    """Codex P3 regression: a multi-day --from/--to range can exceed
+    the default limit=5000 for chatty events (price_overlay_eval at
+    ~1/minute = 1440/day). If the response saturates, the silently-
+    truncated result would corrupt downstream stats. The client must
+    log a warning so the operator sees it."""
+    import logging
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        # Return a stream that exactly hits the requested limit so the
+        # client cannot distinguish "happened to fit" from "truncated".
+        n = params["limit"]
+        values = [
+            (str(1779328800000000000 + i), '{"msg": "decision_trace.x"}')
+            for i in range(n)
+        ]
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [{"stream": {}, "values": values}],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+
+    with caplog.at_level(logging.WARNING, logger="tools.decision_trace_report.loki_client"):
+        events = client.fetch_decision_traces(
+            event_name="price_overlay_eval",
+            start="2026-05-10T00:00:00Z",
+            end="2026-05-17T00:00:00Z",
+            limit=5000,
+        )
+
+    assert len(events) == 5000
+    assert any(
+        "fetch_decision_traces" in rec.message and "limit" in rec.message
+        for rec in caplog.records
+    ), "expected truncation warning from fetch_decision_traces"
+
+
 def test_count_reason_codes_aggregates_across_chunks(monkeypatch, loki_url):
     """count_reason_codes chunks by day and accumulates. A 7-day query
     must issue 7 separate query_range calls (one per day) and sum the
