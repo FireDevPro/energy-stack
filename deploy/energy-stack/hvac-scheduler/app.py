@@ -986,6 +986,14 @@ def _classify_with_tape(forecast: dict | None) -> tuple[str, list[dict]]:
         "reason_code": DayTypeCode.NORMAL_MISSING_TEMPS_FALLBACK.value,
     })
     if fired:
+        # Preserve the existing P2.7 warn log that `_classify_one_day`
+        # emits on this path. The plan's "no removal of existing log
+        # lines" rule applies — `decide_day_type` now consumes this
+        # helper instead of `_classify_one_day`, so the warn must fire
+        # here too or the production log stream silently loses the
+        # degraded-forecast alert.
+        log("warn", "forecast_no_temperature_fields_falling_back_to_normal",
+            forecast_keys=sorted(forecast.keys()) if hasattr(forecast, "keys") else [])
         return DAYTYPE_NORMAL, tape
 
     # Rule 6: MILD default (high_f present and < NORMAL threshold).
@@ -1101,7 +1109,25 @@ def decide_day_type(forecast: dict | None,
         reasons["evaluation_tape"] = evaluation_tape
         return DAYTYPE_HOT, reasons
     if base_type == DAYTYPE_NORMAL:
-        reasons["reason"] = f"high_{NORMAL_TEMP_THRESHOLD_F}_to_{HOT_TEMP_THRESHOLD_F - 1}"
+        # Pre-Phase-5 this branch always wrote "high_75_to_84" — but
+        # base_type == DAYTYPE_NORMAL can be reached via TWO paths:
+        # the real "high in [75, 84]" range OR the P2.7 missing-temps
+        # safe fallback (forecast row present but both temp fields
+        # None). The pre-Phase-5 reason string lied about the second
+        # case. Phase 5 surfaces the distinction via the tape; this
+        # branch checks the last-fired tape entry to write a reason
+        # that matches the actual rule that fired, so the trace's
+        # `winning_reason` and `reason_code` don't contradict.
+        last_fired = next(
+            (e for e in reversed(evaluation_tape) if e["fired"]),
+            None,
+        )
+        if (last_fired is not None
+                and last_fired["reason_code"]
+                == DayTypeCode.NORMAL_MISSING_TEMPS_FALLBACK.value):
+            reasons["reason"] = "missing_temps_fallback"
+        else:
+            reasons["reason"] = f"high_{NORMAL_TEMP_THRESHOLD_F}_to_{HOT_TEMP_THRESHOLD_F - 1}"
         reasons["evaluation_tape"] = evaluation_tape
         return DAYTYPE_NORMAL, reasons
     reasons["reason"] = f"high_lt_{NORMAL_TEMP_THRESHOLD_F}"

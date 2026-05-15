@@ -824,6 +824,37 @@ class TestPhase5DayTypeTape:
         # short-circuit explicitly.
         assert "DAY_TYPE_HOT_STREAK_5CP_RISK" not in by_code
 
+    def test_day_type_missing_temps_fallback_preserves_warn_and_reason(self, capsys):
+        """Two regressions caught on PR review:
+
+        1. The P2.7 warn log `forecast_no_temperature_fields_falling_back_
+           to_normal` must still emit when decide_day_type sees a
+           degraded forecast (high_f + apparent_max_f both None). Plan
+           rule: "no removal of existing log lines."
+
+        2. reasons["reason"] must NOT report "high_75_to_84" when the
+           missing-temps fallback is the rule that actually fired —
+           that lies about the rule and would make the trace's
+           `winning_reason` field contradict `evaluation_tape`'s
+           reason_code.
+        """
+        from app import decide_day_type
+        forecast = {
+            # No high_f, no apparent_max_f — the degraded path.
+            "is_heat_advisory": 0, "max_dewpoint_f": 60.0,
+            "alert_summary": "",
+        }
+        day_type, reasons = decide_day_type(forecast)
+        assert day_type == "NORMAL"
+        # (1) Warn log preserved.
+        captured = capsys.readouterr().out
+        assert "forecast_no_temperature_fields_falling_back_to_normal" in captured
+        # (2) Reason string distinguishes this path.
+        assert reasons["reason"] == "missing_temps_fallback"
+        # Tape confirms the same rule fired.
+        last_fired = next(e for e in reversed(reasons["evaluation_tape"]) if e["fired"])
+        assert last_fired["reason_code"] == "DAY_TYPE_NORMAL_MISSING_TEMPS_FALLBACK"
+
     def test_day_type_no_forecast_fallback_tape(self):
         """No-forecast input produces a single-entry tape with
         NORMAL_NO_FORECAST_FALLBACK fired."""
