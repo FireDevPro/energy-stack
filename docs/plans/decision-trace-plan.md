@@ -102,13 +102,14 @@ Changes:
   - `LAYER_RESOLUTION_5CP_WINS`
   - `LAYER_RESOLUTION_TIE_WARMER_WINS` (when multiple layers propose the same setpoint)
 - New trace at the call site of `resolve_layer_priority` in `app.py` (the function itself is pure; log at caller).
-- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `schedule_cool_f`, `price_overlay_tier`, `price_cool_f`, `fivecp_active` (bool), `fivecp_scopes_fired` (list), `fivecp_cool_f`, `effective_cool_f`, `winning_layer` ∈ `{schedule, price_overlay, 5cp}`, `reason_code`.
+- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `schedule_cool_f`, `price_overlay_tier`, `price_cool_f`, `fivecp_active` (bool), `fivecp_scopes_fired` (list), `fivecp_cool_f`, `effective_cool_f`, `prev_effective_cool_f`, `winning_layer` ∈ `{schedule, price_overlay, 5cp, tie}`, `reason_code`. The `tie` value corresponds to `LAYER_RESOLUTION_TIE_WARMER_WINS` and is emitted when multiple non-schedule layers (5cp and price overlay) propose the same effective setpoint — preserves the forensic distinction between "schedule won alone" and "schedule was matched by a non-schedule layer at the warmest." Operator can inspect the per-layer fields on the trace to see which agreed.
 - Level: `info` when `effective_cool_f` differs from previous tick; `debug` when identical (gated on verbose).
 
 Acceptance:
 
-- `test_layer_resolution_eval_emits_every_tick` — drive three input combinations (schedule-only, price-elevated, 5CP-active); assert three trace lines with correct `winning_layer`.
-- Failure-isolation test parallel to Phase 1.
+- `test_layer_resolution_eval_emits_every_tick` — drive three input combinations (schedule-only, price-elevated, 5CP-active); assert three trace lines with correct `winning_layer` + `reason_code` + tick_id propagation.
+- `test_layer_resolution_tie_warmer_wins` — drive an input combination where both the price overlay (scarcity-tier override 85F) and 5CP (active, 85F shutoff) propose the same effective setpoint; assert `winning_layer="tie"` + `reason_code="LAYER_RESOLUTION_TIE_WARMER_WINS"`.
+- Failure-isolation test parallel to Phase 1: asserts BOTH that no exception propagates AND that the existing thermostat-write path (read_thermostat_snapshot + execute_action + write_action) still executes.
 
 ### Phase 3 — supervisor per invocation
 
