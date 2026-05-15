@@ -1105,9 +1105,29 @@ def test_fetch_hvac_actions_for_ct_day_cst(influx_url):
     assert "2026-01-16T06:00:00Z" in flux
 
 
-def test_fetch_comed_prices_spikes_only(influx_url):
-    """fetch_comed_prices_above filters by threshold; used for §3
-    price-spike audit."""
+def test_fetch_hvac_actions_by_range_accepts_arbitrary_ct_window(influx_url):
+    """Range-mode variant: arbitrary CT datetime window for custom
+    --from/--to mode. Date-mode methods delegate here; this is the
+    canonical primitive."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = []
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    ct = ZoneInfo("America/Chicago")
+    client.fetch_hvac_actions_by_range(
+        start_ct=datetime(2026, 5, 14, 13, 0, tzinfo=ct),
+        end_ct=datetime(2026, 5, 14, 19, 30, tzinfo=ct),
+    )
+    flux = fake_query_api.query.call_args[0][0]
+    assert 'r._measurement == "hvac.actions"' in flux
+    # CT 13:00 CDT = UTC 18:00; CT 19:30 CDT = UTC 00:30 next day
+    assert "2026-05-14T18:00:00Z" in flux
+    assert "2026-05-15T00:30:00Z" in flux
+
+
+def test_fetch_comed_prices_spikes_only_date_mode(influx_url):
+    """Date-mode fetch_comed_prices_above filters by threshold + CT day."""
     fake_query_api = MagicMock()
     fake_query_api.query.return_value = []
     client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
@@ -1115,6 +1135,25 @@ def test_fetch_comed_prices_spikes_only(influx_url):
     flux = fake_query_api.query.call_args[0][0]
     assert 'r._measurement == "comed.prices"' in flux
     assert "r._value >= 10.0" in flux
+
+
+def test_fetch_comed_prices_above_by_range_accepts_arbitrary_window(influx_url):
+    """Range-mode variant for custom --from/--to."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = []
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    ct = ZoneInfo("America/Chicago")
+    client.fetch_comed_prices_above_by_range(
+        start_ct=datetime(2026, 5, 14, 13, 0, tzinfo=ct),
+        end_ct=datetime(2026, 5, 14, 19, 30, tzinfo=ct),
+        threshold_cents=10.0,
+    )
+    flux = fake_query_api.query.call_args[0][0]
+    assert "r._value >= 10.0" in flux
+    assert "2026-05-14T18:00:00Z" in flux
+    assert "2026-05-15T00:30:00Z" in flux
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1142,18 +1181,19 @@ Append to `influx_client.py`:
         rows = self._flatten_query(flux)
         return rows[0] if rows else None
 
-    def fetch_hvac_actions(self, target_date_iso: str) -> list[dict[str, Any]]:
-        """All hvac.actions rows for the CT day `target_date_iso`.
+    def fetch_hvac_actions_by_range(
+        self,
+        start_ct: "datetime",
+        end_ct: "datetime",
+    ) -> list[dict[str, Any]]:
+        """Range-mode primitive: all `hvac.actions` rows in the CT
+        datetime window `[start_ct, end_ct)`.
 
-        Uses `ZoneInfo("America/Chicago")` to compute UTC bounds, so
-        CDT (summer, UTC-5) and CST (winter, UTC-6) are handled
-        symmetrically. Test coverage in Task 2.2 includes both seasons.
+        `start_ct` / `end_ct` MUST be tz-aware datetimes in
+        `America/Chicago` (or any equivalent zone). ZoneInfo handles
+        CDT/CST symmetrically — DST is not encoded as a constant offset.
         """
-        from datetime import datetime, timedelta, timezone
-        from zoneinfo import ZoneInfo
-        ct = ZoneInfo("America/Chicago")
-        start_ct = datetime.fromisoformat(target_date_iso).replace(tzinfo=ct)
-        end_ct = start_ct + timedelta(days=1)
+        from datetime import timezone
         start_utc = start_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         end_utc = end_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         flux = f"""
@@ -1164,18 +1204,31 @@ Append to `influx_client.py`:
         """
         return self._flatten_query(flux)
 
-    def fetch_comed_prices_above(
-        self,
-        target_date_iso: str,
-        threshold_cents: float,
-    ) -> list[dict[str, Any]]:
-        """ComEd 5-min prices on `target_date_iso` (CT) with value
-        >= `threshold_cents`. Field name is `price_cents_per_kwh`."""
-        from datetime import datetime, timedelta, timezone
+    def fetch_hvac_actions(self, target_date_iso: str) -> list[dict[str, Any]]:
+        """Date-mode convenience: all `hvac.actions` rows for the
+        CT day `target_date_iso`. Delegates to
+        `fetch_hvac_actions_by_range` after computing the day bounds.
+
+        Both date-mode and range-mode flow through the same primitive
+        so they can't drift out of sync.
+        """
+        from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
         ct = ZoneInfo("America/Chicago")
         start_ct = datetime.fromisoformat(target_date_iso).replace(tzinfo=ct)
         end_ct = start_ct + timedelta(days=1)
+        return self.fetch_hvac_actions_by_range(start_ct=start_ct, end_ct=end_ct)
+
+    def fetch_comed_prices_above_by_range(
+        self,
+        start_ct: "datetime",
+        end_ct: "datetime",
+        threshold_cents: float,
+    ) -> list[dict[str, Any]]:
+        """Range-mode primitive: ComEd 5-min prices in CT window
+        `[start_ct, end_ct)` with value >= `threshold_cents`. Field
+        name is `price_cents_per_kwh`."""
+        from datetime import timezone
         start_utc = start_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         end_utc = end_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         flux = f"""
@@ -1186,6 +1239,22 @@ Append to `influx_client.py`:
                                     and r._value >= {threshold_cents})
         """
         return self._flatten_query(flux)
+
+    def fetch_comed_prices_above(
+        self,
+        target_date_iso: str,
+        threshold_cents: float,
+    ) -> list[dict[str, Any]]:
+        """Date-mode convenience. Delegates to the range primitive
+        after computing CT-day bounds."""
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        ct = ZoneInfo("America/Chicago")
+        start_ct = datetime.fromisoformat(target_date_iso).replace(tzinfo=ct)
+        end_ct = start_ct + timedelta(days=1)
+        return self.fetch_comed_prices_above_by_range(
+            start_ct=start_ct, end_ct=end_ct, threshold_cents=threshold_cents,
+        )
 ```
 
 - [ ] **Step 4: Verify**
@@ -1193,13 +1262,13 @@ Append to `influx_client.py`:
 ```
 python -m pytest tools/decision_trace_report/tests/test_influx_client.py -v
 ```
-Expected: 5 PASSED.
+Expected: 7 PASSED (precool_window, hvac_actions date-mode CDT, hvac_actions date-mode CST, hvac_actions_by_range arbitrary CT window, comed_prices date-mode, comed_prices_above_by_range arbitrary CT window, plus the 2 from the prior task).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add tools/decision_trace_report/influx_client.py tools/decision_trace_report/tests/test_influx_client.py
-git commit -m "feat(report-tool): InfluxClient fetch_precool_window/actions/comed_prices"
+git commit -m "feat(report-tool): InfluxClient fetch_precool_window/actions/comed_prices + range variants"
 ```
 
 ### Task 2.3: InfluxClient — feed-health max_time queries
@@ -3175,14 +3244,30 @@ def test_cli_renders_and_writes_file(monkeypatch, tmp_path):
 
 
 def test_cli_renders_custom_from_to_range(monkeypatch, tmp_path):
-    """--from / --to render an arbitrary CT-local range, NOT silently
-    fall back to --date or yesterday. The label embeds both endpoints
-    so the operator can tell at a glance what window the report
-    covers."""
+    """--from / --to renders an arbitrary CT-local range end-to-end:
+
+    1. The CT range is correctly resolved to UTC bounds.
+    2. Loki receives the resolved (start_utc, end_utc) on every
+       fetch_decision_traces call.
+    3. Influx range-mode helpers receive the resolved (start_ct, end_ct)
+       datetime objects — NOT the report label string. This is the
+       regression catch for `target = label` propagating into
+       date-mode helpers.
+    4. Date-mode Influx helpers (fetch_hvac_decisions,
+       fetch_precool_window, fetch_hvac_actions(target),
+       fetch_comed_prices_above(target)) MUST NOT be called in
+       custom-range mode.
+    5. Output filename + report content reflect the range label, not a
+       single date.
+    """
+    from datetime import datetime
     from unittest.mock import MagicMock
+    from zoneinfo import ZoneInfo
     from tools.decision_trace_report.cli import main
 
     captured_loki_ranges: list[tuple[str, str]] = []
+    captured_influx_action_ranges: list[tuple] = []
+    captured_influx_price_ranges: list[tuple] = []
 
     fake_loki = MagicMock()
     def record_range(event_name, start, end, limit=5000):
@@ -3192,11 +3277,27 @@ def test_cli_renders_custom_from_to_range(monkeypatch, tmp_path):
     fake_loki.count_reason_codes.return_value = {}
 
     fake_influx = MagicMock()
-    fake_influx.fetch_hvac_decisions.return_value = []
-    fake_influx.fetch_precool_window.return_value = None
-    fake_influx.fetch_hvac_actions.return_value = []
-    fake_influx.fetch_comed_prices_above.return_value = []
+    def record_hvac_actions_range(*, start_ct, end_ct):
+        captured_influx_action_ranges.append((start_ct, end_ct))
+        return []
+    def record_price_range(*, start_ct, end_ct, threshold_cents):
+        captured_influx_price_ranges.append((start_ct, end_ct, threshold_cents))
+        return []
+    fake_influx.fetch_hvac_actions_by_range.side_effect = record_hvac_actions_range
+    fake_influx.fetch_comed_prices_above_by_range.side_effect = record_price_range
     fake_influx.last_write_time.return_value = None
+    # Date-mode helpers — they should NOT be called in custom-range
+    # mode. Configure them to raise so an accidental call would crash
+    # loudly instead of silently passing a label as a date.
+    def _date_mode_must_not_be_called(*a, **kw):
+        raise AssertionError(
+            "date-mode Influx helper called in custom-range mode — "
+            "the target=label bug is back"
+        )
+    fake_influx.fetch_hvac_decisions.side_effect = _date_mode_must_not_be_called
+    fake_influx.fetch_precool_window.side_effect = _date_mode_must_not_be_called
+    fake_influx.fetch_hvac_actions.side_effect = _date_mode_must_not_be_called
+    fake_influx.fetch_comed_prices_above.side_effect = _date_mode_must_not_be_called
 
     import tools.decision_trace_report.cli as cli_mod
     monkeypatch.setattr(cli_mod, "LokiClient", lambda *a, **kw: fake_loki)
@@ -3222,14 +3323,71 @@ def test_cli_renders_custom_from_to_range(monkeypatch, tmp_path):
     assert rc == 0
     assert output.exists()
     content = output.read_text(encoding="utf-8")
-    # Report header / filename includes both endpoints, not just a date
+    # (5) Report header / filename includes both endpoints
     assert "2026-05-14T13:00" in content
     assert "2026-05-14T19:30" in content
 
-    # At least one Loki call uses the custom range (not the default
-    # CT-day boundaries) — verifies --from/--to is actually consumed.
+    # (2) Loki received the resolved UTC range, not the label.
     # CT 13:00 CDT = UTC 18:00; CT 19:30 CDT = UTC 00:30 next day.
     assert ("2026-05-14T18:00:00Z", "2026-05-15T00:30:00Z") in captured_loki_ranges
+
+    # (3) Influx range-mode helpers received resolved CT DATETIMES (not
+    # the label).
+    ct = ZoneInfo("America/Chicago")
+    expected_start = datetime(2026, 5, 14, 13, 0, tzinfo=ct)
+    expected_end = datetime(2026, 5, 14, 19, 30, tzinfo=ct)
+    assert (expected_start, expected_end) in captured_influx_action_ranges
+    assert (expected_start, expected_end, 10.0) in captured_influx_price_ranges
+
+    # (4) Date-mode helpers were never called (side_effect would have
+    # raised AssertionError; reach here means no call happened).
+
+
+def test_cli_date_mode_still_uses_date_helpers(monkeypatch, tmp_path):
+    """Regression guard for date-mode: --date / default mode MUST call
+    the date-mode Influx helpers (`fetch_hvac_decisions`,
+    `fetch_precool_window`) AND the range-mode helpers (since §2 + §3
+    use them in both modes), with the right target_date / range."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+    from zoneinfo import ZoneInfo
+    from tools.decision_trace_report.cli import main
+
+    date_mode_calls: list[tuple[str, str]] = []  # (method_name, target_date)
+
+    fake_loki = MagicMock()
+    fake_loki.fetch_decision_traces.return_value = []
+    fake_loki.count_reason_codes.return_value = {}
+
+    fake_influx = MagicMock()
+    fake_influx.fetch_hvac_decisions.side_effect = lambda d: (
+        date_mode_calls.append(("fetch_hvac_decisions", d)) or []
+    )
+    fake_influx.fetch_precool_window.side_effect = lambda d: (
+        date_mode_calls.append(("fetch_precool_window", d)) or None
+    )
+    fake_influx.fetch_hvac_actions_by_range.return_value = []
+    fake_influx.fetch_comed_prices_above_by_range.return_value = []
+    fake_influx.last_write_time.return_value = None
+
+    import tools.decision_trace_report.cli as cli_mod
+    monkeypatch.setattr(cli_mod, "LokiClient", lambda *a, **kw: fake_loki)
+    monkeypatch.setattr(cli_mod, "InfluxClient", lambda *a, **kw: fake_influx)
+    monkeypatch.setattr(cli_mod, "TelegramClient", lambda *a, **kw: MagicMock())
+    for var in ("LOKI_URL", "INFLUXDB_URL", "INFLUXDB_TOKEN", "INFLUXDB_ORG",
+                 "INFLUXDB_BUCKET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        monkeypatch.setenv(var, "x")
+
+    output = tmp_path / "date-mode.md"
+    rc = main([
+        "--date", "2026-05-15",
+        "--output", str(output),
+        "--no-telegram",
+    ])
+    assert rc == 0
+    # Date-mode helpers received the exact YYYY-MM-DD date — NOT a label.
+    assert ("fetch_hvac_decisions", "2026-05-15") in date_mode_calls
+    assert ("fetch_precool_window", "2026-05-15") in date_mode_calls
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -3271,15 +3429,34 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    # Resolve CLI args into a CT-local window. `label` is used for the
-    # output filename + report header; for day-aligned runs it's the
-    # YYYY-MM-DD date, for custom --from/--to ranges it embeds both
-    # endpoints.
-    label, start_ct, end_ct = resolve_window(args)
+    # Three concepts deliberately kept separate:
+    #
+    #   report_label   — used for output filename + section headers.
+    #                    For --date / default mode: the YYYY-MM-DD date.
+    #                    For --from/--to custom range: "FROM__to__TO".
+    #
+    #   target_date    — set only in date-mode (default or --date).
+    #                    Used as a Loki `decision_for_date` filter for
+    #                    §1 night-before and as the tag for InfluxDB
+    #                    `hvac.decisions` / `hvac.precool_window`
+    #                    lookups. None in custom-range mode, where the
+    #                    range query itself is the source of truth and
+    #                    decision_for_date filtering is skipped.
+    #
+    #   start_ct / end_ct — always set, used for every range-mode query
+    #                    (Loki time bounds + Influx range-mode helpers).
+    #
+    # Conflating these (e.g., `target = label`) breaks custom-range
+    # mode because date-mode helpers like `fetch_hvac_actions(target)`
+    # would try to parse the label as YYYY-MM-DD and crash.
+    report_label, start_ct, end_ct = resolve_window(args)
     is_custom_range = bool(args.from_ct and args.to_ct)
-    target = label  # passed to sections that key on target_date
+    target_date = (
+        None if is_custom_range
+        else (args.date or default_target_date())
+    )
     log.info("rendering decision-trace report for window %s (%s)",
-              label, "custom range" if is_custom_range else "CT day")
+              report_label, "custom range" if is_custom_range else "CT day")
 
     loki = LokiClient(args.loki_url or os.environ["LOKI_URL"])
     influx = InfluxClient(
@@ -3296,28 +3473,46 @@ def main(argv: list[str] | None = None) -> int:
     end_utc = end_ct.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # §1 night-before
+    #
+    # Date mode (default / --date): filter Loki events by
+    # `decision_for_date == target_date` (so the 21:00 night-before
+    # decision and the 06:00/11:00 revisits all key cleanly), and
+    # cross-reference InfluxDB by the same tag.
+    #
+    # Custom-range mode (--from/--to): no `decision_for_date` filter
+    # — return any matching trace events whose Loki ingest timestamp
+    # falls in the requested CT window. Skip Influx cross-reference
+    # (no canonical "this is THE date" — caller asked for a window).
     try:
-        day_type_events = [
-            e for e in loki.fetch_decision_traces(
-                "day_type_decision",
-                # Cover prior-night 21:00 + revisits
-                start=(start_ct - timedelta(hours=4)).astimezone(timezone.utc)
-                      .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                end=end_utc,
-            ) if e.get("decision_for_date") == target
-        ]
-        precool_events = [
-            e for e in loki.fetch_decision_traces(
-                "precool_decision",
-                start=(start_ct - timedelta(hours=4)).astimezone(timezone.utc)
-                      .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                end=end_utc,
-            ) if e.get("decision_for_date") == target
-        ]
-        hvac_decisions = influx.fetch_hvac_decisions(target)
-        hvac_precool = influx.fetch_precool_window(target)
+        if target_date is not None:
+            extended_start_utc = (start_ct - timedelta(hours=4)).astimezone(
+                timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            day_type_events = [
+                e for e in loki.fetch_decision_traces(
+                    "day_type_decision",
+                    start=extended_start_utc, end=end_utc,
+                ) if e.get("decision_for_date") == target_date
+            ]
+            precool_events = [
+                e for e in loki.fetch_decision_traces(
+                    "precool_decision",
+                    start=extended_start_utc, end=end_utc,
+                ) if e.get("decision_for_date") == target_date
+            ]
+            hvac_decisions = influx.fetch_hvac_decisions(target_date)
+            hvac_precool = influx.fetch_precool_window(target_date)
+        else:
+            # Custom range — no decision_for_date filter, no Influx cross-ref
+            day_type_events = loki.fetch_decision_traces(
+                "day_type_decision", start=start_utc, end=end_utc,
+            )
+            precool_events = loki.fetch_decision_traces(
+                "precool_decision", start=start_utc, end=end_utc,
+            )
+            hvac_decisions = []
+            hvac_precool = None
         sections_md["night_before"] = night_before.render(
-            target_date=target,
+            target_date=report_label,
             day_type_events=day_type_events,
             precool_events=precool_events,
             hvac_decisions=hvac_decisions,
@@ -3337,6 +3532,10 @@ def main(argv: list[str] | None = None) -> int:
         query_errors += 1
 
     # §2 day-of
+    # Both date-mode and custom-range mode use the range-mode Influx
+    # helper. fetch_hvac_actions_by_range(start_ct, end_ct) is the
+    # canonical primitive; the date-mode wrapper just computes day
+    # bounds and delegates.
     try:
         layer_events = loki.fetch_decision_traces(
             "layer_resolution", start=start_utc, end=end_utc,
@@ -3344,9 +3543,11 @@ def main(argv: list[str] | None = None) -> int:
         supervisor_events = loki.fetch_decision_traces(
             "supervisor", start=start_utc, end=end_utc,
         )
-        hvac_actions = influx.fetch_hvac_actions(target)
+        hvac_actions = influx.fetch_hvac_actions_by_range(
+            start_ct=start_ct, end_ct=end_ct,
+        )
         sections_md["day_of"] = day_of.render(
-            target_date=target,
+            target_date=report_label,
             layer_events=layer_events,
             supervisor_events=supervisor_events,
             hvac_actions=hvac_actions,
@@ -3362,13 +3563,16 @@ def main(argv: list[str] | None = None) -> int:
         query_errors += 1
 
     # §3 price spikes
+    # Same pattern as §2 — range-mode Influx helper handles both modes.
     try:
-        spikes = influx.fetch_comed_prices_above(target, threshold_cents=10.0)
+        spikes = influx.fetch_comed_prices_above_by_range(
+            start_ct=start_ct, end_ct=end_ct, threshold_cents=10.0,
+        )
         overlay_events = loki.fetch_decision_traces(
             "price_overlay_eval", start=start_utc, end=end_utc,
         )
         sections_md["price_spikes"] = price_spikes.render(
-            target_date=target, spikes=spikes, overlay_events=overlay_events,
+            target_date=report_label, spikes=spikes, overlay_events=overlay_events,
         )
         unexplained = price_spikes.count_unexplained(
             spikes=spikes, overlay_events=overlay_events,
@@ -3477,7 +3681,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     full_md = renderer.build_report(
-        target_date=target,
+        target_date=report_label,
         rendered_at=datetime.now(timezone.utc),
         sections=sections_md,
         anomaly_summary=summary,
@@ -3486,7 +3690,7 @@ def main(argv: list[str] | None = None) -> int:
     # Sanitize label for Windows filesystems — colons (in custom-range
     # labels like "2026-05-14T13:00__to__2026-05-14T19:30") and other
     # path-hostile chars become underscores.
-    safe_label = re.sub(r'[\\/:*?"<>|]', "_", label)
+    safe_label = re.sub(r'[\\/:*?"<>|]', "_", report_label)
     output_path = Path(args.output) if args.output else (
         DEFAULT_OUTPUT_DIR / f"{safe_label}-decision-trace.md"
     )
@@ -3502,7 +3706,7 @@ def main(argv: list[str] | None = None) -> int:
                 chat_id=os.environ["TELEGRAM_CHAT_ID"],
             )
             tg.send_message(
-                f"Decision-trace commissioning report ready: {target}\n"
+                f"Decision-trace commissioning report ready: {report_label}\n"
                 f"Anomalies: {summary.total()} "
                 f"({summary.unexpected_codes} unexpected codes, "
                 f"{summary.supervisor_non_approved} sup non-approved, "
@@ -3533,7 +3737,7 @@ And remove the duplicated imports inside `main()`.
 ```
 python -m pytest tools/decision_trace_report/tests/test_cli.py -v
 ```
-Expected: 13 PASSED (11 from Task 6.1 + 2 end-to-end: day-aligned default + custom --from/--to range).
+Expected: 14 PASSED (11 from Task 6.1 + 3 end-to-end: day-aligned default, custom --from/--to range proving both Loki UTC bounds AND Influx CT-datetime args reach their helpers (and date-mode helpers are NOT called in custom-range mode), and date-mode regression guard proving the date-mode helpers ARE called with the correct YYYY-MM-DD date).
 
 Full suite:
 ```
@@ -3667,6 +3871,19 @@ Round 2 (--from/--to wiring, §5 chunking, stale InfluxClient docstring):
 - (1) `--from`/`--to` actually consumed: Task 6.1 adds `validate_args` (rejects partial range + mutual exclusion with `--date`) and `resolve_window` (returns `(label, start_ct, end_ct)` honoring the three modes). Task 6.2 `main()` calls both, derives UTC range from the resolved CT window, and uses a sanitized `safe_label` for the output filename so colons in custom-range labels don't break Windows paths. Task 6.1 adds 7 new tests (from/to flags, validate_args x2, resolve_window x4) covering arbitrary CT ranges + winter CST hygiene; Task 6.2 adds an end-to-end test asserting the custom range actually reaches Loki (`captured_loki_ranges` check), NOT silently falling back to default-yesterday.
 - (2) §5 counting cannot silently truncate: Task 1.4 now **chunks `count_reason_codes` by day**, accumulating per-chunk counts. `per_chunk_limit` defaults to 10k (well above ~3500/day verbose estimate); if any single chunk hits the limit a warning is logged so the partial-count case is loud, not silent. Test coverage includes 7-day window producing 7 calls, partial-day edge handling, and the limit-hit warning path.
 - (3) InfluxClient docstring: Task 2.2's `fetch_hvac_actions` docstring now states `ZoneInfo("America/Chicago")` handles CDT + CST symmetrically. The "fixed CDT offset acceptable for May-Sep cooling season" language is gone; Task 2.2 still has both CDT and CST tests to back it up.
+
+Round 3 (custom-range end-to-end — date-mode helpers were still being called with label):
+- The Round-2 fix proved `--from`/`--to` reached Loki but missed that Task 6.2's main() still did `target = label` and threaded `target` into date-mode Influx helpers (`fetch_hvac_actions(target)`, `fetch_comed_prices_above(target)`, `fetch_hvac_decisions(target)`, `fetch_precool_window(target)`). Those helpers call `datetime.fromisoformat(target)` and crash on a label like `"2026-05-14T13:00__to__2026-05-14T19:30"`.
+- **Three concepts now kept separate in main():**
+  - `report_label` — output filename + section headers (always set)
+  - `target_date` — YYYY-MM-DD for date-mode-only filtering; **None** in custom-range mode
+  - `start_ct` / `end_ct` — CT-local datetime bounds for range queries (always set)
+- **InfluxClient range-mode primitives added (Task 2.2):**
+  - `fetch_hvac_actions_by_range(start_ct, end_ct)`
+  - `fetch_comed_prices_above_by_range(start_ct, end_ct, threshold_cents)`
+  Date-mode wrappers (`fetch_hvac_actions(target_date_iso)`, `fetch_comed_prices_above(target_date_iso, ...)`) now compute day bounds and delegate to the range primitives — single source of truth for the Flux query, no drift risk between modes.
+- **§2 and §3 use the range primitives unconditionally** — both date-mode and custom-range flow through them, since both already have `start_ct`/`end_ct` from `resolve_window`. §1 has explicit branching: in date-mode, filter Loki by `decision_for_date == target_date` and cross-reference `hvac.decisions` / `hvac.precool_window`; in custom-range, return all trace events in the time window (no `decision_for_date` filter) and skip Influx cross-ref (no canonical "the date" to anchor on).
+- **End-to-end test strengthened (Task 6.2):** the custom-range e2e test now verifies (1) Loki receives the correct UTC bounds, (2) `fetch_hvac_actions_by_range` and `fetch_comed_prices_above_by_range` receive resolved CT-datetime objects (not the label string), (3) date-mode Influx helpers (`fetch_hvac_decisions` / `fetch_precool_window` / `fetch_hvac_actions` / `fetch_comed_prices_above`) are configured to raise AssertionError on call — reaching the end means none were invoked, regression-guarding against `target = label` resurfacing. A new date-mode regression test confirms the date-mode helpers ARE called with a proper YYYY-MM-DD value when `--date` is used.
 
 ---
 
