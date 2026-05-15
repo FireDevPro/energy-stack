@@ -119,21 +119,24 @@ Cadence note: the supervisor is invoked when a layer resolution proposes a setpo
 
 Changes:
 
-- `decision_codes.py` extended:
-  - `SUPERVISOR_APPROVED`
-  - `SUPERVISOR_CLAMPED_COOL_FLOOR`
-  - `SUPERVISOR_CLAMPED_COOL_CEILING`
-  - `SUPERVISOR_CLAMPED_HEAT_FLOOR`
-  - `SUPERVISOR_CLAMPED_HEAT_CEILING`
-  - `SUPERVISOR_EMERGENCY_OVERHEAT`
-  - `SUPERVISOR_EMERGENCY_NO_INDOOR_TEMP` (snapshot missing)
-- New trace at every `safety_supervisor.evaluate(...)` call site. Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `proposed_cool_f`, `proposed_heat_f`, `indoor_temp_f`, `indoor_temp_available` (bool), `decision` ∈ `{approved, clamped, emergency}`, `reason_code`, `final_cool_f`, `final_heat_f`.
+- `decision_codes.py` extended with `SupervisorCode` enum. The shipped enum is derived from caller-observable state (proposed setpoints + SupervisorDecision dataclass), NOT from internal supervisor knowledge:
+  - `SUPERVISOR_APPROVED` — proposed values in range AND no emergency
+  - `SUPERVISOR_CLAMPED_COOL_FLOOR` — cool clamped UP (proposed_cool < 65)
+  - `SUPERVISOR_CLAMPED_COOL_CEILING` — cool clamped DOWN (proposed_cool > 86)
+  - `SUPERVISOR_CLAMPED_HEAT_FLOOR` — heat clamped UP (proposed_heat < 55)
+  - `SUPERVISOR_CLAMPED_HEAT_CEILING` — heat clamped DOWN (proposed_heat > 75)
+  - `SUPERVISOR_CLAMPED_MULTIPLE` — both axes clamped in same call
+  - `SUPERVISOR_EMERGENCY_OVERHEAT` — indoor >= 86°F triggers emergency override
+
+  Plan-aspirational `SUPERVISOR_EMERGENCY_NO_INDOOR_TEMP` is **NOT in the shipped enum**: the production supervisor does not escalate to emergency when `indoor_temp_f` is missing — it falls through to the clamp check, which (with in-range setpoints) returns `approved`. The diagnostic is surfaced via the `indoor_temp_available: bool` field on the trace line, so an operator can filter `decision_trace.supervisor` by `indoor_temp_available=false` to see when the safety floor was running blind without inventing a fake "emergency" reason code.
+- New trace at every `validate_setpoints(...)` call site. Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `proposed_cool_f`, `proposed_heat_f`, `indoor_temp_f` (None when unavailable), `indoor_temp_available` (bool), `decision` ∈ `{approved, clamped, emergency}`, `reason_code`, `supervisor_reason` (the existing free-text reason from the SupervisorDecision), `final_cool_f`, `final_heat_f`.
 - Level: `info` for any non-approved decision; `debug` for approved (gated on verbose).
 
 Acceptance:
 
-- `test_supervisor_eval_emits_every_invocation` — drive approved / clamped-floor / clamped-ceiling / emergency-overheat / emergency-no-temp paths; assert correct `reason_code` on each.
-- Failure-isolation test.
+- `test_supervisor_eval_emits_every_invocation` — parametrized over 8 scenarios covering all 7 reason codes (approved + approved-no-indoor-temp + 4 single-axis clamps + clamped-multiple + emergency-overheat). Asserts `reason_code`, `decision`, `level`, `indoor_temp_available`, and `tick_id` correctness for each.
+- `test_supervisor_trace_fires_from_mid_period_repush` — integration test confirming the call-site wire-up and that supervisor + layer_resolution traces share `tick_id`.
+- `test_supervisor_trace_is_failure_isolated` — fault-injects `app.log` on supervisor events; asserts no exception propagates AND that the existing thermostat-write path (`read_thermostat_snapshot` + `execute_action` + `write_action`) still executes.
 
 ### Phase 4 — §7 precool rejection reason
 
