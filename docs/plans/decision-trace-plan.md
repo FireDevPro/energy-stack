@@ -28,7 +28,7 @@ This plan does NOT introduce shadow mode — that already exists via `SCHEDULER_
 | Cadence | **Every evaluation**, not every transition or every action fire. Per-tick price overlay + per-tick 5CP + per-tick layer resolution + per-invocation supervisor (not per-tick). ~500-1500 log lines / day in commissioning. |
 | Verbosity gate | `SCHEDULER_DECISION_TRACE_VERBOSE` env var (default `false`). Orthogonal to `SCHEDULER_MODE`. When `true`: per-evaluation "no-change" emissions land at `debug` level. Transitions, fires, decisions, rejections, errors always emit at `info`. Loki/LogQL filters by `level`. Commissioning runs with `true`; experiment defaults `false`. |
 | Failure isolation | Every trace `log()` wrapped in try/except that swallows. Trace never raises into the control path. Tested per phase BOTH at the trace-helper level AND at the caller level (`_evaluate_layer_inputs`, `run_decision`, supervisor call site, etc.) — the guarantee that matters is "trace failure cannot interrupt the calling control path." |
-| Rule-code touch | No return-shape changes. Two additive touches only:<br>1. `decide_day_type` mutates its existing `reasons` dict to add `reasons["evaluation_tape"] = [...]`. Return signature unchanged.<br>2. New wrapper `compute_price_aware_precool_window_with_trace(...) -> (dict \| None, reason_code)` lives alongside the original pure function. Original function and existing callers untouched.<br>Both made once before OSF filing and pinned. |
+| Rule-code touch | No return-shape changes. Two additive touches only:<br>1. `decide_day_type` mutates its existing `reasons` dict to add `reasons["evaluation_tape"] = [...]`. Return signature unchanged.<br>2. `should_add_price_aware_precool` and `compute_price_aware_precool_window` each gain one optional kwarg `trace_reason: list[str] \| None = None`. Default None means no overhead and no behaviour change; when provided, the function appends one `PrecoolCode` value on the way out. Same list-mutation pattern as touch #1 — chosen over a new wrapper that would have duplicated the rejection-tree logic.<br>Both made once before OSF filing and pinned. |
 | Cross-correlation fields on every trace line | `tick_id` (UUID4 per scheduler tick, JSON FIELD only — **NOT a Loki label**, would explode cardinality). `scheduler_mode` always emitted as its own field (independent of arm context). `arm` emitted when `arm_calendar.current_arm_at(now_ct)` returns `"A"` or `"B"`; omitted when it returns `None` (outside the locked calendar window). This matches the semantics of `write_arm_mode` and the existing `hvac.arm_mode` rows — `arm` reflects calendar membership, not protocol mode. Off-protocol shadow/production operation inside the calendar window therefore still carries an `arm` field, which is correct: it documents which calendar period the tick fell in, regardless of whether the scheduler was acting on it. |
 | reason_code taxonomy | Coded enums in `deploy/energy-stack/hvac-scheduler/decision_codes.py`. Append-only forever. Locked at OSF commit hash. Phase 1 establishes the file with the price-overlay subset; later phases extend it. |
 | Coexistence | Trace is additive. Existing `hvac.decisions` / `hvac.actions` / `hvac.5cp_state` / `hvac.price_overlay` / `hvac.precool_window` measurements continue to drive Grafana dashboards. No measurement renamed, no field removed. |
@@ -144,25 +144,31 @@ Today: window selected → row written. Window rejected → silent.
 
 Changes:
 
-- `decision_codes.py` extended:
+- `decision_codes.py` extended with `PrecoolCode` enum reflecting the **actual branches in production code**, not aspiration:
   - `PRECOOL_SELECTED`
   - `PRECOOL_REJECTED_NO_DA_LMP_DATA`
+  - `PRECOOL_REJECTED_NO_FORECAST` (real branch in `compute_price_aware_precool_window`)
+  - `PRECOOL_REJECTED_DA_LMP_INCOMPLETE` (real branch in `should_add_price_aware_precool` when `len(prices) < 24`)
   - `PRECOOL_REJECTED_NO_CHEAP_WINDOW`
-  - `PRECOOL_REJECTED_NO_EVENING_SPIKE`
-  - `PRECOOL_REJECTED_GAP_TOO_SHORT`
-  - `PRECOOL_REJECTED_DAY_TYPE_NOT_ELIGIBLE`
-  - `PRECOOL_REJECTED_ALREADY_DEEPER_VIA_HOT_STREAK`
-- New wrapper `compute_price_aware_precool_window_with_trace(...) -> (dict | None, reason_code)` in `app.py` (or a sibling module). The original `compute_price_aware_precool_window` keeps its `dict | None` signature and its existing call sites are untouched. The wrapper re-implements the rejection decision tree as a thin shell around the pure function, returning the appropriate `reason_code` for each None-yielding branch.
-- `app.py:run_decision` switches from calling `compute_price_aware_precool_window` directly to calling the new wrapper, so the trace line carries the reason code.
-- New trace at the call site in `app.py:run_decision`. Always fires once at 21:00; always logs `info` level (one row / night is not noisy).
-- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `decision_for_date`, `day_type`, `selected` (bool), `hour_ct`, `depth_f`, `reason_code`.
+  - `PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP` (collapses planned NO_EVENING_SPIKE + GAP_TOO_SHORT — both produce the same observable rejection path)
+
+  Plan-aspirational codes DROPPED (no matching branch in current production code):
+  - `GAP_TOO_SHORT` — collapsed into `NO_SPIKE_WINDOW_AFTER_GAP`. The gap requirement is enforced by starting the spike search after `cheap_start + MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS`; the only observable outcome is "no spike found beyond the gap."
+  - `DAY_TYPE_NOT_ELIGIBLE` — no day-type gate exists in the function. `compute_price_aware_precool_window` is called at 21:00 regardless of day_type.
+  - `ALREADY_DEEPER_VIA_HOT_STREAK` — that interaction is handled by `merge_same_hour_actions_deepest_wins` AFTER selection, not as a precool rejection inside the §7 path.
+
+  Same reconciliation pattern as Phase 1's `HELD_IN_TIER` and Phase 3's `CLAMPED_MULTIPLE`. Codes are append-only / OSF-bound, so the enum must describe production behaviour.
+- **Design pattern revision**: plan originally called for a NEW wrapper `compute_price_aware_precool_window_with_trace(...)` that re-implements the rejection decision tree as a thin shell. Shipped instead: an additive optional kwarg `trace_reason: list[str] | None = None` on the EXISTING `compute_price_aware_precool_window` and `should_add_price_aware_precool` functions. The functions append exactly one `PrecoolCode` value to the list on the way out. Default `None` means no overhead and no behaviour change — existing callers unaffected. This is the same dict/list-mutation pattern Phase 1 user-approved for `decide_day_type["evaluation_tape"]` (Phase 5). The change is minimal (one optional kwarg per function) and avoids the rejection-tree-duplication risk the wrapper approach carried.
+- `app.py:run_decision` passes a fresh `trace_reason` list to `compute_price_aware_precool_window`, reads the appended code, emits the trace.
+- New `_trace_precool` helper emission. Always fires once at 21:00 per night; always logs `info` level (one row / night is not noisy). `run_decision` generates a fresh `tick_id` since it runs outside the `run_schedule_check` tick loop and has no shared `tick_id`.
+- Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `decision_for_date`, `day_type`, `selected` (bool), `hour_ct` (int or null), `depth_f` (int or null), `reason_code`.
 
 Acceptance:
 
-- `test_precool_rejection_emits_with_reason` — drive each rejection branch by calling the wrapper with synthetic inputs; assert correct `reason_code` on each.
-- `test_precool_selection_emits` — drive the happy path via the wrapper; assert `PRECOOL_SELECTED` with hour and depth.
-- Existing `compute_price_aware_precool_window` tests unchanged (function signature is unchanged).
-- Caller-level failure-isolation test parallel to Phase 1.
+- `test_precool_emits_with_reason` — parametrized over the 6 PrecoolCode outcomes by driving `compute_price_aware_precool_window` with mocked fetch helpers + capturing the `trace_reason` list. Asserts correct code for each branch.
+- `test_trace_precool_emits_trace_line` — drives `_trace_precool` directly with both happy-path and rejection inputs; asserts well-formed `decision_trace.precool_decision` line with all expected fields.
+- `test_precool_trace_is_failure_isolated` — fault-injects `app.log` on precool events; asserts no exception propagates.
+- Existing `should_add_price_aware_precool` and `compute_price_aware_precool_window` tests unchanged (callers that don't pass `trace_reason` are unaffected).
 
 ### Phase 5 — day-type negative branches
 
@@ -192,7 +198,7 @@ The daily Markdown / Telegram report compiler. Reads Loki via LogQL, renders yes
 | Stdout JSON line gets truncated at high frequency | Existing log calls don't hit this; trace lines are similar size. Monitor after Phase 1. |
 | `decide_day_type` evaluation-tape addition breaks an existing caller that does dict-key iteration | The change is dict-mutation (adds `reasons["evaluation_tape"]`); no return-shape change, no key removed, no existing key's type changed. Pin a test that verifies all existing `reasons` keys are still present and same-typed. |
 | Verbose mode enabled in experiment by accident inflates Loki cardinality | Compose env defaults `false`; Pi `.env` only sets `true` for commissioning window; OSF-locked commit hash records the default and the operator-set state at experiment start. |
-| Rule-code touch lands at OSF commit hash | Both touches (`decide_day_type` dict mutation, `compute_price_aware_precool_window_with_trace` wrapper) land before Phase 5 ships; original functions remain bit-identical; OSF filing happens after this plan completes; the prereg's frozen commit hash is the post-merge commit. |
+| Rule-code touch lands at OSF commit hash | Both touches (`decide_day_type` dict mutation in Phase 5; `should_add_price_aware_precool` + `compute_price_aware_precool_window` `trace_reason` kwarg in Phase 4) land before Phase 5 ships; both are additive and behaviour-identical when the new kwarg is not passed; OSF filing happens after this plan completes; the prereg's frozen commit hash is the post-merge commit. |
 | `tick_id` accidentally promoted to a Loki label | Phase 1 acceptance includes an assertion against `promtail/config.yml` that no pipeline stage lifts `tick_id`. Re-check on subsequent phases when adding new fields. |
 | `arm` field on trace lines diverges from the canonical `hvac.arm_mode` rows / `arm_calendar` semantics | Use `arm_calendar.current_arm_at(now_ct)` as the single source of truth — same call `write_arm_mode` makes. Literal `"A"` / `"B"` when inside the calendar window; field omitted when it returns `None`. Phase 1 acceptance test (`test_arm_field_present_only_inside_calendar_window`) pins the semantics against `current_arm_at` directly, not against `SCHEDULER_MODE`. |
 

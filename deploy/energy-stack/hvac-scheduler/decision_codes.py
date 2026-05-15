@@ -6,8 +6,8 @@ added in subsequent phases without breaking downstream Loki / LogQL
 consumers.
 
 Phase 1 shipped `PriceOverlayCode`. Phase 2 shipped `LayerResolutionCode`.
-Phase 3 (this PR) adds `SupervisorCode`. Phases 4-5 will extend with
-`PrecoolCode` and `DayTypeCode`.
+Phase 3 shipped `SupervisorCode`. Phase 4 (this PR) adds `PrecoolCode`.
+Phase 5 will extend with `DayTypeCode`.
 
 The codes are derived from caller-observable state (prev tier, new tier,
 current price, stale-feed flag) — NOT from the internal price-overlay
@@ -86,3 +86,44 @@ class SupervisorCode(str, Enum):
     CLAMPED_HEAT_CEILING = "SUPERVISOR_CLAMPED_HEAT_CEILING"
     CLAMPED_MULTIPLE = "SUPERVISOR_CLAMPED_MULTIPLE"
     EMERGENCY_OVERHEAT = "SUPERVISOR_EMERGENCY_OVERHEAT"
+
+
+class PrecoolCode(str, Enum):
+    """Reason codes for the §7 day-ahead price-aware precool decision,
+    classified at the caller side from the wrapper's output.
+
+    The shipped enum reflects actual code branches in
+    `compute_price_aware_precool_window` + `should_add_price_aware_precool`:
+
+      * SELECTED — happy path, returns a (hour_ct, depth_f) window.
+      * REJECTED_NO_DA_LMP_DATA — day-ahead LMP fetch returned None.
+      * REJECTED_NO_FORECAST — tomorrow's NWS forecast row missing.
+      * REJECTED_DA_LMP_INCOMPLETE — DA vector has < 24 hours.
+      * REJECTED_NO_CHEAP_WINDOW — no consecutive cheap-hour window in
+        the 06:00-15:00 search range.
+      * REJECTED_NO_SPIKE_WINDOW_AFTER_GAP — no evening spike-hour
+        window after the minimum gap from the chosen cheap window.
+
+    Plan-aspirational codes dropped (no matching branch in current
+    production code):
+      * GAP_TOO_SHORT — collapsed into NO_SPIKE_WINDOW_AFTER_GAP. The
+        gap requirement is enforced by starting the spike search after
+        `cheap_start + MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS`; "no spike
+        beyond the gap" is the only observable outcome from the caller.
+      * DAY_TYPE_NOT_ELIGIBLE — `compute_price_aware_precool_window` is
+        called at 21:00 regardless of the decided day_type. No
+        day-type gate exists in the function.
+      * ALREADY_DEEPER_VIA_HOT_STREAK — that interaction is handled by
+        `merge_same_hour_actions_deepest_wins` AFTER selection, not as
+        a precool rejection inside the §7 path.
+
+    Removing these from the shipped enum matches the Phase 1/3
+    reconciliation pattern: codes are append-only / OSF-bound, so the
+    enum should describe production behaviour, not aspiration."""
+
+    SELECTED = "PRECOOL_SELECTED"
+    REJECTED_NO_DA_LMP_DATA = "PRECOOL_REJECTED_NO_DA_LMP_DATA"
+    REJECTED_NO_FORECAST = "PRECOOL_REJECTED_NO_FORECAST"
+    REJECTED_DA_LMP_INCOMPLETE = "PRECOOL_REJECTED_DA_LMP_INCOMPLETE"
+    REJECTED_NO_CHEAP_WINDOW = "PRECOOL_REJECTED_NO_CHEAP_WINDOW"
+    REJECTED_NO_SPIKE_WINDOW_AFTER_GAP = "PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP"
