@@ -439,9 +439,187 @@ class TestPhase2LayerResolution:
 
 
 class TestPhase3Supervisor:
-    @pytest.mark.xfail(strict=True, reason="Phase 3 not yet implemented")
-    def test_supervisor_eval_emits_every_invocation(self):
-        pytest.fail("Phase 3 — supervisor trace emission not yet wired")
+    """Trace fires once per `validate_setpoints` invocation (NOT per
+    scheduler tick; supervisor only runs when a layer resolution
+    proposes a setpoint). All 7 reason codes covered by directly driving
+    `_trace_supervisor` with the supervisor's own outputs; one
+    integration test via `_push_layer_change_mid_period` confirms the
+    call-site wire-up; failure-isolation parallels Phase 1/2."""
+
+    @pytest.mark.parametrize(
+        "scenario_id,proposed_cool,proposed_heat,snapshot,"
+        "expected_reason,expected_decision,expected_level,expected_indoor_avail",
+        [
+            # Approved: in-range setpoints, indoor temp present.
+            ("approved",
+             78, 68, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_APPROVED", "approved", "debug", True),
+            # Approved, no indoor temp signal: supervisor falls through
+            # to clamp check (all in-range) -> approved. indoor_temp_available
+            # surfaces the diagnostic.
+            ("approved_no_indoor_temp",
+             78, 68, {},
+             "SUPERVISOR_APPROVED", "approved", "debug", False),
+            # Cool clamped UP from below floor (60 -> 65).
+            ("clamped_cool_floor",
+             60, 68, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_CLAMPED_COOL_FLOOR", "clamped", "info", True),
+            # Cool clamped DOWN from above ceiling (90 -> 86).
+            ("clamped_cool_ceiling",
+             90, 68, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_CLAMPED_COOL_CEILING", "clamped", "info", True),
+            # Heat clamped UP from below floor (50 -> 55).
+            ("clamped_heat_floor",
+             78, 50, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_CLAMPED_HEAT_FLOOR", "clamped", "info", True),
+            # Heat clamped DOWN from above ceiling (80 -> 75).
+            ("clamped_heat_ceiling",
+             78, 80, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_CLAMPED_HEAT_CEILING", "clamped", "info", True),
+            # Both axes clamped simultaneously.
+            ("clamped_multiple",
+             90, 50, {"indoor_temp_f": 72.0},
+             "SUPERVISOR_CLAMPED_MULTIPLE", "clamped", "info", True),
+            # Emergency overheat: indoor >= 86 trumps everything.
+            ("emergency_overheat",
+             85, 68, {"indoor_temp_f": 87.0},
+             "SUPERVISOR_EMERGENCY_OVERHEAT", "emergency", "info", True),
+        ],
+    )
+    def test_supervisor_eval_emits_every_invocation(
+        self, capsys, monkeypatch,
+        scenario_id, proposed_cool, proposed_heat, snapshot,
+        expected_reason, expected_decision, expected_level, expected_indoor_avail,
+    ):
+        """Drive validate_setpoints + _trace_supervisor for each of the
+        7 reason codes (8 scenarios including approved-no-indoor-temp).
+        Asserts reason_code, decision, level, and indoor_temp_available
+        field present on every trace line."""
+        from app import _trace_supervisor
+        from safety_supervisor import validate_setpoints
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+
+        now_ct = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+        decision = validate_setpoints(proposed_cool, proposed_heat, snapshot)
+        _trace_supervisor(
+            tick_id=f"tick_{scenario_id}", now_ct=now_ct,
+            proposed_cool_f=proposed_cool, proposed_heat_f=proposed_heat,
+            snapshot=snapshot, decision=decision,
+        )
+
+        traces = _parse_trace_lines(capsys.readouterr().out, SUPERVISOR_EVENT)
+        assert len(traces) == 1, f"{scenario_id}: expected 1 trace, got {len(traces)}"
+        t = traces[0]
+        assert t["reason_code"] == expected_reason, scenario_id
+        assert t["decision"] == expected_decision, scenario_id
+        assert t["level"] == expected_level, scenario_id
+        assert t["indoor_temp_available"] is expected_indoor_avail, scenario_id
+        assert t["tick_id"] == f"tick_{scenario_id}", scenario_id
+        # Proposed values always preserved on the trace.
+        assert t["proposed_cool_f"] == proposed_cool
+        assert t["proposed_heat_f"] == proposed_heat
+        # Final values match the supervisor decision.
+        assert t["final_cool_f"] == decision.cool_setpoint_f
+        assert t["final_heat_f"] == decision.heat_setpoint_f
+
+    @pytest.mark.asyncio
+    async def test_supervisor_trace_fires_from_mid_period_repush(self, capsys, monkeypatch):
+        """Integration: confirm the call-site wire-up actually emits a
+        supervisor trace when `_push_layer_change_mid_period` runs, and
+        that the trace shares `tick_id` with the layer_resolution trace
+        from the same tick."""
+        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+        cfg = _make_schedule_check_cfg()
+        c4, _ = _mock_c4_client()
+        write_api = MagicMock()
+        firing = FiringState(
+            last_schedule_cool_f=78,
+            last_action_label="COAST",
+            last_pushed_effective_cool_f=None,
+        )
+        layer_inputs = LayerInputs(
+            price_tier_name="normal", price_offset_f=0, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=5.0,
+            fivecp_active=False, fivecp_scopes_fired=(),
+            fivecp_load_mw=0.0, fivecp_derivative=0.0,
+            fivecp_forecast_peak=0.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", layer_inputs,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local, tick_id="tick_integration",
+        )
+
+        out = capsys.readouterr().out
+        sup_traces = _parse_trace_lines(out, SUPERVISOR_EVENT)
+        layer_traces = _parse_trace_lines(out, LAYER_RESOLUTION_EVENT)
+
+        assert len(sup_traces) == 1, "supervisor trace must fire on mid-period repush"
+        assert len(layer_traces) == 1, "layer_resolution trace must also fire (Phase 2)"
+        assert sup_traces[0]["tick_id"] == "tick_integration"
+        assert layer_traces[0]["tick_id"] == "tick_integration"
+        # The mid-period repush proposes layer_resolution.effective_cool_f
+        # (78 = schedule, no overlay) with HEAT_SETPOINT_FLOOR_F=65 heat.
+        assert sup_traces[0]["proposed_cool_f"] == 78
+        assert sup_traces[0]["proposed_heat_f"] == 65
+
+    @pytest.mark.asyncio
+    async def test_supervisor_trace_is_failure_isolated(self, capsys, monkeypatch):
+        """Patching `app.log` to raise on `decision_trace.supervisor`
+        events must NOT propagate into the caller. The mid-period push
+        + thermostat-write path continues to execute."""
+        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        import app as app_mod
+        monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
+
+        original_log = app_mod.log
+        def _maybe_raise(level, msg, **fields):
+            if isinstance(msg, str) and msg == SUPERVISOR_EVENT:
+                raise RuntimeError("synthetic supervisor trace failure")
+            return original_log(level, msg, **fields)
+        monkeypatch.setattr(app_mod, "log", _maybe_raise)
+
+        cfg = _make_schedule_check_cfg()
+        c4, _ = _mock_c4_client()
+        write_api = MagicMock()
+        firing = FiringState(
+            last_schedule_cool_f=78,
+            last_action_label="COAST",
+            last_pushed_effective_cool_f=None,
+        )
+        layer_inputs = LayerInputs(
+            price_tier_name="normal", price_offset_f=0, price_override_f=None,
+            price_prev_tier="normal", current_price_cents=5.0,
+            fivecp_active=False, fivecp_scopes_fired=(),
+            fivecp_load_mw=0.0, fivecp_derivative=0.0,
+            fivecp_forecast_peak=0.0, fivecp_season_5th_mw=20375.0,
+            fivecp_data_available=True,
+        )
+        now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        # Must not raise.
+        await _push_layer_change_mid_period(
+            cfg, c4, write_api, firing, "NORMAL", layer_inputs,
+            today_dewpoint_f=60.0, override_note="",
+            now_local=now_local, tick_id="tick_sup_iso",
+        )
+
+        # Write path completed despite trace fault.
+        assert c4.get_climate.await_count >= 1, (
+            "read_thermostat_snapshot must still run under trace fault"
+        )
+        action_rows = [
+            c for c in write_api.write.call_args_list
+            if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
+        ]
+        assert len(action_rows) >= 1, (
+            "hvac.actions write must still happen under trace fault"
+        )
+        assert firing.last_pushed_effective_cool_f == 78
 
 
 # ---- Phase 4 — §7 precool rejection reason -------------------------------

@@ -112,7 +112,7 @@ from price_overlay import (
     offset_and_override_for_tier,
 )
 from safety_supervisor import validate_setpoints
-from decision_codes import LayerResolutionCode, PriceOverlayCode
+from decision_codes import LayerResolutionCode, PriceOverlayCode, SupervisorCode
 
 
 # ---- Config ----------------------------------------------------------------
@@ -434,6 +434,86 @@ def _classify_layer_resolution(
     # the three. Fall back to SCHEDULE_WINS rather than raise from a
     # diagnostic helper.
     return LayerResolutionCode.SCHEDULE_WINS, "schedule"
+
+
+def _classify_supervisor(
+    decision: "SupervisorDecision",
+    proposed_cool_f: int,
+    proposed_heat_f: int,
+) -> SupervisorCode:
+    """Return reason_code for one validate_setpoints call from observable
+    state (proposed setpoints + decision dataclass).
+
+    Mirrors the supervisor's precedence: emergency > clamp > approved.
+    For clamps, distinguishes which axis(es) and direction(s) were
+    violated:
+      * cool clamped UP (from below 65) -> CLAMPED_COOL_FLOOR
+      * cool clamped DOWN (from above 86) -> CLAMPED_COOL_CEILING
+      * heat clamped UP (from below 55) -> CLAMPED_HEAT_FLOOR
+      * heat clamped DOWN (from above 75) -> CLAMPED_HEAT_CEILING
+      * both axes clamped -> CLAMPED_MULTIPLE
+    """
+    if decision.decision == "approved":
+        return SupervisorCode.APPROVED
+    if decision.decision == "emergency":
+        return SupervisorCode.EMERGENCY_OVERHEAT
+    # decision.decision == "clamped"
+    cool_clamped = decision.cool_setpoint_f != proposed_cool_f
+    heat_clamped = decision.heat_setpoint_f != proposed_heat_f
+    if cool_clamped and heat_clamped:
+        return SupervisorCode.CLAMPED_MULTIPLE
+    if cool_clamped:
+        return (
+            SupervisorCode.CLAMPED_COOL_FLOOR
+            if decision.cool_setpoint_f > proposed_cool_f
+            else SupervisorCode.CLAMPED_COOL_CEILING
+        )
+    if heat_clamped:
+        return (
+            SupervisorCode.CLAMPED_HEAT_FLOOR
+            if decision.heat_setpoint_f > proposed_heat_f
+            else SupervisorCode.CLAMPED_HEAT_CEILING
+        )
+    # Defensive fallback (should be unreachable): clamp decision with
+    # neither axis showing a difference. Don't raise from a diagnostic
+    # helper; return APPROVED so the trace doesn't lie about the
+    # supervisor's intent (it WOULD have approved this).
+    return SupervisorCode.APPROVED
+
+
+def _trace_supervisor(
+    *,
+    tick_id: str, now_ct: datetime,
+    proposed_cool_f: int, proposed_heat_f: int,
+    snapshot: dict, decision: "SupervisorDecision",
+) -> None:
+    """Emit one `decision_trace.supervisor` line per `validate_setpoints`
+    call. Trace cadence is per-INVOCATION (not per scheduler tick) —
+    supervisor only runs when a layer resolution proposes a setpoint to
+    apply. `indoor_temp_available` surfaces the diagnostic case where
+    the supervisor approved without an indoor-temp signal (safety floor
+    can't apply emergency override)."""
+    indoor_f = snapshot.get("indoor_temp_f")
+    indoor_temp_available = isinstance(indoor_f, (int, float))
+    reason_code = _classify_supervisor(decision, proposed_cool_f, proposed_heat_f)
+    # info on any non-approved decision (operator-visible event); debug on
+    # approved (suppressed unless verbose=true).
+    level = "info" if decision.decision != "approved" else "debug"
+    _trace(
+        "decision_trace.supervisor",
+        level=level,
+        tick_id=tick_id,
+        now_ct=now_ct,
+        proposed_cool_f=int(proposed_cool_f),
+        proposed_heat_f=int(proposed_heat_f),
+        indoor_temp_f=(float(indoor_f) if indoor_temp_available else None),
+        indoor_temp_available=indoor_temp_available,
+        decision=decision.decision,
+        reason_code=reason_code.value,
+        supervisor_reason=decision.reason,
+        final_cool_f=int(decision.cool_setpoint_f),
+        final_heat_f=int(decision.heat_setpoint_f),
+    )
 
 
 def _trace_layer_resolution(
@@ -2289,6 +2369,12 @@ async def _push_layer_change_mid_period(
     decision = validate_setpoints(
         layer_resolution.effective_cool_f, HEAT_SETPOINT_FLOOR_F, snapshot,
     )
+    _trace_supervisor(
+        tick_id=tick_id, now_ct=now_local,
+        proposed_cool_f=layer_resolution.effective_cool_f,
+        proposed_heat_f=HEAT_SETPOINT_FLOOR_F,
+        snapshot=snapshot, decision=decision,
+    )
     sup_cool = decision.cool_setpoint_f
     sup_heat = decision.heat_setpoint_f
     sup_decision = decision.decision
@@ -2530,6 +2616,12 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             cool_to_apply = layer_resolution.effective_cool_f
 
             decision = validate_setpoints(cool_to_apply, action.heat_setpoint_f, snapshot)
+            _trace_supervisor(
+                tick_id=tick_id, now_ct=now_local,
+                proposed_cool_f=cool_to_apply,
+                proposed_heat_f=action.heat_setpoint_f,
+                snapshot=snapshot, decision=decision,
+            )
             sup_cool = decision.cool_setpoint_f
             sup_heat = decision.heat_setpoint_f
             sup_decision = decision.decision
