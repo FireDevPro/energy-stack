@@ -95,3 +95,46 @@ def test_parse_trace_lines_skips_non_json(loki_url):
     assert len(parsed) == 2
     assert parsed[0]["msg"] == "ok"
     assert parsed[1]["msg"] == "also ok"
+
+
+def test_fetch_decision_traces_filters_by_event_name(monkeypatch, loki_url):
+    """fetch_decision_traces queries with the right LogQL filter for an
+    event_name and time range, then parses the response."""
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["params"] = params
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.day_type_decision", '
+                             '"decision_for_date": "2026-05-15"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    client = LokiClient(loki_url)
+    events = client.fetch_decision_traces(
+        event_name="day_type_decision",
+        start="2026-05-15T00:00:00Z",
+        end="2026-05-15T23:59:59Z",
+    )
+
+    assert 'decision_trace.day_type_decision' in captured["params"]["query"]
+    assert '{container="hvac-scheduler"}' in captured["params"]["query"]
+    assert len(events) == 1
+    assert events[0]["decision_for_date"] == "2026-05-15"

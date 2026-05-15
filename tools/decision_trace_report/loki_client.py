@@ -51,3 +51,24 @@ class LokiClient:
                 parsed["_loki_ts_ns"] = int(ts_ns)
                 out.append(parsed)
         return out
+
+    def fetch_decision_traces(
+        self,
+        event_name: str,
+        start: str,
+        end: str,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Pull decision_trace.<event_name> log lines from Loki over a
+        time range. Returns the JSON-parsed events sorted by `ts`.
+
+        `event_name` is the suffix after `decision_trace.` (e.g.,
+        `"day_type_decision"`, `"price_overlay_eval"`).
+        """
+        full_event = f"decision_trace.{event_name}"
+        query = f'{{container="hvac-scheduler"}} |= "{full_event}"'
+        raw = self.query_range(query, start, end, limit=limit)
+        events = self.parse_trace_lines(raw)
+        # Sort by trace's own `ts` if present, else Loki ingest time.
+        events.sort(key=lambda e: e.get("ts", "") or e["_loki_ts_ns"])
+        return events
