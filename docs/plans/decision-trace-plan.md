@@ -1,7 +1,7 @@
 ---
 date: 2026-05-14
 owner: chris
-status: draft
+status: complete-pending-merge
 role-label: chris
 ---
 
@@ -176,15 +176,27 @@ Today: `decide_day_type` returns `(day_type, reasons)` with `reason: str` carryi
 
 Changes:
 
-- `decision_codes.py` extended for each rule arm. `DAY_TYPE_HOT_high_f_ge_85`, `DAY_TYPE_HOT_apparent_max_ge_90`, `DAY_TYPE_HOT_STREAK_DAY1_day2_ge_85`, `DAY_TYPE_NORMAL_high_f_75_to_84`, `DAY_TYPE_MILD_high_f_lt_75`, etc. (Full list locked when writing the function.)
-- `decide_day_type` keeps its `(day_type, reasons)` return signature. The function mutates the existing `reasons` dict to add `reasons["evaluation_tape"] = [...]` — a list of `{rule, threshold, actual, fired: bool, reason_code}` dicts, one per evaluated branch. Existing callers that consume `reasons["high_f"]`, `reasons["reason"]`, etc. are unaffected.
-- New trace at the call site in `app.py:run_decision` and `app.py:run_decision_revisit`. Fields: `tick_id`, `scheduler_mode`, `arm` (when `current_arm_at(now_ct)` returns A/B), `decision_for_date`, `winning_day_type`, `evaluation_tape` (read from `reasons["evaluation_tape"]`, inlined into the log line). Level `info`.
+- `decision_codes.py` extended with `DayTypeCode` enum — 9 values reflecting the actual rule branches in `_classify_with_tape` (the Phase 5 helper) + the streak escalation rules in `decide_day_type`:
+  - `HOT_HEAT_ADVISORY`, `HOT_HIGH_GE_85`, `HOT_APPARENT_GE_90` — the three single-day HOT triggers, in precedence order
+  - `HOT_STREAK_MULTI_DAY`, `HOT_STREAK_5CP_RISK` — the two HOT_STREAK_DAY1 escalation paths
+  - `NORMAL_HIGH_75_TO_84`, `NORMAL_MISSING_TEMPS_FALLBACK`, `NORMAL_NO_FORECAST_FALLBACK` — the three NORMAL paths (winning, P2.7 missing-temps safe default, no-forecast fallback)
+  - `MILD_HIGH_LT_75` — the MILD default
+- New helper `_classify_with_tape(forecast) -> (day_type, list[tape_entry])` in `app.py`. Same rule precedence as the existing `_classify_one_day`, but additionally records each evaluated rule as a tape entry with `{rule, threshold, actual, fired: bool, reason_code}`. `_classify_one_day` itself is unchanged (other callers — day2 classification — keep their existing path).
+- `decide_day_type` keeps its `(day_type, reasons)` return signature. The function uses `_classify_with_tape` internally and appends streak-path entries (`streak_multi_day`, `streak_5cp_risk`) when the base classification is HOT. The final tape is stored in `reasons["evaluation_tape"]`. All existing keys (`high_f`, `apparent_max_f`, `is_heat_advisory`, `max_dewpoint_f`, `alert_summary`, `reason`, plus conditional streak fields) preserved with same types — verified by `test_existing_decide_day_type_callers_unchanged`.
+- New `_trace_day_type(...)` emission helper. Wired at `app.py:run_decision` AND `app.py:run_decision_revisit`. Fields: `tick_id`, `scheduler_mode`, `arm` (when applicable), `decision_for_date`, `winning_day_type`, `evaluation_tape` (inlined), `winning_reason`, plus the scalar fields from the existing reasons dict for self-contained forensics. Level `info`. `run_decision` reuses the same `tick_id` as the §7 precool trace (Phase 4) so both 21:00 traces correlate; `run_decision_revisit` generates a fresh `tick_id` per revisit (06:00 + 11:00 CT).
+- Third `decide_day_type` call site at `fetch_today_decision` (recovery / cold-start path) is NOT wired with a trace in Phase 5. The plan's "run_decision + run_decision_revisit" scope holds. Recovery path observability is a known gap; can be added in a follow-up if commissioning surfaces a need.
 
 Acceptance:
 
-- `test_day_type_negative_branches_in_trace` — drive one input that lands NORMAL but is close to HOT (high_f=84, apparent=88); assert `reasons["evaluation_tape"]` contains the HOT branch evaluated and rejected with the correct threshold and actual value, and the trace line carries it.
-- `test_existing_decide_day_type_callers_unchanged` — pin tests that read `reasons["high_f"]`, `reasons["reason"]`, etc. continue to pass without modification (regression guard against an accidental return-shape change).
-- `test_causal_chain_reconstructable_from_log` (the chain test mentioned in the acceptance section) — xfail marker removed: one synthetic full-tick run produces a connected chain of decision_trace.* lines sharing a tick_id, covering price overlay → layer resolution → supervisor → would-push.
+- `test_day_type_negative_branches_in_trace` — input lands NORMAL but is close to HOT (high_f=84, apparent=88); asserts HOT branches evaluated and rejected in the tape with correct thresholds + actuals, and NORMAL branch fired.
+- `test_day_type_streak_branches_in_tape` — HOT day + day2=HOT produces tape with both base HOT trigger fired AND streak_multi_day fired AND short-circuit: 5cp_risk rule NOT evaluated (multi-day path wins first).
+- `test_day_type_no_forecast_fallback_tape` — None forecast yields single-entry tape with NORMAL_NO_FORECAST_FALLBACK fired; existing `reason` + `fallback` keys preserved.
+- `test_existing_decide_day_type_callers_unchanged` — regression guard pinning every existing reasons-dict key with its expected type.
+- `test_trace_day_type_emits_trace_line` — drives `_trace_day_type` directly; asserts well-formed `decision_trace.day_type_decision` line with inlined evaluation_tape + scalar fields.
+- `test_day_type_trace_is_failure_isolated` — fault-injects `app.log` on day_type events; asserts no exception propagates.
+- `test_causal_chain_reconstructable_from_log` — **xfail marker removed**. Drives one synthetic scheduler tick (`_evaluate_layer_inputs` then `_push_layer_change_mid_period`, both threaded with the same `tick_id`); asserts every emitted `decision_trace.*` line shares that `tick_id` and all three event types (price_overlay_eval, layer_resolution, supervisor) appear at least once.
+
+**With this PR merged the feature is complete per AGENTS.md outside-in TDD rule + memory `feedback-outside-in-xfail-not-skip`**: the feature-level acceptance test passes against the real implementation with zero scaffolding, and zero xfail markers remain on `test_decision_trace.py`.
 
 ## Phase 6 (deferred — not part of this plan)
 
