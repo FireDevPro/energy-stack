@@ -40,3 +40,7 @@ analysis/exports/
 
 # Firecrawl tool cache (reference PDFs etc; local-only)
 .firecrawl/
+
+# Decision-trace commissioning reports (transient artifacts)
+docs/test-reports/*.md
+!docs/test-reports/README.md
