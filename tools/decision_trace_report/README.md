@@ -55,3 +55,28 @@ python -m pytest tools/decision_trace_report/tests/
 ```
 
 No live HTTP. All Loki + InfluxDB + Telegram calls are mocked.
+
+## Daily automation — Windows Task Scheduler
+
+Goal: render yesterday's report every morning at 08:00 CT without manual
+invocation.
+
+1. Open Task Scheduler (Win+R → `taskschd.msc`).
+2. Create Task → name: `decision-trace-report-daily`.
+3. Trigger: Daily at 08:00. Synchronize across time zones: off.
+4. Action: Start a program.
+   - Program: `python.exe` (or the full path to your venv's python)
+   - Arguments: `-m tools.decision_trace_report`
+   - Start in: `D:\Projects\energy-proxy`
+5. Conditions: uncheck "Start the task only if the computer is on AC power"
+   if you want it to run on battery (desktop = AC always).
+6. Settings: tick "Run task as soon as possible after a scheduled start
+   is missed" so a brief reboot at 08:00 doesn't lose that day's run.
+7. Environment variables: set `LOKI_URL`, `INFLUXDB_URL`, `INFLUXDB_TOKEN`,
+   `INFLUXDB_ORG`, `INFLUXDB_BUCKET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+   either as system env vars OR put them in a `.env` file and use
+   `python -m tools.decision_trace_report --env-file C:\path\to\.env`
+   as the action's arguments instead.
+
+To verify: right-click the task → Run. Wait ~30s. Check
+`D:\Projects\energy-proxy\docs\test-reports\` for the new file.
