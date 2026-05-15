@@ -655,6 +655,158 @@ git add tools/decision_trace_report/loki_client.py tools/decision_trace_report/t
 git commit -m "feat(report-tool): LokiClient.fetch_decision_traces convenience method"
 ```
 
+### Task 1.4: LokiClient.count_reason_codes — for §5 coverage scorecard
+
+**Files:**
+- Modify: `tools/decision_trace_report/loki_client.py`
+- Modify: `tools/decision_trace_report/tests/test_loki_client.py`
+
+`§5 Coverage scorecard` needs the live count of every `reason_code` value seen in `decision_trace.*` events over (a) cumulative since-trace-started and (b) the last 7 days. LogQL's JSON parsing for grouped aggregation is awkward; doing it client-side after `parse_trace_lines` is straightforward.
+
+- [ ] **Step 1: Write failing test**
+
+Append to `test_loki_client.py`:
+
+```python
+def test_count_reason_codes_aggregates_across_events(monkeypatch, loki_url):
+    """count_reason_codes queries all decision_trace.* events in a time
+    range and returns a dict mapping reason_code -> count."""
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["params"] = params
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.price_overlay_eval", '
+                             '"reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"}'),
+                            ("1779328860000000000",
+                             '{"msg": "decision_trace.price_overlay_eval", '
+                             '"reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"}'),
+                            ("1779328920000000000",
+                             '{"msg": "decision_trace.supervisor", '
+                             '"reason_code": "SUPERVISOR_APPROVED"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    counts = client.count_reason_codes(
+        start="2026-05-08T00:00:00Z",
+        end="2026-05-15T00:00:00Z",
+    )
+
+    # Query matches `decision_trace.` events broadly
+    assert "decision_trace" in captured["params"]["query"]
+    assert counts["PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"] == 2
+    assert counts["SUPERVISOR_APPROVED"] == 1
+
+
+def test_count_reason_codes_ignores_events_without_reason_code(monkeypatch, loki_url):
+    """Some trace lines may not carry reason_code (defensive); skip them
+    rather than counting blank as a 'code'."""
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.startup"}'),  # no reason_code
+                            ("1779328860000000000",
+                             '{"msg": "decision_trace.supervisor", '
+                             '"reason_code": "SUPERVISOR_APPROVED"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+    counts = client.count_reason_codes(
+        start="2026-05-08T00:00:00Z",
+        end="2026-05-15T00:00:00Z",
+    )
+    assert counts == {"SUPERVISOR_APPROVED": 1}
+```
+
+- [ ] **Step 2: Run to verify fail**
+
+```
+python -m pytest tools/decision_trace_report/tests/test_loki_client.py::test_count_reason_codes_aggregates_across_events tools/decision_trace_report/tests/test_loki_client.py::test_count_reason_codes_ignores_events_without_reason_code -v
+```
+Expected: 2 FAIL on missing method.
+
+- [ ] **Step 3: Implement**
+
+Append to `loki_client.py`:
+
+```python
+    def count_reason_codes(
+        self,
+        start: str,
+        end: str,
+        limit: int = 50000,
+    ) -> dict[str, int]:
+        """Count occurrences of each `reason_code` value across
+        `decision_trace.*` events in `[start, end]`.
+
+        Returns `{reason_code: count}`. Events without a `reason_code`
+        field are ignored (some decision_trace.* events may not carry
+        one — defensive). Used by §5 coverage scorecard.
+
+        `limit` defaults to 50k because verbose commissioning emits
+        ~3500 lines/day and a 30-day cumulative window is ~100k. Loki
+        capped at its own server limit if 50k is exceeded.
+        """
+        query = '{container="hvac-scheduler"} |= "decision_trace"'
+        raw = self.query_range(query, start, end, limit=limit)
+        events = self.parse_trace_lines(raw)
+        counts: dict[str, int] = {}
+        for event in events:
+            code = event.get("reason_code")
+            if not isinstance(code, str):
+                continue
+            counts[code] = counts.get(code, 0) + 1
+        return counts
+```
+
+- [ ] **Step 4: Verify**
+
+```
+python -m pytest tools/decision_trace_report/tests/test_loki_client.py -v
+```
+Expected: 6 PASSED (4 prior + 2 new).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/decision_trace_report/loki_client.py tools/decision_trace_report/tests/test_loki_client.py
+git commit -m "feat(report-tool): LokiClient.count_reason_codes for §5 coverage"
+```
+
 ---
 
 ## Phase 2 — InfluxDB client
@@ -824,16 +976,28 @@ def test_fetch_precool_window_filters_by_target_date(influx_url):
     assert 'r.target_date == "2026-05-15"' in flux
 
 
-def test_fetch_hvac_actions_for_ct_day(influx_url):
+def test_fetch_hvac_actions_for_ct_day_cdt(influx_url):
+    """Summer (CDT, UTC-5): CT day 2026-05-15 → UTC [05:00 May 15, 05:00 May 16)."""
     fake_query_api = MagicMock()
     fake_query_api.query.return_value = []
     client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
     client.fetch_hvac_actions("2026-05-15")
     flux = fake_query_api.query.call_args[0][0]
     assert 'r._measurement == "hvac.actions"' in flux
-    # CT day 2026-05-15 spans UTC 05:00 May 15 to UTC 05:00 May 16 in CDT.
     assert "2026-05-15T05:00:00Z" in flux
     assert "2026-05-16T05:00:00Z" in flux
+
+
+def test_fetch_hvac_actions_for_ct_day_cst(influx_url):
+    """Winter (CST, UTC-6): CT day 2026-01-15 → UTC [06:00 Jan 15, 06:00 Jan 16).
+    Proves the tz arithmetic isn't hardcoded to CDT — DST hygiene check."""
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = []
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    client.fetch_hvac_actions("2026-01-15")
+    flux = fake_query_api.query.call_args[0][0]
+    assert "2026-01-15T06:00:00Z" in flux
+    assert "2026-01-16T06:00:00Z" in flux
 
 
 def test_fetch_comed_prices_spikes_only(influx_url):
@@ -1426,6 +1590,34 @@ def test_event_feed_uses_expected_next_fire_window():
     ]
     out = render(now=now, feeds=feeds)
     assert "✅" in out
+
+
+def test_missing_feed_renders_loudly_not_silently():
+    """A feed with last_write=None (never seen) must NOT disappear from
+    the report. Surface it as 'missing' and count it toward stale —
+    silent-feed disappearance is exactly the kind of commissioning
+    failure the report exists to catch."""
+    from tools.decision_trace_report.sections.feed_health import count_stale
+    now = datetime(2026, 5, 16, 8, 0, tzinfo=timezone.utc)
+    feeds = [
+        {
+            "name": "pjm.metered_load",
+            "kind": "event",
+            "last_write": None,  # never written / poller never ran
+            "expected_fire_description": "Sunday 02:00 CT weekly",
+            "last_expected_fire_utc": datetime(2026, 5, 11, 7, 0, tzinfo=timezone.utc),
+            "grace": timedelta(hours=2),
+        },
+    ]
+    out = render(now=now, feeds=feeds)
+    # Feed name MUST appear — not silently dropped
+    assert "pjm.metered_load" in out
+    # Some visible "missing" indicator
+    assert ("missing" in out.lower()
+            or "never seen" in out.lower()
+            or "🔴" in out)
+    # Counts as stale for anomaly summary
+    assert count_stale(now=now, feeds=feeds) == 1
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -1466,7 +1658,13 @@ def classify_age(age: timedelta, *, warn: timedelta, stale: timedelta) -> Status
 
 
 def _classify_feed(now: datetime, feed: dict) -> tuple[Status, str]:
-    """Return (status, age_or_freshness_label) for one feed dict."""
+    """Return (status, age_or_freshness_label) for one feed dict.
+
+    A missing feed (last_write=None) is ALWAYS stale — surfaced loudly.
+    The report is a commissioning monitor; a poller that never wrote
+    is exactly the failure we must catch, not silently filter."""
+    if feed.get("last_write") is None:
+        return "stale", "missing — no data found in Influx"
     if feed["kind"] == "continuous":
         age = now - feed["last_write"]
         status = classify_age(age, warn=feed["warn"], stale=feed["stale"])
@@ -1847,12 +2045,14 @@ def test_counts_supervisor_non_approved():
 
 def test_action_fire_reconciliation_flags_missing_influx_row():
     """An action-fire trace (non-MID_PERIOD_REPUSH action_label) must
-    have a matching hvac.actions row. Missing -> anomaly."""
+    have a matching hvac.actions row within +/- 2 minutes of the trace
+    ts. Missing -> anomaly."""
+    from datetime import datetime, timezone
     layer_events = [
         {
             "msg": "decision_trace.layer_resolution",
             "tick_id": "tick_x",
-            "ts": "2026-05-15T13:00:00-05:00",
+            "ts": "2026-05-15T18:00:00+00:00",
             "action_label": "COAST",      # action-fire, NOT MID_PERIOD_REPUSH
             "effective_cool_f": 78,
         },
@@ -1860,6 +2060,62 @@ def test_action_fire_reconciliation_flags_missing_influx_row():
     hvac_actions = []  # no row -> mismatch
     assert count_action_fire_mismatches(layer_events=layer_events,
                                           hvac_actions=hvac_actions) == 1
+
+
+def test_action_fire_matches_only_by_label_AND_nearby_timestamp():
+    """Reconciliation must match by (action_label, time-window). A
+    COAST hvac.actions row at 13:00 should NOT satisfy a COAST trace
+    event at 22:00 — one Influx row can't cover two separate firings
+    of the same label on the same day."""
+    from datetime import datetime, timezone
+    layer_events = [
+        {
+            "msg": "decision_trace.layer_resolution",
+            "tick_id": "tick_a",
+            "ts": "2026-05-15T18:00:00+00:00",  # 13:00 CT
+            "action_label": "COAST",
+            "effective_cool_f": 78,
+        },
+        {
+            "msg": "decision_trace.layer_resolution",
+            "tick_id": "tick_b",
+            "ts": "2026-05-16T03:00:00+00:00",  # 22:00 CT — second firing
+            "action_label": "COAST",
+            "effective_cool_f": 79,
+        },
+    ]
+    hvac_actions = [
+        {
+            "action_label": "COAST",
+            "_time": datetime(2026, 5, 15, 18, 0, 30, tzinfo=timezone.utc),  # matches tick_a
+        },
+        # No row for tick_b's 22:00 firing -> 1 mismatch expected
+    ]
+    assert count_action_fire_mismatches(layer_events=layer_events,
+                                          hvac_actions=hvac_actions) == 1
+
+
+def test_action_fire_matches_within_two_minute_window():
+    """Match window is +/- 2 minutes to allow for tick-fire vs Influx-
+    write latency (Pi clock skew, write batching, etc.)."""
+    from datetime import datetime, timezone
+    layer_events = [
+        {
+            "tick_id": "tick_x",
+            "ts": "2026-05-15T18:00:00+00:00",
+            "action_label": "COAST",
+            "effective_cool_f": 78,
+            "msg": "decision_trace.layer_resolution",
+        },
+    ]
+    hvac_actions = [
+        {
+            "action_label": "COAST",
+            "_time": datetime(2026, 5, 15, 18, 1, 30, tzinfo=timezone.utc),  # 90s later
+        },
+    ]
+    assert count_action_fire_mismatches(layer_events=layer_events,
+                                          hvac_actions=hvac_actions) == 0
 
 
 def test_mid_period_repush_does_not_count_as_mismatch():
@@ -1966,17 +2222,55 @@ def count_action_fire_mismatches(
     *,
     layer_events: list[dict[str, Any]],
     hvac_actions: list[dict[str, Any]],
+    match_window_s: int = 120,
 ) -> int:
     """A layer_resolution event with an action-fire label and no
-    matching hvac.actions row is a mismatch. Mid-period repushes are
-    not reconciled."""
-    action_labels_seen = {
-        a.get("action_label") for a in hvac_actions if a.get("action_label")
-    }
-    return sum(
-        1 for evt in layer_events
-        if _is_action_fire(evt) and evt["action_label"] not in action_labels_seen
-    )
+    matching hvac.actions row within +/- match_window_s seconds is
+    a mismatch. Mid-period repushes are not reconciled.
+
+    Matches by BOTH action_label AND timestamp window so that one
+    Influx row can't accidentally satisfy two separate trace events
+    sharing the same label (e.g., two COAST firings same day)."""
+    from datetime import datetime
+    from datetime import timedelta as _td
+
+    def parse_ts(s: Any) -> datetime | None:
+        if not isinstance(s, str):
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    # Build a list of (label, ts) tuples we can mark as consumed
+    available = [
+        (a.get("action_label"), a.get("_time"))
+        for a in hvac_actions
+        if a.get("action_label") and a.get("_time") is not None
+    ]
+    consumed = [False] * len(available)
+
+    n_mismatch = 0
+    window = _td(seconds=match_window_s)
+    for evt in layer_events:
+        if not _is_action_fire(evt):
+            continue
+        evt_label = evt.get("action_label")
+        evt_ts = parse_ts(evt.get("ts"))
+        if evt_ts is None or not evt_label:
+            continue
+        # Find first unconsumed action row matching label + within window
+        matched = False
+        for i, (label, row_ts) in enumerate(available):
+            if consumed[i] or label != evt_label:
+                continue
+            if abs(row_ts - evt_ts) <= window:
+                consumed[i] = True
+                matched = True
+                break
+        if not matched:
+            n_mismatch += 1
+    return n_mismatch
 ```
 
 - [ ] **Step 4: Verify**
@@ -2518,6 +2812,36 @@ def load_env_file(path: str) -> None:
             os.environ.setdefault(key, value)
 
 
+def _last_da_lmp_fire_utc(now_utc: datetime) -> datetime:
+    """Most-recent expected 17:00 CT daily publish, in UTC.
+
+    Used for §4 feed-health event-feed staleness check on
+    `pjm.lmp_da_hourly`. If `now` is BEFORE today's 17:00 CT publish,
+    last expected fire is yesterday's; otherwise today's."""
+    now_ct = now_utc.astimezone(CT)
+    today_17 = now_ct.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now_ct < today_17:
+        today_17 = today_17 - timedelta(days=1)
+    return today_17.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+
+
+def _last_metered_load_fire_utc(now_utc: datetime) -> datetime:
+    """Most-recent expected Sunday 02:00 CT weekly publish, in UTC.
+
+    Used for §4 feed-health event-feed staleness check on
+    `pjm.metered_load`."""
+    now_ct = now_utc.astimezone(CT)
+    # weekday: Monday=0 ... Sunday=6
+    days_since_sunday = (now_ct.weekday() + 1) % 7
+    last_sunday = (now_ct - timedelta(days=days_since_sunday)).replace(
+        hour=2, minute=0, second=0, microsecond=0,
+    )
+    # If we're early Sunday before 02:00, use the previous Sunday's fire
+    if last_sunday > now_ct:
+        last_sunday = last_sunday - timedelta(days=7)
+    return last_sunday.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.env_file:
@@ -2765,6 +3089,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from datetime import timedelta as td2
         now_utc = datetime.now(timezone.utc)
+        # Compute expected last-fire timestamps for event feeds, in UTC.
+        last_da_lmp_fire = _last_da_lmp_fire_utc(now_utc)
+        last_metered_load_fire = _last_metered_load_fire_utc(now_utc)
         feeds = [
             {"name": "comed.prices", "kind": "continuous",
              "last_write": influx.last_write_time("comed.prices"),
@@ -2784,9 +3111,23 @@ def main(argv: list[str] | None = None) -> int:
             {"name": "pjm.inst_load", "kind": "continuous",
              "last_write": influx.last_write_time("pjm.inst_load"),
              "warn": td2(minutes=10), "stale": td2(minutes=30)},
+            # Event feeds — spec §4 explicitly requires both. Missing
+            # last_write (None) renders as "missing" + counts as stale
+            # per feed_health._classify_feed.
+            {"name": "pjm.lmp_da_hourly", "kind": "event",
+             "last_write": influx.last_write_time("pjm.lmp_da_hourly"),
+             "expected_fire_description": "17:00 CT daily",
+             "last_expected_fire_utc": last_da_lmp_fire,
+             "grace": td2(hours=2)},
+            {"name": "pjm.metered_load", "kind": "event",
+             "last_write": influx.last_write_time("pjm.metered_load"),
+             "expected_fire_description": "Sunday 02:00 CT weekly",
+             "last_expected_fire_utc": last_metered_load_fire,
+             "grace": td2(hours=6)},
         ]
-        # Filter out feeds with no last_write so we don't crash
-        feeds = [f for f in feeds if f["last_write"] is not None]
+        # DO NOT filter feeds with last_write=None — those are surfaced
+        # as "missing" by feed_health._classify_feed. Silently dropping
+        # them is the exact failure mode this report is meant to catch.
         sections_md["feed_health"] = feed_health.render(now=now_utc, feeds=feeds)
         stale = feed_health.count_stale(now=now_utc, feeds=feeds)
     except Exception as exc:
@@ -2798,11 +3139,21 @@ def main(argv: list[str] | None = None) -> int:
     # §5 coverage scorecard
     try:
         reference_codes = decision_codes_loader.load_reference_codes()
-        # For v1, derive counts from a wide Loki query — best effort.
-        # Production: a LogQL `count_over_time` or summary expression.
-        # Defer that complexity; here we just enumerate the reference.
-        cumulative_counts: dict[str, int] = {}
-        recent_7d_counts: dict[str, int] = {}
+        # Live counts via LokiClient.count_reason_codes over two windows.
+        # 30d for cumulative is a Loki-retention-friendly proxy for
+        # "since trace started" — if retention is shorter, Loki returns
+        # what it has and the function still produces a usable summary.
+        from datetime import timedelta as td3
+        cumulative_start = (now_utc - td3(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent_start = (now_utc - td3(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cumulative_counts = loki.count_reason_codes(
+            start=cumulative_start,
+            end=end_utc,
+        )
+        recent_7d_counts = loki.count_reason_codes(
+            start=recent_start,
+            end=end_utc,
+        )
         sections_md["coverage_scorecard"] = coverage_scorecard.render(
             reference_codes=reference_codes,
             cumulative_counts=cumulative_counts,
@@ -2980,15 +3331,15 @@ Use `gh pr create --base main` with a body summarizing:
 
 **Spec coverage:**
 - §1 night-before — Task 4.3 ✅
-- §2 day-of — Task 4.4 ✅
+- §2 day-of — Task 4.4 (reconciliation hardened to label + 2-min ts window) ✅
 - §3 price-spike — Task 4.5 ✅
-- §4 feed health — Task 4.2 ✅
+- §4 feed health — Task 4.2 (loud "missing" rendering for last_write=None) ✅
 - §5 coverage scorecard — Task 4.1 ✅
-- LokiClient — Tasks 1.1–1.3 ✅
-- InfluxClient — Tasks 2.1–2.3 ✅
+- LokiClient — Tasks 1.1–1.4 (1.4 added: `count_reason_codes` for §5 live counts) ✅
+- InfluxClient — Tasks 2.1–2.3 (2.2 has CST + CDT tests for DST hygiene) ✅
 - TelegramClient — Task 3.1 ✅
 - Renderer + AnomalySummary — Task 5.1 ✅
-- CLI — Tasks 6.1–6.2 ✅
+- CLI — Tasks 6.1–6.2 (6.2 wires `count_reason_codes` to §5; adds `pjm.lmp_da_hourly` + `pjm.metered_load` event feeds; surfaces missing feeds loudly instead of filtering) ✅
 - Heartbeat content with all-green vs open-report status — Task 5.1 + 6.2 ✅
 - Gitignored `docs/test-reports/` — Task 0.2 ✅
 - `.env.example` tracked, `.env*` ignored — Task 0.1 (env-example) + repo `.gitignore` (already covers `.env*`) ✅
@@ -2996,10 +3347,19 @@ Use `gh pr create --base main` with a body summarizing:
 - No live HTTP in tests — every test uses mocks/MagicMock ✅
 - Per-section error isolation — Task 6.2 ✅
 - Exit codes (0 rendered, 1 crash, 2 invalid args) — argparse handles 2 natively; main returns 0 always; uncaught exceptions yield 1 via `sys.exit` default — sufficient ✅
+- All 8 critical feeds from spec §4 (comed.prices, nws.forecast, pjm.lmp_da_hourly, pjm.inst_load, pjm.metered_load, refoss.channel, hvac.thermostat, haven.indoor) — Task 6.2 ✅
+- §5 live counts (cumulative + last 7d) sourced from real Loki queries, NOT empty dicts — Task 6.2 ✅
+- DST hygiene — Task 2.2 includes CST + CDT cases — ✅
 
 **Placeholder scan:** no TBD / TODO / "implement later" in any task. Every step has code or a concrete command. Every reason_code referenced is from the spec's enum list.
 
-**Type consistency:** method names used consistently across tasks (e.g., `fetch_decision_traces`, `render`, `count_*`). `AnomalySummary` field names match between dataclass definition and consumer.
+**Type consistency:** method names used consistently across tasks (e.g., `fetch_decision_traces`, `count_reason_codes`, `render`, `count_*`). `AnomalySummary` field names match between dataclass definition and consumer. Feed-dict shape consistent across `_classify_feed`, `render`, `count_stale`.
+
+**Review-finding fixes applied (P1/P1/P2/P3):**
+- P1 (§5 wiring): Task 1.4 adds `count_reason_codes` to LokiClient; Task 6.2 calls it for cumulative + 7d counts instead of empty dicts.
+- P1 (§4 missing feeds + loud missing): Task 6.2 includes `pjm.lmp_da_hourly` + `pjm.metered_load` with event-feed expected-fire timestamps via `_last_da_lmp_fire_utc` / `_last_metered_load_fire_utc` helpers; Task 4.2 `_classify_feed` renders `last_write=None` as `🔴 stale — missing — no data found in Influx`; Task 6.2 no longer filters such feeds out.
+- P2 (§2 reconciliation): Task 4.4 `count_action_fire_mismatches` now matches by `(action_label, +/- 2-min ts window)` with row-consumption tracking so one Influx row can't satisfy two same-label trace events.
+- P3 (DST hygiene): Task 2.2 has both CDT (summer) and CST (winter) test cases proving the tz arithmetic isn't hardcoded.
 
 ---
 
