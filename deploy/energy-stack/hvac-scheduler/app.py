@@ -1382,17 +1382,38 @@ def fetch_day_ahead_prices_for_date(
 ) -> list[float] | None:
     """Pull the 24 hourly day-ahead LMPs for ``target_date_iso`` from
     ``pjm.lmp_da_hourly`` and convert them to cents/kWh (the unit the
-    §2 price overlay tier thresholds are measured in).
+    §2 price overlay tier thresholds and the §7 cheap/spike thresholds
+    are measured in).
 
-    PJM's day-ahead market clears around 16:00 ET and the poller runs
-    at 17:00 CT, so tomorrow's 24-hour vector is available by 18:00 CT
-    every day. Returns None when fewer than 24 hourly observations
-    exist for the target date (e.g., a 21:00 decision that beat the
-    DA-LMP write, or a market-cancelled day).
+    ``$/MWh ÷ 10 = ¢/kWh``. PJM publishes ``total_lmp_da`` in $/MWh.
 
-    Conversion: ``$/MWh ÷ 10 = ¢/kWh``. PJM publishes ``total_lmp_da``
-    in $/MWh; the price overlay's locked thresholds (10c, 20c) and the
-    §7 cheap/spike thresholds (3c, 10c) are all cents/kWh.
+    EPT-vs-CT day-boundary handling (not DST-specific). PJM publishes
+    DA LMP indexed by Eastern Prevailing Time calendar day; the
+    scheduler operates on CT calendar day. EPT runs **1 hour ahead of
+    CT year-round** — both zones observe DST simultaneously, so the
+    offset is constant (EST/CST in winter, EDT/CDT in summer). At the
+    17:00 CT day-D publish, PJM's "tomorrow EPT day" batch covers the
+    physical hours CT 23:00 day D through CT 22:00 day D+1 — 23 of the
+    24 CT-tomorrow hours (CT 00:00-22:00 day D+1). The 24th CT hour
+    (CT 23:00 day D+1) belongs to "EPT day D+2", which PJM does not
+    publish until 17:00 CT day D+1.
+
+    At a 21:00 CT day-D decision for tomorrow's precool window, CT
+    hour 23 is therefore **structurally unavailable** by the
+    publish-schedule of the PJM market, not by any missing-data fault.
+    This function treats the "only CT hour 23 missing" case as valid
+    coverage: pads hour 23 with hour 22's price so the returned
+    24-element vector is complete and the §7 cheap-window search range
+    (hours 6-14) and typical spike search (hours 10-22, all real PJM
+    data) are unaffected. Padding produces no false-positive spike — a
+    spike at hour 22 already detected extends to hour 23 with no new
+    maximum; absence of a spike at hour 22 means no spike at the padded
+    hour 23 either.
+
+    Any other coverage gap (interior missing hours, fewer than 23
+    contiguous hours from CT hour 0, etc.) returns None — those are
+    genuine insufficient coverage and the §7 decision must short-
+    circuit rather than guess.
     """
     target = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
     start_local = target.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1407,16 +1428,41 @@ def fetch_day_ahead_prices_for_date(
                                 and r._field == "total_lmp_da")
           |> sort(columns: ["_time"])
     """
-    prices_per_mwh: list[float] = []
+    # Map each row to its CT-hour-of-day via the record's _time. The
+    # explicit hour mapping lets us distinguish the structural
+    # end-of-day boundary case (hour 23 missing) from interior gaps
+    # — implicit list ordering alone collapses both into "fewer than
+    # 24 rows" with no recoverable signal.
+    prices_by_hour: dict[int, float] = {}
     for table in query_api.query(flux):
         for record in table.records:
             v = record.get_value()
-            if v is not None:
-                prices_per_mwh.append(float(v))
-    if len(prices_per_mwh) < 24:
+            if v is None:
+                continue
+            time_ct = record.get_time().astimezone(tz)
+            if time_ct.date().isoformat() != target_date_iso:
+                # Row landed in our UTC range but maps to a different
+                # CT calendar date (can happen if PJM EPT-hour 00:00
+                # of the target EPT day = CT 23:00 of the prior CT
+                # day). Skip; it belongs to a different precool
+                # decision.
+                continue
+            prices_by_hour[time_ct.hour] = float(v)
+
+    if not prices_by_hour:
         return None
-    # $/MWh -> cents/kWh: ÷ 10. (e.g., $50/MWh = $0.05/kWh = 5c/kWh)
-    return [p / 10.0 for p in prices_per_mwh[:24]]
+
+    missing_hours = set(range(24)) - set(prices_by_hour)
+    if missing_hours == {23}:
+        # EPT-vs-CT structural boundary — pad hour 23 with hour 22.
+        # See module docstring.
+        prices_by_hour[23] = prices_by_hour[22]
+    elif missing_hours:
+        # Genuinely insufficient coverage; short-circuit.
+        return None
+
+    # $/MWh -> cents/kWh: ÷ 10.
+    return [prices_by_hour[h] / 10.0 for h in range(24)]
 
 
 def compute_price_aware_precool_window(

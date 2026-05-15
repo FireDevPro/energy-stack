@@ -998,18 +998,36 @@ def test_precool_window_action_synthesizes_correct_shape():
     assert a.fan_mode is None
 
 
+def _build_da_lmp_query_result(
+    hour_to_price_per_mwh: dict[int, float],
+    target_date_iso: str = "2026-07-15",
+    tz_name: str = "America/Chicago",
+):
+    """Build a MagicMock query_api result list mirroring the InfluxDB
+    Flux response for ``pjm.lmp_da_hourly`` rows. Each record carries an
+    explicit ``get_time()`` returning the UTC instant corresponding to
+    the requested CT hour, so the function under test can map the row
+    back to its CT-hour-of-day for the EPT-vs-CT boundary logic."""
+    tz = ZoneInfo(tz_name)
+    table = MagicMock()
+    table.records = []
+    target_local = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
+    for hour in sorted(hour_to_price_per_mwh):
+        ct_time = target_local.replace(hour=hour, minute=0, second=0, microsecond=0)
+        utc_time = ct_time.astimezone(timezone.utc)
+        record = MagicMock()
+        record.get_value.return_value = hour_to_price_per_mwh[hour]
+        record.get_time.return_value = utc_time
+        table.records.append(record)
+    return [table]
+
+
 def test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh(monkeypatch):
     """The poller stores total_lmp_da in $/MWh; the §7 decision rule
     needs cents/kWh (the unit the locked tier thresholds use). $50/MWh
     must come out as 5c/kWh."""
     api = MagicMock()
-    table = MagicMock()
-    table.records = []
-    for v in [50.0] * 24:  # flat $50/MWh day
-        record = MagicMock()
-        record.get_value.return_value = v
-        table.records.append(record)
-    api.query.return_value = [table]
+    api.query.return_value = _build_da_lmp_query_result({h: 50.0 for h in range(24)})
     out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
                                            tz=ZoneInfo("America/Chicago"))
     assert out is not None
@@ -1017,21 +1035,100 @@ def test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh(monkey
     assert all(p == 5.0 for p in out)
 
 
-def test_fetch_day_ahead_prices_returns_none_when_under_24_hours(monkeypatch):
-    """Partial day-ahead vector (e.g., a 21:00 decision that beat the
-    DA-LMP write) -> None so the §7 decision rule short-circuits
-    rather than making a decision on partial data."""
+def test_fetch_day_ahead_prices_accepts_ept_ct_boundary_only_hour_23_missing(monkeypatch):
+    """EPT-vs-CT day-boundary case (NOT DST-specific — EPT is 1 hour
+    ahead of CT year-round). At a 21:00 CT day-D decision for tomorrow,
+    PJM's "tomorrow EPT day" publish covers CT hours 0-22 of CT-tomorrow
+    but not CT hour 23 (which belongs to "EPT day D+2", unpublished
+    until 17:00 CT day D+1). Function pads hour 23 with hour 22's value
+    so the precool decision can fire on the boundary case. Hours 6-14
+    (cheap-window search) and 10-22 (typical spike search) — the
+    operationally-required range — are real PJM data."""
     api = MagicMock()
-    table = MagicMock()
-    table.records = []
-    for v in [50.0] * 18:  # only 18 hours posted
-        record = MagicMock()
-        record.get_value.return_value = v
-        table.records.append(record)
-    api.query.return_value = [table]
+    # 23 hours present, hour 23 missing. Distinct value at hour 22 so
+    # we can verify padding.
+    hours = {h: (50.0 if h != 22 else 75.0) for h in range(23)}
+    api.query.return_value = _build_da_lmp_query_result(hours)
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
+                                           tz=ZoneInfo("America/Chicago"))
+    assert out is not None
+    assert len(out) == 24
+    # Hour 22 in cents/kWh: $75/MWh = 7.5c/kWh
+    assert out[22] == 7.5
+    # Hour 23 padded with hour 22's value -> same 7.5c/kWh
+    assert out[23] == 7.5
+
+
+def test_fetch_day_ahead_prices_rejects_interior_gap(monkeypatch):
+    """Genuine insufficient coverage — an interior hour missing is NOT
+    the structural EPT-vs-CT boundary case. The function must reject
+    rather than pad, so the §7 decision short-circuits."""
+    api = MagicMock()
+    # 23 hours, but hour 7 (interior, not hour 23) is missing.
+    hours = {h: 50.0 for h in range(24) if h != 7}
+    api.query.return_value = _build_da_lmp_query_result(hours)
     out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
                                            tz=ZoneInfo("America/Chicago"))
     assert out is None
+
+
+def test_fetch_day_ahead_prices_rejects_partial_coverage(monkeypatch):
+    """Substantial coverage gap (e.g., only the first 18 hours posted)
+    must reject. Catches missed polls, market-cancelled days, and
+    queries-before-publish."""
+    api = MagicMock()
+    hours = {h: 50.0 for h in range(18)}  # hours 18-23 all missing
+    api.query.return_value = _build_da_lmp_query_result(hours)
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
+                                           tz=ZoneInfo("America/Chicago"))
+    assert out is None
+
+
+def test_fetch_day_ahead_prices_rejects_empty_result(monkeypatch):
+    """No DA LMP rows at all -> None. (Pre-publish query, market-
+    cancelled day, etc.)"""
+    api = MagicMock()
+    api.query.return_value = _build_da_lmp_query_result({})
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
+                                           tz=ZoneInfo("America/Chicago"))
+    assert out is None
+
+
+def test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates(monkeypatch):
+    """Rows that land in the requested UTC range but actually belong to
+    a different CT calendar date (e.g., PJM-EPT-day-X's hour 00:00 EPT =
+    CT 23:00 day-before) must be filtered out — they're for a different
+    precool decision, not this one. Without the filter, a row at CT
+    23:00 day-before could occupy the dict's hour-23 slot and mask the
+    structural boundary case."""
+    api = MagicMock()
+    # All 23 hours of the target CT date + one stray hour 23 of the
+    # previous CT date (CT 23:00 2026-07-14 = the EPT 00:00 boundary
+    # of EPT day 2026-07-15). The function should ignore the stray and
+    # treat the result as the boundary case (pad hour 23 with hour 22).
+    tz = ZoneInfo("America/Chicago")
+    table = MagicMock()
+    table.records = []
+    for hour in range(23):
+        ct_time = datetime.fromisoformat("2026-07-15").replace(tzinfo=tz, hour=hour)
+        rec = MagicMock()
+        rec.get_value.return_value = 50.0
+        rec.get_time.return_value = ct_time.astimezone(timezone.utc)
+        table.records.append(rec)
+    # Stray record from the previous CT date (different precool decision).
+    stray_ct = datetime.fromisoformat("2026-07-14").replace(tzinfo=tz, hour=23)
+    stray = MagicMock()
+    stray.get_value.return_value = 999.0
+    stray.get_time.return_value = stray_ct.astimezone(timezone.utc)
+    table.records.append(stray)
+    api = MagicMock()
+    api.query.return_value = [table]
+    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15", tz=tz)
+    assert out is not None
+    assert len(out) == 24
+    # The 999 value MUST NOT appear; hour 23 is padded with hour 22 (50).
+    assert 99.9 not in out
+    assert out[23] == 5.0
 
 
 # ---- §Critical #2: per-tick layer evaluation ------------------------------
