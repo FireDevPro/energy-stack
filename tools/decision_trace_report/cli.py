@@ -139,7 +139,12 @@ def _last_metered_load_fire_utc(now_utc: datetime) -> datetime:
     return last_sunday.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
+    """CLI entry. `now` is injectable for snapshot tests — freezing
+    `now` makes the rendered report byte-deterministic (header
+    `_Rendered at ..._`, §4 feed-age math, §5 cumulative/recent-7d
+    window bounds). Production callers omit it and get
+    `datetime.now(timezone.utc)`."""
     from tools.decision_trace_report import (
         decision_codes_loader,
         renderer,
@@ -320,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     # §4 feed health
     try:
         from datetime import timedelta as td2
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now if now is not None else datetime.now(timezone.utc)
         # Compute expected last-fire timestamps for event feeds, in UTC.
         last_da_lmp_fire = _last_da_lmp_fire_utc(now_utc)
         last_metered_load_fire = _last_metered_load_fire_utc(now_utc)
@@ -414,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
 
     full_md = renderer.build_report(
         target_date=report_label,
-        rendered_at=datetime.now(timezone.utc),
+        rendered_at=now if now is not None else datetime.now(timezone.utc),
         sections=sections_md,
         anomaly_summary=summary,
     )
