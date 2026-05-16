@@ -202,6 +202,38 @@ def test_last_write_time_returns_utc_datetime(influx_url):
     assert last == datetime(2026, 5, 15, 17, 0, tzinfo=timezone.utc)
 
 
+def test_last_write_time_drops_value_column_before_aggregating(influx_url):
+    """Live-verification regression: multi-field measurements (e.g.,
+    `refoss.channel`, `hvac.thermostat`) store fields with different
+    `_value` types — some string, some float. Running `max(column:
+    "_time")` over the raw rows triggers a Flux schema collision:
+
+        runtime error: max: schema collision: cannot group string and
+        float types together
+
+    Fix: drop `_value` (and other type-variant columns) BEFORE the
+    grouping aggregation so `max` sees only `_time`. `keep(columns:
+    ["_time"])` is the canonical way.
+
+    Matches memory `feedback_flux_schema_validation` — pre-filter
+    before group/aggregate on multi-field measurements.
+    """
+    fake_query_api = MagicMock()
+    fake_query_api.query.return_value = []
+    client = InfluxClient(influx_url, "t", "o", "energy", query_api=fake_query_api)
+    client.last_write_time("refoss.channel")
+    flux = fake_query_api.query.call_args[0][0]
+    assert 'keep(columns: ["_time"])' in flux, (
+        "last_write_time must drop _value/_field before group+max to "
+        "avoid schema collision on multi-field measurements"
+    )
+    # Order matters: keep MUST come before group+max
+    keep_idx = flux.index('keep(columns: ["_time"])')
+    group_idx = flux.index("group()")
+    max_idx = flux.index('max(column: "_time")')
+    assert keep_idx < group_idx < max_idx
+
+
 def test_last_write_time_returns_max_across_multiple_tables(influx_url):
     """Codex P2 regression: with multiple tables (multi-series
     measurement, no group()) the OLDER timestamp can appear in the

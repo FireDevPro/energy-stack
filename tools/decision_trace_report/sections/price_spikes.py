@@ -83,6 +83,33 @@ def _render_time(value: Any) -> str:
     return str(value)
 
 
+def _format_ct_trace_time(ts: Any) -> str:
+    """Render a trace event's `ts` as `HH:MM:SS-OFFSET` in CT.
+
+    Mirror of `day_of._format_ct_time`; duplicated here so §3 doesn't
+    cross-import from another section. Both serve the same display
+    contract — see §2 module for the rationale (microsecond ts in
+    production breaks the `[-14:]` slice).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    if isinstance(ts, str):
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return ts
+    elif isinstance(ts, datetime):
+        dt = ts
+    else:
+        return str(ts)
+    if dt.tzinfo is None:
+        return dt.strftime("%H:%M:%S")
+    ct = dt.astimezone(ZoneInfo("America/Chicago"))
+    offset = ct.strftime("%z")
+    offset_colon = f"{offset[:3]}:{offset[3:]}" if offset else ""
+    return ct.strftime("%H:%M:%S") + offset_colon
+
+
 def render(
     *,
     target_date: str,
@@ -113,7 +140,7 @@ def render(
         icon = "✅" if ok else "❌"
         lines.append(
             f"| {spike_display} | {spike.get('price_cents'):.2f} | "
-            f"{trace.get('ts', '')[-14:]} | `{tier}` | `{code}` | {icon} |"
+            f"{_format_ct_trace_time(trace.get('ts', ''))} | `{tier}` | `{code}` | {icon} |"
         )
     lines.append("")
     return "\n".join(lines)
