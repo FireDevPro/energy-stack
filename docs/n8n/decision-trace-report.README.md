@@ -166,9 +166,11 @@ the `Influx Feed Health` node hasn't been edited to skip the `keep`.
   produced.
 - Anthropic API cost per run is roughly $0.01-0.02 (fact packet
   ~2-5 KB, output ~2-4 KB). Daily cost: well under $1/month.
-- The legacy Python tool at `tools/decision_trace_report/` is still
-  importable for ad-hoc CLI investigation. Plan to sunset it after this
-  n8n workflow has run successfully for ~1 week.
+- The Python predecessor at `tools/decision_trace_report/` was
+  removed once this workflow proved out. Spec at
+  `docs/superpowers/specs/2026-05-15-decision-trace-report-tool-design.md`
+  is retained as superseded historical context for the fact-packet
+  design decisions.
 
 ## See also
 
