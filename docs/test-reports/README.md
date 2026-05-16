@@ -1,11 +1,27 @@
 <!-- docs/test-reports/README.md -->
-# Decision-trace commissioning reports
+# Decision-trace commissioning reports — scratch space
 
-This directory holds the daily markdown reports produced by
-`tools/decision_trace_report`. Contents are **gitignored** — these are
-transient commissioning artifacts, not permanent docs.
+This directory is a local scratch space for ad-hoc Markdown report
+dumps. Contents are **gitignored** — these are transient artifacts,
+not permanent docs. Tracked: this README + `.gitkeep`. Everything
+else under here ignored.
 
-Tracked: this README + `.gitkeep`. Everything else under here ignored.
+## Where reports actually live now
 
-See `docs/superpowers/specs/2026-05-15-decision-trace-report-tool-design.md`
-for what the reports contain and how to render them.
+Daily commissioning reports are produced by the n8n workflow
+`docs/n8n/decision-trace-report.workflow.json` and delivered to
+Telegram (short summary message + full Markdown as a document
+attachment). See `docs/n8n/decision-trace-report.README.md` for the
+operator runbook.
+
+This directory remains useful for one-off local renders extracted
+from n8n execution data when debugging the workflow or sharing a
+specific run by file rather than by Telegram.
+
+## History
+
+The Python tool that previously rendered reports into this directory
+(`tools/decision_trace_report/`) was sunset after the n8n workflow
+proved out. Spec at
+`docs/superpowers/specs/2026-05-15-decision-trace-report-tool-design.md`
+is retained as superseded historical context.

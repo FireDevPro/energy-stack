@@ -1,9 +1,29 @@
 ---
 date: 2026-05-15
 owner: chris
-status: spec-pending-review
+status: superseded
 role-label: chris
+superseded_by: docs/n8n/decision-trace-report.prompt.md
+superseded_on: 2026-05-16
 ---
+
+> **Superseded 2026-05-16.** This spec described a Python Markdown
+> renderer at `tools/decision_trace_report/`. That implementation
+> shipped (PRs #125, #126) and ran live, but the rendered Markdown
+> tables proved hard to interpret as a commissioning artifact. The
+> tool was replaced by an n8n + Claude pipeline that delegates
+> narrative writing to the Anthropic node (PRs #127, #128, #129,
+> #130-equivalent sunset). The fact-collection lessons earned
+> here — Flux query patterns, Loki retention/limit handling,
+> microsecond ts formatting, synthetic-trace tagging, ±5 min
+> spike-to-trace pairing — carried forward into the n8n workflow.
+>
+> Live artifact: `docs/n8n/decision-trace-report.workflow.json`
+> Prompt of record: `docs/n8n/decision-trace-report.prompt.md`
+> Operator README: `docs/n8n/decision-trace-report.README.md`
+>
+> This file is retained as historical context for the design
+> decisions that informed the n8n fact-packet contract.
 
 # Decision-Trace Commissioning Report Tool — Design Spec
 
