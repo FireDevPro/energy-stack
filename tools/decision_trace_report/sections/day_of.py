@@ -17,6 +17,24 @@ def _is_action_fire(event: dict[str, Any]) -> bool:
     return not label.startswith("MID_PERIOD_REPUSH:")
 
 
+_HEADERS = [
+    "time", "tick_id", "event", "winning_layer",
+    "schedule_cool_f", "price_cool_f", "fivecp_cool_f", "effective_cool_f",
+    "sup_decision", "sup_reason",
+]
+
+
+def _row(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _cell(value: Any) -> str:
+    """Render a single cell value; missing/None → blank."""
+    if value is None:
+        return ""
+    return str(value)
+
+
 def render(
     *,
     target_date: str,
@@ -24,6 +42,15 @@ def render(
     supervisor_events: list[dict[str, Any]],
     hvac_actions: list[dict[str, Any]],
 ) -> str:
+    """§2 live day-of decision audit per spec §5 (lines 162-180).
+
+    Renders one row per layer_resolution + supervisor event in
+    chronological order. Layer rows fill the four `*_cool_f` columns;
+    supervisor rows fill the `sup_decision` + `sup_reason` columns.
+    Consecutive events sharing the same `tick_id` are grouped — an
+    all-blank separator row marks each tick boundary so the reader can
+    scan tick-by-tick.
+    """
     lines: list[str] = [f"## §2 Live day-of decision audit — {target_date}", ""]
     all_events = sorted(
         [*layer_events, *supervisor_events],
@@ -35,25 +62,38 @@ def render(
         lines.append("")
         return "\n".join(lines)
 
-    lines.append("| time | tick_id | event | winning_layer / decision | "
-                  "effective_cool_f | reason_code |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append(_row(_HEADERS))
+    lines.append("|" + "|".join(["---"] * len(_HEADERS)) + "|")
+
+    separator_row = _row([""] * len(_HEADERS))
+    prev_tick: str | None = None
     for evt in all_events:
-        ts = evt.get("ts", "")[-14:]  # HH:MM:SS.xxx-zz suffix-ish
         tick = (evt.get("tick_id") or "")[:8]
-        kind = "layer" if evt.get("msg") == "decision_trace.layer_resolution" else "sup"
-        if kind == "layer":
-            secondary = evt.get("winning_layer", "")
-            eff = evt.get("effective_cool_f", "")
-            reason = ""
+        if prev_tick is not None and tick != prev_tick:
+            lines.append(separator_row)
+        ts = evt.get("ts", "")[-14:]
+        if evt.get("msg") == "decision_trace.layer_resolution":
+            cells = [
+                ts, f"`{tick}`" if tick else "", "layer",
+                _cell(evt.get("winning_layer")),
+                _cell(evt.get("schedule_cool_f")),
+                _cell(evt.get("price_cool_f")),
+                _cell(evt.get("fivecp_cool_f")),
+                _cell(evt.get("effective_cool_f")),
+                "", "",
+            ]
         else:
-            secondary = evt.get("decision", "")
-            eff = ""
-            reason = f"`{evt.get('reason_code', '')}`" if evt.get('reason_code') else ""
-        lines.append(f"| {ts} | `{tick}` | {kind} | {secondary} | {eff} | {reason} |")
+            reason = evt.get("reason_code", "")
+            cells = [
+                ts, f"`{tick}`" if tick else "", "sup",
+                "", "", "", "", "",
+                _cell(evt.get("decision")),
+                f"`{reason}`" if reason else "",
+            ]
+        lines.append(_row(cells))
+        prev_tick = tick
     lines.append("")
 
-    # Reconciliation summary
     fire_mismatches = count_action_fire_mismatches(
         layer_events=layer_events, hvac_actions=hvac_actions,
     )

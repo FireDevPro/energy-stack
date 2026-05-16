@@ -40,6 +40,129 @@ def test_chronological_timeline_grouped_by_tick_id():
     assert "SUPERVISOR_APPROVED" in out
 
 
+def test_renders_all_four_layer_cool_f_columns_per_spec():
+    """Spec §5 line 168 mandates separate columns for schedule_cool_f,
+    price_cool_f, fivecp_cool_f, effective_cool_f. The diagnostic value
+    of §2 is seeing per-layer disagreement; collapsing them to a single
+    `effective_cool_f` column defeats the purpose of the trace."""
+    layer_events = [
+        {
+            "msg": "decision_trace.layer_resolution",
+            "ts": "2026-05-15T13:00:01-05:00",
+            "tick_id": "tick_aaaa1234",
+            "winning_layer": "fivecp",
+            "schedule_cool_f": 79,
+            "price_cool_f": 78,
+            "fivecp_cool_f": 73,
+            "effective_cool_f": 73,
+        },
+    ]
+    out = render(
+        target_date="2026-05-15",
+        layer_events=layer_events,
+        supervisor_events=[],
+        hvac_actions=[],
+    )
+    # Column headers
+    assert "schedule_cool_f" in out
+    assert "price_cool_f" in out
+    assert "fivecp_cool_f" in out
+    assert "effective_cool_f" in out
+    # All four values rendered (note: 79 and 78 are distinct, 73 appears
+    # twice as fivecp_cool_f + effective_cool_f)
+    assert "| 79 |" in out
+    assert "| 78 |" in out
+    assert "| 73 |" in out
+
+
+def test_supervisor_event_renders_decision_and_reason_columns():
+    """Spec §5 line 168: supervisor events render `decision` (always)
+    + `reason_code` (when non-approved). Layer columns are blank on
+    a supervisor row."""
+    supervisor_events = [
+        {
+            "msg": "decision_trace.supervisor",
+            "ts": "2026-05-15T13:05:00-05:00",
+            "tick_id": "tick_bbbb5678",
+            "decision": "clamped",
+            "reason_code": "SUPERVISOR_CLAMPED_COOL_FLOOR",
+        },
+    ]
+    out = render(
+        target_date="2026-05-15",
+        layer_events=[],
+        supervisor_events=supervisor_events,
+        hvac_actions=[],
+    )
+    assert "clamped" in out
+    assert "SUPERVISOR_CLAMPED_COOL_FLOOR" in out
+
+
+def test_groups_consecutive_events_sharing_tick_id():
+    """Spec §5 line 169: 'Group consecutive events sharing the same
+    tick_id (so one tick's chain reads as a unit).' Inserts a blank
+    separator row between distinct ticks so the reader can scan
+    tick-by-tick instead of row-by-row."""
+    layer_events = [
+        {
+            "msg": "decision_trace.layer_resolution",
+            "ts": "2026-05-15T13:00:00-05:00",
+            "tick_id": "tick_aaaa",
+            "winning_layer": "schedule",
+            "schedule_cool_f": 79, "price_cool_f": 79,
+            "fivecp_cool_f": 79, "effective_cool_f": 79,
+        },
+        {
+            "msg": "decision_trace.layer_resolution",
+            "ts": "2026-05-15T13:05:00-05:00",
+            "tick_id": "tick_bbbb",
+            "winning_layer": "fivecp",
+            "schedule_cool_f": 79, "price_cool_f": 79,
+            "fivecp_cool_f": 73, "effective_cool_f": 73,
+        },
+    ]
+    supervisor_events = [
+        {
+            "msg": "decision_trace.supervisor",
+            "ts": "2026-05-15T13:00:01-05:00",
+            "tick_id": "tick_aaaa",
+            "decision": "approved",
+            "reason_code": "SUPERVISOR_APPROVED",
+        },
+        {
+            "msg": "decision_trace.supervisor",
+            "ts": "2026-05-15T13:05:01-05:00",
+            "tick_id": "tick_bbbb",
+            "decision": "approved",
+            "reason_code": "SUPERVISOR_APPROVED",
+        },
+    ]
+    out = render(
+        target_date="2026-05-15",
+        layer_events=layer_events,
+        supervisor_events=supervisor_events,
+        hvac_actions=[],
+    )
+    # Both tick chains rendered, in order.
+    aaaa_idx = out.index("tick_aaa")
+    bbbb_idx = out.index("tick_bbb")
+    assert aaaa_idx < bbbb_idx
+    # The tick_aaaa block must contain BOTH its layer and supervisor
+    # rows BEFORE the first tick_bbbb row — proves grouping, not
+    # interleaving.
+    aaaa_block = out[aaaa_idx:bbbb_idx]
+    assert aaaa_block.count("tick_aaa") == 2  # layer + sup
+    # Visual separator between groups: a row with only blank cells (no
+    # content). Distinct from any content row, which always has non-
+    # empty values in time/tick_id/event.
+    import re
+    sep_pattern = re.compile(r"^\|(?:\s*\|)+\s*$")
+    lines_between = out[aaaa_idx:bbbb_idx].split("\n")
+    assert any(sep_pattern.match(line) for line in lines_between), (
+        "expected an all-blank-cells separator row between distinct tick_ids"
+    )
+
+
 def test_counts_supervisor_non_approved():
     layer_events = []
     supervisor_events = [
