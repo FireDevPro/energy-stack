@@ -1,5 +1,5 @@
 ---
-date: 2026-05-15
+date: 2026-05-16
 owner: chris
 status: active
 role-label: chris
@@ -31,6 +31,40 @@ Say when evidence is missing or uncertain. Do not call something a
 controller failure unless the packet proves it. Prefer "needs
 investigation" when the evidence is incomplete.
 
+Synthetic vs organic reason-code counts:
+
+The fact packet has TWO separate 7-day reason-code maps:
+
+- `observed_reason_codes_7d_organic` — counts from real scheduler
+  ticks. These describe actual scheduler behavior over the last 7
+  days. Use these when discussing "what the scheduler did" or
+  "what reason codes fired in production".
+
+- `observed_reason_codes_7d_synthetic` — counts from Path-C
+  commissioning script runs (`tick_id` starts with `commission`).
+  These describe commissioning coverage only — they are NOT
+  organic scheduler behavior. Never imply these happened
+  naturally. When discussing coverage, distinguish: "the scheduler
+  emitted X (organic)" vs "the commissioning script exercised Y
+  (synthetic)".
+
+Feed health framing — each feed has a `kind` field:
+
+- `continuous`: writes at a regular cadence (sub-hourly to ~10
+  min). Treat last_write older than 30-60 min as worth flagging.
+- `event`: writes on a known schedule (e.g., PJM DA LMP daily
+  ~17:00 CT). Treat as stale only if last_write predates the most
+  recent expected fire.
+- `event_lagged`: settlement-grade data with a built-in publish
+  lag (e.g., `pjm.metered_load` lags ~2 days; PJM only publishes
+  verified hourly metered load after a 1-2 day settlement window).
+  Describe these as "latest published settlement data through
+  <timestamp>". Do NOT call them stale based on raw age. Only
+  flag if the poller appears to have missed its expected fire,
+  which would show up in `query_errors` or as an unexpected gap
+  between the last write and the expected publish cadence shown
+  in `expected_cadence`.
+
 Report shape:
 
 1. Executive summary — 2-4 sentences, plain English. What kind of day
@@ -41,10 +75,13 @@ Report shape:
    commissioning burst from the main timeline; reference it once at
    the end of this section.
 4. Feed health now — one-line per critical feed, current status.
-5. Coverage / observed reason codes — which reason codes fired in the
-   last 7 days and roughly how often. Do NOT claim "code X never
-   observed" unless the packet explicitly says so. Treat absence in
-   the packet as silence, not as a negative result.
+   Frame each feed according to its `kind` per the rules above.
+5. Coverage / observed reason codes — discuss the two count maps
+   separately. For organic: which reason codes fired in real
+   scheduler ticks and roughly how often. For synthetic: which
+   reason codes the commissioning script exercised. Do NOT claim
+   "code X never observed" unless the packet explicitly says so.
+   Treat absence in the packet as silence, not as a negative result.
 6. Appendix — only if you have something concrete to add (e.g., the
    raw tick_ids of synthetic traces for cross-reference). Skip if not
    useful.
@@ -82,6 +119,7 @@ output of the workflow's "Build Fact Packet" Code node. Shape:
 {
   "target_date": "2026-05-14",
   "timezone": "America/Chicago",
+  "rendered_at_utc": "2026-05-15T13:00:00.000Z",
   "day_type": {
     "trace_events": [],
     "hvac_decisions": [{"day_type": "MILD"}]
@@ -101,13 +139,29 @@ output of the workflow's "Build Fact Packet" Code node. Shape:
     "normal_traces": [],
     "synthetic_commissioning_traces": [
       {"time_ct": "22:58", "tick_id": "commission_..."}
-    ]
+    ],
+    "hvac_actions": []
   },
   "feed_health_now": [
-    {"name": "haven.indoor", "status": "missing", "last_write": null}
+    {
+      "name": "pjm.metered_load",
+      "kind": "event_lagged",
+      "last_write": "2026-05-14T03:00:00Z",
+      "has_data": true,
+      "expected_cadence": "daily, settlement-grade, lagged ~2 days"
+    },
+    {
+      "name": "haven.indoor",
+      "kind": "continuous",
+      "last_write": null,
+      "has_data": false
+    }
   ],
-  "observed_reason_codes_7d": {
+  "observed_reason_codes_7d_organic": {
     "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER": 309
+  },
+  "observed_reason_codes_7d_synthetic": {
+    "SUPERVISOR_EMERGENCY_OVERHEAT": 1
   },
   "query_errors": []
 }
@@ -129,11 +183,23 @@ output of the workflow's "Build Fact Packet" Code node. Shape:
 - `synthetic_commissioning_traces` — populated when `tick_id` starts
   with `commission`. These are Path-C verification traffic. Keep them
   separate in the narrative.
-- `observed_reason_codes_7d` — counts of reason codes seen in the last
-  7 days of `decision_trace.*` events. **Not** a canonical-coverage
-  comparison; codes that never fired simply aren't listed. If a code
-  is missing from this map, you have no information about it —
-  silence, not absence.
+- `feed_health_now[].kind` — one of `continuous`, `event`,
+  `event_lagged`. Frames how to interpret `last_write`. See the
+  prompt above for the framing rules.
+- `feed_health_now[].expected_cadence` — present on event / event-
+  lagged feeds. Human-readable hint about when the feed normally
+  fires or publishes.
+- `feed_health_now[].has_data` — `false` only if the feed never wrote
+  a row in the 7-day query window. `true` means at least one
+  point exists; `last_write` carries the timestamp of the newest.
+- `observed_reason_codes_7d_organic` — counts of reason codes seen in
+  real scheduler ticks over the last 7 days. Codes that never fired
+  simply aren't listed. If a code is missing from this map, you have
+  no information about it — silence, not absence.
+- `observed_reason_codes_7d_synthetic` — counts of reason codes seen
+  in Path-C commissioning script runs over the last 7 days. Same
+  silence-vs-absence rule. Never imply these counts happened
+  naturally — they reflect commissioning coverage only.
 - `query_errors` — non-empty if any HTTP query failed. Each item
   describes which query and why. Prefer "report may be incomplete
   for X" over "X did not happen" when this list is non-empty.
