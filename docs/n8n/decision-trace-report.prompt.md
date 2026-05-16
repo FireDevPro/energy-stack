@@ -124,6 +124,31 @@ The fact packet has TWO separate 7-day reason-code maps:
   emitted X (organic)" vs "the commissioning script exercised Y
   (synthetic)".
 
+Structural nulls / conditional fields:
+
+Some fields in trace events are only populated in specific decision
+paths. A null value for these fields is the expected outcome on most
+days — NOT evidence of a broken feed or missing data. Do not flag
+these as investigation items.
+
+Day-type trace fields:
+
+- `day2_high_f`, `day2_apparent_max_f`, `day2_is_heat_advisory` are
+  populated only when today is HOT AND tomorrow is also classified
+  HOT (the HOT-streak branch). Null on MILD, NORMAL, or single-day
+  HOT days is expected. Do NOT flag those nulls as missing forecast
+  data.
+- `high_f` is today's high and IS the field to check for forecast
+  availability. If `high_f` is null or missing, that IS a real
+  issue worth flagging.
+
+Precool trace fields:
+
+- `hour_ct` and `depth_f` are populated only when `selected: true`.
+  Null on rejected precool is expected. For rejected precool,
+  explain using the `reason_code` field — do not point at missing
+  `hour_ct` / `depth_f` as the issue.
+
 Feed health framing — each feed has a `kind` field:
 
 - `continuous`: writes at a regular cadence (sub-hourly to ~10
