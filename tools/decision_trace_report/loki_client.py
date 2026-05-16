@@ -92,7 +92,7 @@ class LokiClient:
         self,
         start: str,
         end: str,
-        per_chunk_limit: int = 10000,
+        per_chunk_limit: int = 5000,
     ) -> dict[str, int]:
         """Count occurrences of each `reason_code` value across
         `decision_trace.*` events in `[start, end]`.
@@ -102,14 +102,20 @@ class LokiClient:
         one — defensive). Used by §5 coverage scorecard.
 
         **Chunked by day** to avoid silent truncation. Verbose
-        commissioning emits ~3500 lines/day; a single 30-day query at
-        50k would silently truncate. Instead, we walk the [start, end]
-        range one CT day at a time and accumulate. Each day fits well
-        under `per_chunk_limit` (10k) with headroom for unusually
-        chatty days. If any single day's response is AT the limit, a
-        warning is logged so the operator knows the count for that day
-        may be partial — but the cumulative number still avoids the
-        cliff a single oversized query would produce.
+        commissioning emits ~3500 lines/day; a single 30-day query
+        would silently truncate. We walk `[start, end]` one CT day
+        at a time and accumulate.
+
+        `per_chunk_limit` defaults to **5000** — Loki's
+        `max_entries_limit_per_query` defaults to 5000 server-side and
+        rejects larger requests with HTTP 400. ~3500 lines/day fits
+        with headroom. If a chunk hits the limit a warning is logged
+        so partial single-day counts are loud; the cumulative number
+        still avoids the cliff a single oversized query would produce.
+
+        Per-chunk HTTP errors (typically Loki retention exceeded for
+        old chunks in a 30-day cumulative window) are caught + logged,
+        not raised — partial-but-loud beats no-§5-at-all.
 
         `start` and `end` must be RFC3339 UTC timestamps (e.g.,
         `2026-05-08T00:00:00Z`). The chunking step is 24 hours; partial
@@ -133,7 +139,20 @@ class LokiClient:
         cur = start_dt
         while cur < end_dt:
             nxt = min(cur + timedelta(days=1), end_dt)
-            raw = self.query_range(query, _fmt(cur), _fmt(nxt), limit=per_chunk_limit)
+            # Per-chunk errors are tolerated, not fatal. The cumulative
+            # 30-day window routinely walks past Loki retention; the
+            # too-old chunks return 400 Bad Request. We want partial-
+            # but-loud: log the failed chunk and keep aggregating.
+            try:
+                raw = self.query_range(query, _fmt(cur), _fmt(nxt), limit=per_chunk_limit)
+            except Exception as exc:
+                log.warning(
+                    "count_reason_codes: chunk %s..%s failed (likely "
+                    "Loki retention exceeded): %s",
+                    _fmt(cur), _fmt(nxt), exc,
+                )
+                cur = nxt
+                continue
             events = self.parse_trace_lines(raw)
             if len(events) >= per_chunk_limit:
                 log.warning(

@@ -98,6 +98,37 @@ def test_supervisor_event_renders_decision_and_reason_columns():
     assert "SUPERVISOR_CLAMPED_COOL_FLOOR" in out
 
 
+def test_renders_microsecond_timestamps_cleanly():
+    """Live-verification regression: real Loki trace events carry `ts`
+    with microsecond precision (e.g., '2026-05-14T13:00:08.438328+00:00').
+    The pre-fix slice `ts[-14:]` cut mid-fractional, producing garbage
+    like '8.438328+00:00' in the rendered table. The formatter must
+    parse + render properly: 'HH:MM:SS' in CT with offset."""
+    layer_events = [
+        {
+            "msg": "decision_trace.layer_resolution",
+            "ts": "2026-05-14T13:00:08.438328+00:00",  # UTC microsecond ts
+            "tick_id": "tick_real1",
+            "winning_layer": "schedule",
+            "schedule_cool_f": 78,
+            "price_cool_f": 78,
+            "fivecp_cool_f": 78,
+            "effective_cool_f": 78,
+        },
+    ]
+    out = render(
+        target_date="2026-05-14",
+        layer_events=layer_events,
+        supervisor_events=[],
+        hvac_actions=[],
+    )
+    # UTC 13:00:08 → CDT 08:00:08 (May, UTC-5)
+    assert "08:00:08-05:00" in out
+    # Garbage from old slice must be gone
+    assert "8.438328" not in out
+    assert "438328+00:00" not in out
+
+
 def test_groups_consecutive_events_sharing_tick_id():
     """Spec §5 line 169: 'Group consecutive events sharing the same
     tick_id (so one tick's chain reads as a unit).' Inserts a blank

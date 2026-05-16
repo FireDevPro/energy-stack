@@ -5,7 +5,39 @@ Reconciliation against hvac.actions is narrowed to action-fire events
 only (action_label NOT prefixed `MID_PERIOD_REPUSH:`) so the common
 mid-period-no-op case doesn't false-flag.
 """
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_CT = ZoneInfo("America/Chicago")
+
+
+def _format_ct_time(ts: Any) -> str:
+    """Render a Loki/Influx timestamp as `HH:MM:SS-OFFSET` in CT.
+
+    Accepts a tz-aware ISO string or a datetime. Microseconds are
+    dropped — display is second-precision per spec §5 line 168.
+
+    Live-verification regression: production `ts` strings carry
+    microseconds (`2026-05-14T13:00:08.438328+00:00`); the pre-fix
+    `ts[-14:]` slice cut mid-fractional and rendered garbage like
+    `8.438328+00:00` in the table.
+    """
+    if isinstance(ts, str):
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return ts
+    elif isinstance(ts, datetime):
+        dt = ts
+    else:
+        return str(ts)
+    if dt.tzinfo is None:
+        return dt.strftime("%H:%M:%S")
+    ct = dt.astimezone(_CT)
+    offset = ct.strftime("%z")  # e.g., "-0500"
+    offset_colon = f"{offset[:3]}:{offset[3:]}" if offset else ""
+    return ct.strftime("%H:%M:%S") + offset_colon
 
 
 def _is_action_fire(event: dict[str, Any]) -> bool:
@@ -71,7 +103,7 @@ def render(
         tick = (evt.get("tick_id") or "")[:8]
         if prev_tick is not None and tick != prev_tick:
             lines.append(separator_row)
-        ts = evt.get("ts", "")[-14:]
+        ts = _format_ct_time(evt.get("ts", ""))
         if evt.get("msg") == "decision_trace.layer_resolution":
             cells = [
                 ts, f"`{tick}`" if tick else "", "layer",

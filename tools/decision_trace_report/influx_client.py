@@ -151,19 +151,29 @@ class InfluxClient:
     def last_write_time(self, measurement: str) -> "datetime | None":
         """`max(_time)` for `measurement` over the last 7 days, or None.
 
-        Uses `group() |> max(column: "_time")` instead of `last()`:
-        `last()` is per-series, so for multi-tag measurements like
-        `refoss.channel` it would return the latest point of one
-        channel rather than the latest write across the measurement.
+        Three concerns the query must address:
 
-        7-day window is wide enough to catch event feeds (e.g., PJM
-        DA LMP fires once a day) but bounded so Flux isn't scanning
-        forever.
+        1. `last()` is per-series, so for multi-tag measurements like
+           `refoss.channel` it returns the latest point of WHICHEVER
+           series Flux processes first — not the latest write across
+           the measurement. Use `group() |> max(column: "_time")`.
+
+        2. Multi-field measurements (hvac.thermostat, haven.indoor,
+           etc.) carry `_value` of mixed types (some float, some
+           string). Running `max` over the raw rows triggers a Flux
+           runtime error: "schema collision: cannot group string and
+           float types together". `keep(columns: ["_time"])` drops
+           `_value` BEFORE the aggregation so only `_time` survives —
+           matches memory `feedback_flux_schema_validation`.
+
+        3. 7-day window is wide enough for event feeds (DA LMP fires
+           once a day, metered_load weekly) but bounded.
         """
         flux = f"""
             from(bucket: "{self.bucket}")
               |> range(start: -7d)
               |> filter(fn: (r) => r._measurement == "{measurement}")
+              |> keep(columns: ["_time"])
               |> group()
               |> max(column: "_time")
         """

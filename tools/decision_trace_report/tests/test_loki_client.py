@@ -238,6 +238,67 @@ def test_count_reason_codes_aggregates_across_chunks(monkeypatch, loki_url):
     assert counts["SUPERVISOR_APPROVED"] == 7
 
 
+def test_count_reason_codes_tolerates_per_chunk_errors(monkeypatch, caplog, loki_url):
+    """Live-verification regression: when a cumulative window walks past
+    Loki retention (typical 30d cumulative vs ~14d retention), the
+    too-old chunks return 400 Bad Request. Previously this raised and
+    killed the entire §5 call. The aggregator must catch per-chunk
+    HTTP errors, log a warning, and continue accumulating over the
+    chunks that DID succeed.
+    """
+    import logging
+    import requests
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        response = MagicMock()
+        # First two chunks: 400 (out of retention). Remaining chunks:
+        # one PRICE row each so we can assert partial aggregation.
+        if params["start"] < "2026-05-10T00:00:00Z":
+            response.status_code = 400
+            response.json.return_value = {"status": "fail", "data": "out of retention"}
+            err = requests.HTTPError("400 Bad Request")
+            response.raise_for_status = MagicMock(side_effect=err)
+            return response
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "success",
+            "data": {
+                "resultType": "streams",
+                "result": [
+                    {
+                        "stream": {},
+                        "values": [
+                            ("1779328800000000000",
+                             '{"msg": "decision_trace.price_overlay_eval", '
+                             '"reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"}'),
+                        ],
+                    },
+                ],
+            },
+        }
+        response.raise_for_status = MagicMock()
+        return response
+
+    monkeypatch.setattr("requests.get", fake_get)
+    client = LokiClient(loki_url)
+
+    with caplog.at_level(logging.WARNING, logger="tools.decision_trace_report.loki_client"):
+        counts = client.count_reason_codes(
+            start="2026-05-08T00:00:00Z",
+            end="2026-05-15T00:00:00Z",
+        )
+
+    # 7 chunks attempted; first 2 (May 8 + May 9) failed; 5 succeeded.
+    # 5 successful chunks × 1 PRICE row each = 5
+    assert counts.get("PRICE_OVERLAY_NORMAL_BELOW_TRIGGER") == 5
+    # Warning logged for failed chunks
+    assert any(
+        "count_reason_codes" in rec.message
+        and ("chunk failed" in rec.message or "retention" in rec.message.lower())
+        for rec in caplog.records
+    ), "expected per-chunk failure warning"
+
+
 def test_count_reason_codes_handles_partial_day_at_edges(monkeypatch, loki_url):
     """A non-day-aligned range still works — final chunk is sub-day,
     no extra calls past `end`."""

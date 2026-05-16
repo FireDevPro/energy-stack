@@ -82,6 +82,26 @@ def test_render_accepts_datetime_time_field():
     assert "2026-05-15T13:00:00" in out
 
 
+def test_renders_microsecond_trace_ts_cleanly():
+    """Live-verification regression: trace `ts` carries microseconds
+    in production ('2026-05-15T13:00:08.452837+00:00'). Pre-fix
+    `trace['ts'][-14:]` rendered garbage like '8.452837+00:00'.
+    Render proper HH:MM:SS-offset in CT."""
+    spikes = [
+        {"price_cents": 15.0, "_time": datetime(2026, 5, 15, 13, 0, tzinfo=CT)},
+    ]
+    overlay_events = [
+        {"ts": "2026-05-15T18:00:09.452837+00:00",  # UTC microsecond ts
+         "reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER",
+         "prev_tier": "normal", "new_tier": "normal", "outcome": "held"},
+    ]
+    out = render(target_date="2026-05-15", spikes=spikes, overlay_events=overlay_events)
+    # UTC 18:00:09 → CDT 13:00:09 (May, UTC-5)
+    assert "13:00:09-05:00" in out
+    assert "9.452837" not in out
+    assert "452837+00:00" not in out
+
+
 def test_count_unexplained_aggregates():
     spikes = [
         {"price_cents": 15.0, "_time": datetime(2026, 5, 15, 13, 0, tzinfo=CT)},
