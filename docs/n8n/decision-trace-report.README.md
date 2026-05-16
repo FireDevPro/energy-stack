@@ -1,5 +1,5 @@
 ---
-date: 2026-05-15
+date: 2026-05-16
 owner: chris
 status: active
 role-label: chris
@@ -10,7 +10,9 @@ role-label: chris
 Replaces the Python `tools/decision_trace_report` Markdown renderer. Same
 fact-collection (Loki + InfluxDB queries, the load-bearing lessons from
 PRs #125/#126 ported into n8n nodes); narrative generation is delegated
-to Claude via the Anthropic node.
+to Claude via the Anthropic node. Output is delivered entirely through
+Telegram (short summary + full Markdown as a document attachment) — no
+server-side file persistence.
 
 **Workflow file:** `decision-trace-report.workflow.json`
 **Prompt:** `decision-trace-report.prompt.md`
@@ -29,14 +31,16 @@ Schedule (08:00 CT)
    → Influx: feed last-write times (unioned 8-measurement query)
    → Build fact packet (JS: parse Flux CSV + Loki JSON, normalize, tag
      synthetic commission_* traces, pair spikes with overlay traces +/-5min)
-   → Claude Sonnet 4.6 (Anthropic node, system prompt from prompt.md)
-   → Extract short summary (executive summary + needs-attention sections)
-   → Telegram short summary (with file path)
-   → Write full Markdown to /reports/YYYY-MM-DD-decision-trace.md
+   → Claude Sonnet 4.6 (Anthropic node, system prompt from prompt.md,
+     maxTokens 4096)
+   → Extract short summary (executive summary + needs-attention sections,
+     emits binary Markdown for the document attachment)
+   → Telegram short summary (Markdown-formatted text message)
+   → Telegram full report (same Markdown as a document attachment)
 ```
 
 14 nodes total. Linear chain except the final Extract Short Summary
-fan-out (Telegram + Write File from one parent).
+fan-out (Telegram short summary + Telegram document from one parent).
 
 ## Initial setup (one-time)
 
@@ -69,32 +73,16 @@ Three credentials need to be created in n8n's Credentials panel
 **C. `Telegram Bot` (type: Telegram API)**
 - Access Token: `<TELEGRAM_BOT_TOKEN>` (from SOPS-encrypted env file —
   same `@EnergyStackBot` token used by the existing stack)
-- Attach to the `Telegram Short Summary` node.
+- Attach to **both** `Telegram Short Summary` and `Telegram Full Report`
+  nodes.
 
-### 3. Fill the Telegram chat ID placeholder
+### 3. Fill the Telegram chat ID
 
-The `Telegram Short Summary` node's `chatId` parameter is a placeholder.
-Open the node in the n8n UI and replace
-`REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID` with the numeric chat ID
-(same value as `TELEGRAM_CHAT_ID` in SOPS env).
+Both Telegram nodes have a `chatId` parameter. If imported fresh, they
+may carry placeholder text — replace with the numeric chat ID (same
+value as `TELEGRAM_CHAT_ID` in SOPS env).
 
-### 4. Volume mount for `/reports`
-
-The `Write Report File` node writes to `/reports/YYYY-MM-DD-decision-trace.md`
-inside the n8n container. To persist reports outside the container:
-
-```yaml
-# in n8n's docker-compose service definition
-services:
-  n8n:
-    volumes:
-      - /home/chris/energy-stack/reports:/reports
-```
-
-Adjust the host path to wherever you want daily reports stored on Pi-lab.
-Restart the n8n container after editing.
-
-### 5. Verify timezone
+### 4. Verify timezone
 
 The Schedule Trigger uses cron `0 8 * * *`. This fires at 08:00 in the
 n8n container's local timezone. Verify the container has
@@ -116,8 +104,8 @@ Before activating the schedule:
    - Build Fact Packet: should produce a `fact_packet_json` string.
    - Claude Generate Report: should produce Markdown starting with
      `# Decision-trace commissioning report — YYYY-MM-DD`.
-   - Telegram Short Summary: should send to your chat.
-   - Write Report File: should write to `/reports/YYYY-MM-DD-decision-trace.md`.
+   - Telegram Short Summary: should send a text message to your chat.
+   - Telegram Full Report: should send the Markdown report as a document attachment.
 
 If any node fails, fix the credential / URL / parameter and re-run.
 

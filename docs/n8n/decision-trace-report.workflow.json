@@ -1,336 +1,636 @@
 {
   "name": "Daily Decision-Trace Commissioning Report",
-  "description": "Daily 08:00 CT cron that queries Loki + InfluxDB for HVAC-scheduler decision traces, builds a compact fact packet, sends it to Claude for narrative report generation, and delivers a short Telegram summary + full Markdown file to /reports.",
+  "description": "Daily 08:00 CT cron that queries Loki + InfluxDB for HVAC-scheduler decision traces, builds a compact fact packet, sends it to Claude for narrative report generation, and delivers a short Telegram summary + full Markdown report as a Telegram document attachment.",
   "active": false,
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
   },
   "nodes": [
     {
       "id": "599e765f-9e18-4e13-a25f-8a793ddf406d",
       "name": "Daily 08:00 CT",
       "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.3,
-      "position": [0, 96],
+      "position": [
+        0,
+        96
+      ],
       "parameters": {
         "rule": {
           "interval": [
-            { "field": "cronExpression", "expression": "0 8 * * *" }
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
           ]
         }
-      }
+      },
+      "typeVersion": 1.3
     },
     {
       "id": "39862685-6b1e-4d02-bca7-a7f87f91d48d",
       "name": "Compute Target Date",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [224, 96],
+      "position": [
+        224,
+        96
+      ],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "language": "javaScript",
         "jsCode": "const nowUtc = new Date();\nconst ctStr = nowUtc.toLocaleString('en-US', { timeZone: 'America/Chicago' });\nconst ctNow = new Date(ctStr);\nconst target = new Date(ctNow);\ntarget.setDate(target.getDate() - 1);\nconst y = target.getFullYear();\nconst m = String(target.getMonth() + 1).padStart(2, '0');\nconst d = String(target.getDate()).padStart(2, '0');\nconst target_date_iso = `${y}-${m}-${d}`;\nfunction ctMidnightUtc(dateIso) {\n  const utcGuess = new Date(`${dateIso}T00:00:00Z`);\n  const ctEquivalent = new Date(utcGuess.toLocaleString('en-US', { timeZone: 'America/Chicago' }));\n  const offsetMs = utcGuess.getTime() - ctEquivalent.getTime();\n  return new Date(utcGuess.getTime() + offsetMs);\n}\nconst startUtc = ctMidnightUtc(target_date_iso);\nconst endUtc = new Date(startUtc.getTime() + 24 * 3600 * 1000);\nconst cumulativeStart = new Date(endUtc.getTime() - 7 * 24 * 3600 * 1000);\nconst fmt = (dt) => dt.toISOString().replace(/\\.\\d{3}Z$/, 'Z');\nreturn [{ json: {\n  target_date_iso,\n  target_start_utc: fmt(startUtc),\n  target_end_utc: fmt(endUtc),\n  cumulative_start_utc: fmt(cumulativeStart),\n  render_now_utc: nowUtc.toISOString()\n}}];"
-      }
+      },
+      "typeVersion": 2
     },
     {
       "id": "9017deee-dcfc-4d43-8fc9-3f7dd7c1f1db",
       "name": "Loki Target Day Traces",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [448, 96],
+      "position": [
+        448,
+        96
+      ],
       "parameters": {
-        "method": "GET",
         "url": "http://192.168.20.10:3100/loki/api/v1/query_range",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
         "sendQuery": true,
-        "specifyQuery": "keypair",
         "queryParameters": {
           "parameters": [
-            { "name": "query", "value": "{container=\"hvac-scheduler\"} |= \"decision_trace\"" },
-            { "name": "start", "value": "={{ $('Compute Target Date').first().json.target_start_utc }}" },
-            { "name": "end", "value": "={{ $('Compute Target Date').first().json.target_end_utc }}" },
-            { "name": "limit", "value": "5000" }
+            {
+              "name": "query",
+              "value": "{container=\"hvac-scheduler\"} |= \"decision_trace\""
+            },
+            {
+              "name": "start",
+              "value": "={{ $('Compute Target Date').first().json.target_start_utc }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $('Compute Target Date').first().json.target_end_utc }}"
+            },
+            {
+              "name": "limit",
+              "value": "5000"
+            }
           ]
-        },
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "json" } }
         }
-      }
+      },
+      "typeVersion": 4.4
     },
     {
       "id": "5896802d-3d35-49f9-aaa1-d7d1b2436989",
       "name": "Loki 7d Trace Counts",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [672, 96],
+      "position": [
+        672,
+        96
+      ],
       "parameters": {
-        "method": "GET",
         "url": "http://192.168.20.10:3100/loki/api/v1/query_range",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
         "sendQuery": true,
-        "specifyQuery": "keypair",
         "queryParameters": {
           "parameters": [
-            { "name": "query", "value": "{container=\"hvac-scheduler\"} |= \"decision_trace\"" },
-            { "name": "start", "value": "={{ $('Compute Target Date').first().json.cumulative_start_utc }}" },
-            { "name": "end", "value": "={{ $('Compute Target Date').first().json.target_end_utc }}" },
-            { "name": "limit", "value": "5000" }
+            {
+              "name": "query",
+              "value": "{container=\"hvac-scheduler\"} |= \"decision_trace\""
+            },
+            {
+              "name": "start",
+              "value": "={{ $('Compute Target Date').first().json.cumulative_start_utc }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $('Compute Target Date').first().json.target_end_utc }}"
+            },
+            {
+              "name": "limit",
+              "value": "5000"
+            }
           ]
-        },
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "json" } }
         }
-      }
+      },
+      "typeVersion": 4.4
     },
     {
       "id": "6da66661-8bec-40ca-98b2-82109f2d39e1",
       "name": "Influx HVAC Decisions",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [896, 96],
+      "position": [
+        896,
+        96
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://192.168.20.10:8086/api/v2/query",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": { "parameters": [{ "name": "org", "value": "depaola-home" }] },
-        "sendHeaders": true,
-        "specifyHeaders": "keypair",
-        "headerParameters": {
-          "parameters": [
-            { "name": "Content-Type", "value": "application/vnd.flux" },
-            { "name": "Accept", "value": "application/csv" }
-          ]
+        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: -7d)\\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r.decision_for_date == \"' + $('Compute Target Date').first().json.target_date_iso + '\")\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         },
         "sendBody": true,
+        "sendQuery": true,
         "contentType": "raw",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
         "rawContentType": "application/vnd.flux",
-        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: -7d)\\n  |> filter(fn: (r) => r._measurement == \"hvac.decisions\" and r.decision_for_date == \"' + $('Compute Target Date').first().json.target_date_iso + '\")\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "text" } }
+        "genericAuthType": "httpHeaderAuth",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "org",
+              "value": "depaola-home"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.flux"
+            },
+            {
+              "name": "Accept",
+              "value": "application/csv"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 4.4,
+      "_credentialsRequired": [
+        "httpHeaderAuth"
+      ]
     },
     {
       "id": "09e33b6c-5a5d-418b-9e72-7a6efcb4adc2",
       "name": "Influx Precool Window",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1120, 96],
+      "position": [
+        1120,
+        96
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://192.168.20.10:8086/api/v2/query",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": { "parameters": [{ "name": "org", "value": "depaola-home" }] },
-        "sendHeaders": true,
-        "specifyHeaders": "keypair",
-        "headerParameters": {
-          "parameters": [
-            { "name": "Content-Type", "value": "application/vnd.flux" },
-            { "name": "Accept", "value": "application/csv" }
-          ]
+        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: -7d)\\n  |> filter(fn: (r) => r._measurement == \"hvac.precool_window\" and r.target_date == \"' + $('Compute Target Date').first().json.target_date_iso + '\")\\n  |> last()\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         },
         "sendBody": true,
+        "sendQuery": true,
         "contentType": "raw",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
         "rawContentType": "application/vnd.flux",
-        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: -7d)\\n  |> filter(fn: (r) => r._measurement == \"hvac.precool_window\" and r.target_date == \"' + $('Compute Target Date').first().json.target_date_iso + '\")\\n  |> last()\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "text" } }
+        "genericAuthType": "httpHeaderAuth",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "org",
+              "value": "depaola-home"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.flux"
+            },
+            {
+              "name": "Accept",
+              "value": "application/csv"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 4.4,
+      "_credentialsRequired": [
+        "httpHeaderAuth"
+      ]
     },
     {
       "id": "4508a489-0591-435e-9d19-bf4db11466ed",
       "name": "Influx HVAC Actions",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1344, 96],
+      "position": [
+        1344,
+        96
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://192.168.20.10:8086/api/v2/query",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": { "parameters": [{ "name": "org", "value": "depaola-home" }] },
-        "sendHeaders": true,
-        "specifyHeaders": "keypair",
-        "headerParameters": {
-          "parameters": [
-            { "name": "Content-Type", "value": "application/vnd.flux" },
-            { "name": "Accept", "value": "application/csv" }
-          ]
+        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: ' + $('Compute Target Date').first().json.target_start_utc + ', stop: ' + $('Compute Target Date').first().json.target_end_utc + ')\\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\")\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         },
         "sendBody": true,
+        "sendQuery": true,
         "contentType": "raw",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
         "rawContentType": "application/vnd.flux",
-        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: ' + $('Compute Target Date').first().json.target_start_utc + ', stop: ' + $('Compute Target Date').first().json.target_end_utc + ')\\n  |> filter(fn: (r) => r._measurement == \"hvac.actions\")\\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")' }}",
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "text" } }
+        "genericAuthType": "httpHeaderAuth",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "org",
+              "value": "depaola-home"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.flux"
+            },
+            {
+              "name": "Accept",
+              "value": "application/csv"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 4.4,
+      "_credentialsRequired": [
+        "httpHeaderAuth"
+      ]
     },
     {
       "id": "8a7cd25d-0518-4b0c-9141-92b11bff999c",
       "name": "Influx ComEd Spikes",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1568, 96],
+      "position": [
+        1568,
+        96
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://192.168.20.10:8086/api/v2/query",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": { "parameters": [{ "name": "org", "value": "depaola-home" }] },
-        "sendHeaders": true,
-        "specifyHeaders": "keypair",
-        "headerParameters": {
-          "parameters": [
-            { "name": "Content-Type", "value": "application/vnd.flux" },
-            { "name": "Accept", "value": "application/csv" }
-          ]
+        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: ' + $('Compute Target Date').first().json.target_start_utc + ', stop: ' + $('Compute Target Date').first().json.target_end_utc + ')\\n  |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r._value >= 10.0)\\n  |> rename(columns: {_value: \"price_cents\"})' }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         },
         "sendBody": true,
+        "sendQuery": true,
         "contentType": "raw",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
         "rawContentType": "application/vnd.flux",
-        "body": "={{ 'from(bucket: \"energy\")\\n  |> range(start: ' + $('Compute Target Date').first().json.target_start_utc + ', stop: ' + $('Compute Target Date').first().json.target_end_utc + ')\\n  |> filter(fn: (r) => r._measurement == \"comed.prices\" and r._field == \"price_cents_per_kwh\" and r._value >= 10.0)\\n  |> rename(columns: {_value: \"price_cents\"})' }}",
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "text" } }
+        "genericAuthType": "httpHeaderAuth",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "org",
+              "value": "depaola-home"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.flux"
+            },
+            {
+              "name": "Accept",
+              "value": "application/csv"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 4.4,
+      "_credentialsRequired": [
+        "httpHeaderAuth"
+      ]
     },
     {
       "id": "767b0237-53ae-41be-a265-13d14e851322",
       "name": "Influx Feed Health",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1792, 96],
+      "position": [
+        1792,
+        96
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://192.168.20.10:8086/api/v2/query",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": { "parameters": [{ "name": "org", "value": "depaola-home" }] },
-        "sendHeaders": true,
-        "specifyHeaders": "keypair",
-        "headerParameters": {
-          "parameters": [
-            { "name": "Content-Type", "value": "application/vnd.flux" },
-            { "name": "Accept", "value": "application/csv" }
-          ]
+        "body": "feeds = [\"comed.prices\",\"nws.forecast\",\"pjm.lmp_da_hourly\",\"pjm.inst_load\",\"pjm.metered_load\",\"refoss.channel\",\"hvac.thermostat\",\"haven.indoor\"]\nfrom(bucket: \"energy\")\n  |> range(start: -7d)\n  |> filter(fn: (r) => contains(value: r._measurement, set: feeds))\n  |> keep(columns: [\"_time\", \"_measurement\"])\n  |> group(columns: [\"_measurement\"])\n  |> max(column: \"_time\")",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         },
         "sendBody": true,
+        "sendQuery": true,
         "contentType": "raw",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
         "rawContentType": "application/vnd.flux",
-        "body": "feeds = [\"comed.prices\",\"nws.forecast\",\"pjm.lmp_da_hourly\",\"pjm.inst_load\",\"pjm.metered_load\",\"refoss.channel\",\"hvac.thermostat\",\"haven.indoor\"]\nfrom(bucket: \"energy\")\n  |> range(start: -7d)\n  |> filter(fn: (r) => contains(value: r._measurement, set: feeds))\n  |> keep(columns: [\"_time\", \"_measurement\"])\n  |> group(columns: [\"_measurement\"])\n  |> max(column: \"_time\")",
-        "options": {
-          "response": { "response": { "neverError": true, "responseFormat": "text" } }
+        "genericAuthType": "httpHeaderAuth",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "org",
+              "value": "depaola-home"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.flux"
+            },
+            {
+              "name": "Accept",
+              "value": "application/csv"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 4.4,
+      "_credentialsRequired": [
+        "httpHeaderAuth"
+      ]
     },
     {
       "id": "36cf6fd7-a704-4e7a-ad0e-3e9f0a384003",
       "name": "Build Fact Packet",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2016, 96],
+      "position": [
+        2016,
+        96
+      ],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "language": "javaScript",
         "jsCode": "function parseLokiResponse(resp) {\n  if (!resp || !resp.data) return [];\n  const streams = resp.data.result || [];\n  const out = [];\n  for (const stream of streams) {\n    for (const pair of (stream.values || [])) {\n      const line = pair[1];\n      try { out.push(JSON.parse(line)); } catch (e) {}\n    }\n  }\n  return out;\n}\nfunction parseFluxCsv(text) {\n  if (!text || typeof text !== 'string') return [];\n  const lines = text.split(/\\r?\\n/).filter(function (l) { return l.length > 0; });\n  let headers = null;\n  const rows = [];\n  for (const line of lines) {\n    if (line.startsWith('#')) continue;\n    if (!headers) { headers = line.split(','); continue; }\n    const fields = line.split(',');\n    const row = {};\n    for (let i = 0; i < headers.length; i++) {\n      const h = (headers[i] || '').trim();\n      if (!h || h === 'result' || h === 'table') continue;\n      const v = (fields[i] || '').trim();\n      const num = Number(v);\n      row[h] = (v !== '' && !isNaN(num)) ? num : v;\n    }\n    rows.push(row);\n  }\n  return rows;\n}\nfunction formatCt(isoTs) {\n  if (!isoTs) return '';\n  const d = new Date(isoTs);\n  if (isNaN(d.getTime())) return String(isoTs);\n  return d.toLocaleString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });\n}\nfunction tally(events) {\n  const c = {};\n  for (const e of events) {\n    if (typeof e.reason_code === 'string') c[e.reason_code] = (c[e.reason_code] || 0) + 1;\n  }\n  return c;\n}\nconst dateCtx = $('Compute Target Date').first().json;\nconst target_date = dateCtx.target_date_iso;\nconst queryErrors = [];\nfunction checkError(name, item) {\n  const j = item && item.json;\n  if (j && j.statusCode && j.statusCode >= 400) {\n    queryErrors.push({ query: name, status: j.statusCode });\n  }\n}\nconst lokiTargetItem = $('Loki Target Day Traces').first();\ncheckError('loki_target_day', lokiTargetItem);\nconst targetTraces = parseLokiResponse(lokiTargetItem.json);\nconst loki7dItem = $('Loki 7d Trace Counts').first();\ncheckError('loki_7d', loki7dItem);\nconst traces7d = parseLokiResponse(loki7dItem.json);\nif (traces7d.length >= 5000) queryErrors.push({ query: 'loki_7d', warn: 'limit_saturated', note: 'observed counts may be truncated at 5000 entries' });\nconst observed_reason_codes_7d = tally(traces7d);\nfunction getCsv(name) {\n  const it = $(name).first();\n  checkError(name, it);\n  const raw = it.json;\n  if (typeof raw === 'string') return parseFluxCsv(raw);\n  if (raw && typeof raw.data === 'string') return parseFluxCsv(raw.data);\n  return [];\n}\nconst decisionsRows = getCsv('Influx HVAC Decisions');\nconst precoolRows = getCsv('Influx Precool Window');\nconst actionsRows = getCsv('Influx HVAC Actions');\nconst spikeRowsRaw = getCsv('Influx ComEd Spikes');\nconst feedRows = getCsv('Influx Feed Health');\nconst dayTypeTraces = targetTraces.filter(function (t) { return t.msg === 'decision_trace.day_type_decision' && t.decision_for_date === target_date; });\nconst precoolTraces = targetTraces.filter(function (t) { return t.msg === 'decision_trace.precool_decision' && t.decision_for_date === target_date; });\nconst layerSupTraces = targetTraces.filter(function (t) { return t.msg === 'decision_trace.layer_resolution' || t.msg === 'decision_trace.supervisor'; });\nconst overlayTraces = targetTraces.filter(function (t) { return t.msg === 'decision_trace.price_overlay_eval'; });\nconst FIVE_MIN_MS = 5 * 60 * 1000;\nconst price_spikes = spikeRowsRaw.map(function (r) {\n  const spikeMs = new Date(r._time).getTime();\n  const nearby = overlayTraces.filter(function (t) {\n    const tMs = new Date(t.ts).getTime();\n    return !isNaN(tMs) && Math.abs(tMs - spikeMs) <= FIVE_MIN_MS;\n  }).map(function (t) { return { time_ct: formatCt(t.ts), reason_code: t.reason_code, prev_tier: t.prev_tier, new_tier: t.new_tier, outcome: t.outcome }; });\n  return { time_ct: formatCt(r._time), price_cents_per_kwh: r.price_cents, nearby_overlay_traces_within_5m: nearby };\n});\nfunction isSynthetic(t) { return typeof t.tick_id === 'string' && t.tick_id.startsWith('commission'); }\nconst normalTraces = layerSupTraces.filter(function (t) { return !isSynthetic(t); }).map(function (t) { return Object.assign({ time_ct: formatCt(t.ts) }, t); });\nconst syntheticTraces = layerSupTraces.filter(isSynthetic).map(function (t) { return Object.assign({ time_ct: formatCt(t.ts) }, t); });\nconst expected = ['comed.prices', 'nws.forecast', 'pjm.lmp_da_hourly', 'pjm.inst_load', 'pjm.metered_load', 'refoss.channel', 'hvac.thermostat', 'haven.indoor'];\nconst feedMap = {};\nfor (const r of feedRows) { if (r._measurement) feedMap[r._measurement] = r._time; }\nconst feed_health_now = expected.map(function (name) {\n  const lastWrite = feedMap[name] || null;\n  return { name: name, status: lastWrite ? 'has_data' : 'missing', last_write: lastWrite };\n});\nconst fact_packet = {\n  target_date: target_date,\n  timezone: 'America/Chicago',\n  rendered_at_utc: dateCtx.render_now_utc,\n  day_type: { trace_events: dayTypeTraces, hvac_decisions: decisionsRows },\n  precool: { trace_events: precoolTraces, hvac_precool_window: precoolRows[0] || null },\n  price_spikes: price_spikes,\n  layer_supervisor: { normal_traces: normalTraces, synthetic_commissioning_traces: syntheticTraces, hvac_actions: actionsRows },\n  feed_health_now: feed_health_now,\n  observed_reason_codes_7d: observed_reason_codes_7d,\n  query_errors: queryErrors\n};\nreturn [{ json: { fact_packet: fact_packet, fact_packet_json: JSON.stringify(fact_packet, null, 2) } }];"
-      }
+      },
+      "typeVersion": 2
     },
     {
       "id": "eca686e3-1471-493e-9256-90a08f4a22b2",
       "name": "Claude Generate Report",
       "type": "@n8n/n8n-nodes-langchain.anthropic",
-      "typeVersion": 1,
-      "position": [2240, 96],
+      "position": [
+        2240,
+        96
+      ],
       "parameters": {
-        "resource": "text",
-        "operation": "message",
-        "modelId": { "__rl": true, "mode": "list", "value": "claude-sonnet-4-6", "cachedResultName": "Claude Sonnet 4.6" },
-        "messages": {
-          "values": [
-            { "role": "user", "content": "={{ $('Build Fact Packet').first().json.fact_packet_json }}" }
-          ]
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-6",
+          "cachedResultName": "Claude Sonnet 4.6"
         },
-        "simplify": true,
         "options": {
-          "system": "You are writing a daily commissioning report for Chris.\n\nUse only the fact packet provided. Do not invent events. Write in plain English. Use Central Time for all times. Separate real scheduler behavior from synthetic commissioning traces (any tick_id that starts with `commission` is verification traffic, not normal scheduler output). Say when evidence is missing or uncertain. Do not call something a controller failure unless the packet proves it. Prefer \"needs investigation\" when the evidence is incomplete.\n\nReport shape:\n1. Executive summary — 2-4 sentences. What kind of day was it?\n2. What needs attention — bullet list. Nothing if everything is normal.\n3. Timeline — chronological narrative of notable moments. Skip the commissioning burst from the main timeline; reference it once at the end of this section.\n4. Feed health now — one-line per critical feed, current status.\n5. Coverage / observed reason codes — which reason codes fired in the last 7 days and roughly how often. Do NOT claim \"code X never observed\" unless the packet explicitly says so. Treat absence as silence, not negative result.\n6. Appendix — only if you have something concrete to add. Skip if not useful.\n\nOutput format:\n- Markdown.\n- Start with `# Decision-trace commissioning report — YYYY-MM-DD`.\n- Then the five sections above as `##` headings, in order.\n- No code blocks unless quoting a trace event verbatim.",
-          "maxTokens": 2048,
+          "system": "You are writing a daily commissioning report for Chris.\n\nUse only the fact packet provided. Do not invent events. Write in plain English. Use Central Time for all times. Separate real scheduler behavior from synthetic commissioning traces (any tick_id that starts with `commission` is verification traffic, not normal scheduler output). Say when evidence is missing or uncertain. Do not call something a controller failure unless the packet proves it. Prefer \"needs investigation\" when the evidence is incomplete.\n\nReport shape:\n1. Executive summary \u2014 2-4 sentences. What kind of day was it?\n2. What needs attention \u2014 bullet list. Nothing if everything is normal.\n3. Timeline \u2014 chronological narrative of notable moments. Skip the commissioning burst from the main timeline; reference it once at the end of this section.\n4. Feed health now \u2014 one-line per critical feed, current status.\n5. Coverage / observed reason codes \u2014 which reason codes fired in the last 7 days and roughly how often. Do NOT claim \"code X never observed\" unless the packet explicitly says so. Treat absence as silence, not negative result.\n6. Appendix \u2014 only if you have something concrete to add. Skip if not useful.\n\nOutput format:\n- Markdown.\n- Start with `# Decision-trace commissioning report \u2014 YYYY-MM-DD`.\n- Then the five sections above as `##` headings, in order.\n- No code blocks unless quoting a trace event verbatim.",
+          "maxTokens": 4096,
           "temperature": 0.3,
           "includeMergedResponse": true
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $('Build Fact Packet').first().json.fact_packet_json }}"
+            }
+          ]
         }
-      }
+      },
+      "typeVersion": 1,
+      "_credentialsRequired": [
+        "anthropicApi"
+      ]
     },
     {
       "id": "8e4e3d51-390e-4be7-9a4a-d0a222bf9ed6",
       "name": "Extract Short Summary",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2464, 96],
+      "position": [
+        2464,
+        96
+      ],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "language": "javaScript",
-        "jsCode": "function pickResponseText(item) {\n  if (!item) return '';\n  if (typeof item.content === 'string') return item.content;\n  if (typeof item.text === 'string') return item.text;\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  if (Array.isArray(item.content)) {\n    return item.content.map(function (c) { return c && c.text ? c.text : ''; }).join('\\n');\n  }\n  return JSON.stringify(item);\n}\nfunction extractSection(md, heading) {\n  const re = new RegExp('^##\\\\s*' + heading + '\\\\s*$([\\\\s\\\\S]*?)(?=^##\\\\s|$)', 'im');\n  const m = md.match(re);\n  return m ? m[1].trim() : '';\n}\nconst target_date = $('Compute Target Date').first().json.target_date_iso;\nconst filePath = '/reports/' + target_date + '-decision-trace.md';\nconst fullReport = pickResponseText($input.first().json);\nconst execSummary = extractSection(fullReport, 'Executive summary');\nconst needsAttention = extractSection(fullReport, 'What needs attention');\nconst telegramLines = [\n  '*Decision-trace report \\u2014 ' + target_date + '*',\n  '',\n  '*Executive summary*',\n  execSummary || '(no summary section)',\n  '',\n  '*What needs attention*',\n  needsAttention || '(none)',\n  '',\n  'Full report: `' + filePath + '`'\n];\nconst telegram_text = telegramLines.join('\\n');\nconst buffer = Buffer.from(fullReport, 'utf-8');\nreturn [{\n  json: { telegram_text: telegram_text, file_path: filePath, target_date: target_date },\n  binary: { data: { data: buffer.toString('base64'), mimeType: 'text/markdown', fileName: target_date + '-decision-trace.md' } }\n}];"
-      }
+        "jsCode": "function pickResponseText(item) {\n  if (!item) return '';\n  if (typeof item.content === 'string') return item.content;\n  if (typeof item.text === 'string') return item.text;\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  if (Array.isArray(item.content)) {\n    return item.content.map(function (c) { return c && c.text ? c.text : ''; }).join('\n');\n  }\n  return JSON.stringify(item);\n}\nfunction extractSection(md, heading) {\n  const re = new RegExp('^##\\s*' + heading + '\\s*$([\\s\\S]*?)(?=^##\\s|$)', 'im');\n  const m = md.match(re);\n  return m ? m[1].trim() : '';\n}\nconst target_date = $('Compute Target Date').first().json.target_date_iso;\nconst fullReport = pickResponseText($input.first().json);\nconst execSummary = extractSection(fullReport, 'Executive summary');\nconst needsAttention = extractSection(fullReport, 'What needs attention');\nconst telegramLines = [\n  '*Decision-trace report \u2014 ' + target_date + '*',\n  '',\n  '*Executive summary*',\n  execSummary || '(no summary section)',\n  '',\n  '*What needs attention*',\n  needsAttention || '(none)',\n  '',\n  '_Full report attached as document._'\n];\nconst telegram_text = telegramLines.join('\n');\nconst buffer = Buffer.from(fullReport, 'utf-8');\nreturn [{\n  json: { telegram_text: telegram_text, target_date: target_date },\n  binary: { data: { data: buffer.toString('base64'), mimeType: 'text/markdown', fileName: target_date + '-decision-trace.md' } }\n}];"
+      },
+      "typeVersion": 2
     },
     {
       "id": "eea18ca5-723c-4e81-8e32-1b6adff6ae2a",
       "name": "Telegram Short Summary",
       "type": "n8n-nodes-base.telegram",
-      "typeVersion": 1.2,
-      "position": [2688, 0],
+      "position": [
+        2688,
+        0
+      ],
+      "webhookId": "6f76128b-daa1-4a7b-a06b-b022322b84a4",
       "parameters": {
-        "resource": "message",
-        "operation": "sendMessage",
-        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID",
         "text": "={{ $json.telegram_text }}",
+        "chatId": "0",
         "additionalFields": {
           "parse_mode": "Markdown",
           "appendAttribution": false,
           "disable_web_page_preview": true
         }
-      }
+      },
+      "typeVersion": 1.2,
+      "_credentialsRequired": [
+        "telegramApi"
+      ]
     },
     {
-      "id": "ef559d0e-d5fb-4fe3-92fd-2ce8aebc41f9",
-      "name": "Write Report File",
-      "type": "n8n-nodes-base.readWriteFile",
-      "typeVersion": 1.1,
-      "position": [2688, 192],
+      "id": "97d15c34-c1ed-4c32-8c4b-27632690b862",
+      "name": "Telegram Full Report",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        2688,
+        192
+      ],
       "parameters": {
-        "operation": "write",
-        "fileName": "={{ $('Extract Short Summary').first().json.file_path }}",
-        "dataPropertyName": "data"
-      }
+        "chatId": "0",
+        "resource": "message",
+        "operation": "sendDocument",
+        "binaryData": true,
+        "additionalFields": {
+          "caption": "={{ $('Extract Short Summary').first().json.target_date + ' decision-trace report' }}",
+          "fileName": "={{ $('Extract Short Summary').first().json.target_date + '-decision-trace.md' }}",
+          "disable_notification": true
+        },
+        "binaryPropertyName": "data"
+      },
+      "typeVersion": 1.2,
+      "_credentialsRequired": [
+        "telegramApi"
+      ]
     }
   ],
   "connections": {
-    "Daily 08:00 CT": { "main": [[{ "node": "Compute Target Date", "type": "main", "index": 0 }]] },
-    "Compute Target Date": { "main": [[{ "node": "Loki Target Day Traces", "type": "main", "index": 0 }]] },
-    "Loki Target Day Traces": { "main": [[{ "node": "Loki 7d Trace Counts", "type": "main", "index": 0 }]] },
-    "Loki 7d Trace Counts": { "main": [[{ "node": "Influx HVAC Decisions", "type": "main", "index": 0 }]] },
-    "Influx HVAC Decisions": { "main": [[{ "node": "Influx Precool Window", "type": "main", "index": 0 }]] },
-    "Influx Precool Window": { "main": [[{ "node": "Influx HVAC Actions", "type": "main", "index": 0 }]] },
-    "Influx HVAC Actions": { "main": [[{ "node": "Influx ComEd Spikes", "type": "main", "index": 0 }]] },
-    "Influx ComEd Spikes": { "main": [[{ "node": "Influx Feed Health", "type": "main", "index": 0 }]] },
-    "Influx Feed Health": { "main": [[{ "node": "Build Fact Packet", "type": "main", "index": 0 }]] },
-    "Build Fact Packet": { "main": [[{ "node": "Claude Generate Report", "type": "main", "index": 0 }]] },
-    "Claude Generate Report": { "main": [[{ "node": "Extract Short Summary", "type": "main", "index": 0 }]] },
+    "Daily 08:00 CT": {
+      "main": [
+        [
+          {
+            "node": "Compute Target Date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fact Packet": {
+      "main": [
+        [
+          {
+            "node": "Claude Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Influx Feed Health": {
+      "main": [
+        [
+          {
+            "node": "Build Fact Packet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Target Date": {
+      "main": [
+        [
+          {
+            "node": "Loki Target Day Traces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Influx ComEd Spikes": {
+      "main": [
+        [
+          {
+            "node": "Influx Feed Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Influx HVAC Actions": {
+      "main": [
+        [
+          {
+            "node": "Influx ComEd Spikes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loki 7d Trace Counts": {
+      "main": [
+        [
+          {
+            "node": "Influx HVAC Decisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Extract Short Summary": {
-      "main": [[
-        { "node": "Telegram Short Summary", "type": "main", "index": 0 },
-        { "node": "Write Report File", "type": "main", "index": 0 }
-      ]]
+      "main": [
+        [
+          {
+            "node": "Telegram Short Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Full Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Influx HVAC Decisions": {
+      "main": [
+        [
+          {
+            "node": "Influx Precool Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Influx Precool Window": {
+      "main": [
+        [
+          {
+            "node": "Influx HVAC Actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Extract Short Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loki Target Day Traces": {
+      "main": [
+        [
+          {
+            "node": "Loki 7d Trace Counts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   }
 }
