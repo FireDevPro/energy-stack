@@ -126,11 +126,14 @@ describe('ActionEdge', () => {
     expect(edge).toHaveAttribute('data-edge-style', 'dashed')
   })
 
-  it('defaults to dashed if shadow is unset', () => {
+  it('defaults to dashed (conservative) when shadow is unset', () => {
+    // Solid claims writes are physically happening. If the snapshot data
+    // is missing the `shadow` flag entirely, we don't actually know — the
+    // safe default is dashed (no writes assumed).
     const { container } = renderInFlow(
       <ActionEdge {...baseProps} data={{ testId: 'edge-action' }} />,
     )
     const edge = container.querySelector('[data-testid="edge-action"]')
-    expect(edge).toHaveAttribute('data-edge-style', 'solid')
+    expect(edge).toHaveAttribute('data-edge-style', 'dashed')
   })
 })

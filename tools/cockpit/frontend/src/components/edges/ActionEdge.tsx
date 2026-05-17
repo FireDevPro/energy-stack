@@ -5,7 +5,11 @@ type ActionEdgeData = { shadow?: boolean; testId?: string }
 export function ActionEdge(props: EdgeProps) {
   const [path] = getBezierPath(props)
   const data = props.data as ActionEdgeData | undefined
-  const shadow = data?.shadow ?? false
+  // Default to dashed: solid means "writes are physically happening." If
+  // the data prop is missing entirely (malformed snapshot, race during
+  // re-render, etc.), the conservative default is to NOT claim writes
+  // are firing. Visualizing dashed when uncertain is honest.
+  const shadow = data?.shadow ?? true
   const style = shadow ? 'dashed' : 'solid'
   return (
     <g data-testid={data?.testId} data-edge-style={style}>

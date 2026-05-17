@@ -44,3 +44,4 @@ analysis/exports/
 # Decision-trace commissioning reports (transient artifacts)
 docs/test-reports/*.md
 !docs/test-reports/README.md
+.codex/

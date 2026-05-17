@@ -68,6 +68,19 @@ export const FRESHNESS_THRESHOLDS: Record<string, FreshnessThresholds> = {
     warn_max_ms: hr(3),
     stale_max_ms: hr(12),
   },
+  // Refoss EM16P + EAGLE-3 both poll at 30s cadence. Without these
+  // entries, classifyFreshness returns 'fresh' for any age, masking real
+  // outages once Phase 3 wires live data.
+  'refoss.channel': {
+    fresh_max_ms: min(1),
+    warn_max_ms: min(3),
+    stale_max_ms: min(10),
+  },
+  'eagle.meter': {
+    fresh_max_ms: min(1),
+    warn_max_ms: min(3),
+    stale_max_ms: min(10),
+  },
 }
 
 export function classifyFreshness(source: string, ageMs: number): Freshness {

@@ -47,6 +47,11 @@ export function Header({ snapshot }: { snapshot: Snapshot }) {
       >
         {snapshot.arm_mode.mode_actual}
       </Chip>
+      {snapshot.arm_mode.arm && (
+        <Chip tone="zinc" testId="chip-arm-letter">
+          arm {snapshot.arm_mode.arm}
+        </Chip>
+      )}
       <span
         data-testid="chip-controller-alive"
         className={`inline-block h-2 w-2 rounded-full ${snapshot.controller.alive ? 'bg-emerald-400' : 'bg-rose-500'}`}
