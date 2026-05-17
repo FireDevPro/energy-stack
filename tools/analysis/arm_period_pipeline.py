@@ -62,6 +62,11 @@ _CT = ZoneInfo("America/Chicago")
 _UTC = ZoneInfo("UTC")
 
 
+HIGH_TEMP_F = 85.0  # spec §9.5 / §9 high-temp threshold
+COOLING_ACTIVE_W = 100.0  # spec §9: em:2 + em:8 > 100W => cooling active
+LOW_COOLING_EXPOSURE_HOURS = 6  # spec §9: low_cooling_exposure_flag
+
+
 # Default OSF April-2026 snapshot of non-LMP rate primitives. Real
 # pipeline calls override this via the ``rate_snapshot`` kwarg. The
 # defaults are only used so the fixture-driven outside-in test can
@@ -86,6 +91,20 @@ class PipelineResult:
 
 
 # --- Time helpers ----------------------------------------------------------
+
+
+def _normalize_time_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with ``_time`` normalised to naive UTC. Tolerates
+    both tz-aware-UTC (production Influx) and naive (fixture) inputs.
+    """
+    if df.empty or "_time" not in df.columns:
+        return df
+    out = df.copy()
+    times = pd.to_datetime(out["_time"])
+    if times.dt.tz is not None:
+        times = times.dt.tz_convert("UTC").dt.tz_localize(None)
+    out["_time"] = times
+    return out
 
 
 def _arm_id(arm: ArmPeriod) -> str:
@@ -179,15 +198,22 @@ def _hourly_mode_from_telemetry(
     return modes
 
 
+_KNOWN_MODE_STRINGS: dict[str, HourMode] = {
+    "A-active": HourMode.A_ACTIVE,
+    "B-active": HourMode.B_ACTIVE,
+    "B-fallback": HourMode.B_FALLBACK,
+    "B-down": HourMode.B_DOWN,
+    "telemetry-invalid": HourMode.TELEMETRY_INVALID,
+}
+
+
 def _string_to_hour_mode(s: str) -> HourMode:
-    mapping = {
-        "A-active": HourMode.A_ACTIVE,
-        "B-active": HourMode.B_ACTIVE,
-        "B-fallback": HourMode.B_FALLBACK,
-        "B-down": HourMode.B_DOWN,
-        "telemetry-invalid": HourMode.TELEMETRY_INVALID,
-    }
-    return mapping[s]
+    """Map a controller-side mode string to HourMode. Unknown values
+    (e.g. off-protocol shadow/production captured in production telemetry
+    but outside this study's scope) downgrade to TELEMETRY_INVALID so
+    they are excluded from analysis rather than crashing.
+    """
+    return _KNOWN_MODE_STRINGS.get(s, HourMode.TELEMETRY_INVALID)
 
 
 # --- Per-hour HVAC kWh + rate vectors --------------------------------------
@@ -218,13 +244,28 @@ def _hourly_rates(
     rt_hrl_lmps_df: pd.DataFrame,
     rate_snapshot: dict[str, float],
 ) -> list[float]:
-    """¢/kWh per hour-index per spec §4."""
+    """¢/kWh per hour-index per spec §4. Raises if rt_hrl_lmps has no
+    row for a hour in the post-washout window -- the analysis layer
+    requires bill-canonical settled LMP for every hour. Missing data is
+    a feed-gap defect to surface, not silently substitute as zero.
+    """
     start_utc = _post_washout_utc_naive(arm)
+    # Index LMP rows once
+    lmp_lookup = (
+        rt_hrl_lmps_df.dropna(subset=["_time"])
+        .set_index("_time")["total_lmp_rt"]
+    )
     rates: list[float] = []
     for k in range(HOURS_PER_ARM):
         h_start = start_utc + datetime.timedelta(hours=k)
-        match = rt_hrl_lmps_df[rt_hrl_lmps_df["_time"] == h_start]
-        lmp_per_mwh = float(match["total_lmp_rt"].iloc[0]) if not match.empty else 0.0
+        if h_start not in lmp_lookup.index:
+            raise ValueError(
+                f"Missing rt_hrl_lmps row for hour {h_start} (arm "
+                f"{_arm_id(arm)} hour-index {k}); bill-canonical supply "
+                "rate is required per spec §4. Run the rt_hrl_lmps "
+                "poller backfill before running the pipeline."
+            )
+        lmp_per_mwh = float(lmp_lookup.loc[h_start])
         ct_hour = _utc_to_ct_hour_of_day(h_start)
         inputs = HourlyRateInputs(
             rt_hrl_lmps_per_mwh=lmp_per_mwh,
@@ -237,6 +278,45 @@ def _hourly_rates(
         )
         rates.append(hourly_rate_c_per_kwh(inputs))
     return rates
+
+
+def _hourly_em28_watts(arm: ArmPeriod, refoss_df: pd.DataFrame) -> list[float]:
+    """Mean(em:2 + em:8 power_w) per hour-index. Spec §9 cooling-active
+    test uses this instead of the full HVAC kWh (which includes em:9).
+    """
+    df = refoss_df
+    if "_field" in df.columns:
+        df = df[df["_field"] == "power_w"]
+    df = df[df["channel"].isin(("em:2", "em:8"))]
+    start_utc = _post_washout_utc_naive(arm)
+    out: list[float] = []
+    for k in range(HOURS_PER_ARM):
+        h_start = start_utc + datetime.timedelta(hours=k)
+        h_end = h_start + datetime.timedelta(hours=1)
+        slice_df = df[(df["_time"] >= h_start) & (df["_time"] < h_end)]
+        per_channel = slice_df.groupby("channel")["_value"].mean()
+        total = float(per_channel.get("em:2", 0.0) + per_channel.get("em:8", 0.0))
+        out.append(total)
+    return out
+
+
+def _hourly_ct_outdoor_temp(arm: ArmPeriod,
+                            ecowitt_df: pd.DataFrame) -> list[float | None]:
+    """Hourly mean outdoor temp aligned to the arm's hour-indices. Used
+    for high-temp exposure bucket (spec §9.5)."""
+    start_utc = _post_washout_utc_naive(arm)
+    end_utc = start_utc + datetime.timedelta(hours=HOURS_PER_ARM)
+    df = ecowitt_df[
+        (ecowitt_df["_time"] >= start_utc) & (ecowitt_df["_time"] < end_utc)
+    ].copy()
+    if df.empty:
+        return [None] * HOURS_PER_ARM
+    df["_hour"] = df["_time"].dt.floor("h")
+    hourly_mean = df.groupby("_hour")["ch1_temp_f"].mean()
+    return [
+        float(hourly_mean.get(start_utc + datetime.timedelta(hours=k), float("nan")))
+        for k in range(HOURS_PER_ARM)
+    ]
 
 
 # --- Per-pair row construction ---------------------------------------------
@@ -253,6 +333,10 @@ def _build_pair_row(
     rates_b: list[float],
     kwh_a: list[float],
     kwh_b: list[float],
+    em28_w_a: list[float],
+    em28_w_b: list[float],
+    hourly_temp_a: list[float | None],
+    hourly_temp_b: list[float | None],
     vec_a: WeatherVector,
     vec_b: WeatherVector,
     z_a: np.ndarray,
@@ -263,7 +347,7 @@ def _build_pair_row(
     initial_valid_a = [is_fully_valid_for_arm(m, "A") for m in modes_a]
     initial_valid_b = [is_fully_valid_for_arm(m, "B") for m in modes_b]
 
-    # Breakdown of asymmetric-invalid hours BEFORE cost-matched drops
+    # Breakdown of mode-invalid hours BEFORE cost-matched drops
     excl_a = Counter()
     excl_b = Counter()
     for m in modes_a:
@@ -289,20 +373,50 @@ def _build_pair_row(
     hvac_kwh_a = sum(kwh_a[k] for k in range(HOURS_PER_ARM) if valid_a[k])
     hvac_kwh_b = sum(kwh_b[k] for k in range(HOURS_PER_ARM) if valid_b[k])
 
-    # Cooling-active counts use em:2 + em:8 threshold; spec §9 reads from
-    # the per-pair table, so derive from kWh as a proxy at the resolution
-    # we have: any hour with kwh > 0.1 (>=100 W avg over the hour) counts.
+    # Cooling-active per spec §9: em:2 + em:8 > 100W. Use full-arm
+    # post-washout window, not only post-exclusion (the indicator
+    # describes household behavior, not the analysis denominator).
     cooling_active_hours_a = sum(1 for k in range(HOURS_PER_ARM)
-                                 if valid_a[k] and kwh_a[k] > 0.1)
+                                 if em28_w_a[k] > COOLING_ACTIVE_W)
     cooling_active_hours_b = sum(1 for k in range(HOURS_PER_ARM)
-                                 if valid_b[k] and kwh_b[k] > 0.1)
+                                 if em28_w_b[k] > COOLING_ACTIVE_W)
 
     weather_distance = float(np.linalg.norm(z_a - z_b))
     poor_weather_match = weather_distance > p90_dist
 
-    valid_pair_hours = sum(1 for k in range(HOURS_PER_ARM)
-                           if valid_a[k] and valid_b[k])
+    # Spec §5 produces equal-size valid sets in both arms after
+    # cost-matched exclusion. valid_pair_hours therefore equals the
+    # per-arm valid count. Sanity-check both sides agree.
+    valid_a_count = sum(valid_a)
+    valid_b_count = sum(valid_b)
+    if valid_a_count != valid_b_count:
+        raise AssertionError(
+            f"cost-matched exclusion left unequal counts: "
+            f"|valid_a|={valid_a_count} |valid_b|={valid_b_count}"
+        )
+    valid_pair_hours = valid_a_count
     excluded_hours_count = HOURS_PER_ARM - valid_pair_hours
+
+    # Provenance: median hourly rate of excluded hours (union of either-
+    # side exclusions). Empty if no exclusions.
+    excluded_indices = [k for k in range(HOURS_PER_ARM)
+                        if not (valid_a[k] and valid_b[k])]
+    if excluded_indices:
+        excluded_rates = [
+            (rates_a[k] + rates_b[k]) / 2.0 for k in excluded_indices
+        ]
+        excluded_rate_p50 = float(np.median(excluded_rates))
+    else:
+        excluded_rate_p50 = 0.0
+
+    # Spec §5 overlap provenance for excluded hours. Without scarcity-
+    # tier or 5CP-active feeds wired in, those overlaps are 0; high-temp
+    # is computable from Ecowitt.
+    excluded_overlap_high_temp = sum(
+        1 for k in excluded_indices
+        if (hourly_temp_a[k] is not None and hourly_temp_a[k] >= HIGH_TEMP_F)
+        or (hourly_temp_b[k] is not None and hourly_temp_b[k] >= HIGH_TEMP_F)
+    )
 
     raw_diffs = vec_b.as_array() - vec_a.as_array()
     z_diffs = z_b - z_a
@@ -329,22 +443,29 @@ def _build_pair_row(
         "weather_component_diffs_zscored": tuple(z_diffs.tolist()),
         "poor_weather_match_flag": bool(poor_weather_match),
         "valid_pair_hours": int(valid_pair_hours),
-        "valid_pair_hours_a": int(sum(valid_a)),
-        "valid_pair_hours_b": int(sum(valid_b)),
+        "valid_pair_hours_a": int(valid_a_count),
+        "valid_pair_hours_b": int(valid_b_count),
         "excluded_hours_count": int(excluded_hours_count),
         "excluded_hours_breakdown_a": dict(excl_a),
         "excluded_hours_breakdown_b": dict(excl_b),
         "cost_match_quality_median_diff_c_per_kwh":
             excl.cost_match_quality_median_diff_c_per_kwh,
-        # CFE rate is a monthly snapshot column; we record what the
-        # rate-snapshot held during this pair's aggregation. Per spec §10
-        # L1 we report this per pair; pre-OSF this is single-month.
+        "excluded_hourly_rate_p50_c_per_kwh": excluded_rate_p50,
+        # Scarcity-tier + 5CP overlap will fill in when the controller-
+        # side tier markers and post-season 5CP list are wired in
+        # (Phase 5+). Per spec §9.5 zero is itself a reported finding.
+        "excluded_overlap_elevated_price": 0,
+        "excluded_overlap_scarcity_price": 0,
+        "excluded_overlap_5cp_active": 0,
+        "excluded_overlap_high_temp": int(excluded_overlap_high_temp),
         "cfe_c_per_kwh_a": rate_snapshot["carbon_free_credit_c_per_kwh"],
         "cfe_c_per_kwh_b": rate_snapshot["carbon_free_credit_c_per_kwh"],
         "cooling_active_hours_a": int(cooling_active_hours_a),
         "cooling_active_hours_b": int(cooling_active_hours_b),
+        # Spec §9 row: flag if EITHER arm has <6 cooling-active hours.
         "low_cooling_exposure_flag":
-            bool(cooling_active_hours_a + cooling_active_hours_b < 6),
+            bool(cooling_active_hours_a < LOW_COOLING_EXPOSURE_HOURS
+                 or cooling_active_hours_b < LOW_COOLING_EXPOSURE_HOURS),
         "hvac_dollars_a": hvac_dollars_a,
         "hvac_dollars_b": hvac_dollars_b,
         "diff_dollars_b_minus_a": hvac_dollars_b - hvac_dollars_a,
@@ -352,6 +473,14 @@ def _build_pair_row(
         "hvac_kwh_a": float(hvac_kwh_a),
         "hvac_kwh_b": float(hvac_kwh_b),
         "diff_kwh_b_minus_a": float(hvac_kwh_b - hvac_kwh_a),
+        # Hourly outdoor temp summary on the pair (used by the
+        # high_temp_exposed bucket).
+        "any_hour_high_temp_a": any(
+            t is not None and t >= HIGH_TEMP_F for t in hourly_temp_a
+        ),
+        "any_hour_high_temp_b": any(
+            t is not None and t >= HIGH_TEMP_F for t in hourly_temp_b
+        ),
         # Provenance for Ecowitt vs NOAA fallback; the Phase 3 fixture is
         # 100% Ecowitt -- real coverage helper lands when NOAA fallback
         # wires in (Phase 4).
@@ -398,9 +527,15 @@ def _build_bucket_summaries(pair_rows: list[dict]) -> dict[str, dict]:
         "low_cooling_pairs": _bucket_summary(
             [r for r in pair_rows if total_pair_dollars(r) < 5.0]
         ),
+        # Scarcity-tier + 5CP signals not wired into Phase 3 fixtures or
+        # current production telemetry; spec §9.5 explicitly allows
+        # N=0 buckets to be reported as a finding.
         "scarcity_exposed_pairs": _bucket_summary([]),
         "5cp_exposed_pairs": _bucket_summary([]),
-        "high_temp_exposed_pairs": _bucket_summary([]),
+        "high_temp_exposed_pairs": _bucket_summary(
+            [r for r in pair_rows
+             if r.get("any_hour_high_temp_a") or r.get("any_hour_high_temp_b")]
+        ),
     }
 
 
@@ -423,6 +558,17 @@ def run_full_pipeline(
     rate_snapshot = rate_snapshot if rate_snapshot is not None else DEFAULT_RATE_SNAPSHOT
     arms = list(arm_calendar)
 
+    # Normalize every input's _time to naive UTC up front so window-clip
+    # comparisons against naive UTC bounds (from arm-calendar /
+    # zoneinfo) never raise.
+    refoss_df = _normalize_time_column(refoss_df)
+    eagle_df = _normalize_time_column(eagle_df)
+    ecowitt_df = _normalize_time_column(ecowitt_df)
+    rt_hrl_lmps_df = _normalize_time_column(rt_hrl_lmps_df)
+    comed_prices_df = _normalize_time_column(comed_prices_df)
+    hvac_arm_mode_df = _normalize_time_column(hvac_arm_mode_df)
+    bills_df = _normalize_time_column(bills_df)
+
     # Step 1: per-arm mode classification, kWh, rates, weather vector.
     per_arm: dict[str, dict] = {}
     for arm in arms:
@@ -431,12 +577,16 @@ def run_full_pipeline(
         )
         kwh = _hourly_hvac_kwh(arm, refoss_df)
         rates = _hourly_rates(arm, rt_hrl_lmps_df, rate_snapshot)
+        em28 = _hourly_em28_watts(arm, refoss_df)
+        temps = _hourly_ct_outdoor_temp(arm, ecowitt_df)
         vec = build_weather_vector(arm, ecowitt_df)
         per_arm[_arm_id(arm)] = {
             "arm": arm,
             "modes": modes,
             "kwh": kwh,
             "rates": rates,
+            "em28_w": em28,
+            "hourly_temp": temps,
             "weather": vec,
             "fully_valid_count": fully_valid_count(modes, arm.arm),
             "passes_gate": arm_passes_validity_gate(modes, arm.arm),
@@ -477,6 +627,10 @@ def run_full_pipeline(
             rates_b=st_b["rates"],
             kwh_a=st_a["kwh"],
             kwh_b=st_b["kwh"],
+            em28_w_a=st_a["em28_w"],
+            em28_w_b=st_b["em28_w"],
+            hourly_temp_a=st_a["hourly_temp"],
+            hourly_temp_b=st_b["hourly_temp"],
             vec_a=st_a["weather"],
             vec_b=st_b["weather"],
             z_a=z_by_arm_id[_arm_id(arm_a)],

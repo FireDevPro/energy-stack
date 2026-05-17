@@ -114,12 +114,52 @@ def test_validate_lengths():
         cost_matched_exclude([1.0] * 287, [1.0] * 288, [True] * 288, [True] * 288)
 
 
-def test_when_no_overlap_drops_stop_gracefully():
-    """If every B hour is invalid, A has no both-valid candidates to drop -> stop."""
+def test_candidate_pool_includes_other_asymmetric_invalid_hours():
+    """Per spec §5: candidate h is 'fully-valid in the OTHER arm'.
+    For an A-side drop driven by B-invalid k, h needs only va[h]=T;
+    it does NOT additionally need vb[h]=T. Test that a TF hour
+    (va=T, vb=F) is a valid drop candidate when its rate is closest.
+    """
+    rates_a = _flat_rates(15.0)
+    rates_b = _flat_rates(12.0)
+    # Make hour 50 in A have rate 12 (closest match for target rate 12)
+    rates_a[50] = 12.0
+    va, vb = _full_valid_lists()
+    # Two B-invalid hours -> two A drops
+    vb[0] = False
+    vb[1] = False
+    # Make hour 50 ALSO B-invalid (so it's a TF hour: va=T, vb=F).
+    # Spec allows h=50 as an A-side drop candidate.
+    vb[50] = False
+    out = cost_matched_exclude_with_provenance(rates_a, rates_b, va, vb)
+    # Hour 50 was the best cost match (diff 0). It must be chosen as
+    # one of the A-side drops.
+    assert out.valid_a[50] is False
+    # 3 B-invalid hours drove 3 A drops -> 3 fewer valid_a
+    assert sum(out.valid_a) == HOURS_PER_ARM - 3
+
+
+def test_post_exclusion_counts_are_equal_per_spec_5():
+    """Spec §5 result: equal counts of valid hours in both arms."""
+    rates_a = _flat_rates(10.0)
+    rates_b = _flat_rates(10.0)
+    va, vb = _full_valid_lists()
+    # 2 B-invalid, 3 A-invalid (asymmetric)
+    vb[0] = False
+    vb[1] = False
+    va[100] = False
+    va[101] = False
+    va[102] = False
+    out = cost_matched_exclude_with_provenance(rates_a, rates_b, va, vb)
+    assert sum(out.valid_a) == sum(out.valid_b)
+
+
+def test_full_one_sided_invalid_zeroes_both_sides():
+    """If every B hour is invalid and every A hour is valid initially,
+    A must drop 288 hours to keep counts equal -> both sides end at 0."""
     rates_a = _flat_rates(10.0)
     rates_b = _flat_rates(10.0)
     va, vb = [True] * HOURS_PER_ARM, [False] * HOURS_PER_ARM
     out_va, out_vb = cost_matched_exclude(rates_a, rates_b, va, vb)
-    # No symmetric drops possible because there's no both-valid hour to remove.
-    assert sum(out_va) == HOURS_PER_ARM
+    assert sum(out_va) == 0
     assert sum(out_vb) == 0

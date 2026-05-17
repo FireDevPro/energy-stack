@@ -68,20 +68,45 @@ def _post_washout_utc_bounds(arm: ArmPeriod) -> tuple[datetime.datetime, datetim
     return start_utc, end_utc
 
 
-def _attach_ct_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Localize naive-UTC ``_time`` to America/Chicago and add CT
-    bucketing columns the aggregators need.
+def _normalize_to_naive_utc(times: pd.Series) -> pd.Series:
+    """Return a tz-naive UTC Series regardless of input timezone state.
+
+    Real Influx returns tz-aware UTC; fixtures often store naive UTC.
+    Normalize at the boundary so window comparisons against naive bounds
+    don't raise.
     """
-    out = df.copy()
-    times = pd.to_datetime(out["_time"])
-    # Localize as UTC (whether arriving naive or tz-aware UTC works the same
-    # via the .dt.tz_localize/.dt.tz_convert pair, but only naive needs
-    # localize).
+    times = pd.to_datetime(times)
     if times.dt.tz is None:
-        times = times.dt.tz_localize("UTC")
-    else:
-        times = times.dt.tz_convert("UTC")
-    times_ct = times.dt.tz_convert(_CT)
+        return times
+    return times.dt.tz_convert("UTC").dt.tz_localize(None)
+
+
+def _aggregate_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """Group rows by UTC hour and average the temp/dewpoint columns.
+
+    Production Ecowitt is poll-cadence (~minutes); the spec aggregations
+    (CDD/daily-max/nocturnal-min/mean-dewpoint) are HOURLY primitives,
+    so we aggregate the sub-hourly stream first. For the Phase 0
+    fixture (one row per hour) this is a no-op.
+    """
+    df = df.copy()
+    df["_time"] = _normalize_to_naive_utc(df["_time"])
+    df["_hour_utc"] = df["_time"].dt.floor("h")
+    return (
+        df.groupby("_hour_utc", as_index=False)[
+            ["ch1_temp_f", "ch1_dewpoint_f"]
+        ]
+        .mean()
+        .rename(columns={"_hour_utc": "_time"})
+    )
+
+
+def _attach_ct_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add America/Chicago bucketing columns. Input must already have
+    naive-UTC ``_time``."""
+    out = df.copy()
+    times_aware = out["_time"].dt.tz_localize("UTC")
+    times_ct = times_aware.dt.tz_convert(_CT)
     out["_time_ct"] = times_ct
     out["date_ct"] = times_ct.dt.date
     out["hour_ct"] = times_ct.dt.hour
@@ -91,15 +116,22 @@ def _attach_ct_columns(df: pd.DataFrame) -> pd.DataFrame:
 def build_weather_vector(arm: ArmPeriod, ecowitt_df: pd.DataFrame) -> WeatherVector:
     """Aggregate Ecowitt data over the arm's 288-hour post-washout
     window. Uses ``ch1_temp_f`` (shaded outdoor) and ``ch1_dewpoint_f``.
+
+    Handles both naive-UTC fixtures and tz-aware-UTC real-shape inputs.
+    Aggregates sub-hourly cadence to hourly mean before computing spec
+    §6 primitives.
     """
     start_utc, end_utc = _post_washout_utc_bounds(arm)
-    in_window = (ecowitt_df["_time"] >= start_utc) & (ecowitt_df["_time"] < end_utc)
-    df = ecowitt_df.loc[in_window].copy()
+    df = ecowitt_df.copy()
+    df["_time"] = _normalize_to_naive_utc(df["_time"])
+    in_window = (df["_time"] >= start_utc) & (df["_time"] < end_utc)
+    df = df.loc[in_window]
     if df.empty:
         raise ValueError(
             f"No Ecowitt rows in arm-period window [{start_utc}, {end_utc})"
         )
 
+    df = _aggregate_to_hourly(df)
     df = _attach_ct_columns(df)
 
     # 1. CDD total

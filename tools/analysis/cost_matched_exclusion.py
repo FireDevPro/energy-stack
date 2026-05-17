@@ -64,21 +64,30 @@ def cost_matched_exclude_with_provenance(
                        if not valid_a[k] and valid_b[k]]
 
     abs_rate_diffs: list[float] = []
+    dropped_a: set[int] = set()
+    dropped_b: set[int] = set()
 
-    # Drop A hours, one per B-invalid hour
+    # Drop A hours, one per B-invalid hour. Candidate pool per spec §5:
+    # "closest unmatched fully-valid hour h in the OTHER arm" -- here
+    # the OTHER arm is A, so h is fully-valid in A (valid_a[h] initially
+    # True, except those already chosen as drops).
     for k in a_to_drop_for_b:
         target_rate = rates_b[k]
         best_h: int | None = None
         best_diff: float = float("inf")
         for h in range(HOURS_PER_ARM):
-            if not (va[h] and vb[h]):
+            if not valid_a[h] or h in dropped_a:
                 continue
             diff = abs(rates_a[h] - target_rate)
-            if diff < best_diff or (diff == best_diff and best_h is None):
+            if diff < best_diff:
                 best_diff = diff
                 best_h = h
+            # tie-break: chronologically earlier wins; since we iterate
+            # h in ascending order and only overwrite on strict
+            # less-than, the first hit at this diff stays.
         if best_h is None:
-            break  # nothing left to drop
+            break  # no candidates left
+        dropped_a.add(best_h)
         va[best_h] = False
         abs_rate_diffs.append(best_diff)
 
@@ -88,14 +97,15 @@ def cost_matched_exclude_with_provenance(
         best_h: int | None = None
         best_diff: float = float("inf")
         for h in range(HOURS_PER_ARM):
-            if not (va[h] and vb[h]):
+            if not valid_b[h] or h in dropped_b:
                 continue
             diff = abs(rates_b[h] - target_rate)
-            if diff < best_diff or (diff == best_diff and best_h is None):
+            if diff < best_diff:
                 best_diff = diff
                 best_h = h
         if best_h is None:
             break
+        dropped_b.add(best_h)
         vb[best_h] = False
         abs_rate_diffs.append(best_diff)
 
