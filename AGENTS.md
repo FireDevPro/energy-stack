@@ -37,9 +37,11 @@ Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.
 - Project index: [PROJECT.md](PROJECT.md)
 - Per-service detail: [docs/SERVICES.md](docs/SERVICES.md)
 - HVAC scheduler logic + fallback: [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)
+- Scheduler timing + decision diagrams (Mermaid): [docs/SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md)
 - Experiment design (binding once filed): [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md)
 - Thermal model design: [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md)
-- Pollers and tooling: `tools/`
+- Pollers, scripts, ad-hoc tooling: `tools/`
+- Workstation-local Controller Cockpit (read-only live dashboard): [tools/cockpit/](tools/cockpit/)
 - Stack compose + provisioning: `deploy/energy-stack/`
 
 ## Tone

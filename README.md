@@ -19,14 +19,18 @@ Refoss EM16P   (local HTTP,    30s) ─┤                    │  (sole visuali
 NWS forecast   (public,      30min) ─┼───► InfluxDB 2.7 ──► Telegram notifier            │
 PJM DataMiner2 (public, per-feed)   ─┤    (energy + ────► │  (daily summary + alerts)    │
 HAVEN cloud    (public,    5 min)   ─┤    energy-longterm)│                              │
-Control4 → CTK04AE (10 min reads)   ─┘                    │ HVAC scheduler ──► Control4 ─┼─► Amana CTK04AE
-                                                          │  (day-type @ 21:00,          │   thermostat
+Ecowitt GW1200 (push, ~60s)         ─┤                    │ HVAC scheduler ──► Control4 ─┼─► Amana CTK04AE
+Control4 → CTK04AE (10 min reads)   ─┘                    │  (day-type @ 21:00,          │   thermostat
                                                           │   safety supervisor on each  │
                                                           │   setpoint push)             │
-                                                          │                              │
+                                                          │ hvac-scheduler-watchdog      │
+                                                          │ (heartbeat when scheduler    │
+                                                          │  silent > 10 min)            │
                                                           │ Loki + Promtail              │
                                                           └──────────────────────────────┘
 ```
+
+Per-service detail (env vars, fields written, healthchecks) in [`docs/SERVICES.md`](docs/SERVICES.md). 24-hour activity timeline with all poller cadences and decision milestones in [`docs/SCHEDULER_TIMING.md`](docs/SCHEDULER_TIMING.md).
 
 ## Current Status (May 2026)
 
@@ -39,8 +43,10 @@ Control4 → CTK04AE (10 min reads)   ─┘                    │ HVAC schedul
 | `nws-poller` (30 min, forecast today/tomorrow/day2 + active alerts) | Active |
 | `pjm-dm2-poller` (per-feed schedule: DA LMP, load forecast, metered, peak, NSPL) | Active (May 2026) |
 | `hvac-scheduler` (Control4 → Amana CTK04AE, with safety supervisor) | Active |
+| `hvac-scheduler-watchdog` (writes `hvac.heartbeat controller_alive=false` when no `hvac.arm_mode` rows in 10 min) | Active |
 | `thermostat-poller` (continuous 10-min Control4 reads + override detection) | Active (May 2026) |
 | `haven-ingest` (HAVEN cloud API → `haven.indoor` + `haven.outdoor`) | Active (May 2026) |
+| `ecowitt-ingest` (GW1200 push → `ecowitt.weather`; WS90 sun-exposed + WN31 shaded canonical) | Active (May 2026) |
 | `telegram-notifier` (daily 8 AM + 5 min alert checker) | Active |
 | `loki` + `promtail` (log aggregation) | Active |
 | ~~`webdashboard` + `webdashboard-api`~~ | Retired May 2026 — consolidated on Grafana |
@@ -59,7 +65,7 @@ Local HTTPS at `192.168.20.192:443`, basic auth, EAGLE-200/3 Local API. Reads in
 Public API at `hourlypricing.comed.com/api`. 5-minute price intervals (¢/kWh) plus current-hour average. Influx measurement: `comed.prices` (tag `period_type` = `5min` | `hourly_avg`). **Day-ahead forecast is NOT exposed by ComEd's public API** — true day-ahead source is PJM DataMiner2 (see below).
 
 ### PJM Data Miner 2 (zonal market context)
-Public API at `api.pjm.com/api/v1`, Non-Member tier (6 calls/min, free). Per-feed schedule: day-ahead LMP at 17:00 CT, 7-day load forecast at 06:00 + 13:00 CT, weekly metered load Sundays 02:00 CT, RTO peak forecast in cooling season, annual NSPL Dec 1. Influx measurements: `pjm.lmp_da_hourly`, `pjm.load_forecast`, `pjm.metered_load`, `pjm.peak_forecast_rto`, `pjm.nspl_zonal`. Plus `pjm.coincident_peak` written by an annual scrape of the official PJM 5CP PDF. See [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md) and [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
+Public API at `api.pjm.com/api/v1`, Non-Member tier (6 calls/min, free). Per-feed schedule: day-ahead LMP at 17:00 CT, real-time hourly LMP backfilled hourly, 5-min instantaneous load every 5 min, 7-day load forecast at 06:00 + 13:00 CT, weekly metered load Sundays 02:00 CT, RTO peak forecast in cooling season, annual NSPL Dec 1. Influx measurements: `pjm.lmp_da_hourly`, `pjm.lmp_rt_hourly`, `pjm.inst_load`, `pjm.load_forecast`, `pjm.metered_load`, `pjm.peak_forecast_rto`, `pjm.nspl_zonal`, plus `pjm.feed_status` + `pjm.poller_heartbeat` for poller self-observability. `pjm.coincident_peak` is written separately by an annual scrape of the official PJM 5CP PDF. See [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md) and [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
 
 ### HAVEN IAQ
 Official HAVEN Pro API at `havenapi.tzoa.io` (Auth0 refresh-token auth, bootstrap captured from browser login). Polls indoor sensor (return-air mix: temp/RH/tVOC continuous; PM2.5 + airflow CFM flow-dependent) and paired outdoor station every 5 min. Influx measurements: `haven.indoor`, `haven.outdoor`.
@@ -77,14 +83,18 @@ Read-write via **Control4 EA-5** controller (`192.168.1.30`) using **pyControl4 
 
 The scheduler classifies tomorrow's day-type (`MILD` / `NORMAL` / `HOT_5CP_RISK` / `HOT_STREAK_DAY1`) at **21:00 local** based on NWS forecast + day-after lookahead, picks a schedule, and pushes setpoints + fan mode to the thermostat at each scheduled time.
 
-Key constraints encoded in the schedules:
-- **Pre-cool 4-6am** at off-peak rates to bank thermal mass
-- **Coast 12-7pm** through ComEd peak pricing window
+Key constraints encoded in the schedules (full table in [HVAC_LOGIC.md](docs/HVAC_LOGIC.md) and [SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md)):
+- **Pre-cool** at off-peak rates to bank thermal mass — start time is day-type-dependent (03:00 CT on `HOT_STREAK_DAY1`, 04:00 CT on `HOT_5CP_RISK`, 06:00 CT on `NORMAL`), runs until coast.
+- **Coast** through ComEd peak pricing window — 12:00–19:00 CT on `HOT_5CP_RISK`, 13:00–19:00 CT on `NORMAL`.
 - **Dynamic 5CP shutoff** on HOT days driven by the real-time price-overlay and 5CP-detector layers (no fixed shutoff clock; see [HVAC_LOGIC.md HOT_5CP_RISK section](docs/HVAC_LOGIC.md#hot_5cp_risk--85f-max-or-apparent--90f-per-experiment_design-appendix-a)). PJM and ComEd peak avoidance with capacity-charge impact computed via PJM OATT Attachment M-2's CPLC formula; see [HVAC_LOGIC.md "Capacity peak context"](docs/HVAC_LOGIC.md#capacity-peak-context-pjm-5cp--comed-5cp).
 - **Auto-mode safe**: heat setpoint floor 65°F always paired with cool setpoint to satisfy Honeywell ISU 300 deadband
 - **Humid override**: dewpoint > 65°F drops the coast cool setpoint to keep low-stage AC running for latent removal
 
 Detailed schedules + thermostat fallback (programmed into the CTK04AE directly): **[docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)**.
+
+## Operator tooling
+
+**Controller Cockpit** — workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). FastAPI backend on `:8000` proxies the Pi-lab InfluxDB + Loki feed; Vite/React frontend on `:5173` polls the backend every 5 s. Surfaces thermostat state, scheduler decision flow (Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action), price tier, controller liveness via `hvac.heartbeat`, and feed-health for ComEd / NWS / PJM / Refoss / EAGLE / Thermostat. Not deployed via compose — runs on the operator's workstation against Pi-lab over the homelab VLAN.
 
 ## Quick Start
 
