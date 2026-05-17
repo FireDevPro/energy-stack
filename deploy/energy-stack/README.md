@@ -1,6 +1,6 @@
 # energy-stack
 
-Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + ~15 pollers/services + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
+Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + ~14 pollers/services + log aggregation (3 of the 14 only run under the `mqtt` profile for the ComfortNet pipeline), optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
 
 > **Per-service detail:** [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
 > **HVAC scheduler logic + thermostat fallback:** [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
@@ -198,7 +198,7 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | `grafana_data` | grafana | Dashboards (only modifications; provisioned dashboards are read-only mounts), users, alerts state |
 | `hvac_scheduler_data` | hvac-scheduler | `/data/director_token.json` (Control4 token), `/data/overrides.json` (manual day-type / vacation overrides) |
 | `thermostat_poller_data` | thermostat-poller | `/data/director_token.json` (its own Control4 token, independent of hvac-scheduler) |
-| `haven_ingest_data` | haven-ingest | `/data/refresh_token` — HAVEN Auth0 refresh token, rotates on every refresh and persisted across restarts |
+| `haven_ingest_data` | haven-ingest | `/data/haven_token.json` (path overridable via `HAVEN_TOKEN_FILE`) — HAVEN Auth0 refresh token, rotates on every refresh and persisted across restarts |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
 
