@@ -101,7 +101,7 @@ Shipped state:
   (`COCKPIT_BACKEND_MODE=canned`) still serves the `summer_normal`
   fixture for offline development.
 
-Locked design decisions live in [`docs/plans/cockpit-plan.md`](../../docs/plans/cockpit-plan.md).
+Locked design decisions live in [`docs/plans/archive/cockpit-plan.md`](../../docs/plans/archive/cockpit-plan.md) (archived 2026-05-17 when the feature shipped).
 
 ## Layout
 

@@ -1,6 +1,6 @@
 """Decision-trace reason codes for the hvac-scheduler decision tracer.
 
-Per `docs/plans/decision-trace-plan.md` — append-only enums locked at the
+Per `docs/plans/archive/decision-trace-plan.md` — append-only enums locked at the
 OSF commit hash. Existing codes never change meaning; new codes can be
 added in subsequent phases without breaking downstream Loki / LogQL
 consumers.
