@@ -138,6 +138,71 @@ def _utc_to_ct_hour_of_day(when_utc_naive: datetime.datetime) -> int:
 # --- Mode classification from telemetry ------------------------------------
 
 
+def _telemetry_valid_set_for_arm(
+    arm: ArmPeriod, refoss_df: pd.DataFrame,
+) -> set[datetime.datetime]:
+    """Return the set of hour boundaries (naive UTC) where every HVAC
+    channel passes spec §7 in this arm's post-washout window.
+
+    Vectorised replacement for the per-hour ``hour_is_telemetry_valid``
+    loop: bins all Refoss rows by hour, drops hours that don't have
+    >=110 samples per channel, and re-runs the gap rule only on the
+    surviving hours.
+    """
+    df = refoss_df
+    if "_field" in df.columns:
+        df = df[df["_field"] == "power_w"]
+    df = df[df["channel"].isin(HVAC_CHANNELS)]
+    start_utc = _post_washout_utc_naive(arm)
+    end_utc = start_utc + datetime.timedelta(hours=HOURS_PER_ARM)
+    df = df[(df["_time"] >= start_utc) & (df["_time"] < end_utc)]
+    if df.empty:
+        return set()
+    df = df.assign(_hour=df["_time"].dt.floor("h"))
+
+    # Count samples per (hour, channel); any (hour, channel) with <110
+    # rows fails. Hours that survive must also pass the gap rule.
+    counts = df.groupby(["_hour", "channel"]).size().unstack(fill_value=0)
+    sample_pass = (counts >= 110).all(axis=1)
+    candidate_hours = set(counts.index[sample_pass].tolist())
+    if not candidate_hours:
+        return set()
+
+    # Vectorised gap check across the surviving hours. Compute first/
+    # last sample times per (hour, channel) and the longest intra-channel
+    # gap; combine with boundary gaps to hour-start and hour-end.
+    df = df.sort_values(["channel", "_time"])
+    df = df.assign(
+        prev_time=df.groupby(["_hour", "channel"])["_time"].shift(1),
+    )
+    df["intra_gap_s"] = (df["_time"] - df["prev_time"]).dt.total_seconds()
+    intra_max = df.groupby(["_hour", "channel"])["intra_gap_s"].max()
+    first_last = df.groupby(["_hour", "channel"])["_time"].agg(["min", "max"])
+
+    valid: set[datetime.datetime] = set()
+    for h_start in candidate_hours:
+        h_end = h_start + datetime.timedelta(hours=1)
+        passed = True
+        for ch in HVAC_CHANNELS:
+            key = (h_start, ch)
+            if key not in first_last.index:
+                passed = False
+                break
+            fl_min = first_last.at[key, "min"]
+            fl_max = first_last.at[key, "max"]
+            lead = (fl_min - h_start).total_seconds()
+            trail = (h_end - fl_max).total_seconds()
+            intra = intra_max.get(key, 0.0)
+            if pd.isna(intra):
+                intra = 0.0
+            if lead > 120 or trail > 120 or intra > 120:
+                passed = False
+                break
+        if passed:
+            valid.add(h_start)
+    return valid
+
+
 def _hourly_mode_from_telemetry(
     *,
     arm: ArmPeriod,
@@ -156,45 +221,39 @@ def _hourly_mode_from_telemetry(
       Arm B period, TELEMETRY_INVALID for Arm A (no signal to confirm
       A-active either).
     """
-    # Pre-filter mode telemetry to this arm's post-washout window once.
     start_utc = _post_washout_utc_naive(arm)
     end_utc = start_utc + datetime.timedelta(hours=HOURS_PER_ARM)
+    # Pre-compute the telemetry-valid hour set once.
+    valid_hours = _telemetry_valid_set_for_arm(arm, refoss_df)
+    # Pre-bin mode telemetry to hourly majority.
     mode_window = hvac_arm_mode_df[
         (hvac_arm_mode_df["_time"] >= start_utc)
         & (hvac_arm_mode_df["_time"] < end_utc)
     ].copy()
-    if not mode_window.empty:
-        mode_window = mode_window.assign(
-            _hour=mode_window["_time"].dt.floor("h"),
+    if mode_window.empty:
+        hourly_recorded: dict = {}
+    else:
+        mode_window["_hour"] = mode_window["_time"].dt.floor("h")
+        hourly_recorded = (
+            mode_window.groupby("_hour")["mode_actual"]
+            .agg(lambda s: s.mode().iloc[0])
+            .to_dict()
         )
 
     modes: list[HourMode] = []
     for k in range(HOURS_PER_ARM):
         h_start = start_utc + datetime.timedelta(hours=k)
-        # Check telemetry validity from Refoss
-        telemetry_valid = hour_is_telemetry_valid(refoss_df, h_start)
-
-        # Determine the recorded mode for this hour
-        if not mode_window.empty:
-            this_hour = mode_window[mode_window["_hour"] == h_start]
-        else:
-            this_hour = pd.DataFrame()
-        if this_hour.empty:
-            recorded_mode = None
-        else:
-            recorded_mode = this_hour["mode_actual"].mode().iloc[0]
-
+        telemetry_valid = h_start in valid_hours
         if not telemetry_valid:
             modes.append(HourMode.TELEMETRY_INVALID)
             continue
-
-        if recorded_mode is None:
+        recorded = hourly_recorded.get(h_start)
+        if recorded is None:
             modes.append(
                 HourMode.B_DOWN if arm.arm == "B" else HourMode.TELEMETRY_INVALID
             )
             continue
-
-        modes.append(_string_to_hour_mode(recorded_mode))
+        modes.append(_string_to_hour_mode(recorded))
     return modes
 
 
@@ -221,21 +280,28 @@ def _string_to_hour_mode(s: str) -> HourMode:
 
 def _hourly_hvac_kwh(arm: ArmPeriod, refoss_df: pd.DataFrame) -> list[float]:
     """Per spec §7: hour_kWh = mean(power_w in hour) * 1h, summed across
-    em:2/em:8/em:9. Caller pre-filters _field if present.
+    em:2/em:8/em:9. Vectorised across the 288-hour window.
     """
     df = refoss_df
     if "_field" in df.columns:
         df = df[df["_field"] == "power_w"]
+    df = df[df["channel"].isin(HVAC_CHANNELS)]
     start_utc = _post_washout_utc_naive(arm)
-    out: list[float] = []
-    for k in range(HOURS_PER_ARM):
-        h_start = start_utc + datetime.timedelta(hours=k)
-        h_end = h_start + datetime.timedelta(hours=1)
-        slice_df = df[(df["_time"] >= h_start) & (df["_time"] < h_end)]
-        per_channel = slice_df.groupby("channel")["_value"].mean()
-        total_w = sum(per_channel.get(ch, 0.0) for ch in HVAC_CHANNELS)
-        # mean(power_w over 1h) * 1h = avg watts * 1h -> Wh; / 1000 -> kWh
-        out.append(float(total_w) / 1000.0)
+    end_utc = start_utc + datetime.timedelta(hours=HOURS_PER_ARM)
+    df = df[(df["_time"] >= start_utc) & (df["_time"] < end_utc)]
+    out = [0.0] * HOURS_PER_ARM
+    if df.empty:
+        return out
+    df = df.assign(_hour=df["_time"].dt.floor("h"))
+    # mean(power_w) per (_hour, channel) then sum across channels = hourly W
+    hourly_w = (
+        df.groupby(["_hour", "channel"])["_value"].mean()
+        .groupby(level=0).sum()
+    )
+    for h_start, watts in hourly_w.items():
+        k = int(round((h_start - start_utc).total_seconds() / 3600))
+        if 0 <= k < HOURS_PER_ARM:
+            out[k] = float(watts) / 1000.0
     return out
 
 
@@ -283,20 +349,27 @@ def _hourly_rates(
 def _hourly_em28_watts(arm: ArmPeriod, refoss_df: pd.DataFrame) -> list[float]:
     """Mean(em:2 + em:8 power_w) per hour-index. Spec §9 cooling-active
     test uses this instead of the full HVAC kWh (which includes em:9).
+    Vectorised.
     """
     df = refoss_df
     if "_field" in df.columns:
         df = df[df["_field"] == "power_w"]
     df = df[df["channel"].isin(("em:2", "em:8"))]
     start_utc = _post_washout_utc_naive(arm)
-    out: list[float] = []
-    for k in range(HOURS_PER_ARM):
-        h_start = start_utc + datetime.timedelta(hours=k)
-        h_end = h_start + datetime.timedelta(hours=1)
-        slice_df = df[(df["_time"] >= h_start) & (df["_time"] < h_end)]
-        per_channel = slice_df.groupby("channel")["_value"].mean()
-        total = float(per_channel.get("em:2", 0.0) + per_channel.get("em:8", 0.0))
-        out.append(total)
+    end_utc = start_utc + datetime.timedelta(hours=HOURS_PER_ARM)
+    df = df[(df["_time"] >= start_utc) & (df["_time"] < end_utc)]
+    out = [0.0] * HOURS_PER_ARM
+    if df.empty:
+        return out
+    df = df.assign(_hour=df["_time"].dt.floor("h"))
+    hourly_w = (
+        df.groupby(["_hour", "channel"])["_value"].mean()
+        .groupby(level=0).sum()
+    )
+    for h_start, watts in hourly_w.items():
+        k = int(round((h_start - start_utc).total_seconds() / 3600))
+        if 0 <= k < HOURS_PER_ARM:
+            out[k] = float(watts)
     return out
 
 
