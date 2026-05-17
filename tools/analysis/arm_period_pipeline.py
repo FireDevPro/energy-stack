@@ -459,14 +459,11 @@ def _build_pair_row(
                                  if em28_w_b[k] > COOLING_ACTIVE_W)
 
     weather_distance = float(np.linalg.norm(z_a - z_b))
-    # Spec §6 says "exceeds the 90th percentile". When the experiment
-    # has a single weather outlier, every pairing involving that arm is
-    # in the top decile of distances, so the Hungarian-matched pair
-    # ends up AT the 90th percentile (= the smallest large-group
-    # distance). Strict `>` would silently mask that exact case as
-    # "non-poor"; use `>=` so the flag fires when the matched distance
-    # sits on the percentile boundary.
-    poor_weather_match = weather_distance >= p90_dist
+    # Spec §6: strict `>` ("exceeds the 90th percentile"). See the
+    # ``caliper_p90_distance`` docstring for the n=6 boundary case
+    # where this rule under-flags single weather outliers; that is a
+    # spec-clarification item, not an implementation deviation.
+    poor_weather_match = weather_distance > p90_dist
 
     # Spec §5 produces equal-size valid sets in both arms after
     # cost-matched exclusion. valid_pair_hours therefore equals the
@@ -759,32 +756,50 @@ def _reconcile_against_bills(
     rt_hrl_lmps_df: pd.DataFrame,
     rate_snapshot: dict[str, float],
 ) -> list[BillReconciliation]:
-    """Sanity-only step per spec §10. Iterates each bill period and
-    delegates to ``reconcile_bill_period``. NEVER touches HVAC$.
+    """Sanity-only step per spec §10. Iterates each DISTINCT bill period
+    and delegates to ``reconcile_bill_period``. NEVER touches HVAC$.
 
-    Bill-period detection contract: ``bills_df`` is expected to have
-    ``bill_period_start_utc`` + ``bill_period_end_utc`` + ``variable_dollars``
-    columns. When those columns are missing (e.g. Phase 0 fixture that
-    only writes per-line-item rows), this step degrades gracefully to
-    an empty result rather than guessing window bounds.
+    Bill-period detection: accepts either the analysis-shape columns
+    (``bill_period_start_utc``, ``bill_period_end_utc``,
+    ``variable_dollars``) or the production ``comed.bill`` shape
+    (``service_from``, ``service_to``, ``total_amount``). Rows are
+    deduplicated by period bounds so multi-line-item bills produce one
+    reconciliation per period, not per line.
     """
-    required = {"bill_period_start_utc", "bill_period_end_utc",
-                "variable_dollars"}
     if bills_df is None or bills_df.empty:
         return []
-    if not required.issubset(bills_df.columns):
+    analysis_cols = {"bill_period_start_utc", "bill_period_end_utc",
+                     "variable_dollars"}
+    production_cols = {"service_from", "service_to", "total_amount"}
+    if analysis_cols.issubset(bills_df.columns):
+        start_col, end_col, dollars_col = (
+            "bill_period_start_utc", "bill_period_end_utc", "variable_dollars",
+        )
+    elif production_cols.issubset(bills_df.columns):
+        start_col, end_col, dollars_col = "service_from", "service_to", "total_amount"
+    else:
         return []
+    periods = (
+        bills_df[[start_col, end_col, dollars_col]]
+        .drop_duplicates(subset=[start_col, end_col])
+    )
     out: list[BillReconciliation] = []
-    for _, row in bills_df.iterrows():
+    for _, row in periods.iterrows():
+        start = pd.to_datetime(row[start_col])
+        end = pd.to_datetime(row[end_col])
+        if hasattr(start, "tz") and start.tz is not None:
+            start = start.tz_convert("UTC").tz_localize(None)
+        if hasattr(end, "tz") and end.tz is not None:
+            end = end.tz_convert("UTC").tz_localize(None)
         out.append(
             reconcile_bill_period(
-                bill_period_start_utc=row["bill_period_start_utc"],
-                bill_period_end_utc=row["bill_period_end_utc"],
+                bill_period_start_utc=start.to_pydatetime() if hasattr(start, "to_pydatetime") else start,
+                bill_period_end_utc=end.to_pydatetime() if hasattr(end, "to_pydatetime") else end,
                 eagle_df=eagle_df,
                 refoss_df=refoss_df,
                 rt_hrl_lmps_df=rt_hrl_lmps_df,
                 rate_snapshot=rate_snapshot,
-                actual_bill_variable_dollars=float(row["variable_dollars"]),
+                actual_bill_variable_dollars=float(row[dollars_col]),
             )
         )
     return out

@@ -92,16 +92,12 @@ def test_pairwise_distance_matrix_known_values():
 
 def test_caliper_p90_is_percentile_of_all_pair_distances():
     """Spec §6 caliper: 90th percentile across the full A-B distribution.
-
-    Uses method='lower' so the percentile collapses to an actual
-    observed value -- see ``caliper_p90_distance`` docstring for the
-    n=6 single-outlier rationale. With 4 distances {1, 2, 3, 4} the
-    90th-percentile-lower is sorted[floor(0.9 * 3)] = sorted[2] = 3.
-    """
+    Uses np.percentile linear interpolation per spec strict reading."""
     arm_a_z = np.array([[0.0, 0.0, 0.0, 0.0]])
     arm_b_z = np.array([[1.0, 0.0, 0.0, 0.0],
                         [2.0, 0.0, 0.0, 0.0],
                         [3.0, 0.0, 0.0, 0.0],
                         [4.0, 0.0, 0.0, 0.0]])
     p90 = caliper_p90_distance(arm_a_z, arm_b_z)
-    assert p90 == pytest.approx(3.0, abs=1e-6)
+    # Distances {1,2,3,4} -> linear p90 = 3.7
+    assert p90 == pytest.approx(3.7, abs=1e-6)

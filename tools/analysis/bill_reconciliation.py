@@ -48,12 +48,16 @@ def _hourly_kwh_from_eagle_totalizer(
 ) -> dict[datetime.datetime, float]:
     """Derive per-hour kWh from an Eagle delivered-kWh totalizer column.
 
-    Returns ``{hour_start_utc: kwh_in_hour}``. An hour with no Eagle row
-    is omitted (caller falls back to Refoss). Per-hour kWh = (last
+    Returns ``{hour_start_utc: kwh_in_hour}``. Per-hour kWh = (last
     totalizer in hour) - (last totalizer in previous hour). Negative
-    deltas (totalizer reset / restart) yield ``0.0`` and are surfaced
-    as a per-hour zero so the bill reconstruction does not turn a meter
-    rollover into negative consumption.
+    deltas (totalizer reset / restart) yield ``0.0`` so a meter
+    rollover does not show up as negative consumption.
+
+    The "previous hour" anchor for the first in-window hour is the
+    last totalizer observed BEFORE ``start_utc`` (if any). Without
+    this anchor the first hour's kWh would be silently zero -- the
+    caller would either treat that as zero consumption or fall back
+    to Refoss when Eagle is in fact present.
     """
     if eagle_df.empty:
         return {}
@@ -61,26 +65,40 @@ def _hourly_kwh_from_eagle_totalizer(
     df["_time"] = pd.to_datetime(df["_time"])
     if df["_time"].dt.tz is not None:
         df["_time"] = df["_time"].dt.tz_convert("UTC").dt.tz_localize(None)
+
+    # Long-form _field/_value Influx shape support
+    if "delivered_kwh" not in df.columns and "_field" in df.columns:
+        df = df[df["_field"] == "delivered_kwh"].copy()
+        df["delivered_kwh"] = df["_value"]
+
+    # Anchor reading from the most recent row BEFORE the window start
+    prior = df[df["_time"] < start_utc].sort_values("_time")
+    prior_anchor = (
+        float(prior["delivered_kwh"].iloc[-1])
+        if not prior.empty else None
+    )
+
     df = df[(df["_time"] >= start_utc) & (df["_time"] < end_utc)]
     if df.empty:
         return {}
-    # Take the last reading in each UTC hour as the totalizer for that hour.
     df["_hour"] = df["_time"].dt.floor("h")
     df = df.sort_values("_time")
     last_per_hour = df.groupby("_hour", as_index=False).last()
     last_per_hour = last_per_hour.sort_values("_hour").reset_index(drop=True)
-    if "delivered_kwh" in last_per_hour.columns:
-        totalizer = last_per_hour["delivered_kwh"]
-    elif "_field" in last_per_hour.columns:
-        # Long-form _field/_value Influx shape
-        only_delivered = last_per_hour[last_per_hour["_field"] == "delivered_kwh"]
-        last_per_hour = only_delivered.copy()
-        totalizer = last_per_hour["_value"]
+
+    totalizer = last_per_hour["delivered_kwh"].astype(float)
+    if prior_anchor is not None:
+        # Prepend the prior anchor so diff() at index 0 is meaningful.
+        anchored = pd.concat(
+            [pd.Series([prior_anchor]), totalizer],
+            ignore_index=True,
+        )
+        deltas = anchored.diff().iloc[1:].fillna(0.0).clip(lower=0.0)
     else:
-        totalizer = last_per_hour["_value"]
-    deltas = totalizer.diff().fillna(0.0).clip(lower=0.0)
+        deltas = totalizer.diff().fillna(0.0).clip(lower=0.0)
     return {
-        ts: float(d) for ts, d in zip(last_per_hour["_hour"], deltas)
+        ts: float(d)
+        for ts, d in zip(last_per_hour["_hour"], deltas.tolist())
     }
 
 

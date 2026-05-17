@@ -144,7 +144,12 @@ def build_weather_vector(arm: ArmPeriod, ecowitt_df: pd.DataFrame) -> WeatherVec
 
     # 3. mean_nocturnal_min_temp_f. A "night N" runs 22:00 of date N
     # through 05:59 of date N+1. We label each row's night by shifting
-    # the date for early-morning rows.
+    # the date for early-morning rows, then drop partial nights that
+    # don't have BOTH a pre-midnight half and a post-midnight half
+    # within the window -- otherwise the 12-day arm window produces
+    # 13 named nights (one with hours 0-5 only at the window start,
+    # one with hours 22-23 only at the window end), inflating spec §6
+    # "mean over 12 days" by averaging 13 partials.
     mask = df["hour_ct"].isin(NOCTURNAL_HOURS_CT)
     nocturnal = df.loc[mask].copy()
     night = nocturnal.apply(
@@ -153,8 +158,23 @@ def build_weather_vector(arm: ArmPeriod, ecowitt_df: pd.DataFrame) -> WeatherVec
         axis=1,
     )
     nocturnal = nocturnal.assign(night=night)
-    nightly_min = nocturnal.groupby("night")["ch1_temp_f"].min()
-    mean_nocturnal_min = float(nightly_min.mean())
+    half = nocturnal["hour_ct"].apply(lambda h: "pre" if h >= 22 else "post")
+    halves_present = (
+        nocturnal.assign(half=half)
+        .groupby("night")["half"]
+        .agg(lambda s: set(s.unique()))
+    )
+    full_nights = halves_present[halves_present.apply(
+        lambda s: {"pre", "post"}.issubset(s)
+    )].index
+    nightly_min = (
+        nocturnal[nocturnal["night"].isin(full_nights)]
+        .groupby("night")["ch1_temp_f"].min()
+    )
+    if nightly_min.empty:
+        mean_nocturnal_min = float("nan")
+    else:
+        mean_nocturnal_min = float(nightly_min.mean())
 
     # 4. mean_dewpoint_f
     mean_dewpoint = float(df["ch1_dewpoint_f"].mean())
