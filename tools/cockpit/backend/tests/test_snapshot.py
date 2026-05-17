@@ -21,6 +21,9 @@ _REPO_ROOT = _BACKEND_ROOT.parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from fastapi.testclient import TestClient
+
+from tools.cockpit.backend.app import app
 from tools.cockpit.backend.snapshot import build_snapshot_canned
 from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
 from tools.cockpit.backend.freshness import classify
@@ -156,3 +159,40 @@ class TestSnapshotContract:
         schedule = self.snap["flow"]["schedule"]["details"]
         assert "base_schedule_cool_f" in schedule
         assert "effective_schedule_cool_f" in schedule
+
+
+class TestFastApiEndpoint:
+    """Exercise the actual FastAPI app via TestClient. Catches:
+    - import-path bugs (try/except fallback in app.py)
+    - JSON-serialization drift between dict and HTTP response body
+    - CORS / route registration regressions
+    - status code / content-type contract
+    """
+
+    def setup_method(self):
+        self.client = TestClient(app)
+
+    def test_health_endpoint_returns_ok(self):
+        res = self.client.get("/api/health")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["ok"] is True
+        assert body["backend"] == "cockpit"
+
+    def test_snapshot_endpoint_returns_locked_shape(self):
+        res = self.client.get("/api/snapshot")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/json")
+        body = res.json()
+        # Same shape the frontend's TS Snapshot interface expects.
+        # If this drifts from the paired fixture, downstream rendering
+        # will fail; this assertion is the contract gate.
+        assert body == SUMMER_NORMAL
+
+    def test_snapshot_response_is_deep_independent(self):
+        # Mutating one response body must not affect another. Catches
+        # any accidental return-by-reference into FastAPI's response.
+        a = self.client.get("/api/snapshot").json()
+        a["thermostat"]["indoor_temp_f"] = 999
+        b = self.client.get("/api/snapshot").json()
+        assert b["thermostat"]["indoor_temp_f"] != 999

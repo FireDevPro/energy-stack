@@ -55,12 +55,46 @@ describe('Cockpit Phase 3 live fetch path', () => {
     render(<App />)
 
     await waitFor(() => {
-      // Header chips render from the fallback fixture.
-      expect(screen.getByTestId('chip-scheduler-mode')).toBeInTheDocument()
+      // Header chips render from the fallback fixture (shadow_current).
+      expect(screen.getByTestId('chip-scheduler-mode')).toHaveTextContent(
+        'shadow',
+      )
     })
 
-    // Banner text indicates the live backend is unreachable.
-    expect(screen.getByText(/backend unreachable/i)).toBeInTheDocument()
+    // Banner says fallback fixture (because polling.data never populated).
+    expect(
+      screen.getByText(/showing fallback fixture/i),
+    ).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('polling hook re-fires on the configured interval', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => summerNormal,
+    } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    // Initial mount fires fetch(es). StrictMode in main.tsx may double-
+    // invoke effects, so we only assert that the count is at least one.
+    await vi.runOnlyPendingTimersAsync()
+    const initialCount = fetchMock.mock.calls.length
+    expect(initialCount).toBeGreaterThanOrEqual(1)
+
+    // Advance past the 5s polling interval and verify another fetch
+    // fired beyond the initial count.
+    await vi.advanceTimersByTimeAsync(5_100)
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCount)
+
+    const afterFirstTick = fetchMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(5_100)
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(afterFirstTick)
+
+    vi.useRealTimers()
   })
 })

@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import { loadFixtureFromUrl } from './lib/loadFixture'
+import { shadowCurrent } from './fixtures/shadow_current'
 import { fetchSnapshot } from './lib/api'
 import { usePolling } from './lib/usePolling'
 import { Header } from './components/Header'
@@ -34,21 +35,26 @@ export default function App() {
     [],
   )
 
-  const polling = usePolling<Snapshot>(fetcher, POLL_INTERVAL_MS)
+  // Skip polling entirely when the operator pinned a fixture. Avoids
+  // pointless network requests + matchers in fixture-mode tests.
+  const polling = usePolling<Snapshot>(fetcher, POLL_INTERVAL_MS, !useFixture)
 
   // Snapshot resolution priority:
   //   1. URL fixture (if `?fixture=` present) — explicit operator choice
   //   2. Live polling data (if non-null)
-  //   3. Live error fallback → use a stable fixture so the cockpit still
-  //      renders. Operator sees scheduler_mode=shadow + outside-window
-  //      semantics, which honestly represents "we don't actually know."
+  //   3. Live error fallback → shadow_current. Its scheduler_mode=shadow
+  //      and mode_actual=outside-window honestly represent "we don't
+  //      actually know what the controller is doing right now." Falling
+  //      back to summer_normal (Arm B-active in July) would be a lie —
+  //      it would render a plausible active-control state while the
+  //      backend is unreachable.
   //   4. Initial loading → null until first fetch completes
   const snapshot: Snapshot | null = useFixture
     ? fixtureSnapshot
     : polling.data
       ? polling.data
       : polling.error
-        ? loadFixtureFromUrl() // falls back to default summer_normal
+        ? shadowCurrent
         : null
 
   if (!snapshot) {
@@ -65,10 +71,21 @@ export default function App() {
       <FeedHealthStrip snapshot={snapshot} />
       {!useFixture && polling.error && (
         <div className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-200">
-          backend unreachable — showing fallback fixture · last try{' '}
-          {polling.lastFetchedAt
-            ? new Date(polling.lastFetchedAt).toLocaleTimeString()
-            : '—'}
+          {polling.data ? (
+            <>
+              backend unreachable — showing last successful fetch · last try{' '}
+              {polling.lastFetchedAt
+                ? new Date(polling.lastFetchedAt).toLocaleTimeString()
+                : '—'}
+            </>
+          ) : (
+            <>
+              backend unreachable — showing fallback fixture · last try{' '}
+              {polling.lastFetchedAt
+                ? new Date(polling.lastFetchedAt).toLocaleTimeString()
+                : '—'}
+            </>
+          )}
         </div>
       )}
       <main className="flex flex-1 overflow-hidden">
