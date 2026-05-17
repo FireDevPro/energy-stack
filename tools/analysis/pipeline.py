@@ -2,6 +2,18 @@
 
 Binding contract: docs/ANALYSIS_PIPELINE.md.
 
+DEPRECATION NOTE (Phase 3, 2026-05-17): the arm-period-shaped
+``tools.analysis.arm_period_pipeline`` supersedes the weekly Stage 3
+/ $/CDD / bootstrap / SCED-randomization machinery in this module per
+docs/plans/sced-rebaseline-spec-2026-05-13.md §12 and §13. The obsolete
+functions (``weekly_dollars_per_cdd``, ``weekly_kwh_per_cdd``,
+``stationary_bootstrap_median_diff``, ``sced_randomization_pvalue``)
+and their callers remain in place for this PR because removing them
+also requires removing the Stage 7 and Stage 8 orchestrators that
+call them -- a separate task scheduled for a follow-up PR. Do not
+add new callers of these functions; new code targets
+``arm_period_pipeline`` instead.
+
 This module is intentionally a single file with all stage functions
 side-by-side. The boundaries between stages are explicit (each writes
 its outputs to a typed CSV) but they share the math primitives and
