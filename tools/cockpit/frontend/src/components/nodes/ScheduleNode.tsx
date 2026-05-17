@@ -1,37 +1,48 @@
-import { BaseNode } from './BaseNode'
+import { BaseNode, Stat } from './BaseNode'
 import type { BaseNodeEnvelope, ScheduleDetails } from '../../types'
 
-export function ScheduleNode({ data }: { data: BaseNodeEnvelope<ScheduleDetails> }) {
+export function ScheduleNode({
+  data,
+  pos,
+  nodeW,
+  nodeH,
+}: {
+  data: BaseNodeEnvelope<ScheduleDetails>
+  pos: { x: number; y: number }
+  nodeW: number
+  nodeH: number
+}) {
   const d = data.details
-  const setpoint =
-    d.base_schedule_cool_f !== d.effective_schedule_cool_f
-      ? `${d.effective_schedule_cool_f}°F`
-      : `${d.base_schedule_cool_f}°F`
   return (
     <BaseNode
+      id="schedule"
+      testId="node-schedule"
+      pos={pos}
+      nodeW={nodeW}
+      nodeH={nodeH}
       role_state={data.role_state}
       freshness={data.freshness}
       freshness_label={data.freshness_label}
-      title="Schedule"
-      headline={setpoint}
-      testId="node-schedule"
+      title={data.title}
+      subtitle={data.subtitle}
     >
-      <div className="font-mono text-[10px] text-zinc-500">
-        {d.action_label}
+      <div className="node-stats">
+        {d.base_schedule_cool_f !== d.effective_schedule_cool_f ? (
+          <>
+            <Stat k="base" v={`${d.base_schedule_cool_f}°`} />
+            <Stat
+              k="effective"
+              v={`${d.effective_schedule_cool_f}°`}
+              tone="cool"
+            />
+          </>
+        ) : (
+          <Stat k="cool" v={`${d.effective_schedule_cool_f}°`} tone="cool" />
+        )}
+        {d.humid_override_active && (
+          <Stat k="humid override" v="active" tone="live" />
+        )}
       </div>
-      {d.base_schedule_cool_f !== d.effective_schedule_cool_f && (
-        <div className="text-zinc-500">
-          base {d.base_schedule_cool_f}°F → {d.effective_schedule_cool_f}°F
-        </div>
-      )}
-      {d.humid_override_active && (
-        <div className="text-amber-300">humid override</div>
-      )}
-      {d.precool_window && (
-        <div className="text-cyan-300">
-          precool {d.precool_window.hour_ct}:00 / {d.precool_window.depth_f}°F
-        </div>
-      )}
     </BaseNode>
   )
 }

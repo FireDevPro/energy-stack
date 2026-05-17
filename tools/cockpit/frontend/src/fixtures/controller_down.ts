@@ -124,7 +124,7 @@ export const controllerDown: Snapshot = {
       role_state: 'missing',
       freshness: 'missing',
       freshness_label: 'no trace in 17m',
-      title: 'Price Overlay',
+      title: 'RTP Spike',
       subtitle: '—',
       details: {
         price_cents: null,

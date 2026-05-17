@@ -1,83 +1,118 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { Snapshot } from '../types'
 import { ThermostatRing } from './ThermostatRing'
 import { PriceChip } from './PriceChip'
-import { FeedHealthStrip } from './FeedHealthStrip'
-
-// Direction-A redesign: fixed-width 400px instrument panel. Vertical
-// stack — ring → setpoints → mode/fan/RH → price chip → feed health →
-// tick footer. No empty bottom; every region carries data.
 
 export function ThermostatCard({ snapshot }: { snapshot: Snapshot }) {
-  const t = snapshot.thermostat
   return (
-    <aside className="flex w-[400px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-zinc-800 bg-zinc-950 p-5">
-      {/* Ring + setpoint readout */}
-      <div className="flex flex-col items-center">
-        <ThermostatRing
-          indoor_f={t.indoor_temp_f}
-          cool_f={t.cool_setpoint_f}
-          heat_f={t.heat_setpoint_f}
-        />
-        <div className="mt-3 flex items-baseline gap-6 font-sans">
-          <SetpointReadout
-            label="Cool"
-            value={t.cool_setpoint_f}
-            tone="text-sky-300"
-            testId="thermostat-cool-setpoint"
-          />
-          <div className="h-6 w-px bg-zinc-800" />
-          <SetpointReadout
-            label="Heat"
-            value={t.heat_setpoint_f}
-            tone="text-rose-300"
-          />
-        </div>
-        <div className="mt-2 font-sans text-[11px] uppercase tracking-[0.18em] text-zinc-500">
-          {t.hvac_mode} · {t.fan_mode} fan · {t.indoor_humidity_pct}% RH
-        </div>
-      </div>
-
-      {/* Price chip — second-largest instrument */}
+    <aside className="hero">
+      <ThermostatHero snapshot={snapshot} />
       <PriceChip price={snapshot.price} />
-
-      {/* Feed health — compact secondary */}
-      <FeedHealthStrip snapshot={snapshot} />
-
-      {/* Tick footer at the very bottom */}
-      <div
-        data-testid="thermostat-tick-footer"
-        className="mt-auto border-t border-zinc-800 pt-3 font-mono text-[10px] text-zinc-500"
-      >
-        tick {snapshot.latest_tick_id} · {snapshot.thermostat.freshness_label}
-      </div>
+      <HeroContext snapshot={snapshot} />
     </aside>
   )
 }
 
-function SetpointReadout({
-  label,
-  value,
-  tone,
-  testId,
-}: {
-  label: string
-  value: number
-  tone: string
-  testId?: string
-}) {
+function ThermostatHero({ snapshot }: { snapshot: Snapshot }) {
+  const t = snapshot.thermostat
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState(300)
+
+  useLayoutEffect(() => {
+    if (!wrapRef.current) return
+    const ro = new ResizeObserver(([e]) => {
+      // Ring tracks hero column width (now viewport-relative). Cap at
+      // 500 so it doesn't dominate the panel on ultra-wide monitors.
+      const w = Math.min(e.contentRect.width, 500)
+      setSize(Math.max(240, w))
+    })
+    ro.observe(wrapRef.current)
+    return () => ro.disconnect()
+  }, [])
+
+  const whole = Math.trunc(t.indoor_temp_f)
+  const dec = (
+    Math.abs(t.indoor_temp_f - whole) * 10
+  ).toFixed(0)
+
   return (
-    <div className="flex flex-col items-center">
-      <div className="font-sans text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
-        {label}
+    <>
+      <div
+        className="hero-ring-wrap"
+        ref={wrapRef}
+        style={{ minHeight: size }}
+      >
+        <ThermostatRing
+          size={size}
+          indoor_f={t.indoor_temp_f}
+          cool_f={t.cool_setpoint_f}
+          heat_f={t.heat_setpoint_f}
+        />
+        <div className="indoor-readout">
+          <div className="indoor-eyebrow">indoor · now</div>
+          <div
+            className="indoor-temp"
+            data-testid="thermostat-indoor-temp"
+          >
+            {whole}
+            <span className="indoor-temp-dec">.{dec}</span>
+            <span className="indoor-temp-unit">°F</span>
+          </div>
+          <div className="indoor-hum">
+            {t.indoor_humidity_pct}% RH · {t.hvac_mode} · {t.fan_mode} fan
+          </div>
+        </div>
       </div>
-      <div className="mt-0.5 flex items-baseline gap-1">
-        <span
-          data-testid={testId}
-          className={`font-mono text-2xl font-bold leading-none ${tone}`}
-        >
-          {value}
+
+      <div className="setpoint-row">
+        <div className="sp-tile cool">
+          <div className="sp-eyebrow">
+            <span className="sp-dot" />
+            cool
+          </div>
+          <div className="sp-val">
+            <span data-testid="thermostat-cool-setpoint">
+              {t.cool_setpoint_f}
+            </span>
+            <span className="sp-unit">°F</span>
+          </div>
+          <div className="sp-meta">setpoint · {t.freshness_label}</div>
+        </div>
+        <div className="sp-tile heat">
+          <div className="sp-eyebrow">
+            <span className="sp-dot" />
+            heat
+          </div>
+          <div className="sp-val">
+            {t.heat_setpoint_f}
+            <span className="sp-unit">°F</span>
+          </div>
+          <div className="sp-meta">setpoint</div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function HeroContext({ snapshot }: { snapshot: Snapshot }) {
+  const w = snapshot.flow.weather.details
+  const d = snapshot.flow.day_type.details
+  return (
+    <div className="hero-context" data-testid="thermostat-tick-footer">
+      <div className="hero-context-row">
+        <span className="k">outdoor</span>
+        <span>
+          {w.current_outdoor_f}°F · high {w.today_high_f}°F
+          {w.heat_advisory ? ' · advisory' : ''}
         </span>
-        <span className="font-mono text-xs text-zinc-500">°F</span>
+      </div>
+      <div className="hero-context-row">
+        <span className="k">day type</span>
+        <span>{d.winning_day_type}</span>
+      </div>
+      <div className="hero-context-row">
+        <span className="k">tick</span>
+        <span>{snapshot.latest_tick_id}</span>
       </div>
     </div>
   )

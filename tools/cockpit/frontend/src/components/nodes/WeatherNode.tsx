@@ -1,21 +1,40 @@
-import { BaseNode } from './BaseNode'
+import { BaseNode, Stat } from './BaseNode'
 import type { BaseNodeEnvelope, WeatherDetails } from '../../types'
 
-export function WeatherNode({ data }: { data: BaseNodeEnvelope<WeatherDetails> }) {
+export function WeatherNode({
+  data,
+  pos,
+  nodeW,
+  nodeH,
+}: {
+  data: BaseNodeEnvelope<WeatherDetails>
+  pos: { x: number; y: number }
+  nodeW: number
+  nodeH: number
+}) {
   const d = data.details
   return (
     <BaseNode
+      id="weather"
+      testId="node-weather"
+      pos={pos}
+      nodeW={nodeW}
+      nodeH={nodeH}
       role_state={data.role_state}
       freshness={data.freshness}
       freshness_label={data.freshness_label}
-      title="Weather"
-      headline={`${Math.round(d.today_high_f)}°F high`}
-      testId="node-weather"
+      title={data.title}
+      subtitle={data.subtitle}
     >
-      <div>{Math.round(d.current_outdoor_f)}°F now · dew {Math.round(d.dewpoint_max_f)}°F</div>
-      {d.heat_advisory && (
-        <div className="font-semibold text-rose-300">heat advisory</div>
-      )}
+      <div className="node-stats">
+        <Stat k="now" v={`${d.current_outdoor_f}°`} />
+        <Stat
+          k="high"
+          v={`${d.today_high_f}°`}
+          tone={d.heat_advisory ? 'warn' : ''}
+        />
+        <Stat k="dew" v={`${d.dewpoint_max_f}°`} />
+      </div>
     </BaseNode>
   )
 }

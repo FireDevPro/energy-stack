@@ -10,9 +10,10 @@ Modes (via COCKPIT_BACKEND_MODE env var):
   a fallback when Influx/Loki credentials are not present.
 - "live" — assembles the Snapshot from live Influx + Loki query results
   using snapshot.build_snapshot_live. Requires:
-    INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET
-    LOKI_URL, LOKI_CONTAINER (default: energy-stack-hvac-scheduler-1)
-  Live smoke against Pi-lab is the operator's manual step.
+    INFLUXDB_URL, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET
+    LOKI_URL, LOKI_CONTAINER (default: hvac-scheduler)
+  Workstation usage: start via ../start-cockpit.ps1 which sources
+  tools/cockpit/.env.local for these values.
 
 Run (only supported invocation form, from repo root):
     PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8000
@@ -110,14 +111,12 @@ def _live_snapshot() -> dict[str, Any]:
 
     from tools.cockpit.backend import influx, loki  # noqa: PLC0415
 
-    url = _require_env("INFLUX_URL")
-    token = _require_env("INFLUX_TOKEN")
-    org = _require_env("INFLUX_ORG")
-    bucket = _require_env("INFLUX_BUCKET")
+    url = _require_env("INFLUXDB_URL")
+    token = _require_env("INFLUXDB_TOKEN")
+    org = _require_env("INFLUXDB_ORG")
+    bucket = _require_env("INFLUXDB_BUCKET")
     loki_url = _require_env("LOKI_URL")
-    container = os.environ.get(
-        "LOKI_CONTAINER", "energy-stack-hvac-scheduler-1"
-    )
+    container = os.environ.get("LOKI_CONTAINER", "hvac-scheduler")
 
     influx_client = InfluxDBClient(url=url, token=token, org=org)
     query_api = influx_client.query_api()
@@ -130,6 +129,9 @@ def _live_snapshot() -> dict[str, Any]:
     arm_mode = influx.query_latest_arm_mode(query_api, bucket=bucket)
     price = influx.query_latest_price(query_api, bucket=bucket)
     heartbeat = influx.query_latest_heartbeat(query_api, bucket=bucket)
+    last_action = influx.query_latest_action(query_api, bucket=bucket)
+    weather = influx.query_today_forecast(query_api, bucket=bucket)
+    outdoor = influx.query_outdoor_now(query_api, bucket=bucket)
 
     feed_health = _build_feed_health(query_api, bucket, now)
     traces = loki.fetch_latest_tick_traces(
@@ -144,6 +146,9 @@ def _live_snapshot() -> dict[str, Any]:
         heartbeat=heartbeat,
         feed_health=feed_health,
         traces=traces,
+        last_action=last_action,
+        weather=weather,
+        outdoor=outdoor,
         scheduler_mode=scheduler_mode,
         now=now,
     )
@@ -156,9 +161,12 @@ def _build_feed_health(
     from tools.cockpit.backend.freshness import classify  # noqa: PLC0415
 
     out: list[dict[str, Any]] = []
-    for display_name, measurement, freshness_key in influx.FEED_DEFINITIONS:
+    for display_name, measurement, freshness_key, tag_filter in influx.FEED_DEFINITIONS:
         ts = influx.query_feed_last_ts(
-            query_api, bucket=bucket, measurement=measurement
+            query_api,
+            bucket=bucket,
+            measurement=measurement,
+            tag_filter=tag_filter,
         )
         if ts is None:
             out.append(

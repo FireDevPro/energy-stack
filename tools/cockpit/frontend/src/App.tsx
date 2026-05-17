@@ -3,10 +3,12 @@ import { loadFixtureFromUrl } from './lib/loadFixture'
 import { shadowCurrent } from './fixtures/shadow_current'
 import { fetchSnapshot } from './lib/api'
 import { usePolling } from './lib/usePolling'
+import { writesAllowed } from './lib/tone'
 import { Header } from './components/Header'
-import { StatusBanner } from './components/StatusBanner'
+import { FeedHealthStrip } from './components/FeedHealthStrip'
 import { ThermostatCard } from './components/ThermostatCard'
 import { DecisionBoard } from './components/DecisionBoard'
+import { ActionStrip } from './components/ActionStrip'
 import type { Snapshot } from './types'
 
 const POLL_INTERVAL_MS = 5_000
@@ -27,15 +29,8 @@ export default function App() {
     [],
   )
 
-  // Skip polling entirely when the operator pinned a fixture.
   const polling = usePolling<Snapshot>(fetcher, POLL_INTERVAL_MS, !useFixture)
 
-  // Snapshot resolution priority:
-  //   1. URL fixture (explicit operator choice)
-  //   2. Live polling data
-  //   3. Live error: prefer last good data; fall back to shadow_current
-  //      (honest "we don't know" state) if no good data yet
-  //   4. Initial loading → null
   const snapshot: Snapshot | null = useFixture
     ? fixtureSnapshot
     : polling.data
@@ -46,41 +41,97 @@ export default function App() {
 
   if (!snapshot) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 font-mono text-sm text-zinc-500">
-        loading snapshot…
-      </div>
+      <>
+        <div className="ambient" aria-hidden="true" />
+        <div
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: '100vh',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 13,
+            color: 'var(--ink-3)',
+            letterSpacing: '0.06em',
+          }}
+        >
+          loading snapshot…
+        </div>
+      </>
     )
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
-      <Header snapshot={snapshot} />
-      {!useFixture && polling.error && (
-        <div className="border-b border-amber-500/40 bg-amber-500/10 px-6 py-1.5 font-mono text-[11px] uppercase tracking-[0.15em] text-amber-200">
-          {polling.data ? (
-            <>
-              Backend unreachable — showing last successful fetch · last try{' '}
-              {polling.lastFetchedAt
-                ? new Date(polling.lastFetchedAt).toLocaleTimeString()
-                : '—'}
-            </>
-          ) : (
-            <>
-              Backend unreachable — showing fallback fixture · last try{' '}
-              {polling.lastFetchedAt
-                ? new Date(polling.lastFetchedAt).toLocaleTimeString()
-                : '—'}
-            </>
-          )}
-        </div>
-      )}
-      <main className="flex flex-1 overflow-hidden">
-        <ThermostatCard snapshot={snapshot} />
-        <section className="flex flex-1 flex-col overflow-auto">
-          <StatusBanner snapshot={snapshot} />
-          <DecisionBoard snapshot={snapshot} />
-        </section>
-      </main>
-    </div>
+    <>
+      <div className="ambient" aria-hidden="true" />
+      <div className="cockpit">
+        <Header snapshot={snapshot} />
+        <FeedHealthStrip snapshot={snapshot} />
+
+        {!useFixture && polling.error && (
+          <div
+            style={{
+              padding: '6px 18px',
+              borderBottom: '1px solid var(--line-soft)',
+              background:
+                'color-mix(in oklab, var(--warn) 12%, var(--bg-base))',
+              color: 'var(--warn)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+            }}
+          >
+            {polling.data
+              ? `Backend unreachable — showing last successful fetch · last try ${
+                  polling.lastFetchedAt
+                    ? new Date(polling.lastFetchedAt).toLocaleTimeString()
+                    : '—'
+                }`
+              : `Backend unreachable — showing fallback fixture · last try ${
+                  polling.lastFetchedAt
+                    ? new Date(polling.lastFetchedAt).toLocaleTimeString()
+                    : '—'
+                }`}
+          </div>
+        )}
+
+        <main className="cockpit-main">
+          <ThermostatCard snapshot={snapshot} />
+          <section className="flow-pane" data-layout="horizontal">
+            <div className="flow-toolbar">
+              <div>
+                <div className="flow-title">Decision flow</div>
+                <div className="flow-subtitle">
+                  weather → day type → arbitration → supervisor → action
+                </div>
+              </div>
+              <div
+                style={{
+                  marginLeft: 'auto',
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <span
+                  className="chip chip-neutral chip-mono"
+                  style={{
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.1em',
+                  }}
+                >
+                  {writesAllowed(snapshot) ? 'writes live' : 'shadow'}
+                </span>
+              </div>
+            </div>
+            <DecisionBoard snapshot={snapshot} />
+            <ActionStrip snapshot={snapshot} />
+          </section>
+        </main>
+      </div>
+    </>
   )
 }

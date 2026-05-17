@@ -1,37 +1,54 @@
-import { BaseNode } from './BaseNode'
+import { BaseNode, Stat } from './BaseNode'
 import type { BaseNodeEnvelope, PriceOverlayDetails } from '../../types'
-
-const TIER_TEXT = {
-  normal: 'text-emerald-300',
-  elevated: 'text-amber-300',
-  scarcity: 'text-rose-300',
-} as const
 
 export function PriceOverlayNode({
   data,
+  pos,
+  nodeW,
+  nodeH,
 }: {
   data: BaseNodeEnvelope<PriceOverlayDetails>
+  pos: { x: number; y: number }
+  nodeW: number
+  nodeH: number
 }) {
   const d = data.details
-  const headline = `${(d.price_cents ?? 0).toFixed(1)}¢`
   return (
     <BaseNode
+      id="price_overlay"
+      testId="node-price-overlay"
+      pos={pos}
+      nodeW={nodeW}
+      nodeH={nodeH}
       role_state={data.role_state}
       freshness={data.freshness}
       freshness_label={data.freshness_label}
-      title="Price"
-      headline={headline}
-      testId="node-price-overlay"
+      title={data.title}
+      subtitle={data.subtitle}
     >
-      <div>
-        <span className={`font-semibold ${TIER_TEXT[d.new_tier]}`}>
-          {d.new_tier}
-        </span>
-        {d.prev_tier !== d.new_tier && (
-          <span className="text-zinc-500"> · was {d.prev_tier}</span>
-        )}
-      </div>
-      <div className="font-mono text-[10px] text-zinc-500">{d.reason_code}</div>
+      {d.price_cents == null ? (
+        <div className="node-stats">
+          <Stat k="status" v="—" />
+        </div>
+      ) : (
+        <div className="node-stats">
+          <Stat
+            k="¢"
+            v={d.price_cents.toFixed(1)}
+            tone={
+              d.new_tier === 'scarcity'
+                ? 'danger'
+                : d.new_tier === 'elevated'
+                  ? 'warn'
+                  : ''
+            }
+          />
+          <Stat k="tier" v={d.new_tier} />
+          {d.hold_minutes_remaining && d.hold_minutes_remaining > 0 && (
+            <Stat k="hold" v={`${d.hold_minutes_remaining}m`} />
+          )}
+        </div>
+      )}
     </BaseNode>
   )
 }

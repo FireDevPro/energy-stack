@@ -3,7 +3,7 @@ import type { Snapshot } from '../types'
 // PJM RT LMP feed is stale (>3h gap). Controller can't compute the
 // price overlay decision reliably and falls back to schedule-only
 // behavior. arm_mode = B-fallback (writes happening per protocol but
-// without all required signals). Price Overlay node is stale; schedule
+// without all required signals). RTP Spike node is stale; schedule
 // wins by default.
 export const feedOutage: Snapshot = {
   snapshot_ts: '2026-07-23T13:15:30-05:00',
@@ -139,7 +139,7 @@ export const feedOutage: Snapshot = {
       role_state: 'stale',
       freshness: 'stale',
       freshness_label: 'PJM RT LMP 3h 14m old',
-      title: 'Price Overlay',
+      title: 'RTP Spike',
       subtitle: 'feed-stale — preserving normal',
       details: {
         price_cents: 7.8,

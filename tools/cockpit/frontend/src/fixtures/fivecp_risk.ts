@@ -117,7 +117,7 @@ export const fivecpRisk: Snapshot = {
       role_state: 'dimmed',
       freshness: 'fresh',
       freshness_label: '30s ago',
-      title: 'Price Overlay',
+      title: 'RTP Spike',
       subtitle: 'elevated — partial override',
       details: {
         price_cents: 12.3,

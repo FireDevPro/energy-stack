@@ -1,0 +1,6 @@
+.env
+.env.local
+logs/
+# Original design source extracted from Chris's reference .zip. The live
+# code is now the source of truth; this folder is operator-local.
+reference/

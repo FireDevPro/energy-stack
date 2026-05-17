@@ -45,3 +45,9 @@ analysis/exports/
 docs/test-reports/*.md
 !docs/test-reports/README.md
 .codex/
+
+# Cockpit dev artifacts (local-only; should never be committed)
+/node_modules/
+.playwright-mcp/
+reticule-*.png
+reference-original.png

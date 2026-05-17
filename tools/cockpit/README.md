@@ -12,23 +12,41 @@ complement to the daily n8n/Telegram commissioning report.
 
 ## Run
 
-```bash
-# 1. Start the backend (FastAPI on :8000)
-cd tools/cockpit/backend
-pip install -r requirements.txt
-cd ../../..
-PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8000
+One-click launcher (Windows). First-time setup:
 
-# 2. Start the frontend (Vite on :5173, proxies /api/* to :8000)
-cd tools/cockpit/frontend
-npm install
-npm run dev
+```pwsh
+cp tools/cockpit/.env.example tools/cockpit/.env.local
+# edit .env.local — fill INFLUXDB_TOKEN + confirm URLs.
+# Pi-lab token lives in /home/chris/energy-proxy/.env as INFLUXDB_TOKEN.
+
+pwsh tools/cockpit/install-shortcut.ps1   # creates Cockpit.lnk on desktop
 ```
 
-Open <http://localhost:5173/> for live data polled from the backend
-every 5 seconds. If port 8000 is in use, override via
-`COCKPIT_BACKEND_PORT=8765` on the Vite invocation and pass `--port 8765`
-to uvicorn.
+Then double-click the Cockpit desktop icon. The launcher:
+
+- sources `tools/cockpit/.env.local` (gitignored)
+- kills any prior cockpit backend on `:8000` / Vite on `:5173`
+  (only if the bound process command line matches the cockpit — leaves
+  unrelated python/node alone)
+- spawns uvicorn (live mode) and Vite in two visible pwsh windows
+- waits for both to be healthy, then opens <http://localhost:5173/>
+
+Close the two spawned pwsh windows to stop the cockpit.
+
+Ports `:8000` (backend) and `:5173` (frontend) are pinned in
+`start-cockpit.ps1` and `vite.config.ts` — change both together if
+either ever needs to move. There is deliberately no
+`COCKPIT_BACKEND_PORT` knob, because letting Vite's proxy target drift
+from the backend's actual port silently serves stale data without
+erroring.
+
+Toggle to a fixture (offline / demo / screenshots) via `?fixture=<name>`:
+
+- <http://localhost:5173/> — live data (default)
+- <http://localhost:5173/?fixture=summer_normal> — Arm B-active, July
+  afternoon, 1pm fire-time tick, Schedule winning, humid override active
+- <http://localhost:5173/?fixture=shadow_current> — pre-experiment shadow
+  mode, `mode_actual=outside-window`, dry-run action
 
 Toggle to a fixture (offline / demo / screenshots) via `?fixture=<name>`:
 
@@ -57,6 +75,14 @@ Read-only by design. No drag, no setpoint controls, no writes back to the
 scheduler. Snapshot is assembled from existing `decision_trace.*` Loki logs
 and `hvac.*` Influx measurements — cockpit cannot introduce control-path
 behavior changes.
+
+The Action node shows whatever `hvac.actions` row is most recent and
+does **not** try to distinguish synthetic commissioning emissions from
+real controller behavior — that distinction must come from the writer
+(e.g. a `source=commissioning` tag on the row). Without an upstream
+marker, cockpit-side filtering by name pattern would risk hiding real
+rows or missing synthetic ones, so by policy the cockpit just renders
+what's there.
 
 Three phases delivered, one follow-on:
 
@@ -110,6 +136,16 @@ physically happening (`scheduler_mode=production` OR
 Vite, React 19, TypeScript, `@xyflow/react` v12, Framer Motion 12,
 Tailwind 3, Vitest 4 + Testing Library + jsdom. Dark zinc ops-dashboard
 theme. Inter UI font + JetBrains Mono for IDs/timestamps.
+
+## Visual acceptance
+
+**Chrome on the operator's real display is the visual oracle.** Vitest +
+jsdom is non-visual regression only — node-state derivation, data
+attributes, edge state metadata. Chromium / Playwright screenshots are
+NOT authoritative; they have rendered differently from Chrome in this
+project and caused bad visual fixes. Do not adjust layout or CSS to
+satisfy Chromium / 1280x720 / jsdom unless the operator explicitly
+reports the problem in Chrome.
 
 ## Tests
 

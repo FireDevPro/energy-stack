@@ -166,7 +166,7 @@ describe('Cockpit Phase 2 fixtures', () => {
     window.history.replaceState({}, '', '/?fixture=summer_normal')
   })
 
-  it('price_spike: Price Overlay wins with scarcity tier', () => {
+  it('price_spike: RTP Spike wins with scarcity tier', () => {
     window.history.replaceState({}, '', '/?fixture=price_spike')
     render(<App />)
 

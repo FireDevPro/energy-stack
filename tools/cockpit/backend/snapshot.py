@@ -41,6 +41,9 @@ def build_snapshot_live(
     heartbeat: dict[str, Any] | None,
     feed_health: list[dict[str, Any]],
     traces: dict[str, Any],
+    last_action: dict[str, Any] | None = None,
+    weather: dict[str, Any] | None = None,
+    outdoor: dict[str, Any] | None = None,
     scheduler_mode: str,
     now: datetime,
 ) -> dict[str, Any]:
@@ -59,7 +62,7 @@ def build_snapshot_live(
     day_type = traces.get("day_type_decision") or {}
     tick_id = traces.get("tick_id") or _short_id(now)
 
-    layer_ts = _parse_ts(layer.get("now_ct")) or now
+    layer_ts = _parse_ts(layer.get("ts")) or now
     indoor_temp = (thermostat or {}).get("indoor_temp_f")
     indoor_temp_available = isinstance(indoor_temp, (int, float))
 
@@ -89,14 +92,14 @@ def build_snapshot_live(
         },
         "feed_health": feed_health,
         "flow": {
-            "weather": _build_weather_node(day_type, now),
+            "weather": _build_weather_node(day_type, weather, outdoor, now),
             "day_type": _build_day_type_node(day_type, now),
-            "schedule": _build_schedule_node(layer, now),
+            "schedule": _build_schedule_node(layer, last_action, now),
             "price_overlay": _build_price_overlay_node(po_eval, layer, now),
-            "fivecp": _build_fivecp_node(layer, now),
-            "winner": _build_winner_node(layer, now),
-            "supervisor": _build_supervisor_node(sup, indoor_temp_available, now),
-            "action": _build_action_node(layer, sup, now),
+            "fivecp": _build_fivecp_node(layer, day_type, now),
+            "winner": _build_winner_node(layer, last_action, now),
+            "supervisor": _build_supervisor_node(sup, last_action, indoor_temp_available, now),
+            "action": _build_action_node(last_action, now),
         },
     }
 
@@ -178,13 +181,27 @@ def _build_arm_mode(
     }
 
 
-def _build_weather_node(day_type: dict[str, Any], now: datetime) -> dict[str, Any]:
-    # Weather inputs surface inside the day_type trace; for live data
-    # without a separate NWS query we fall back to "context" with
-    # whatever the day_type tape recorded.
-    high = day_type.get("high_f")
-    apparent = day_type.get("apparent_max_f")
-    dewpoint = day_type.get("max_dewpoint_f")
+def _build_weather_node(
+    day_type: dict[str, Any],
+    weather: dict[str, Any] | None,
+    outdoor: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    # Three sources, in priority order:
+    # - outdoor (Ecowitt) → current temp/rh/dewpoint, live
+    # - weather (NWS forecast for today) → high/apparent_max/dewpoint_max
+    # - day_type trace payload → cached forecast inputs the controller saw
+    current_outdoor = (outdoor or {}).get("outdoor_temp_f")
+    high = (weather or {}).get("high_f") or day_type.get("high_f")
+    apparent = (weather or {}).get("apparent_max_f") or day_type.get("apparent_max_f")
+    dewpoint = (
+        (outdoor or {}).get("outdoor_dewpoint_f")
+        or (weather or {}).get("max_dewpoint_f")
+        or day_type.get("max_dewpoint_f")
+    )
+    advisory = bool(
+        (weather or {}).get("is_heat_advisory") or day_type.get("is_heat_advisory")
+    )
     return {
         "role_state": "context",
         "freshness": "fresh",
@@ -192,16 +209,16 @@ def _build_weather_node(day_type: dict[str, Any], now: datetime) -> dict[str, An
         "title": "Weather",
         "subtitle": _weather_subtitle(high, dewpoint),
         "details": {
-            "current_outdoor_f": _f(high) if high is not None else 0.0,
+            "current_outdoor_f": _f(current_outdoor) if current_outdoor is not None else _f(high),
             "today_high_f": _i(high) if high is not None else 0,
             "apparent_max_f": _i(apparent) if apparent is not None else 0,
             "dewpoint_max_f": _i(dewpoint) if dewpoint is not None else 0,
-            "heat_advisory": bool(day_type.get("is_heat_advisory")),
+            "heat_advisory": advisory,
         },
         "source": {
             "event": "nws.forecast",
             "tick_id": None,
-            "ts": day_type.get("now_ct") or _iso(now),
+            "ts": day_type.get("ts") or _iso(now),
         },
     }
 
@@ -224,25 +241,38 @@ def _build_day_type_node(day_type: dict[str, Any], now: datetime) -> dict[str, A
         "source": {
             "event": "decision_trace.day_type_decision",
             "tick_id": day_type.get("tick_id"),
-            "ts": day_type.get("now_ct") or _iso(now),
+            "ts": day_type.get("ts") or _iso(now),
         },
     }
 
 
-def _build_schedule_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]:
-    base = _i(layer.get("schedule_cool_f")) or 78
+def _build_schedule_node(
+    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime
+) -> dict[str, Any]:
+    # Prefer layer_resolution trace; fall back to last hvac.actions row
+    # so values are populated even without recent Loki traces.
+    base = (
+        _i(layer.get("schedule_cool_f"))
+        or _i((last_action or {}).get("schedule_cool_f"))
+        or 78
+    )
+    effective = (
+        _i(layer.get("effective_cool_f"))
+        or _i((last_action or {}).get("effective_cool_f"))
+        or base
+    )
     winning_layer = layer.get("winning_layer") or "schedule"
     role = "winning" if winning_layer == "schedule" else "dimmed"
     return {
         "role_state": role,
         "freshness": "fresh",
-        "freshness_label": "this tick",
+        "freshness_label": "from last action",
         "title": "Schedule",
-        "subtitle": f"baseline: {base}°F",
+        "subtitle": f"{(last_action or {}).get('day_type') or 'NORMAL'} · {effective}°F",
         "details": {
-            "action_label": "live",
+            "action_label": (last_action or {}).get("action_label") or "live",
             "base_schedule_cool_f": base,
-            "effective_schedule_cool_f": base,
+            "effective_schedule_cool_f": effective,
             "humid_override_active": False,
             "humid_override_setpoint_f": None,
             "precool_window": None,
@@ -250,7 +280,7 @@ def _build_schedule_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]
         "source": {
             "event": "decision_trace.layer_resolution",
             "tick_id": layer.get("tick_id"),
-            "ts": layer.get("now_ct") or _iso(now),
+            "ts": layer.get("ts") or _iso(now),
         },
     }
 
@@ -267,7 +297,7 @@ def _build_price_overlay_node(
         "role_state": "winning" if winning else "dimmed",
         "freshness": "stale" if po.get("price_is_stale") else "fresh",
         "freshness_label": "this tick",
-        "title": "Price Overlay",
+        "title": "RTP Spike",
         "subtitle": str(new_tier),
         "details": {
             "price_cents": _f(po.get("price_cents")),
@@ -280,21 +310,29 @@ def _build_price_overlay_node(
         "source": {
             "event": "decision_trace.price_overlay_eval",
             "tick_id": po.get("tick_id"),
-            "ts": po.get("now_ct") or _iso(now),
+            "ts": po.get("ts") or _iso(now),
         },
     }
 
 
-def _build_fivecp_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _build_fivecp_node(
+    layer: dict[str, Any], day_type: dict[str, Any], now: datetime
+) -> dict[str, Any]:
     active = bool(layer.get("fivecp_active"))
+    winning_day_type = str(day_type.get("winning_day_type") or "")
+    armed = "5CP" in winning_day_type
+    if active:
+        role, subtitle = "winning", "firing now"
+    elif armed:
+        role, subtitle = "context", "armed · awaiting peak window"
+    else:
+        role, subtitle = "dimmed", "no risk"
     return {
-        "role_state": "winning" if layer.get("winning_layer") == "fivecp" else (
-            "dimmed" if active else "dimmed"
-        ),
+        "role_state": "winning" if layer.get("winning_layer") == "fivecp" else role,
         "freshness": "fresh",
         "freshness_label": "this tick",
         "title": "5CP Risk",
-        "subtitle": "active" if active else "no risk",
+        "subtitle": subtitle,
         "details": {
             "fivecp_active": active,
             "fivecp_scopes_fired": list(layer.get("fivecp_scopes_fired") or []),
@@ -304,23 +342,36 @@ def _build_fivecp_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]:
         "source": {
             "event": "decision_trace.layer_resolution",
             "tick_id": layer.get("tick_id"),
-            "ts": layer.get("now_ct") or _iso(now),
+            "ts": layer.get("ts") or _iso(now),
         },
     }
 
 
-def _build_winner_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]:
-    effective = _i(layer.get("effective_cool_f")) or 0
+def _build_winner_node(
+    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime
+) -> dict[str, Any]:
+    effective = (
+        _i(layer.get("effective_cool_f"))
+        or _i((last_action or {}).get("effective_cool_f"))
+        or _i((last_action or {}).get("cool_setpoint_f"))
+        or 0
+    )
     prev = _i(layer.get("prev_effective_cool_f")) or effective
     winning_layer = layer.get("winning_layer") or "schedule"
     if winning_layer not in {"schedule", "price_overlay", "fivecp", "tie"}:
         winning_layer = "schedule"
+    layer_display = {
+        "schedule": "Schedule",
+        "price_overlay": "RTP Spike",
+        "fivecp": "5CP Risk",
+        "tie": "Tie",
+    }[winning_layer]
     return {
         "role_state": "winning",
         "freshness": "fresh",
         "freshness_label": "this tick",
         "title": "Winner",
-        "subtitle": winning_layer.replace("_", " ").title(),
+        "subtitle": layer_display,
         "details": {
             "winning_layer": winning_layer,
             "effective_cool_f": effective,
@@ -331,14 +382,45 @@ def _build_winner_node(layer: dict[str, Any], now: datetime) -> dict[str, Any]:
         "source": {
             "event": "decision_trace.layer_resolution",
             "tick_id": layer.get("tick_id"),
-            "ts": layer.get("now_ct") or _iso(now),
+            "ts": layer.get("ts") or _iso(now),
         },
     }
 
 
 def _build_supervisor_node(
-    sup: dict[str, Any] | None, indoor_temp_available: bool, now: datetime
+    sup: dict[str, Any] | None,
+    last_action: dict[str, Any] | None,
+    indoor_temp_available: bool,
+    now: datetime,
 ) -> dict[str, Any]:
+    # Fall back to last_action.supervisor_decision when no live trace.
+    if sup is None and last_action is not None:
+        decision = last_action.get("supervisor_decision")
+        if decision:
+            cool = _i(last_action.get("cool_setpoint_f"))
+            heat = _i(last_action.get("heat_setpoint_f"))
+            return {
+                "role_state": (
+                    "clamped" if decision == "clamped"
+                    else "emergency" if decision == "emergency"
+                    else "winning"
+                ),
+                "freshness": "fresh",
+                "freshness_label": "from last action",
+                "title": "Supervisor",
+                "subtitle": str(decision),
+                "details": {
+                    "decision": decision,
+                    "proposed_cool_f": cool,
+                    "proposed_heat_f": heat,
+                    "final_cool_f": cool,
+                    "final_heat_f": heat,
+                    "supervisor_reason": last_action.get("supervisor_reason"),
+                    "reason_code": "SUPERVISOR_APPROVED" if decision == "approved" else None,
+                    "indoor_temp_available": indoor_temp_available,
+                },
+                "source": None,
+            }
     if sup is None:
         return {
             "role_state": "not_applicable",
@@ -383,41 +465,60 @@ def _build_supervisor_node(
         "source": {
             "event": "decision_trace.supervisor",
             "tick_id": sup.get("tick_id"),
-            "ts": sup.get("now_ct") or _iso(now),
+            "ts": sup.get("ts") or _iso(now),
         },
     }
 
 
 def _build_action_node(
-    layer: dict[str, Any], sup: dict[str, Any] | None, now: datetime
+    last_action: dict[str, Any] | None, now: datetime
 ) -> dict[str, Any]:
-    # Layer resolution proposed an effective; supervisor (if invoked)
-    # finalized it. Action node represents the "what would be written"
-    # surface for the live snapshot — the actual hvac.actions row only
-    # appears at scheduled action times.
-    cool = (
-        _i((sup or {}).get("final_cool_f"))
-        if sup
-        else _i(layer.get("effective_cool_f"))
-    )
+    if last_action is None:
+        return {
+            "role_state": "context",
+            "freshness": "missing",
+            "freshness_label": "no recent action",
+            "title": "Action",
+            "subtitle": "no rows in last 8h",
+            "details": {
+                "applied": None,
+                "dry_run": None,
+                "action_label": None,
+                "cool_setpoint_f": None,
+                "heat_setpoint_f": None,
+                "fan_mode": None,
+                "setpoint_reason": None,
+                "fire_ts": None,
+                "error": None,
+            },
+            "source": None,
+        }
+    applied = bool(last_action.get("applied"))
+    dry_run = bool(last_action.get("dry_run"))
+    fire_ts = last_action.get("fire_ts")
+    age_label = _label_age(_age_ms(_parse_ts(fire_ts), now)) if fire_ts else "—"
     return {
-        "role_state": "context",
+        "role_state": "winning" if applied else "context",
         "freshness": "fresh",
-        "freshness_label": "this tick",
+        "freshness_label": f"fired {age_label}",
         "title": "Action",
-        "subtitle": "live tick",
+        "subtitle": str(last_action.get("action_label") or "—"),
         "details": {
-            "applied": False,
-            "dry_run": True,
-            "action_label": "live_tick",
-            "cool_setpoint_f": cool,
-            "heat_setpoint_f": _i((sup or {}).get("final_heat_f")),
-            "fan_mode": "auto",
-            "setpoint_reason": "live snapshot — last hvac.actions row not queried",
-            "fire_ts": None,
-            "error": None,
+            "applied": applied,
+            "dry_run": dry_run,
+            "action_label": last_action.get("action_label"),
+            "cool_setpoint_f": _i(last_action.get("cool_setpoint_f")),
+            "heat_setpoint_f": _i(last_action.get("heat_setpoint_f")),
+            "fan_mode": last_action.get("fan_mode"),
+            "setpoint_reason": last_action.get("setpoint_reason"),
+            "fire_ts": fire_ts,
+            "error": last_action.get("error") or None,
         },
-        "source": None,
+        "source": {
+            "event": "hvac.actions",
+            "tick_id": None,
+            "ts": fire_ts or _iso(now),
+        },
     }
 
 

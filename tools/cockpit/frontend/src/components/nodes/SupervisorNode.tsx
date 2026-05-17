@@ -1,14 +1,11 @@
-import { BaseNode } from './BaseNode'
+import { BaseNode, Stat } from './BaseNode'
 import type {
   BaseNodeEnvelope,
   SupervisorDetails,
   RoleState,
 } from '../../types'
 
-function supervisorRoleOverride(
-  d: SupervisorDetails,
-  fallback: RoleState,
-): RoleState {
+function supervisorRole(d: SupervisorDetails, fallback: RoleState): RoleState {
   if (d.decision === 'emergency') return 'emergency'
   if (d.decision === 'clamped') return 'clamped'
   return fallback
@@ -16,45 +13,60 @@ function supervisorRoleOverride(
 
 export function SupervisorNode({
   data,
+  pos,
+  nodeW,
+  nodeH,
 }: {
   data: BaseNodeEnvelope<SupervisorDetails>
+  pos: { x: number; y: number }
+  nodeW: number
+  nodeH: number
 }) {
   const d = data.details
-  const role = supervisorRoleOverride(d, data.role_state)
-  const headline =
-    d.decision === null
-      ? 'idle'
-      : d.decision === 'clamped'
-        ? `clamped → ${d.final_cool_f}°F`
-        : d.decision === 'emergency'
-          ? `emergency → ${d.final_cool_f}°F`
-          : `approved ${d.final_cool_f}°F`
+  const role = supervisorRole(d, data.role_state)
   return (
     <BaseNode
+      id="supervisor"
+      testId="node-supervisor"
+      pos={pos}
+      nodeW={nodeW}
+      nodeH={nodeH}
       role_state={role}
       freshness={data.freshness}
       freshness_label={data.freshness_label}
-      title="Supervisor"
-      headline={headline}
-      testId="node-supervisor"
+      title={data.title}
+      subtitle={data.subtitle}
     >
-      {d.decision === null ? (
-        <div className="text-zinc-600">no proposal this tick</div>
+      {!d.decision ? (
+        <div className="node-stats">
+          <Stat k="state" v="bypass" />
+        </div>
       ) : (
-        <>
-          {d.proposed_cool_f !== d.final_cool_f && (
-            <div>
-              proposed{' '}
-              <span className="text-zinc-400">{d.proposed_cool_f}°F</span>
-            </div>
-          )}
-          {d.indoor_temp_available === false && (
-            <div className="text-amber-300">indoor temp unavailable</div>
-          )}
-          <div className="font-mono text-[10px] text-zinc-500">
-            {d.reason_code}
-          </div>
-        </>
+        <div className="node-stats">
+          <Stat
+            k="result"
+            v={d.decision}
+            tone={
+              d.decision === 'clamped'
+                ? 'warn'
+                : d.decision === 'emergency'
+                  ? 'danger'
+                  : 'live'
+            }
+          />
+          {d.proposed_cool_f != null &&
+            d.proposed_cool_f !== d.final_cool_f && (
+              <Stat
+                k="cool"
+                v={`${d.proposed_cool_f}→${d.final_cool_f}°`}
+                tone="warn"
+              />
+            )}
+          {d.proposed_cool_f != null &&
+            d.proposed_cool_f === d.final_cool_f && (
+              <Stat k="cool" v={`${d.final_cool_f}°`} tone="cool" />
+            )}
+        </div>
       )}
     </BaseNode>
   )

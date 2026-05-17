@@ -136,7 +136,7 @@ export const priceSpike: Snapshot = {
       role_state: 'winning',
       freshness: 'fresh',
       freshness_label: '30s ago',
-      title: 'Price Overlay',
+      title: 'RTP Spike',
       subtitle: 'scarcity — overriding to 85°F',
       details: {
         price_cents: 53.4,
@@ -175,7 +175,7 @@ export const priceSpike: Snapshot = {
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Winner',
-      subtitle: 'Price Overlay',
+      subtitle: 'RTP Spike',
       details: {
         winning_layer: 'price_overlay',
         effective_cool_f: 85,

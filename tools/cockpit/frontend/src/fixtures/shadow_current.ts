@@ -137,7 +137,7 @@ export const shadowCurrent: Snapshot = {
       role_state: 'dimmed',
       freshness: 'fresh',
       freshness_label: '3m ago',
-      title: 'Price Overlay',
+      title: 'RTP Spike',
       subtitle: 'normal — no override',
       details: {
         price_cents: 4.1,

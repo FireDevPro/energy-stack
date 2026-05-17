@@ -116,7 +116,7 @@ SUMMER_NORMAL = {
             "role_state": "dimmed",
             "freshness": "fresh",
             "freshness_label": "30s ago",
-            "title": "Price Overlay",
+            "title": "RTP Spike",
             "subtitle": "normal — no override",
             "details": {
                 "price_cents": 8.4,

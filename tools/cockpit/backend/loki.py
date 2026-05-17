@@ -89,11 +89,13 @@ def fetch_latest_tick_traces(
     base = f'{{container="{container}"}}'
 
     def _query(event: str, tick_id: str | None = None) -> dict[str, Any] | None:
-        # Loki's |= '"event":"..."' substring match is cheap; the JSON
-        # parse step filters to valid payloads.
-        filter_clause = f'|= `"event":"{event}"`'
+        # Use Loki's JSON parser filter rather than `|=` substring match.
+        # The scheduler's Python json.dumps emits `"msg": "..."` with a
+        # space, which fails a literal-string substring match for
+        # `"msg":"..."` (no space). Parser filter is whitespace-agnostic.
+        filter_clause = f'| json | msg=`{event}`'
         if tick_id is not None:
-            filter_clause += f' |= `"tick_id":"{tick_id}"`'
+            filter_clause += f' | tick_id=`{tick_id}`'
         q = f"{base} {filter_clause}"
         resp = client.query_range(
             q, start_ns=start_ns, end_ns=now_ns, limit=100
