@@ -1,0 +1,189 @@
+"""Smoke tests for tools.analysis.arm_period_pipeline orchestrator.
+
+Light-weight tests on a minimal 2-arm synthetic dataset. The full
+12-arm Phase 0 acceptance test lives in
+test_rebaseline_end_to_end_acceptance.py and stays xfail until Task
+3.15 lands the de-scaffolded fixture.
+"""
+from __future__ import annotations
+
+import datetime
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import pytest
+
+from tools.analysis.arm_calendar import (
+    ARM_CALENDAR,
+    ArmPeriod,
+    HOURS_PER_ARM,
+    post_washout_start,
+)
+from tools.analysis.arm_period_pipeline import (
+    DEFAULT_RATE_SNAPSHOT,
+    PipelineResult,
+    run_full_pipeline,
+)
+
+
+_CT = ZoneInfo("America/Chicago")
+_UTC = ZoneInfo("UTC")
+
+
+def _post_washout_utc(arm: ArmPeriod) -> datetime.datetime:
+    return (
+        post_washout_start(arm)
+        .replace(tzinfo=_CT)
+        .astimezone(_UTC)
+        .replace(tzinfo=None)
+    )
+
+
+def _build_arm_signals(arm: ArmPeriod, *, scale: float = 1.0,
+                       lmp_per_mwh: float = 50.0) -> dict[str, pd.DataFrame]:
+    start = _post_washout_utc(arm)
+    refoss_rows = []
+    rt_rows = []
+    arm_mode_rows = []
+    ecowitt_rows = []
+    base_w = (("em:2", 900.0), ("em:8", 600.0), ("em:9", 100.0))
+    for k in range(HOURS_PER_ARM):
+        h_start = start + datetime.timedelta(hours=k)
+        for ch, base in base_w:
+            watts = base * scale
+            for s in range(120):
+                refoss_rows.append({
+                    "_time": h_start + datetime.timedelta(seconds=30 * s),
+                    "channel": ch,
+                    "_value": watts,
+                    "_field": "power_w",
+                })
+        rt_rows.append({"_time": h_start, "total_lmp_rt": lmp_per_mwh})
+        # one mode telemetry row per 5-min
+        for m in range(12):
+            arm_mode_rows.append({
+                "_time": h_start + datetime.timedelta(minutes=5 * m),
+                "arm": arm.arm,
+                "mode_actual": "A-active" if arm.arm == "A" else "B-active",
+            })
+        ecowitt_rows.append({
+            "_time": h_start,
+            "ch1_temp_f": 80.0,
+            "ch1_dewpoint_f": 60.0,
+        })
+    return {
+        "refoss": pd.DataFrame(refoss_rows),
+        "rt": pd.DataFrame(rt_rows),
+        "mode": pd.DataFrame(arm_mode_rows),
+        "ecowitt": pd.DataFrame(ecowitt_rows),
+    }
+
+
+def _build_two_arm_dataset(*, b_savings_pct: float = 0.15):
+    """One A arm + one B arm (matched calendar pair 1-2). Returns input
+    DataFrames to ``run_full_pipeline``."""
+    arms = [ARM_CALENDAR[0], ARM_CALENDAR[1]]  # A1, B2
+    refoss_all = []
+    rt_all = []
+    mode_all = []
+    ecowitt_all = []
+    for arm in arms:
+        scale = 1.0 - b_savings_pct if arm.arm == "B" else 1.0
+        sig = _build_arm_signals(arm, scale=scale)
+        refoss_all.append(sig["refoss"])
+        rt_all.append(sig["rt"])
+        mode_all.append(sig["mode"])
+        ecowitt_all.append(sig["ecowitt"])
+    return {
+        "refoss_df": pd.concat(refoss_all, ignore_index=True),
+        "rt_hrl_lmps_df": pd.concat(rt_all, ignore_index=True),
+        "hvac_arm_mode_df": pd.concat(mode_all, ignore_index=True),
+        "ecowitt_df": pd.concat(ecowitt_all, ignore_index=True),
+        "eagle_df": pd.DataFrame(columns=["_time", "delivered_kwh"]),
+        "comed_prices_df": pd.DataFrame(columns=["_time", "price_cents_per_kwh"]),
+        "bills_df": pd.DataFrame(columns=["_time", "amount", "category"]),
+        "arm_calendar": arms,
+    }
+
+
+def test_pipeline_returns_pipelineresult_with_required_fields():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    assert isinstance(result, PipelineResult)
+    assert isinstance(result.per_pair_table, pd.DataFrame)
+    assert isinstance(result.bucket_summaries, dict)
+    assert isinstance(result.mode_distribution, dict)
+    assert isinstance(result.arms_passed_validity, set)
+
+
+def test_pipeline_arms_pass_validity_under_clean_signals():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    assert result.arms_passed_validity == {"A1", "B2"}
+
+
+def test_pipeline_produces_one_pair_row_per_match():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    assert len(result.per_pair_table) == 1
+    row = result.per_pair_table.iloc[0]
+    assert row["arm_a_id"] == "A1"
+    assert row["arm_b_id"] == "B2"
+
+
+def test_pipeline_savings_show_up_in_diff_dollars():
+    inputs = _build_two_arm_dataset(b_savings_pct=0.15)
+    result = run_full_pipeline(**inputs)
+    row = result.per_pair_table.iloc[0]
+    # B used less HVAC -> diff is negative dollars (B - A)
+    assert row["diff_dollars_b_minus_a"] < 0
+    # ~ -15% of A's dollars
+    pct = row["diff_dollars_b_minus_a"] / row["hvac_dollars_a"]
+    assert pct == pytest.approx(-0.15, abs=0.005)
+
+
+def test_pipeline_mode_distribution_contains_active_modes():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    assert result.mode_distribution.get("A-active", 0) == HOURS_PER_ARM
+    assert result.mode_distribution.get("B-active", 0) == HOURS_PER_ARM
+
+
+def test_pipeline_per_pair_row_has_required_columns():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    required = {
+        "pair_id", "arm_a_id", "arm_b_id",
+        "arm_a_dates", "arm_b_dates",
+        "temporal_gap_days", "weather_distance_zscore",
+        "weather_vector_a", "weather_vector_b",
+        "weather_component_diffs_raw", "weather_component_diffs_zscored",
+        "poor_weather_match_flag",
+        "valid_pair_hours", "excluded_hours_count",
+        "excluded_hours_breakdown_a", "excluded_hours_breakdown_b",
+        "cost_match_quality_median_diff_c_per_kwh",
+        "cfe_c_per_kwh_a", "cfe_c_per_kwh_b",
+        "cooling_active_hours_a", "cooling_active_hours_b",
+        "low_cooling_exposure_flag",
+        "hvac_dollars_a", "hvac_dollars_b",
+        "diff_dollars_b_minus_a", "percent_diff_dollars",
+        "hvac_kwh_a", "hvac_kwh_b", "diff_kwh_b_minus_a",
+        "weather_source_pct_ecowitt_a", "weather_source_pct_ecowitt_b",
+    }
+    missing = required - set(result.per_pair_table.columns)
+    assert not missing, f"Missing columns: {missing}"
+
+
+def test_pipeline_bucket_summaries_have_required_keys():
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    required_buckets = {
+        "all_valid_pairs",
+        "high_cooling_pairs",
+        "medium_cooling_pairs",
+        "low_cooling_pairs",
+        "scarcity_exposed_pairs",
+        "5cp_exposed_pairs",
+        "high_temp_exposed_pairs",
+    }
+    assert required_buckets <= set(result.bucket_summaries.keys())
