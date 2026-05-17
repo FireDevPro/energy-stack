@@ -1,8 +1,15 @@
+---
+date: 2026-05-17
+owner: chris
+status: active
+role-label: chris
+---
+
 # Home Energy Monitoring System — Project Document
 
 **Project**: `D:\Projects\energy-proxy`
 **Started**: 2025
-**Last Updated**: May 2026
+**Last Updated**: 2026-05-17
 
 ---
 
@@ -255,7 +262,7 @@ Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). Fas
 | `PROJECT.md` | This document — decisions, architecture, roadmap |
 | `README.md` | Top-level entry point pointing at the live system |
 | `Test-Eagle.ps1` | Ad-hoc EAGLE-3 Local API probe (kept for manual debugging) |
-| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + ~17 service containers as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
+| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + 19 service containers (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
 | `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
 | `tools/cockpit/` | Workstation-local read-only Controller Cockpit dashboard (FastAPI :8000 + Vite/React :5173). Not deployed via compose — runs on operator's Windows workstation against Pi-lab Influx + Loki over the homelab VLAN. One-click launcher at `tools/cockpit/start-cockpit.ps1`; see [`tools/cockpit/README.md`](tools/cockpit/README.md). |
 | `docs/SERVICES.md` | Per-service reference (env vars, fields written, healthchecks) |
