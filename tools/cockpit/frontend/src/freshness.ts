@@ -48,12 +48,13 @@ export const FRESHNESS_THRESHOLDS: Record<string, FreshnessThresholds> = {
     warn_max_ms: min(20),
     stale_max_ms: min(30),
   },
-  // ComEd writes new 5min rows with `_time` set to the START of the
-  // 5-min price interval. At any moment the latest `_time` is 5-10 min
-  // old (floor: just-written; ceiling: just-before-next-publish) even
-  // under perfect poller health. Fresh ≤ 11 min covers a full normal
-  // cycle plus minor poller variance; warn = one missed publish;
-  // stale = multi-cycle outage.
+  // ComEd writes new 5min rows with `_time` = END of the 5-min price
+  // interval (e.g. _time=18:15 represents 18:10-18:15). ComEd's
+  // upstream publication carries a multi-minute delay past interval
+  // close, so a freshly-written row's age vs wall clock is typically
+  // ~6 min (observed 2026-05-17), climbing to ~11 min just before the
+  // next publish lands. Fresh ≤ 11 min covers one healthy cycle;
+  // warn = one missed publish; stale = multi-cycle outage.
   'comed.prices': {
     fresh_max_ms: min(11),
     warn_max_ms: min(16),
