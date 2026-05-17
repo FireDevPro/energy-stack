@@ -1,6 +1,6 @@
 # energy-stack
 
-Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + 7 pollers/services + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
+Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + ~15 pollers/services + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
 
 > **Per-service detail:** [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
 > **HVAC scheduler logic + thermostat fallback:** [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
@@ -18,6 +18,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `nws-poller` | NWS forecast (today/tomorrow/day2) + alerts, 30 min | — | [SERVICES.md#nws-poller](../../docs/SERVICES.md#nws-poller) |
 | `pjm-dm2-poller` | PJM DataMiner 2 zonal feeds (DA LMP, load forecast, metered, peak, NSPL), per-feed schedule | — | [SERVICES.md#pjm-dm2-poller](../../docs/SERVICES.md#pjm-dm2-poller) |
 | `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes (with safety supervisor) | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
+| `hvac-scheduler-watchdog` | Out-of-band controller-liveness beacon (writes `hvac.heartbeat controller_alive=false` when no `hvac.arm_mode` row appears in 10 min) | — | [SERVICES.md#hvac-scheduler-watchdog](../../docs/SERVICES.md#hvac-scheduler-watchdog) |
 | `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
 | `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
 | `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → canonical `outdoor_*`, WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
@@ -112,14 +113,21 @@ python -m pytest .
 
 `pytest.ini` at `deploy/energy-stack/` is the single source of truth for shared config (currently `asyncio_mode = auto` for the async-using services). Pytest's config discovery walks up from cwd, so individual services don't carry their own.
 
-Currently covered:
-- `nws-poller/test_nws_poller.py` (tz-aware day bucketing, alert time-slicing)
-- `hvac-scheduler/test_hvac_scheduler.py` (release_hold action, lazy decision recompute, safety supervisor)
-- `telegram-notifier/test_telegram_notifier.py` (poller-silence detection, price-spike threshold)
-- `pjm-dm2-poller/test_pjm_dm2_poller.py` (per-feed schedule, point builders, DA-LMP-tomorrow regression)
-- `thermostat-poller/test_thermostat_poller.py` (override detection)
+Currently covered (16 test files across 11 services as of 2026-05-17):
 
-Other services (eagle-poller, refoss-poller, comed-poller, haven-ingest) have no tests yet — incremental work as bug fixes or behavior changes touch each.
+- `comed-poller/test_comed_poller.py`
+- `eagle-poller/test_eagle_poller.py`
+- `ecowitt-ingest/test_ecowitt_ingest.py`
+- `haven-ingest/test_haven_ingest.py`
+- `hvac-scheduler/` — five test files: `test_hvac_scheduler.py` (release_hold action, lazy decision recompute, safety supervisor), `test_decision_trace.py` (decision_trace.* event family), `test_pjm_5cp.py` (5CP detector), `test_precool.py` (§7 cheap-window search), `test_price_overlay.py` (tier state machine), `test_integration_2025_replay.py` (offline replay against 2025 PJM data)
+- `hvac-scheduler-watchdog/test_hvac_scheduler_watchdog.py`
+- `nws-poller/test_nws_poller.py`
+- `pjm-dm2-poller/test_pjm_dm2_poller.py`
+- `refoss-poller/test_refoss_poller.py`
+- `telegram-notifier/test_telegram_notifier.py`
+- `thermostat-poller/test_thermostat_poller.py`
+
+Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot provisioning shell), `telegraf` (config-only). The compose-controlled containers (`influxdb`, `grafana`, `loki`, `promtail`, `mosquitto`) are all upstream images with no Python under test.
 
 > **History note**: until 2026-05-07 every service's tests file was named `tests.py`. The CodeX review caught that pytest couldn't collect more than one of them in a single invocation (duplicate top-level `tests` module name). The rename to `test_<service>.py` makes single-pass collection from the stack root work correctly.
 

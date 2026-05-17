@@ -13,8 +13,10 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [nws-poller](#nws-poller) — weather forecast + alerts
 - [pjm-dm2-poller](#pjm-dm2-poller) — PJM zonal market data (DA LMP, load forecast, metered, peak, NSPL)
 - [hvac-scheduler](#hvac-scheduler) — Control4 setpoint pushes (with safety supervisor)
+- [hvac-scheduler-watchdog](#hvac-scheduler-watchdog) — out-of-band controller-liveness beacon (`hvac.heartbeat`)
 - [thermostat-poller](#thermostat-poller) — continuous thermostat reads + override detection
 - [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
+- [ecowitt-ingest](#ecowitt-ingest) — Ecowitt GW1200 push receiver (`ecowitt.weather`)
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
 - [loki & promtail](#loki--promtail) — log aggregation
 - [mosquitto, mosquitto-init, telegraf](#mosquitto-mosquitto-init-telegraf-comfortnet-pipeline-profile-mqtt) — ComfortNet MQTT pipeline (profile `mqtt`)
@@ -50,8 +52,11 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `comed.prices` | comed-poller | tag `period_type`: `5min`, `hourly_avg` |
 | `refoss.channel` | refoss-poller | per `em:N` channel, power/voltage/current/PF/energy buckets |
 | `refoss.system` | refoss-poller | uptime, RSSI, cfg_rev |
-| `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; high_f, max_dewpoint_f, is_heat_advisory, alert_summary |
+| `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; `period_date`, `high_f`, `low_f`, `max_dewpoint_f`, `apparent_max_f`, `precip_prob`, `is_heat_advisory` (0/1), `alert_summary` (string roll-up of any active heat advisory). Daily summaries only. |
+| `nws.alerts` | nws-poller | tag `event`, `severity`; one point per active alert with `active=1`, `expires_unix`, `headline` (≤200 chars). Granular per-alert detail. |
 | `pjm.lmp_da_hourly` | pjm-dm2-poller | day-ahead LMP for ComEd zonal pnode (`33092371`) — tagged `pnode_id`, `pnode_name`, `zone` |
+| `pjm.lmp_rt_hourly` | pjm-dm2-poller | real-time hourly LMP for ComEd zonal pnode — tagged `pnode_id`, `pnode_name`, `zone`. Scheduled at 12:00 CT (rt_hrl_lmps feed). |
+| `pjm.inst_load` | pjm-dm2-poller | 5-min instantaneous load, both scopes (`area=COMED` from `inst_load` feed + `area=PJM RTO` from `inst_load_rto`) — consumed by `hvac-scheduler/pjm_5cp.py` 5CP detector |
 | `pjm.load_forecast` | pjm-dm2-poller | 7-day load forecast for `forecast_area=COMED` — tagged `evaluated_at_iso` so revisions stay distinct |
 | `pjm.metered_load` | pjm-dm2-poller | weekly hrl_load_metered for `zone=CE` — tagged `is_verified` |
 | `pjm.peak_forecast_rto` | pjm-dm2-poller | RTO peak-day forecast (cooling season only) |
@@ -59,16 +64,26 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
 | `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. **The per-feed health signal** — telegram-notifier's `check_pjm_feed_failures` and `check_pjm_feed_freshness` both consume it |
 | `pjm.poller_heartbeat` | pjm-dm2-poller | one row per loop cycle (hourly), single field `alive=1`. Liveness signal for telegram-notifier's `check_poller_silence` so the long quiet stretches between scheduled feeds don't look like a dead poller |
-| `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; high_f, dewpoint, reason, comed_price_at_decision |
-| `hvac.actions` | hvac-scheduler | tag `action_label`, `day_type`, `dry_run`, `supervisor_decision`; cool_setpoint_f, heat_setpoint_f, fan_mode, applied, error, supervisor_reason, cool_setpoint_proposed_f, thermostat snapshot before |
+| `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; `high_f`, `max_dewpoint_f`, `is_heat_advisory`, `alert_summary`, `reason`, `comed_price_at_decision` |
+| `hvac.actions` | hvac-scheduler | tags `action_label`, `day_type`, `dry_run`, `supervisor_decision` (always); `price_overlay_tier`, `fivecp_active` (added when a `LayerResolution` is computed). Fields: `cool_setpoint_f`, `heat_setpoint_f`, `fan_mode`, `setpoint_reason`, `supervisor_reason`, `cool_setpoint_proposed_f`, `heat_setpoint_proposed_f`, `applied` (0/1), `error`, thermostat-snapshot-before (`hvac_mode_before`, `indoor_temp_before_f`, `cool_setpoint_before_f`, `heat_setpoint_before_f`, `indoor_humidity_before_pct`), plus layer-resolution audit (`schedule_cool_f`, `price_cool_f`, `fivecp_cool_f`, `effective_cool_f`) when present |
+| `hvac.precool_window` | hvac-scheduler | tag `target_date`, `source` (`decision` vs `schedule_check_recompute`); fields `hour_ct`, `depth_f`. §7 day-ahead-price-aware precool window decision |
+| `hvac.5cp_state` | hvac-scheduler | tag `scope`, `zone`, `is_active`; fields `current_load_mw`, `season_5th_highest_mw`, `load_ratio`, `load_derivative_mw_per_hour`, `forecast_peak_today_mw`. Per-tick 5CP detector state machine |
+| `hvac.price_overlay` | hvac-scheduler | tag `prev_tier`, `new_tier`; fields `current_price_cents`, `schedule_cool_f`, `effective_cool_f`, `triggered_at_utc`. RTP tier transitions only (not every tick) |
+| `hvac.arm_mode` | hvac-scheduler | tag `scheduler_mode`, `arm` (when applicable); field `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. **Canonical scheduler-alive signal** — the watchdog reads this measurement to determine whether to emit a `hvac.heartbeat` down-beacon |
+| `hvac.switch_event` | hvac-scheduler | fields `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary transitions |
+| `hvac.input_feed_health` | hvac-scheduler | tag `feed`; field `healthy` (bool). Per-feed gate state observed by the controller each tick |
+| `hvac.heartbeat` | hvac-scheduler-watchdog | field `controller_alive` (only `false` is ever written — no-news-is-good-news; absence of recent rows says nothing about liveness, the canonical signal is recent `hvac.arm_mode`) |
 | `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
 | `hvac.overrides` | thermostat-poller | one row per poll while setpoints diverge from last `hvac.actions` by ≥0.5°F past `OVERRIDE_GRACE_MIN` |
+| `ecowitt.weather` | ecowitt-ingest | tag `gateway` (GW1200 PASSKEY). Three field families: canonical shaded outdoor (`outdoor_temp_f`, `outdoor_rh_pct`, `outdoor_dewpoint_f` — only when `ECOWITT_SHADED_CHANNEL` is set); WS90 sun-exposed comparator + wind/solar/UV/rain (`ws90_temp_f`/`rh_pct`/`dewpoint_f`, `wind_mph`, `solar_wm2`, `rain_*_in`, etc.); GW1200 internal (`indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg`, `pressure_inhg`). Plus `ch{N}_temp_f`/`rh_pct`/`dewpoint_f` for any other paired WH31 channels. |
 | `haven.indoor` | haven-ingest | tagged `device_id`; temp/RH/tVOC continuous, PM2.5/airflow CFM flow-dependent |
 | `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
 | `comed.bill` | `parse_comed_bill.py` (manual) | one point per bill |
 | `comed.bill_lineitems` | `parse_comed_bill.py` (manual) | full GL breakdown |
 | `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
+
+**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config). No new writes occur to any of these.
 
 **Operations:**
 
@@ -255,6 +270,8 @@ Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles 
 | Feed | Schedule | Output measurement |
 |---|---|---|
 | `da_hrl_lmps` (ComEd zonal pnode `33092371`) | 17:00 daily | `pjm.lmp_da_hourly` |
+| `rt_hrl_lmps` (ComEd zonal pnode) | 12:00 daily (~1h after PJM 11–12 ET publish per Phase 2 spec §8) | `pjm.lmp_rt_hourly` |
+| `inst_load` (`area=COMED`) + `inst_load_rto` (`area=PJM RTO`) | every 5 min, both scopes | `pjm.inst_load` (single measurement, distinguished by `area` tag) |
 | `load_frcstd_7_day` (`forecast_area=COMED`) | 06:00 + 13:00 daily | `pjm.load_forecast` |
 | `hrl_load_metered` (`zone=CE` — note: ComEd's PJM zone code is `CE`, not `COMED`, for this feed) | Sundays 02:00 (last 7 days) | `pjm.metered_load` |
 | `ops_sum_frcst_peak_rto` (`area=PJM RTO`) | 06:00 + 13:00 in Jun–Sep only | `pjm.peak_forecast_rto` |
@@ -304,6 +321,7 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 - `CONTROL4_THERMOSTAT_ID` — item ID of the THERMOSTAT proxy (default `3231` — **NOT** `3230` which is the Cinegration backing driver)
 - `SCHEDULER_DRY_RUN` — if `true`, logs actions but doesn't push (default `true` until you flip it; safer)
 - `SCHEDULER_DECISION_HOUR` — hour-of-day for daily decision (default 21)
+- `SCHEDULER_REVISIT_HOURS` — comma-separated local hours for intra-day forecast revisit (default `6,11`). Each revisit re-classifies today and overwrites the stored `hvac.decisions` row if the day-type shifted. See [`HVAC_LOGIC.md#decision-flow`](HVAC_LOGIC.md#decision-flow).
 - `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)
 - `INFLUXDB_*`
 
@@ -312,13 +330,47 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 | Measurement | Tags | Fields |
 |---|---|---|
 | `hvac.decisions` | `decision_for_date`, `day_type` | `high_f`, `max_dewpoint_f`, `is_heat_advisory`, `alert_summary`, `reason`, `comed_price_at_decision` |
-| `hvac.actions` | `day_type`, `action_label`, `dry_run` | `cool_setpoint_f`, `heat_setpoint_f`, `fan_mode`, `setpoint_reason` (`standard`/`humid_override`), `applied` (0/1), `error`, plus thermostat-state-before snapshot (`indoor_temp_before_f`, `cool_setpoint_before_f`, etc.) |
+| `hvac.actions` | `day_type`, `action_label`, `dry_run`, `supervisor_decision` (always); `price_overlay_tier`, `fivecp_active` (added when a `LayerResolution` is computed) | `cool_setpoint_f`, `heat_setpoint_f`, `fan_mode`, `setpoint_reason` (`standard`/`humid_override`/etc.), `supervisor_reason`, `cool_setpoint_proposed_f`, `heat_setpoint_proposed_f`, `applied` (0/1), `error`, thermostat-snapshot-before (`hvac_mode_before`, `indoor_temp_before_f`, `cool_setpoint_before_f`, `heat_setpoint_before_f`, `indoor_humidity_before_pct`); plus layer-resolution audit (`schedule_cool_f`, `price_cool_f`, `fivecp_cool_f`, `effective_cool_f`) when present |
+| `hvac.arm_mode` | `scheduler_mode`, `arm` (when applicable) | `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. Written every tick — canonical scheduler-alive signal that the watchdog reads. |
+| `hvac.precool_window` | `target_date`, `source` (`decision` vs `schedule_check_recompute`) | `hour_ct`, `depth_f`. §7 day-ahead-price-aware precool window decision. |
+| `hvac.5cp_state` | `scope`, `zone`, `is_active` | `current_load_mw`, `season_5th_highest_mw`, `load_ratio`, `load_derivative_mw_per_hour`, `forecast_peak_today_mw`. Per-tick 5CP detector state, dual scope (ComEd zone + PJM RTO). |
+| `hvac.price_overlay` | `prev_tier`, `new_tier` | `current_price_cents`, `schedule_cool_f`, `effective_cool_f`, `triggered_at_utc`. RTP tier transitions only (not every tick). |
+| `hvac.switch_event` | — | `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary crossings. |
+| `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller each tick. |
 
 **Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in [`HVAC_LOGIC.md`](HVAC_LOGIC.md#overrides).
 
 **Healthcheck:** `/tmp/last_tick_ok` touched every minute regardless of whether actions fired — failure means the scheduler is wedged.
 
 **Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [`HVAC_LOGIC.md`](HVAC_LOGIC.md).
+
+---
+
+## hvac-scheduler-watchdog
+
+Build: `./hvac-scheduler-watchdog` · Cycle: `WATCHDOG_INTERVAL_SECONDS` (default 60)
+
+Out-of-band controller-liveness check. Single-purpose container so it cannot fail-with-the-controller. Runs an Influx query each cycle: if zero `hvac.arm_mode` rows appear in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10), writes `hvac.heartbeat controller_alive=false`. Otherwise writes nothing — **no-news-is-good-news**.
+
+The canonical scheduler-liveness signal is recent `hvac.arm_mode` rows from the scheduler itself; the heartbeat is purely a "DOWN beacon" emitted by an out-of-band observer. The absence of recent `hvac.heartbeat` rows tells you nothing about controller liveness on its own.
+
+**Env:**
+- `INFLUXDB_URL` (default `http://influxdb:8086`)
+- `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` — standard credentials
+- `WATCHDOG_INTERVAL_SECONDS` — wake interval (default 60)
+- `WATCHDOG_THRESHOLD_MINUTES` — silence budget before declaring down (default 10)
+
+**Writes** (only when controller is down):
+
+| Measurement | Tags | Fields |
+|---|---|---|
+| `hvac.heartbeat` | — | `controller_alive` (always `false` when this beacon writes) |
+
+**Healthcheck:** none — single-purpose loop with `restart: unless-stopped`. If the watchdog itself crashes, docker compose brings it back.
+
+**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_latest_heartbeat`) for the header controller-alive light. Telegram-notifier alerts on the same signal.
+
+Source: [`deploy/energy-stack/hvac-scheduler-watchdog/check.py`](../deploy/energy-stack/hvac-scheduler-watchdog/check.py).
 
 ---
 
@@ -388,6 +440,45 @@ Polls the official HAVEN Pro API at `https://havenapi.tzoa.io` every 5 minutes f
 **Crucial flow-dependent insight:** the sparse `airflow_cfm` and `pm25_ugm3` rows aren't a defect — they're **only populated when the blower is moving air past the duct sensor**. This means:
 - Non-null `airflow_cfm` rows = blower runtime ground truth (cross-validate against Refoss `em:9` furnace blower power)
 - Non-null `airflow_cfm` value = real measured CFM at that moment, useful for delivered-BTU calc when paired with future supply-air temp instrumentation
+
+---
+
+## ecowitt-ingest
+
+Build: `./ecowitt-ingest` · **Push receiver**, not a poller · Listen port: `${ECOWITT_LISTEN_PORT:-8088}`
+
+HTTP receiver for the Ecowitt GW1200 gateway's "Customized Server" upload. The GW1200 POSTs form-encoded sensor payloads to `http://<pi-lab-LAN-IP>:8088/data/report/` on a fixed 60-second cadence; this service parses the payload, maps Ecowitt protocol fields to the project's canonical `ecowitt.weather` schema, computes dewpoints via the Magnus formula, and writes to InfluxDB.
+
+**Two-stream design (shaded canonical + sun comparator):** the WS90 7-in-1 sits in direct sun on the pergola — its onboard temp/RH (`tempf`/`humidity`) is a sun-exposure comparator, NOT canonical outdoor air temperature for meteorological work. A standalone WN31 on a WH31 channel, mounted in a UV-shielded enclosure on the shaded N/E wall, provides the canonical shaded reading. `ECOWITT_SHADED_CHANNEL` (1–8) tells the parser which channel is the shaded reference; without that env var set, the `outdoor_*` fields are not written — fail-loud rather than silently substituting sun data for shaded data.
+
+**Hardware in this deployment:**
+- GW1200B v1.4.7 — gateway, indoor (basement/utility room). Source of `tempinf`/`humidityin`/`baromrelin`.
+- WS90 — 7-in-1 on pergola, S/E facing. Wind, solar, UV, piezo rain, lightning, AND onboard temp/RH (sun-exposed at `tempf`/`humidity`).
+- WN31 — multi-channel temp/RH on the shaded N/E wall under a UV shield. Dip switches 1–3 set channel 1–8 at the sensor; `ECOWITT_SHADED_CHANNEL` tells the parser which channel is canonical.
+
+**Gateway-side config** (WSView app → Weather Services → Customized): Protocol `Ecowitt`, Server `<pi-lab LAN IP>`, Path `/data/report/`, Port `8088`, Upload `60 seconds`.
+
+**Env:**
+- `ECOWITT_LISTEN_PORT` — TCP port to bind (default `8088`)
+- `ECOWITT_SHADED_CHANNEL` — WH31 channel (1–8) hosting the shaded reference sensor. When set, `outdoor_temp_f`/`rh_pct`/`dewpoint_f` are sourced from that channel. When unset, those fields are not written.
+- `INFLUXDB_URL` (default `http://influxdb:8086`)
+- `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` — standard credentials
+
+**Writes** (single measurement `ecowitt.weather`, tag `gateway` = GW1200 PASSKEY):
+
+| Family | Fields | Source |
+|---|---|---|
+| Canonical shaded outdoor | `outdoor_temp_f`, `outdoor_rh_pct`, `outdoor_dewpoint_f` | WN31 on `ECOWITT_SHADED_CHANNEL` (only emitted when env is set + channel is reporting; absent rows are intentional fail-loud) |
+| WS90 sun-exposed comparator | `ws90_temp_f`, `ws90_rh_pct`, `ws90_dewpoint_f` | WS90 onboard |
+| WS90 wind / solar / rain / UV | `wind_mph`, `wind_gust_mph`, `wind_dir_deg`, `wind_gust_max_daily_mph`, `solar_wm2`, `uv_index`, `rain_rate_inhr`, `rain_event_in`, `rain_daily_in`, `rain_state` (0/1), `pressure_inhg` | WS90 + GW1200 relative baro |
+| GW1200 internal | `indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg` | GW1200 onboard |
+| Other paired WH31 channels | `ch{N}_temp_f`, `ch{N}_rh_pct`, `ch{N}_dewpoint_f` | Any WH31/WN31 paired channel `!= ECOWITT_SHADED_CHANNEL` |
+
+**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_outdoor_now` reads `ch1_*` for live outdoor display). Future bias-correction work pairs `outdoor_temp_f` against NWS forecast for affine intercept+slope fit.
+
+**Healthcheck:** `/tmp/last_push_ok` marker.
+
+**Ports:** `8088` is bound on the host (not container-network-only) so the GW1200 on the LAN can reach it. No firewall changes — already allowed by the LAN→Homelab ZBF.
 
 ---
 
