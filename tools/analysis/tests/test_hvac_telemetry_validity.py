@@ -42,10 +42,27 @@ def test_below_110_samples_is_invalid():
     assert hour_is_telemetry_valid(df, hour_start_utc=start) is False
 
 
-def test_exactly_110_samples_is_valid():
+def test_exactly_110_samples_evenly_spread_is_valid():
+    """110 samples spread evenly across the hour ~32.7s apart -> no gap > 120s."""
+    start = datetime.datetime(2026, 6, 5, 14, 0)
+    # ~32.7s spacing keeps all gaps (incl. boundaries) <= ~33s
+    df = _all_channels(start, count=110, gap_seconds=32)
+    assert hour_is_telemetry_valid(df, hour_start_utc=start) is True
+
+
+def test_110_samples_packed_to_first_55min_is_invalid():
+    """110 samples at 30s only spans 54.5 min -> trailing 5.5 min gap > 120s."""
     start = datetime.datetime(2026, 6, 5, 14, 0)
     df = _all_channels(start, count=110, gap_seconds=30)
-    assert hour_is_telemetry_valid(df, hour_start_utc=start) is True
+    assert hour_is_telemetry_valid(df, hour_start_utc=start) is False
+
+
+def test_leading_boundary_gap_over_120s_is_invalid():
+    """First sample 3 min into the hour -> 180s leading gap > 120s."""
+    start = datetime.datetime(2026, 6, 5, 14, 0)
+    delayed = start + datetime.timedelta(seconds=180)
+    df = _all_channels(delayed, count=115, gap_seconds=30)
+    assert hour_is_telemetry_valid(df, hour_start_utc=start) is False
 
 
 def test_gap_over_120s_is_invalid():
@@ -81,3 +98,22 @@ def test_other_hours_data_does_not_affect_decision():
     )
     df = pd.concat([in_hour, out_of_hour], ignore_index=True)
     assert hour_is_telemetry_valid(df, hour_start_utc=start) is True
+
+
+def test_field_filter_excludes_non_power_w_rows():
+    """If _field column is present, only _field == 'power_w' rows count."""
+    start = datetime.datetime(2026, 6, 5, 14, 0)
+    power = _all_channels(start, count=120, gap_seconds=30)
+    power["_field"] = "power_w"
+    # Add extra rows tagged as a different field; they should NOT count.
+    pf = _all_channels(start, count=120, gap_seconds=30)
+    pf["_field"] = "power_factor"
+    df_with_extras = pd.concat([power, pf], ignore_index=True)
+    assert hour_is_telemetry_valid(df_with_extras, hour_start_utc=start) is True
+
+    # If the power_w rows alone are insufficient (90 samples), it must fail
+    # even when many power_factor rows exist.
+    sparse = _all_channels(start, count=90, gap_seconds=40)
+    sparse["_field"] = "power_w"
+    df_sparse_power = pd.concat([sparse, pf], ignore_index=True)
+    assert hour_is_telemetry_valid(df_sparse_power, hour_start_utc=start) is False
