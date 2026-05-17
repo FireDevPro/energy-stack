@@ -181,7 +181,7 @@ Add to `~/energy-stack/.env` (or shell profile):
 ```
 INFLUX_URL=http://localhost:8086
 INFLUX_TOKEN=<from energy-stack/.env>
-INFLUX_ORG=home
+INFLUX_ORG=depaola-home
 INFLUX_BUCKET=energy
 ```
 

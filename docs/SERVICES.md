@@ -52,7 +52,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `comed.prices` | comed-poller | tag `period_type`: `5min`, `hourly_avg` |
 | `refoss.channel` | refoss-poller | per `em:N` channel, power/voltage/current/PF/energy buckets |
 | `refoss.system` | refoss-poller | uptime, RSSI, cfg_rev |
-| `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; `period_date`, `high_f`, `low_f`, `max_dewpoint_f`, `apparent_max_f`, `precip_prob`, `is_heat_advisory` (0/1), `alert_summary` (string roll-up of any active heat advisory). Daily summaries only. |
+| `nws.forecast` | nws-poller | tag `for_period`: `today`, `tomorrow`, `day2`; `period_date`, `high_f`, `low_f`, `max_dewpoint_f`, `apparent_max_f`, `precip_prob`, `is_heat_advisory` (0/1), `alert_summary` (string roll-up of any active heat advisory), `hours_covered` (int; pinned int-not-float by `test_hours_covered_is_int_not_float` to avoid an Influx type-collision with the existing bucket schema). Daily summaries only. |
 | `nws.alerts` | nws-poller | tag `event`, `severity`; one point per active alert with `active=1`, `expires_unix`, `headline` (≤200 chars). Granular per-alert detail. |
 | `pjm.lmp_da_hourly` | pjm-dm2-poller | day-ahead LMP for ComEd zonal pnode (`33092371`) — tagged `pnode_id`, `pnode_name`, `zone` |
 | `pjm.lmp_rt_hourly` | pjm-dm2-poller | real-time hourly LMP for ComEd zonal pnode — tagged `pnode_id`, `pnode_name`, `zone`. Scheduled at 12:00 CT (rt_hrl_lmps feed). |
@@ -261,7 +261,7 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 
 ## pjm-dm2-poller
 
-Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 3600 s = 1 h)
+Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 3600 s = 1 h, sourced from `.env` / `.env.example`. `docker-compose.yml`'s `${PJM_DM2_POLL_INTERVAL:-300}` substitution falls back to 300 s only if `.env` is missing the variable — a stale fallback worth aligning the next time compose is touched.)
 
 Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles where it shouldn't fire. Auth header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`. Non-Member tier (6 calls/min ceiling, 50,000 rows/call) is plenty for the steady-state load.
 
@@ -288,7 +288,7 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 - `PJM_DM2_API_KEY` — Non-Member tier subscription key
 - `PJM_DM2_POLL_INTERVAL` — wake interval seconds (default 3600)
 - `PJM_DM2_TZ` — IANA tz for schedule decisions (default `America/Chicago`, sourced from `SCHEDULER_TZ`)
-- `INFLUX_URL`, `INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET` — Influx connection (note the env var names mirror the bootstrap convention rather than `INFLUXDB_*`)
+- `INFLUX_URL`, `INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET` — Influx connection. `INFLUX_URL` is a short-form outlier; the other three mirror the bootstrap `INFLUXDB_INIT_*` convention rather than the `INFLUXDB_*` form used by sibling pollers.
 
 **Healthcheck:** `/tmp/last_poll_ok` is **loop liveness only** — touched on every clean cycle (CodeX pass 2, 2026-05-07 walked back an earlier feed-success-gating attempt). 90-min staleness budget catches a wedged or crashed loop, which is what container restart can fix. Persistent feed failures (expired API key, schema drift, PJM 4xx/5xx) are NOT a container-restart-fixable problem and are deliberately not surfaced via this marker.
 

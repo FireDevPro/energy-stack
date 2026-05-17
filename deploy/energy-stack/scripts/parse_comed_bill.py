@@ -7,7 +7,7 @@ Usage:
 Environment (with defaults pointing at Pi-lab energy-stack):
     INFLUX_URL    (default http://localhost:8086)
     INFLUX_TOKEN  (required)
-    INFLUX_ORG    (default 'home')
+    INFLUX_ORG    (default 'depaola-home')
     INFLUX_BUCKET (default 'energy')
 
 On success: moves the PDF to inbox/comed/processed/comed-YYYY-MM-DD-<period>.pdf
@@ -63,7 +63,7 @@ def main():
         bill,
         url=os.environ.get("INFLUX_URL", "http://localhost:8086"),
         token=token,
-        org=os.environ.get("INFLUX_ORG", "home"),
+        org=os.environ.get("INFLUX_ORG", "depaola-home"),
         bucket=os.environ.get("INFLUX_BUCKET", "energy"),
     )
     print(f"  wrote to InfluxDB: 1 comed.bill + {len(bill.line_items)} bill_lineitems")
