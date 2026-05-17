@@ -1,3 +1,10 @@
+---
+date: 2026-05-17
+owner: chris
+status: active
+role-label: chris
+---
+
 # energy-proxy — AI Agent Context
 
 Standing rules for every AI session. Any agent reading this (Claude, Codex, Cursor, etc.) follows these rules.

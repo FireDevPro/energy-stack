@@ -1,3 +1,10 @@
+---
+date: 2026-05-17
+owner: chris
+status: active
+role-label: chris
+---
+
 # Home Energy Monitoring & HVAC Optimization
 
 Real-time and historical residential energy monitoring with **dynamic-pricing-aware HVAC scheduling**, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance.
@@ -86,7 +93,7 @@ The scheduler classifies tomorrow's day-type (`MILD` / `NORMAL` / `HOT_5CP_RISK`
 Key constraints encoded in the schedules (full table in [HVAC_LOGIC.md](docs/HVAC_LOGIC.md) and [SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md)):
 - **Pre-cool** at off-peak rates to bank thermal mass — start time is day-type-dependent (03:00 CT on `HOT_STREAK_DAY1`, 04:00 CT on `HOT_5CP_RISK`, 06:00 CT on `NORMAL`), runs until coast.
 - **Coast** through ComEd peak pricing window — 12:00–19:00 CT on `HOT_5CP_RISK`, 13:00–19:00 CT on `NORMAL`.
-- **Dynamic 5CP shutoff** on HOT days driven by the real-time price-overlay and 5CP-detector layers (no fixed shutoff clock; see [HVAC_LOGIC.md HOT_5CP_RISK section](docs/HVAC_LOGIC.md#hot_5cp_risk--85f-max-or-apparent--90f-per-experiment_design-appendix-a)). PJM and ComEd peak avoidance with capacity-charge impact computed via PJM OATT Attachment M-2's CPLC formula; see [HVAC_LOGIC.md "Capacity peak context"](docs/HVAC_LOGIC.md#capacity-peak-context-pjm-5cp--comed-5cp).
+- **Dynamic 5CP shutoff** on HOT days driven by the real-time price-overlay and 5CP-detector layers (no fixed shutoff clock; see [HVAC_LOGIC.md HOT_5CP_RISK section](docs/HVAC_LOGIC.md#hot_5cp_risk---85f-max-or-apparent--90f-per-experiment_design-appendix-a)). PJM and ComEd peak avoidance with capacity-charge impact computed via PJM OATT Attachment M-2's CPLC formula; see [HVAC_LOGIC.md "Capacity peak context"](docs/HVAC_LOGIC.md#capacity-peak-context-pjm-5cp--comed-5cp).
 - **Auto-mode safe**: heat setpoint floor 65°F always paired with cool setpoint to satisfy Honeywell ISU 300 deadband
 - **Humid override**: dewpoint > 65°F drops the coast cool setpoint to keep low-stage AC running for latent removal
 
