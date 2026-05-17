@@ -11,7 +11,7 @@ export const priceSpike: Snapshot = {
   latest_tick_time: '2026-07-14T15:30:00-05:00',
   scheduler_mode: 'experiment',
   thermostat: {
-    indoor_temp_f: 78.6,
+    indoor_temp_f: 81.4,
     indoor_humidity_pct: 53,
     cool_setpoint_f: 85,
     heat_setpoint_f: 65,
@@ -178,7 +178,7 @@ export const priceSpike: Snapshot = {
       subtitle: 'Price Overlay',
       details: {
         winning_layer: 'price_overlay',
-        effective_cool_f: 82,
+        effective_cool_f: 85,
         prev_effective_cool_f: 76,
         changed: true,
         reason_code: 'LAYER_RESOLUTION_PRICE_OVERLAY_WINS',
@@ -197,9 +197,9 @@ export const priceSpike: Snapshot = {
       subtitle: 'approved',
       details: {
         decision: 'approved',
-        proposed_cool_f: 82,
+        proposed_cool_f: 85,
         proposed_heat_f: 65,
-        final_cool_f: 82,
+        final_cool_f: 85,
         final_heat_f: 65,
         supervisor_reason: null,
         reason_code: 'SUPERVISOR_APPROVED',

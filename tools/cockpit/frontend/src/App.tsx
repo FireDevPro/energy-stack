@@ -4,19 +4,13 @@ import { shadowCurrent } from './fixtures/shadow_current'
 import { fetchSnapshot } from './lib/api'
 import { usePolling } from './lib/usePolling'
 import { Header } from './components/Header'
-import { FeedHealthStrip } from './components/FeedHealthStrip'
+import { StatusBanner } from './components/StatusBanner'
 import { ThermostatCard } from './components/ThermostatCard'
-import { DecisionFlow } from './components/DecisionFlow'
+import { DecisionBoard } from './components/DecisionBoard'
 import type { Snapshot } from './types'
 
-// Polling cadence for the live backend. Matches the 5-min trace cadence;
-// faster won't surface new data. Phase 3 follow-on may tune this once
-// the backend is wired against live Influx/Loki.
 const POLL_INTERVAL_MS = 5_000
 
-// If the URL has `?fixture=<name>`, the operator wants the fixture path
-// — used for offline demo, screenshots, browser smoke. Otherwise the
-// app polls the live backend.
 function shouldUseFixture(): boolean {
   return new URLSearchParams(window.location.search).has('fixture')
 }
@@ -28,27 +22,20 @@ export default function App() {
     [useFixture],
   )
 
-  // Stable reference for the polling hook so it doesn't re-mount on
-  // every render.
   const fetcher = useCallback(
     (signal: AbortSignal) => fetchSnapshot(signal),
     [],
   )
 
-  // Skip polling entirely when the operator pinned a fixture. Avoids
-  // pointless network requests + matchers in fixture-mode tests.
+  // Skip polling entirely when the operator pinned a fixture.
   const polling = usePolling<Snapshot>(fetcher, POLL_INTERVAL_MS, !useFixture)
 
   // Snapshot resolution priority:
-  //   1. URL fixture (if `?fixture=` present) — explicit operator choice
-  //   2. Live polling data (if non-null)
-  //   3. Live error fallback → shadow_current. Its scheduler_mode=shadow
-  //      and mode_actual=outside-window honestly represent "we don't
-  //      actually know what the controller is doing right now." Falling
-  //      back to summer_normal (Arm B-active in July) would be a lie —
-  //      it would render a plausible active-control state while the
-  //      backend is unreachable.
-  //   4. Initial loading → null until first fetch completes
+  //   1. URL fixture (explicit operator choice)
+  //   2. Live polling data
+  //   3. Live error: prefer last good data; fall back to shadow_current
+  //      (honest "we don't know" state) if no good data yet
+  //   4. Initial loading → null
   const snapshot: Snapshot | null = useFixture
     ? fixtureSnapshot
     : polling.data
@@ -59,8 +46,8 @@ export default function App() {
 
   if (!snapshot) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-400">
-        <div className="font-mono text-sm">loading snapshot…</div>
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 font-mono text-sm text-zinc-500">
+        loading snapshot…
       </div>
     )
   }
@@ -68,19 +55,18 @@ export default function App() {
   return (
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
       <Header snapshot={snapshot} />
-      <FeedHealthStrip snapshot={snapshot} />
       {!useFixture && polling.error && (
-        <div className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-200">
+        <div className="border-b border-amber-500/40 bg-amber-500/10 px-6 py-1.5 font-mono text-[11px] uppercase tracking-[0.15em] text-amber-200">
           {polling.data ? (
             <>
-              backend unreachable — showing last successful fetch · last try{' '}
+              Backend unreachable — showing last successful fetch · last try{' '}
               {polling.lastFetchedAt
                 ? new Date(polling.lastFetchedAt).toLocaleTimeString()
                 : '—'}
             </>
           ) : (
             <>
-              backend unreachable — showing fallback fixture · last try{' '}
+              Backend unreachable — showing fallback fixture · last try{' '}
               {polling.lastFetchedAt
                 ? new Date(polling.lastFetchedAt).toLocaleTimeString()
                 : '—'}
@@ -90,8 +76,9 @@ export default function App() {
       )}
       <main className="flex flex-1 overflow-hidden">
         <ThermostatCard snapshot={snapshot} />
-        <section className="flex-1">
-          <DecisionFlow snapshot={snapshot} />
+        <section className="flex flex-1 flex-col overflow-auto">
+          <StatusBanner snapshot={snapshot} />
+          <DecisionBoard snapshot={snapshot} />
         </section>
       </main>
     </div>

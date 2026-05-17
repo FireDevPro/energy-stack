@@ -5,7 +5,18 @@ export default {
     extend: {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+      },
+      colors: {
+        // Single distinctive accent for "this is winning right now."
+        // Reserved exclusively for the winning lane bar + active-state
+        // emphasis. Never used for tier / arm / freshness encoding.
+        radium: {
+          DEFAULT: '#a3ff70',
+          400: '#bdff8e',
+          500: '#a3ff70',
+          600: '#7be63a',
+        },
       },
       keyframes: {
         'pulse-slow': {

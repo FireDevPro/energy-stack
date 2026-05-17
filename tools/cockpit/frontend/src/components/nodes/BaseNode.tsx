@@ -1,39 +1,58 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Handle, Position } from '@xyflow/react'
 import type { RoleState, Freshness } from '../../types'
 
-const BODY_BG: Record<RoleState, string> = {
-  winning: 'bg-zinc-900',
-  dimmed: 'bg-zinc-900/60',
-  stale: 'bg-zinc-900/40',
-  missing: 'bg-zinc-900/20',
-  not_applicable: 'bg-zinc-900/30',
-  clamped: 'bg-rose-900/40',
-  emergency: 'bg-rose-700/50',
-  context: 'bg-zinc-900/40',
-}
+// Direction-A redesign: nodes are typographic blocks, not boxed cards
+// embedded in a React Flow canvas. Hierarchy is driven by role_state
+// alone — winning lanes get a strong radium left-bar and bright body
+// text; losers go zinc + low-emphasis; the eye picks the winner from
+// across the room.
 
-const BODY_BORDER: Record<RoleState, string> = {
-  winning: 'border-zinc-700',
-  dimmed: 'border-zinc-800',
-  stale: 'border-amber-500/40',
-  missing: 'border-zinc-800',
-  not_applicable: 'border-zinc-800',
-  clamped: 'border-rose-500',
-  emergency: 'border-rose-400 motion-safe:animate-pulse',
-  context: 'border-zinc-800',
-}
-
-const TEXT: Record<RoleState, string> = {
-  winning: 'text-zinc-100',
-  dimmed: 'text-zinc-400',
+const BODY_TONE: Record<RoleState, string> = {
+  winning: 'text-zinc-50',
+  dimmed: 'text-zinc-500',
   stale: 'text-amber-200',
-  missing: 'text-zinc-600',
-  not_applicable: 'text-zinc-500',
+  missing: 'text-zinc-700',
+  not_applicable: 'text-zinc-600',
   clamped: 'text-rose-100',
   emergency: 'text-rose-50',
-  context: 'text-zinc-400',
+  context: 'text-zinc-300',
+}
+
+const HEADER_TONE: Record<RoleState, string> = {
+  winning: 'text-radium-500',
+  dimmed: 'text-zinc-500',
+  stale: 'text-amber-400',
+  missing: 'text-zinc-700',
+  not_applicable: 'text-zinc-600',
+  clamped: 'text-rose-400',
+  emergency: 'text-rose-300',
+  context: 'text-zinc-500',
+}
+
+const BAR_TONE: Record<RoleState, string> = {
+  // The left-bar IS the visual indicator of role. It carries more
+  // weight than the body color because it's the first thing the eye
+  // resolves at a glance.
+  winning: 'bg-radium-500',
+  dimmed: 'bg-zinc-800',
+  stale: 'bg-amber-500',
+  missing: 'bg-zinc-900',
+  not_applicable: 'bg-zinc-800',
+  clamped: 'bg-rose-500',
+  emergency: 'bg-rose-400 motion-safe:animate-pulse',
+  context: 'bg-zinc-700',
+}
+
+const SURFACE: Record<RoleState, string> = {
+  winning: 'bg-zinc-900',
+  dimmed: 'bg-transparent',
+  stale: 'bg-amber-950/30',
+  missing: 'bg-transparent',
+  not_applicable: 'bg-transparent',
+  clamped: 'bg-rose-950/40',
+  emergency: 'bg-rose-900/40',
+  context: 'bg-transparent',
 }
 
 const FRESHNESS_DOT: Record<Freshness, string> = {
@@ -44,30 +63,27 @@ const FRESHNESS_DOT: Record<Freshness, string> = {
 }
 
 export interface BaseNodeProps {
-  nodeId: string
   role_state: RoleState
   freshness: Freshness
   freshness_label: string
   title: string
-  subtitle: string
+  headline: string
   children?: ReactNode
   testId: string
   changed?: boolean
 }
 
 export function BaseNode({
-  nodeId,
   role_state,
   freshness,
   freshness_label,
   title,
-  subtitle,
+  headline,
   children,
   testId,
   changed,
 }: BaseNodeProps) {
-  // Re-fire the pulse animation on role_state transition. Bumping `pulseKey`
-  // remounts the motion component, which re-runs `animate` from `initial`.
+  // Re-fire the pulse animation on role_state transition only.
   const prevRoleRef = useRef(role_state)
   const [pulseKey, setPulseKey] = useState(0)
   useEffect(() => {
@@ -77,20 +93,12 @@ export function BaseNode({
     }
   }, [role_state])
 
-  const ring =
-    role_state === 'winning'
-      ? 'ring-2 ring-sky-400/80 shadow-[0_0_24px_rgba(56,189,248,0.35)]'
-      : ''
-
-  // Supervisor clamped + emergency: one-shot red-flash transition on top of
-  // the persistent border-rose styling. Driven by an `animate` keyframe
-  // sequence; gated automatically by MotionConfig reducedMotion.
   const flashKeyframes =
     role_state === 'emergency'
       ? {
           boxShadow: [
             '0 0 0 rgba(244,63,94,0)',
-            '0 0 32px rgba(244,63,94,0.7)',
+            '0 0 28px rgba(244,63,94,0.6)',
             '0 0 0 rgba(244,63,94,0)',
           ],
         }
@@ -98,7 +106,7 @@ export function BaseNode({
         ? {
             boxShadow: [
               '0 0 0 rgba(244,63,94,0)',
-              '0 0 18px rgba(244,63,94,0.5)',
+              '0 0 16px rgba(244,63,94,0.45)',
               '0 0 0 rgba(244,63,94,0)',
             ],
           }
@@ -110,46 +118,41 @@ export function BaseNode({
       data-testid={testId}
       data-role-state={role_state}
       data-changed={changed ? 'true' : 'false'}
-      className={`relative w-[200px] rounded-lg border p-3 ${BODY_BG[role_state]} ${BODY_BORDER[role_state]} ${ring}`}
+      className={`relative grid grid-cols-[3px_1fr] overflow-hidden rounded-sm ${SURFACE[role_state]}`}
       initial={{ scale: 1 }}
       animate={
         flashKeyframes
-          ? { scale: [1, 1.04, 1], ...flashKeyframes }
-          : { scale: [1, 1.04, 1] }
+          ? { scale: [1, 1.02, 1], ...flashKeyframes }
+          : { scale: [1, 1.02, 1] }
       }
       transition={{ duration: 0.3, ease: 'easeInOut' }}
     >
-      <Handle
-        id={`${nodeId}-in`}
-        type="target"
-        position={Position.Left}
-        className="!bg-zinc-700"
-      />
-      <Handle
-        id={`${nodeId}-out`}
-        type="source"
-        position={Position.Right}
-        className="!bg-zinc-700"
-      />
-
-      <div
-        className={`text-[11px] uppercase tracking-wider ${TEXT[role_state]}`}
-      >
-        {title}
-      </div>
-      <div className={`mt-0.5 text-sm font-medium ${TEXT[role_state]}`}>
-        {subtitle}
-      </div>
-      {children && (
-        <div className={`mt-2 space-y-1 text-xs ${TEXT[role_state]}`}>
-          {children}
+      <div className={`${BAR_TONE[role_state]}`} aria-hidden="true" />
+      <div className="px-3 py-2.5">
+        <div
+          className={`font-sans text-[10px] font-semibold uppercase tracking-[0.15em] ${HEADER_TONE[role_state]}`}
+        >
+          {title}
         </div>
-      )}
-      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-zinc-500">
-        <span
-          className={`inline-block h-1 w-1 rounded-full ${FRESHNESS_DOT[freshness]}`}
-        />
-        <span className="font-mono">{freshness_label}</span>
+        <div
+          className={`mt-1 text-base font-semibold leading-tight ${BODY_TONE[role_state]}`}
+        >
+          {headline}
+        </div>
+        {children && (
+          <div
+            className={`mt-1.5 space-y-0.5 text-[11px] leading-snug ${BODY_TONE[role_state]}`}
+          >
+            {children}
+          </div>
+        )}
+        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-zinc-500">
+          <span
+            className={`inline-block h-1 w-1 rounded-full ${FRESHNESS_DOT[freshness]}`}
+            aria-hidden="true"
+          />
+          <span className="font-mono">{freshness_label}</span>
+        </div>
       </div>
     </motion.div>
   )
