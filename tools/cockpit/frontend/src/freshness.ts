@@ -48,10 +48,16 @@ export const FRESHNESS_THRESHOLDS: Record<string, FreshnessThresholds> = {
     warn_max_ms: min(20),
     stale_max_ms: min(30),
   },
+  // ComEd writes new 5min rows with `_time` set to the START of the
+  // 5-min price interval. At any moment the latest `_time` is 5-10 min
+  // old (floor: just-written; ceiling: just-before-next-publish) even
+  // under perfect poller health. Fresh ≤ 11 min covers a full normal
+  // cycle plus minor poller variance; warn = one missed publish;
+  // stale = multi-cycle outage.
   'comed.prices': {
-    fresh_max_ms: min(6),
-    warn_max_ms: min(10),
-    stale_max_ms: min(15),
+    fresh_max_ms: min(11),
+    warn_max_ms: min(16),
+    stale_max_ms: min(30),
   },
   'nws.forecast': {
     fresh_max_ms: min(35),

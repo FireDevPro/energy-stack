@@ -37,7 +37,13 @@ THRESHOLDS: dict[str, Thresholds] = {
     "decision_trace.precool_decision":   Thresholds(_hr(26), _hr(40), _hr(72)),
     "hvac.arm_mode":                     Thresholds(_min(6), _min(10), _min(15)),
     "hvac.thermostat":                   Thresholds(_min(12), _min(20), _min(30)),
-    "comed.prices":                      Thresholds(_min(6), _min(10), _min(15)),
+    # ComEd writes new 5min rows with `_time` set to the START of the
+    # 5-min price interval. At any moment the latest `_time` is 5-10 min
+    # old (floor: just-written; ceiling: just-before-next-publish) even
+    # under perfect poller health. Fresh ≤ 11 min covers a full normal
+    # cycle plus minor poller variance; warn = one missed publish;
+    # stale = multi-cycle outage.
+    "comed.prices":                      Thresholds(_min(11), _min(16), _min(30)),
     "nws.forecast":                      Thresholds(_min(35), _min(90), _hr(12)),
     "pjm.load_forecast":                 Thresholds(_hr(14), _hr(28), _hr(50)),
     "pjm.rt_hrl_lmps":                   Thresholds(_min(75), _hr(3), _hr(12)),
