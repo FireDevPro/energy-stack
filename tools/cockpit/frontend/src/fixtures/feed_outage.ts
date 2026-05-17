@@ -1,0 +1,237 @@
+import type { Snapshot } from '../types'
+
+// PJM RT LMP feed is stale (>3h gap). Controller can't compute the
+// price overlay decision reliably and falls back to schedule-only
+// behavior. arm_mode = B-fallback (writes happening per protocol but
+// without all required signals). RTP Spike node is stale; schedule
+// wins by default.
+export const feedOutage: Snapshot = {
+  snapshot_ts: '2026-07-23T13:15:30-05:00',
+  latest_tick_id: 'f6a7b8c9',
+  latest_tick_time: '2026-07-23T13:15:00-05:00',
+  scheduler_mode: 'experiment',
+  thermostat: {
+    indoor_temp_f: 75.6,
+    indoor_humidity_pct: 50,
+    cool_setpoint_f: 78,
+    heat_setpoint_f: 65,
+    hvac_mode: 'cool',
+    fan_mode: 'auto',
+    source_ts: '2026-07-23T13:09:00-05:00',
+    freshness: 'fresh',
+    freshness_label: '6m ago',
+  },
+  price: {
+    current_cents_per_kwh: 7.8,
+    tier: 'normal',
+    source_ts: '2026-07-23T13:15:00-05:00',
+    freshness: 'fresh',
+    freshness_label: '30s ago',
+  },
+  arm_mode: {
+    mode_actual: 'B-fallback',
+    arm: 'B',
+    source_ts: '2026-07-23T13:15:00-05:00',
+    freshness: 'fresh',
+    freshness_label: '30s ago',
+  },
+  controller: {
+    alive: true,
+    last_heartbeat_ts: null,
+    freshness: 'fresh',
+  },
+  feed_health: [
+    { name: 'ComEd', status: 'fresh', label: '30s ago' },
+    { name: 'NWS', status: 'fresh', label: '5m ago' },
+    { name: 'PJM forecast', status: 'fresh', label: '6h ago' },
+    { name: 'PJM RT LMP', status: 'stale', label: '3h 14m ago' },
+    { name: 'Refoss', status: 'fresh', label: '15s ago' },
+    { name: 'EAGLE', status: 'fresh', label: '15s ago' },
+    { name: 'Thermostat', status: 'fresh', label: '6m ago' },
+  ],
+  flow: {
+    weather: {
+      role_state: 'context',
+      freshness: 'fresh',
+      freshness_label: '23m ago',
+      title: 'Weather',
+      subtitle: 'high 82°F, dewpoint 60°F',
+      details: {
+        current_outdoor_f: 81.2,
+        today_high_f: 82,
+        apparent_max_f: 83,
+        dewpoint_max_f: 60,
+        heat_advisory: false,
+      },
+      source: {
+        event: 'nws.forecast',
+        tick_id: null,
+        ts: '2026-07-23T13:00:00-05:00',
+      },
+    },
+    day_type: {
+      role_state: 'context',
+      freshness: 'fresh',
+      freshness_label: 'decided 21:00 last night',
+      title: 'Day Type',
+      subtitle: 'NORMAL',
+      details: {
+        winning_day_type: 'NORMAL',
+        decision_for_date: '2026-07-23',
+        reason_code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
+        evaluation_tape: [
+          // Production _classify_with_tape evaluates rules in fixed
+          // precedence and stops at first fire. NORMAL outcome means all
+          // 3 HOT rules were evaluated and rejected.
+          {
+            code: 'DAY_TYPE_HOT_HEAT_ADVISORY',
+            fired: false,
+            actual: false,
+            threshold: true,
+          },
+          {
+            code: 'DAY_TYPE_HOT_HIGH_GE_85',
+            fired: false,
+            actual: 82,
+            threshold: 85,
+          },
+          {
+            code: 'DAY_TYPE_HOT_APPARENT_GE_90',
+            fired: false,
+            actual: 83,
+            threshold: 90,
+          },
+          {
+            code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
+            fired: true,
+            actual: 82,
+            threshold: 75,
+          },
+        ],
+      },
+      source: {
+        event: 'decision_trace.day_type_decision',
+        tick_id: 'b3c4d5e6',
+        ts: '2026-07-22T21:00:00-05:00',
+      },
+    },
+    schedule: {
+      role_state: 'winning',
+      freshness: 'fresh',
+      freshness_label: '30s ago',
+      title: 'Schedule',
+      subtitle: 'NORMAL afternoon: 78°F',
+      details: {
+        action_label: 'afternoon_start',
+        base_schedule_cool_f: 78,
+        effective_schedule_cool_f: 78,
+        humid_override_active: false,
+        humid_override_setpoint_f: null,
+        precool_window: null,
+      },
+      source: {
+        event: 'decision_trace.layer_resolution',
+        tick_id: 'f6a7b8c9',
+        ts: '2026-07-23T13:15:00-05:00',
+      },
+    },
+    price_overlay: {
+      role_state: 'stale',
+      freshness: 'stale',
+      freshness_label: 'PJM RT LMP 3h 14m old',
+      title: 'RTP Spike',
+      subtitle: 'feed-stale — preserving normal',
+      details: {
+        price_cents: 7.8,
+        prev_tier: 'normal',
+        new_tier: 'normal',
+        outcome: 'held',
+        reason_code: 'PRICE_OVERLAY_FEED_UNAVAILABLE_TIER_PRESERVED',
+        hold_minutes_remaining: 0,
+      },
+      source: {
+        event: 'decision_trace.price_overlay_eval',
+        tick_id: 'f6a7b8c9',
+        ts: '2026-07-23T13:15:00-05:00',
+      },
+    },
+    fivecp: {
+      role_state: 'dimmed',
+      freshness: 'fresh',
+      freshness_label: '30s ago',
+      title: '5CP Risk',
+      subtitle: 'no risk — within season',
+      details: {
+        fivecp_active: false,
+        fivecp_scopes_fired: [],
+        fivecp_cool_f: null,
+        in_season: true,
+      },
+      source: {
+        event: 'decision_trace.layer_resolution',
+        tick_id: 'f6a7b8c9',
+        ts: '2026-07-23T13:15:00-05:00',
+      },
+    },
+    winner: {
+      role_state: 'winning',
+      freshness: 'fresh',
+      freshness_label: '30s ago',
+      title: 'Winner',
+      subtitle: 'Schedule',
+      details: {
+        winning_layer: 'schedule',
+        effective_cool_f: 78,
+        prev_effective_cool_f: 78,
+        changed: false,
+        reason_code: 'LAYER_RESOLUTION_SCHEDULE_WINS',
+      },
+      source: {
+        event: 'decision_trace.layer_resolution',
+        tick_id: 'f6a7b8c9',
+        ts: '2026-07-23T13:15:00-05:00',
+      },
+    },
+    supervisor: {
+      role_state: 'not_applicable',
+      freshness: 'fresh',
+      freshness_label: 'not invoked this tick',
+      title: 'Supervisor',
+      subtitle: 'not invoked',
+      details: {
+        decision: null,
+        proposed_cool_f: null,
+        proposed_heat_f: null,
+        final_cool_f: null,
+        final_heat_f: null,
+        supervisor_reason: null,
+        reason_code: null,
+        indoor_temp_available: null,
+      },
+      source: null,
+    },
+    action: {
+      role_state: 'dimmed',
+      freshness: 'fresh',
+      freshness_label: 'last fire 13:00 today',
+      title: 'Action',
+      subtitle: 'no fire this tick (B-fallback)',
+      details: {
+        applied: false,
+        dry_run: false,
+        action_label: 'afternoon_start',
+        cool_setpoint_f: 78,
+        heat_setpoint_f: 65,
+        fan_mode: 'auto',
+        setpoint_reason: 'schedule (B-fallback, no overlay)',
+        fire_ts: '2026-07-23T13:00:00-05:00',
+        error: null,
+      },
+      source: {
+        event: 'hvac.actions',
+        tick_id: 'f6a7b8c9',
+        ts: '2026-07-23T13:00:00-05:00',
+      },
+    },
+  },
+}
