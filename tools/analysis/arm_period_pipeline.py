@@ -34,6 +34,10 @@ from tools.analysis.arm_calendar import (
     HOURS_PER_ARM,
     post_washout_start,
 )
+from tools.analysis.bill_reconciliation import (
+    BillReconciliation,
+    reconcile_bill_period,
+)
 from tools.analysis.cost_matched_exclusion import (
     cost_matched_exclude_with_provenance,
 )
@@ -87,7 +91,7 @@ class PipelineResult:
     bucket_summaries: dict[str, dict]
     mode_distribution: dict[str, int]
     arms_passed_validity: set[str]
-    bill_reconciliations: list[dict] = field(default_factory=list)
+    bill_reconciliations: list[BillReconciliation] = field(default_factory=list)
 
 
 # --- Time helpers ----------------------------------------------------------
@@ -723,10 +727,57 @@ def run_full_pipeline(
             counter[m.value] += 1
     mode_distribution = dict(counter)
 
+    bill_recons = _reconcile_against_bills(
+        bills_df=bills_df,
+        eagle_df=eagle_df,
+        refoss_df=refoss_df,
+        rt_hrl_lmps_df=rt_hrl_lmps_df,
+        rate_snapshot=rate_snapshot,
+    )
+
     return PipelineResult(
         per_pair_table=per_pair_table,
         bucket_summaries=bucket_summaries,
         mode_distribution=mode_distribution,
         arms_passed_validity=arms_passed,
-        bill_reconciliations=[],  # populated by Task 3.14
+        bill_reconciliations=bill_recons,
     )
+
+
+def _reconcile_against_bills(
+    *,
+    bills_df: pd.DataFrame,
+    eagle_df: pd.DataFrame,
+    refoss_df: pd.DataFrame,
+    rt_hrl_lmps_df: pd.DataFrame,
+    rate_snapshot: dict[str, float],
+) -> list[BillReconciliation]:
+    """Sanity-only step per spec §10. Iterates each bill period and
+    delegates to ``reconcile_bill_period``. NEVER touches HVAC$.
+
+    Bill-period detection contract: ``bills_df`` is expected to have
+    ``bill_period_start_utc`` + ``bill_period_end_utc`` + ``variable_dollars``
+    columns. When those columns are missing (e.g. Phase 0 fixture that
+    only writes per-line-item rows), this step degrades gracefully to
+    an empty result rather than guessing window bounds.
+    """
+    required = {"bill_period_start_utc", "bill_period_end_utc",
+                "variable_dollars"}
+    if bills_df is None or bills_df.empty:
+        return []
+    if not required.issubset(bills_df.columns):
+        return []
+    out: list[BillReconciliation] = []
+    for _, row in bills_df.iterrows():
+        out.append(
+            reconcile_bill_period(
+                bill_period_start_utc=row["bill_period_start_utc"],
+                bill_period_end_utc=row["bill_period_end_utc"],
+                eagle_df=eagle_df,
+                refoss_df=refoss_df,
+                rt_hrl_lmps_df=rt_hrl_lmps_df,
+                rate_snapshot=rate_snapshot,
+                actual_bill_variable_dollars=float(row["variable_dollars"]),
+            )
+        )
+    return out

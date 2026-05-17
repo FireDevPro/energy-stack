@@ -187,3 +187,37 @@ def test_pipeline_bucket_summaries_have_required_keys():
         "high_temp_exposed_pairs",
     }
     assert required_buckets <= set(result.bucket_summaries.keys())
+
+
+def test_pipeline_bill_reconciliations_empty_when_bill_period_columns_absent():
+    """When bills_df lacks bill-period columns, pipeline emits no
+    reconciliations rather than guessing the window."""
+    inputs = _build_two_arm_dataset()
+    result = run_full_pipeline(**inputs)
+    assert result.bill_reconciliations == []
+
+
+def test_pipeline_bill_reconciliations_populated_when_bill_period_columns_present():
+    inputs = _build_two_arm_dataset()
+    start = datetime.datetime(2026, 6, 3, 0, 0) + datetime.timedelta(hours=5)
+    bills_df = pd.DataFrame([{
+        "bill_period_start_utc": start,
+        "bill_period_end_utc": start + datetime.timedelta(hours=72),
+        "variable_dollars": 0.0,
+    }])
+    # Eagle totalizer matching the bill window
+    eagle_rows = []
+    cur = 50000.0
+    for k in range(72):
+        cur += 1.0
+        eagle_rows.append({
+            "_time": start + datetime.timedelta(hours=k),
+            "delivered_kwh": cur,
+            "_field": "delivered_kwh",
+        })
+    inputs["eagle_df"] = pd.DataFrame(eagle_rows)
+    inputs["bills_df"] = bills_df
+    result = run_full_pipeline(**inputs)
+    assert len(result.bill_reconciliations) == 1
+    br = result.bill_reconciliations[0]
+    assert br.reconstructed_variable_dollars > 0
