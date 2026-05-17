@@ -4,32 +4,32 @@ import type { Snapshot } from '../types'
 // DAY_TYPE_MILD_HIGH_LT_75 rule path and the full evaluation tape with
 // every rule rejected except MILD.
 export const mildDay: Snapshot = {
-  snapshot_ts: '2026-05-20T11:30:30-05:00',
+  snapshot_ts: '2026-09-15T11:30:30-05:00',
   latest_tick_id: 'a7b8c9d0',
-  latest_tick_time: '2026-05-20T11:30:00-05:00',
+  latest_tick_time: '2026-09-15T11:30:00-05:00',
   scheduler_mode: 'experiment',
   thermostat: {
     indoor_temp_f: 71.4,
     indoor_humidity_pct: 42,
     cool_setpoint_f: 78,
-    heat_setpoint_f: 68,
+    heat_setpoint_f: 65,
     hvac_mode: 'cool',
     fan_mode: 'auto',
-    source_ts: '2026-05-20T11:24:00-05:00',
+    source_ts: '2026-09-15T11:24:00-05:00',
     freshness: 'fresh',
     freshness_label: '6m ago',
   },
   price: {
     current_cents_per_kwh: 3.7,
     tier: 'normal',
-    source_ts: '2026-05-20T11:30:00-05:00',
+    source_ts: '2026-09-15T11:30:00-05:00',
     freshness: 'fresh',
     freshness_label: '30s ago',
   },
   arm_mode: {
     mode_actual: 'B-active',
     arm: 'B',
-    source_ts: '2026-05-20T11:30:00-05:00',
+    source_ts: '2026-09-15T11:30:00-05:00',
     freshness: 'fresh',
     freshness_label: '30s ago',
   },
@@ -64,7 +64,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'nws.forecast',
         tick_id: null,
-        ts: '2026-05-20T11:30:00-05:00',
+        ts: '2026-09-15T11:30:00-05:00',
       },
     },
     day_type: {
@@ -75,7 +75,7 @@ export const mildDay: Snapshot = {
       subtitle: 'MILD',
       details: {
         winning_day_type: 'MILD',
-        decision_for_date: '2026-05-20',
+        decision_for_date: '2026-09-15',
         reason_code: 'DAY_TYPE_MILD_HIGH_LT_75',
         evaluation_tape: [
           {
@@ -113,7 +113,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'decision_trace.day_type_decision',
         tick_id: 'c4d5e6f7',
-        ts: '2026-05-19T21:00:00-05:00',
+        ts: '2026-09-14T21:00:00-05:00',
       },
     },
     schedule: {
@@ -121,9 +121,13 @@ export const mildDay: Snapshot = {
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Schedule',
-      subtitle: 'MILD coast: 78°F',
+      subtitle: 'MILD: thermostat baseline (no active push)',
       details: {
-        action_label: 'mild_coast',
+        // Real MILD_SCHEDULE in app.py has only MILD_RELEASE_HOLD at
+        // 00:05 — once today's hold-release fires, scheduler defers to
+        // the CTK04AE program for the rest of the day. base/effective
+        // here are the released-to baseline (no scheduler override).
+        action_label: 'MILD_RELEASE_HOLD',
         base_schedule_cool_f: 78,
         effective_schedule_cool_f: 78,
         humid_override_active: false,
@@ -133,7 +137,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'a7b8c9d0',
-        ts: '2026-05-20T11:30:00-05:00',
+        ts: '2026-09-15T11:30:00-05:00',
       },
     },
     price_overlay: {
@@ -153,7 +157,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'decision_trace.price_overlay_eval',
         tick_id: 'a7b8c9d0',
-        ts: '2026-05-20T11:30:00-05:00',
+        ts: '2026-09-15T11:30:00-05:00',
       },
     },
     fivecp: {
@@ -171,7 +175,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'a7b8c9d0',
-        ts: '2026-05-20T11:30:00-05:00',
+        ts: '2026-09-15T11:30:00-05:00',
       },
     },
     winner: {
@@ -190,7 +194,7 @@ export const mildDay: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'a7b8c9d0',
-        ts: '2026-05-20T11:30:00-05:00',
+        ts: '2026-09-15T11:30:00-05:00',
       },
     },
     supervisor: {
@@ -214,24 +218,24 @@ export const mildDay: Snapshot = {
     action: {
       role_state: 'context',
       freshness: 'fresh',
-      freshness_label: 'last fire 05:00 today',
+      freshness_label: 'last fire 00:05 today',
       title: 'Action',
-      subtitle: 'morning_start applied',
+      subtitle: 'MILD_RELEASE_HOLD applied',
       details: {
         applied: true,
         dry_run: false,
-        action_label: 'morning_start',
-        cool_setpoint_f: 78,
-        heat_setpoint_f: 68,
-        fan_mode: 'auto',
-        setpoint_reason: 'schedule (MILD coast)',
-        fire_ts: '2026-05-20T05:00:00-05:00',
+        action_label: 'MILD_RELEASE_HOLD',
+        cool_setpoint_f: null,
+        heat_setpoint_f: null,
+        fan_mode: null,
+        setpoint_reason: 'MILD day — release prior hold; defer to thermostat baseline',
+        fire_ts: '2026-09-15T00:05:00-05:00',
         error: null,
       },
       source: {
         event: 'hvac.actions',
         tick_id: 'd5e6f7a8',
-        ts: '2026-05-20T05:00:00-05:00',
+        ts: '2026-09-15T00:05:00-05:00',
       },
     },
   },

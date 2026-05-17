@@ -4,6 +4,18 @@ import type { Snapshot } from '../types'
 // A to B. arm_mode.source_ts is right at the boundary, mode_actual just
 // transitioned from A-active to B-active. First few ticks of the new
 // arm; the controller is establishing baseline state.
+//
+// DEVIATION FROM PLAN §2.7: the plan called for "a header-level subtle
+// 'arm switch detected' badge when source ts is within last 5 min" AND
+// a `switch_event` source on arm_mode. Both are descoped in Phase 2:
+//   - The ArmMode type has no `source` field; adding one for one fixture
+//     would expand the contract without a corresponding consumer.
+//   - The badge component is not built. Operators detect the boundary
+//     visually via the freshness_label "just switched (Xs ago)" and via
+//     the arm-mode chip's color/text.
+// Both are tracked for Phase 4+ as observability enhancements once the
+// live data path (Phase 3) is in place and operators can validate what
+// they actually want to see at boundary moments.
 export const armSwitch: Snapshot = {
   snapshot_ts: '2026-09-07T00:00:30-05:00',
   latest_tick_id: 'b8c9d0e1',
@@ -13,7 +25,7 @@ export const armSwitch: Snapshot = {
     indoor_temp_f: 73.5,
     indoor_humidity_pct: 48,
     cool_setpoint_f: 76,
-    heat_setpoint_f: 68,
+    heat_setpoint_f: 65,
     hvac_mode: 'cool',
     fan_mode: 'auto',
     source_ts: '2026-09-06T23:54:00-05:00',
@@ -79,11 +91,26 @@ export const armSwitch: Snapshot = {
         decision_for_date: '2026-09-07',
         reason_code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
         evaluation_tape: [
+          // Production precedence: HEAT_ADV → HIGH_GE_85 → APPARENT_GE_90
+          // → NORMAL_HIGH_75_TO_84. NORMAL outcome means all 3 HOT rules
+          // were considered and rejected.
+          {
+            code: 'DAY_TYPE_HOT_HEAT_ADVISORY',
+            fired: false,
+            actual: false,
+            threshold: true,
+          },
           {
             code: 'DAY_TYPE_HOT_HIGH_GE_85',
             fired: false,
             actual: 80,
             threshold: 85,
+          },
+          {
+            code: 'DAY_TYPE_HOT_APPARENT_GE_90',
+            fired: false,
+            actual: 82,
+            threshold: 90,
           },
           {
             code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
@@ -205,7 +232,7 @@ export const armSwitch: Snapshot = {
         dry_run: false,
         action_label: 'overnight_hold',
         cool_setpoint_f: 76,
-        heat_setpoint_f: 68,
+        heat_setpoint_f: 65,
         fan_mode: 'auto',
         setpoint_reason: 'arm switch A→B at 00:00 CT, schedule resumed',
         fire_ts: '2026-09-07T00:00:00-05:00',

@@ -1,9 +1,12 @@
 import type { Snapshot } from '../types'
 
-// Hypothetical controller bug: layer resolution proposed cool=92°F
-// (out of range — supervisor cool ceiling is 86°F). Safety supervisor
-// clamps to 86. Action node shows the proposed → final transition.
-// This exercises the rose-bordered clamp role_state visual.
+// Hypothetical schedule corruption: a malformed ScheduleAction
+// loaded effective_schedule_cool_f=92°F (out of range — supervisor cool
+// ceiling is 86°F). 5CP is NOT the source (production 5CP layer is hard-
+// capped at COOL_SHUTOFF_F=85). The corrupt schedule wins arbitration;
+// safety supervisor catches the out-of-range proposal and clamps to 86.
+// Action node shows the proposed → final transition. Exercises the
+// rose-bordered clamp role_state visual.
 export const supervisorClamp: Snapshot = {
   snapshot_ts: '2026-07-22T14:00:30-05:00',
   latest_tick_id: 'd4e5f6a7',
@@ -13,7 +16,7 @@ export const supervisorClamp: Snapshot = {
     indoor_temp_f: 75.4,
     indoor_humidity_pct: 49,
     cool_setpoint_f: 86,
-    heat_setpoint_f: 68,
+    heat_setpoint_f: 65,
     hvac_mode: 'cool',
     fan_mode: 'auto',
     source_ts: '2026-07-22T13:54:00-05:00',
@@ -100,17 +103,21 @@ export const supervisorClamp: Snapshot = {
       },
     },
     schedule: {
-      role_state: 'dimmed',
+      role_state: 'winning',
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Schedule',
-      subtitle: 'HOT afternoon: 76°F (humid override)',
+      subtitle: 'HOT afternoon: 92°F (corrupt — supervisor catches)',
       details: {
         action_label: 'afternoon_coast',
         base_schedule_cool_f: 78,
-        effective_schedule_cool_f: 76,
-        humid_override_active: true,
-        humid_override_setpoint_f: 76,
+        // Simulated corruption: a malformed ScheduleAction was loaded
+        // with cool_setpoint_f=92. This is the only realistic source of
+        // a 92F proposal in production (5CP is capped at COOL_SHUTOFF_F=85,
+        // price overlay scarcity is fixed at 85).
+        effective_schedule_cool_f: 92,
+        humid_override_active: false,
+        humid_override_setpoint_f: null,
         precool_window: null,
       },
       source: {
@@ -140,15 +147,15 @@ export const supervisorClamp: Snapshot = {
       },
     },
     fivecp: {
-      role_state: 'winning',
+      role_state: 'dimmed',
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: '5CP Risk',
-      subtitle: 'ACTIVE — COMED scope',
+      subtitle: 'no risk — within season',
       details: {
-        fivecp_active: true,
-        fivecp_scopes_fired: ['COMED'],
-        fivecp_cool_f: 92,
+        fivecp_active: false,
+        fivecp_scopes_fired: [],
+        fivecp_cool_f: null,
         in_season: true,
       },
       source: {
@@ -162,13 +169,13 @@ export const supervisorClamp: Snapshot = {
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Winner',
-      subtitle: '5CP',
+      subtitle: 'Schedule',
       details: {
-        winning_layer: 'fivecp',
+        winning_layer: 'schedule',
         effective_cool_f: 92,
         prev_effective_cool_f: 76,
         changed: true,
-        reason_code: 'LAYER_RESOLUTION_5CP_WINS',
+        reason_code: 'LAYER_RESOLUTION_SCHEDULE_WINS',
       },
       source: {
         event: 'decision_trace.layer_resolution',
@@ -185,9 +192,9 @@ export const supervisorClamp: Snapshot = {
       details: {
         decision: 'clamped',
         proposed_cool_f: 92,
-        proposed_heat_f: 68,
+        proposed_heat_f: 65,
         final_cool_f: 86,
-        final_heat_f: 68,
+        final_heat_f: 65,
         supervisor_reason: 'cool 92F exceeds ceiling 86F; clamped to 86F',
         reason_code: 'SUPERVISOR_CLAMPED_COOL_CEILING',
         indoor_temp_available: true,
@@ -203,15 +210,15 @@ export const supervisorClamp: Snapshot = {
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Action',
-      subtitle: 'fivecp_shutoff applied (clamped)',
+      subtitle: 'afternoon_coast applied (clamped)',
       details: {
         applied: true,
         dry_run: false,
-        action_label: 'fivecp_shutoff',
+        action_label: 'afternoon_coast',
         cool_setpoint_f: 86,
-        heat_setpoint_f: 68,
+        heat_setpoint_f: 65,
         fan_mode: 'auto',
-        setpoint_reason: '5CP shutoff (supervisor clamped 92 → 86)',
+        setpoint_reason: 'schedule (supervisor clamped corrupt 92 → 86)',
         fire_ts: '2026-07-22T14:00:00-05:00',
         error: null,
       },

@@ -6,32 +6,32 @@ import type { Snapshot } from '../types'
 // without all required signals). Price Overlay node is stale; schedule
 // wins by default.
 export const feedOutage: Snapshot = {
-  snapshot_ts: '2026-07-29T13:15:30-05:00',
+  snapshot_ts: '2026-07-23T13:15:30-05:00',
   latest_tick_id: 'f6a7b8c9',
-  latest_tick_time: '2026-07-29T13:15:00-05:00',
+  latest_tick_time: '2026-07-23T13:15:00-05:00',
   scheduler_mode: 'experiment',
   thermostat: {
     indoor_temp_f: 75.6,
     indoor_humidity_pct: 50,
     cool_setpoint_f: 78,
-    heat_setpoint_f: 68,
+    heat_setpoint_f: 65,
     hvac_mode: 'cool',
     fan_mode: 'auto',
-    source_ts: '2026-07-29T13:09:00-05:00',
+    source_ts: '2026-07-23T13:09:00-05:00',
     freshness: 'fresh',
     freshness_label: '6m ago',
   },
   price: {
     current_cents_per_kwh: 7.8,
     tier: 'normal',
-    source_ts: '2026-07-29T13:15:00-05:00',
+    source_ts: '2026-07-23T13:15:00-05:00',
     freshness: 'fresh',
     freshness_label: '30s ago',
   },
   arm_mode: {
     mode_actual: 'B-fallback',
     arm: 'B',
-    source_ts: '2026-07-29T13:15:00-05:00',
+    source_ts: '2026-07-23T13:15:00-05:00',
     freshness: 'fresh',
     freshness_label: '30s ago',
   },
@@ -66,7 +66,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'nws.forecast',
         tick_id: null,
-        ts: '2026-07-29T13:00:00-05:00',
+        ts: '2026-07-23T13:00:00-05:00',
       },
     },
     day_type: {
@@ -77,14 +77,29 @@ export const feedOutage: Snapshot = {
       subtitle: 'NORMAL',
       details: {
         winning_day_type: 'NORMAL',
-        decision_for_date: '2026-07-29',
+        decision_for_date: '2026-07-23',
         reason_code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
         evaluation_tape: [
+          // Production _classify_with_tape evaluates rules in fixed
+          // precedence and stops at first fire. NORMAL outcome means all
+          // 3 HOT rules were evaluated and rejected.
+          {
+            code: 'DAY_TYPE_HOT_HEAT_ADVISORY',
+            fired: false,
+            actual: false,
+            threshold: true,
+          },
           {
             code: 'DAY_TYPE_HOT_HIGH_GE_85',
             fired: false,
             actual: 82,
             threshold: 85,
+          },
+          {
+            code: 'DAY_TYPE_HOT_APPARENT_GE_90',
+            fired: false,
+            actual: 83,
+            threshold: 90,
           },
           {
             code: 'DAY_TYPE_NORMAL_HIGH_75_TO_84',
@@ -97,7 +112,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'decision_trace.day_type_decision',
         tick_id: 'b3c4d5e6',
-        ts: '2026-07-28T21:00:00-05:00',
+        ts: '2026-07-22T21:00:00-05:00',
       },
     },
     schedule: {
@@ -117,7 +132,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'f6a7b8c9',
-        ts: '2026-07-29T13:15:00-05:00',
+        ts: '2026-07-23T13:15:00-05:00',
       },
     },
     price_overlay: {
@@ -137,7 +152,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'decision_trace.price_overlay_eval',
         tick_id: 'f6a7b8c9',
-        ts: '2026-07-29T13:15:00-05:00',
+        ts: '2026-07-23T13:15:00-05:00',
       },
     },
     fivecp: {
@@ -155,7 +170,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'f6a7b8c9',
-        ts: '2026-07-29T13:15:00-05:00',
+        ts: '2026-07-23T13:15:00-05:00',
       },
     },
     winner: {
@@ -174,7 +189,7 @@ export const feedOutage: Snapshot = {
       source: {
         event: 'decision_trace.layer_resolution',
         tick_id: 'f6a7b8c9',
-        ts: '2026-07-29T13:15:00-05:00',
+        ts: '2026-07-23T13:15:00-05:00',
       },
     },
     supervisor: {
@@ -206,16 +221,16 @@ export const feedOutage: Snapshot = {
         dry_run: false,
         action_label: 'afternoon_start',
         cool_setpoint_f: 78,
-        heat_setpoint_f: 68,
+        heat_setpoint_f: 65,
         fan_mode: 'auto',
         setpoint_reason: 'schedule (B-fallback, no overlay)',
-        fire_ts: '2026-07-29T13:00:00-05:00',
+        fire_ts: '2026-07-23T13:00:00-05:00',
         error: null,
       },
       source: {
         event: 'hvac.actions',
         tick_id: 'f6a7b8c9',
-        ts: '2026-07-29T13:00:00-05:00',
+        ts: '2026-07-23T13:00:00-05:00',
       },
     },
   },
