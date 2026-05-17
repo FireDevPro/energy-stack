@@ -26,27 +26,13 @@ from tools.analysis.tests.fixtures.synth_rebaseline_dataset import (
     build_synth_dataset,
 )
 
-# Outside-in TDD per AGENTS.md: the feature-level acceptance test
-# must produce a VISIBLE signal at each phase-boundary (slice) PR,
-# not silently skip. `xfail(strict=True)` keeps the test red across
-# Phases 2-5 while showing in every test run, and forces removal of
-# the marker the moment the implementation is complete enough to
-# pass (strict=True flips XPASS to failure). The marker comes off
-# when this test passes against the real arm_period_pipeline with
-# zero scaffolding — that is the only definition of feature-complete
-# for the rebaseline.
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Outside-in: implementation lands progressively across "
-        "Phases 3-6 (Phase 3 introduces tools.analysis.arm_period_"
-        "pipeline.run_full_pipeline; Phases 4-6 replace its "
-        "scaffolding). Test stays xfail until the real "
-        "implementation passes every assertion with zero scaffolding. "
-        "When xfail flips to XPASS (strict=True triggers a failure), "
-        "remove this marker — that is feature-complete."
-    ),
-)
+# Outside-in TDD per AGENTS.md: this feature-level acceptance test
+# stayed xfail(strict=True) across Phases 0-2 (scaffolded implementation)
+# and Phase 3 task progress. Phase 3 Task 3.15 de-scaffolded the
+# fixture to real-shape inputs and the test now passes against the
+# real ``arm_period_pipeline.run_full_pipeline`` with zero scaffolding,
+# satisfying AGENTS.md's "the marker comes off the moment the test
+# passes against the real implementation" rule.
 def test_rebaseline_end_to_end_acceptance():
     """The whole pipeline produces expected outputs on synthetic data."""
     from tools.analysis.arm_period_pipeline import run_full_pipeline
@@ -220,9 +206,12 @@ def test_fixture_actually_injects_claimed_scenarios():
     """
     from tools.analysis.tests.fixtures.synth_rebaseline_dataset import (
         CALENDAR,
+        CALENDAR_CT,
+        COOLING_START_HOUR_CT,
         SCENARIOS,
         WEATHER_OUTLIER_SHIFT_F,
         BASE_TEMP_F,
+        _ct_naive_to_utc_naive,
     )
 
     synth = build_synth_dataset()
@@ -320,17 +309,25 @@ def test_fixture_actually_injects_claimed_scenarios():
     #     reduction vs matched-arm A cooling hours. Verifies the data builder
     #     INJECTS the savings effect, not just claims it in expected values.
     from tools.analysis.tests.fixtures.synth_rebaseline_dataset import SAVINGS_PCT
+    # The anchor below picks a post-washout day-9 cooling-active CT hour
+    # (CT 13:00 = COOLING_START_HOUR_CT, past any injected
+    # fallback/telemetry-invalid offsets which come from the first
+    # fallback_hours_b + ti hours of the cooling-active list).
+    def _cooling_anchor_utc(arm_idx):
+        arm_start_ct = CALENDAR_CT[arm_idx - 1][2]
+        cool_ct = (
+            arm_start_ct
+            + datetime.timedelta(days=11, hours=COOLING_START_HOUR_CT)
+        )
+        return _ct_naive_to_utc_naive(cool_ct)
+
     for scenario in SCENARIOS:
         (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
          ti_a, ti_b, weather_outlier_b, dst) = scenario
         if cooling_per_day == 0:
             continue
-        # Day 11 hour 12: cooling-active and past any injected
-        # fallback/telemetry-invalid hours (same anchor as check #5 below)
-        a_start, _ = arm_idx_to_dates[arm_a]
-        b_start, _ = arm_idx_to_dates[arm_b]
-        cool_a_ts = a_start + datetime.timedelta(hours=11 * 24 + 12)
-        cool_b_ts = b_start + datetime.timedelta(hours=11 * 24 + 12)
+        cool_a_ts = _cooling_anchor_utc(arm_a)
+        cool_b_ts = _cooling_anchor_utc(arm_b)
 
         def _hvac_w(when):
             mask = (
@@ -354,16 +351,13 @@ def test_fixture_actually_injects_claimed_scenarios():
         )
 
     # 5. Cooling-active hours actually have nonzero em:2+em:8 power.
-    # Use post-washout day 11 hour 12 = offset 276. That's past any injected
-    # fallback/telemetry-invalid offsets (which come from the first
-    # fallback_hours_b + ti hours of the cooling-active list).
+    # Use the same day-11 cooling-active anchor (CT 13:00) used in 4b.
     for scenario in SCENARIOS:
         (pair_id, arm_a, arm_b, label, cooling_per_day, fallback_hours_b,
          ti_a, ti_b, weather_outlier_b, dst) = scenario
         if cooling_per_day == 0:
             continue
-        start, _ = arm_idx_to_dates[arm_a]
-        cooling_hour = start + datetime.timedelta(hours=11 * 24 + 12)
+        cooling_hour = _cooling_anchor_utc(arm_a)
         mask = (
             (synth.refoss_df["_time"] >= cooling_hour) &
             (synth.refoss_df["_time"] < cooling_hour + datetime.timedelta(hours=1)) &

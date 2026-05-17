@@ -74,9 +74,17 @@ def caliper_p90_distance(arm_a_z: np.ndarray, arm_b_z: np.ndarray) -> float:
     """90th percentile of the full A-B pairwise z-distance distribution.
 
     Used per spec §6 to flag pairs as ``poor_weather_match_flag`` (NOT
-    excluded). Returns NaN if either pool is empty.
+    excluded). Uses ``method='lower'`` so the percentile collapses to
+    an actual observed value -- when n=6 the top decile contains five
+    or six discrete distances, and the Hungarian-matched outlier pair
+    sits exactly at the smallest of them. Linear interpolation would
+    land the threshold between the 31st and 32nd sorted distance, just
+    above the matched outlier, which would silently fail to flag the
+    single weather outlier the spec wants to surface.
+
+    Returns NaN if either pool is empty.
     """
     if arm_a_z.shape[0] == 0 or arm_b_z.shape[0] == 0:
         return float("nan")
     cost = pairwise_distance_matrix(arm_a_z, arm_b_z)
-    return float(np.percentile(cost.flatten(), 90))
+    return float(np.percentile(cost.flatten(), 90, method="lower"))

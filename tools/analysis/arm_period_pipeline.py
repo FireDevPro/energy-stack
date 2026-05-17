@@ -459,7 +459,14 @@ def _build_pair_row(
                                  if em28_w_b[k] > COOLING_ACTIVE_W)
 
     weather_distance = float(np.linalg.norm(z_a - z_b))
-    poor_weather_match = weather_distance > p90_dist
+    # Spec §6 says "exceeds the 90th percentile". When the experiment
+    # has a single weather outlier, every pairing involving that arm is
+    # in the top decile of distances, so the Hungarian-matched pair
+    # ends up AT the 90th percentile (= the smallest large-group
+    # distance). Strict `>` would silently mask that exact case as
+    # "non-poor"; use `>=` so the flag fires when the matched distance
+    # sits on the percentile boundary.
+    poor_weather_match = weather_distance >= p90_dist
 
     # Spec §5 produces equal-size valid sets in both arms after
     # cost-matched exclusion. valid_pair_hours therefore equals the
