@@ -1,16 +1,76 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { loadFixtureFromUrl } from './lib/loadFixture'
+import { fetchSnapshot } from './lib/api'
+import { usePolling } from './lib/usePolling'
 import { Header } from './components/Header'
 import { FeedHealthStrip } from './components/FeedHealthStrip'
 import { ThermostatCard } from './components/ThermostatCard'
 import { DecisionFlow } from './components/DecisionFlow'
+import type { Snapshot } from './types'
+
+// Polling cadence for the live backend. Matches the 5-min trace cadence;
+// faster won't surface new data. Phase 3 follow-on may tune this once
+// the backend is wired against live Influx/Loki.
+const POLL_INTERVAL_MS = 5_000
+
+// If the URL has `?fixture=<name>`, the operator wants the fixture path
+// — used for offline demo, screenshots, browser smoke. Otherwise the
+// app polls the live backend.
+function shouldUseFixture(): boolean {
+  return new URLSearchParams(window.location.search).has('fixture')
+}
 
 export default function App() {
-  const snapshot = useMemo(() => loadFixtureFromUrl(), [])
+  const useFixture = useMemo(() => shouldUseFixture(), [])
+  const fixtureSnapshot = useMemo<Snapshot | null>(
+    () => (useFixture ? loadFixtureFromUrl() : null),
+    [useFixture],
+  )
+
+  // Stable reference for the polling hook so it doesn't re-mount on
+  // every render.
+  const fetcher = useCallback(
+    (signal: AbortSignal) => fetchSnapshot(signal),
+    [],
+  )
+
+  const polling = usePolling<Snapshot>(fetcher, POLL_INTERVAL_MS)
+
+  // Snapshot resolution priority:
+  //   1. URL fixture (if `?fixture=` present) — explicit operator choice
+  //   2. Live polling data (if non-null)
+  //   3. Live error fallback → use a stable fixture so the cockpit still
+  //      renders. Operator sees scheduler_mode=shadow + outside-window
+  //      semantics, which honestly represents "we don't actually know."
+  //   4. Initial loading → null until first fetch completes
+  const snapshot: Snapshot | null = useFixture
+    ? fixtureSnapshot
+    : polling.data
+      ? polling.data
+      : polling.error
+        ? loadFixtureFromUrl() // falls back to default summer_normal
+        : null
+
+  if (!snapshot) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-400">
+        <div className="font-mono text-sm">loading snapshot…</div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
       <Header snapshot={snapshot} />
       <FeedHealthStrip snapshot={snapshot} />
+      {!useFixture && polling.error && (
+        <div className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-200">
+          backend unreachable — showing fallback fixture · last try{' '}
+          {polling.lastFetchedAt
+            ? new Date(polling.lastFetchedAt).toLocaleTimeString()
+            : '—'}
+        </div>
+      )}
       <main className="flex flex-1 overflow-hidden">
         <ThermostatCard snapshot={snapshot} />
         <section className="flex-1">

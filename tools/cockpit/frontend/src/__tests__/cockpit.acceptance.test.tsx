@@ -32,7 +32,10 @@ void _typeChecks
 
 describe('Cockpit Phase 1 outside-in acceptance', () => {
   beforeEach(() => {
-    window.history.replaceState({}, '', '/')
+    // Always pin to a fixture URL so App skips the live fetch path.
+    // Phase 3 added live polling; tests that want live behavior live
+    // in cockpit.live.test.tsx.
+    window.history.replaceState({}, '', '/?fixture=summer_normal')
   })
 
   it('renders summer_normal fixture with Schedule winning', () => {
@@ -134,7 +137,7 @@ describe('Cockpit Phase 1 outside-in acceptance', () => {
     )
   })
 
-  it('honors prefers-reduced-motion on the active edge', () => {
+  it('honors prefers-reduced-motion on the decision flow', () => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: vi.fn().mockImplementation((q: string) => ({
@@ -160,7 +163,7 @@ describe('Cockpit Phase 1 outside-in acceptance', () => {
 
 describe('Cockpit Phase 2 fixtures', () => {
   beforeEach(() => {
-    window.history.replaceState({}, '', '/')
+    window.history.replaceState({}, '', '/?fixture=summer_normal')
   })
 
   it('price_spike: Price Overlay wins with scarcity tier', () => {

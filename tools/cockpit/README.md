@@ -10,17 +10,27 @@ role-label: chris
 Workstation-local read-only dashboard for the HVAC controller. Live-tape
 complement to the daily n8n/Telegram commissioning report.
 
-## Phase 1 (current): mock fixtures, no backend
+## Run
 
 ```bash
+# 1. Start the backend (FastAPI on :8000)
+cd tools/cockpit/backend
+pip install -r requirements.txt
+cd ../../..
+PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8000
+
+# 2. Start the frontend (Vite on :5173, proxies /api/* to :8000)
 cd tools/cockpit/frontend
 npm install
 npm run dev
 ```
 
-Open <http://localhost:5173/> for the default `summer_normal` fixture.
+Open <http://localhost:5173/> for live data polled from the backend
+every 5 seconds. If port 8000 is in use, override via
+`COCKPIT_BACKEND_PORT=8765` on the Vite invocation and pass `--port 8765`
+to uvicorn.
 
-Toggle fixtures via `?fixture=<name>`:
+Toggle to a fixture (offline / demo / screenshots) via `?fixture=<name>`:
 
 - <http://localhost:5173/> — `summer_normal` (Arm B-active, July afternoon,
   1pm fire-time tick, Schedule winning, humid override active, action applied)
@@ -32,12 +42,14 @@ Toggle fixtures via `?fixture=<name>`:
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` | dev server on `:5173` |
+| `npm run dev` | dev server on `:5173` (proxies `/api/*` to backend) |
 | `npm run build` | production build to `dist/` |
 | `npm run typecheck` | `tsc -b --noEmit` |
-| `npm run test` | Vitest run (acceptance + edge unit tests) |
+| `npm run test` | Vitest run (acceptance + edge unit + live-fetch tests) |
 | `npm run test:watch` | Vitest watch mode |
 | `npm run lint` | ESLint |
+| `pytest tools/cockpit/backend/tests/` | backend pytest (snapshot + freshness) |
+| `uvicorn tools.cockpit.backend.app:app --reload` | run backend dev server |
 
 ## Architecture
 
@@ -46,17 +58,19 @@ scheduler. Snapshot is assembled from existing `decision_trace.*` Loki logs
 and `hvac.*` Influx measurements — cockpit cannot introduce control-path
 behavior changes.
 
-Three phases planned:
+Three phases delivered, one follow-on:
 
-- **Phase 1 (this)** — mock fixtures, full UI rendering, no backend.
-- **Phase 2** — 7 additional fixtures (price_spike, fivecp_risk,
-  supervisor_clamp, controller_down, feed_outage, mild_day, arm_switch) +
-  refine node-state edge cases + animation polish.
-- **Phase 3** — adds `tools/cockpit/backend/` FastAPI proxy that queries
-  the live Pi-lab InfluxDB + Loki and returns the same `Snapshot` JSON
-  shape. Frontend swaps the fixture import for `fetch('/api/snapshot')` +
-  polling. Snapshot contract stable; backend just shapes Influx/Loki
-  queries into JSON.
+- **Phase 1** — mock fixtures, full UI rendering, no backend.
+- **Phase 2** — 7 additional fixtures + node-state edge cases.
+- **Phase 3 (this)** — `tools/cockpit/backend/` FastAPI proxy at `:8000`
+  serving the same `Snapshot` JSON shape. Frontend polls every 5s with
+  fixture fallback on network errors and explicit fixture mode via
+  `?fixture=`. Backend tests assert the snapshot contract; live
+  Influx/Loki queries are stubbed (NotImplementedError) and land in a
+  follow-on PR.
+- **Phase 3 follow-on** — wire `tools/cockpit/backend/influx.py` and
+  `loki.py` against the Pi-lab InfluxDB + Loki. Snapshot contract stable
+  at this point; the follow-on only fills the query builders.
 
 Locked design decisions live in [`docs/plans/cockpit-plan.md`](../../docs/plans/cockpit-plan.md).
 
