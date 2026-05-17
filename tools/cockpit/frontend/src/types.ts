@@ -1,4 +1,4 @@
-// Locked snapshot contract — see docs/plans/cockpit-plan.md
+// Locked snapshot contract — see docs/plans/archive/cockpit-plan.md
 
 export type Freshness = 'fresh' | 'warn' | 'stale' | 'missing'
 

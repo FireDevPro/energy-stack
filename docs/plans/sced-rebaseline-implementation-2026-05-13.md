@@ -1,3 +1,14 @@
+---
+name: sced-rebaseline-implementation
+date: 2026-05-13
+owner: chris
+status: in-progress
+role-label: chris
+companion-spec: docs/plans/sced-rebaseline-spec-2026-05-13.md
+osf_filing_target: 2026-05-30
+experiment_start: 2026-06-01
+---
+
 # SCED Rebaseline Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

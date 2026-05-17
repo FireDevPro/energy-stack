@@ -4,7 +4,7 @@ date: 2026-05-13
 owner: chris
 status: draft
 role-label: spec
-supersedes: docs/plans/analysis-rebaseline-plan-2026-05-13.md, docs/EXPERIMENT_DESIGN.md (analysis portions)
+supersedes: docs/plans/archive/analysis-rebaseline-plan-2026-05-13.md, docs/EXPERIMENT_DESIGN.md (analysis portions)
 osf_filing_target: 2026-05-30
 experiment_start: 2026-06-01
 experiment_end: 2026-11-16

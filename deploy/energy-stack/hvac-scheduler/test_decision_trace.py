@@ -1,6 +1,6 @@
 """Decision-trace acceptance tests.
 
-Outside-in feature test for `docs/plans/decision-trace-plan.md`. Asserts
+Outside-in feature test for `docs/plans/archive/decision-trace-plan.md`. Asserts
 every silent decision-trace gap is closed. Per-phase tests use
 `@pytest.mark.xfail(strict=True)` until the phase's PR lands; markers are
 removed in the same PR that wires the phase's emission. The final chain

@@ -346,7 +346,7 @@ def _trace(event_name: str, *, level: str, tick_id: str,
            now_ct: datetime, **fields: Any) -> None:
     """Best-effort decision-trace emission. Wraps `log()` and never raises.
 
-    Per `docs/plans/decision-trace-plan.md` Phase 1:
+    Per `docs/plans/archive/decision-trace-plan.md` Phase 1:
       * Reads `SCHEDULER_DECISION_TRACE_VERBOSE` from os.environ on each
         call (orthogonal to `SCHEDULER_MODE`; tests can monkeypatch.setenv).
         When false, `debug`-level lines are suppressed.
@@ -2449,7 +2449,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     # current_price, stale_release_fired) — never re-implements the
     # internal state machine. Held outcomes go at `debug` level (gated
     # on `SCHEDULER_DECISION_TRACE_VERBOSE`); transitions and releases at
-    # `info`. See `docs/plans/decision-trace-plan.md` Phase 1.
+    # `info`. See `docs/plans/archive/decision-trace-plan.md` Phase 1.
     new_tier = price_tier_name
     if current_price_cents is None and stale_release_fired:
         po_outcome = "released"

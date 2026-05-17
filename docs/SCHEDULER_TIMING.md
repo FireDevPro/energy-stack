@@ -208,7 +208,7 @@ PR #121 contains the fix + live verification.
 | [`deploy/energy-stack/hvac-scheduler/decision_codes.py`](../deploy/energy-stack/hvac-scheduler/decision_codes.py) | Append-only enums for all `reason_code` values |
 | [`deploy/energy-stack/pjm-dm2-poller/app.py`](../deploy/energy-stack/pjm-dm2-poller/app.py) | `fetch_da_lmp_for_tomorrow` + per-feed schedule |
 | [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) | Prose specification of day-type schedules, supervisor rules, ISU settings, fallback behavior |
-| [`docs/plans/decision-trace-plan.md`](plans/decision-trace-plan.md) | Phased plan that delivered the `decision_trace.*` event family (Phases 1-5, all merged) |
+| [`docs/plans/archive/decision-trace-plan.md`](plans/archive/decision-trace-plan.md) | Phased plan that delivered the `decision_trace.*` event family (Phases 1-5, all merged; archived) |
 
 ## Doc maintenance
 
