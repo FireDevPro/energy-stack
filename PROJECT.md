@@ -74,10 +74,13 @@ EAGLE-3 (local HTTPS, 30s) ─────────┐
 ComEd Pricing API (public, 60s) ────┤
 Refoss EM16P (local HTTP, 30s) ─────┤   Pi-lab (192.168.20.10)
 NWS forecast (public, 30min) ───────┼──► energy-stack compose ──► InfluxDB ──► Grafana
-PJM Data Miner 2 (public, hourly) ──┤   (eagle / comed / refoss /     (storage)    (dashboards)
+PJM Data Miner 2 (public, per-feed)─┤   (eagle / comed / refoss /     (storage)    (dashboards)
 HAVEN IAQ API (cloud, 5min) ────────┤    nws / pjm-dm2 / haven /
-Control4 → CTK04AE (10min) ─────────┘    thermostat / hvac pollers)
+Ecowitt GW1200 (push, ~60s) ────────┤    ecowitt / thermostat /
+Control4 → CTK04AE (10min) ─────────┘    hvac-scheduler + watchdog)
 ```
+
+Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. The workstation-local **Controller Cockpit** (`tools/cockpit/`) reads from this stack but is not deployed via compose. Per-service detail in [`docs/SERVICES.md`](docs/SERVICES.md); 24-hour activity timeline in [`docs/SCHEDULER_TIMING.md`](docs/SCHEDULER_TIMING.md).
 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
@@ -219,8 +222,13 @@ New `safety_supervisor.py` module gates every setpoint push the scheduler propos
 - **Approved** — proposed values pass through.
 Decision logged to `hvac.actions` for audit. Shipped before Arm B because the supervisor is shared infrastructure that hangs every controller (RBC and future model-informed) off the same gate.
 
+Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose container (so it cannot fail-with-the-controller) that writes `hvac.heartbeat controller_alive=false` whenever no `hvac.arm_mode` row appears in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10). No-news-is-good-news: the absence of recent `hvac.heartbeat` rows tells you nothing on its own; the canonical liveness signal is recent `hvac.arm_mode` from the scheduler itself. Consumed by the Controller Cockpit's `controller.alive` field.
+
 ### Phase 11 — Field Study Pre-Registration (drafted May 2026, filing pending)
 SCED randomized-alternation field study comparing baseline RBC (Arm A) against RBC + Step 1 model-informed (Arm B), week-level alternation, June 1 – Sep 30, 2026. Pre-registration draft in [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md). Assignment list pre-generated and committed: [`deploy/energy-stack/scripts/randomize_arms.py`](deploy/energy-stack/scripts/randomize_arms.py) → [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) (18 weeks, 9 Arm A / 9 Arm B). Pinned-snapshot test fails loud if seed or algorithm ever drifts.
+
+### Controller Cockpit ✅ (May 2026)
+Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). FastAPI backend on `:8000` proxies live Pi-lab InfluxDB + Loki; Vite/React frontend on `:5173` polls every 5 s. Renders the same `decision_trace.*` events the scheduler emits as a real-time flow board: Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action. Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the seven upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). One-click launcher (`start-cockpit.ps1`) + targeted process cleanup + desktop shortcut installer. Read-only by design — no setpoint writes back to the scheduler. Companion to the daily Telegram commissioning report (live-tape vs end-of-day-tape).
 
 ---
 
@@ -231,7 +239,7 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 - **OSF pre-registration filing**: [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md) is currently a draft. Both arms must be pinned at one frozen commit hash before week 1 of alternation.
 - **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](docs/archive/COMFORTNET_PIPELINE.md).
 - **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel input to the day-type classifier.
-- **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Needs paired observation history; Ecowitt GW1200 + WN32 hardware en route May 2026.
+- **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Observation source live (`ecowitt-ingest`, shaded WN31 on N/E wall — May 2026); only the bias-fit work remains pending.
 - **Phase 8 forward-projection panel**: bill-vs-projected stub exists in `comed-bill-reconciliation.json`; full formula (supply-so-far + delivery + capacity + taxes + extrapolation) lands after a few cycles of bill data accumulate.
 - **Pre-cool depth A/B test**: research review (May 2026) suggests softening `HOT_PRE_COOL` from 68°F starting 4am to 71–72°F starting 3am for ~90% of peak shift at materially less off-peak kWh. Hits the comfort-aware-scheduling research's recommendation set. Will fall out of the SCED study automatically when run as an Arm B variant.
 - **Fridge anomaly detection upgrade**: current univariate threshold; Merlion (Salesforce, BSD-3) is multivariate and a better fit for the 18-channel Refoss surface.
@@ -247,10 +255,12 @@ SCED randomized-alternation field study comparing baseline RBC (Arm A) against R
 | `PROJECT.md` | This document — decisions, architecture, roadmap |
 | `README.md` | Top-level entry point pointing at the live system |
 | `Test-Eagle.ps1` | Ad-hoc EAGLE-3 Local API probe (kept for manual debugging) |
-| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + ~10 service containers as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
+| `deploy/energy-stack/` | The live system — InfluxDB + Grafana + ~17 service containers as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
 | `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
+| `tools/cockpit/` | Workstation-local read-only Controller Cockpit dashboard (FastAPI :8000 + Vite/React :5173). Not deployed via compose — runs on operator's Windows workstation against Pi-lab Influx + Loki over the homelab VLAN. One-click launcher at `tools/cockpit/start-cockpit.ps1`; see [`tools/cockpit/README.md`](tools/cockpit/README.md). |
 | `docs/SERVICES.md` | Per-service reference (env vars, fields written, healthchecks) |
 | `docs/HVAC_LOGIC.md` | HVAC scheduler logic, schedules, fallback, ISU settings, safety supervisor, equipment |
+| `docs/SCHEDULER_TIMING.md` | Mermaid timing + decision diagrams; companion to HVAC_LOGIC.md |
 | **Research track** | |
 | `docs/EXPERIMENT_DESIGN.md` | Pre-registration draft for the SCED field study (summer 2026 onwards) |
 | `docs/THERMAL_MODEL_DESIGN.md` | Step 1 affine-fit thermal model for Arm B, methodology grounded in Bacher–Madsen 2011 |
@@ -403,7 +413,7 @@ Why this matters for the existing scheduler: the return-air mix is a **fundament
 
 - **`gridstatus` Python lib** — alternative wrapper for PJM DataMiner2; not adopted (the `pjm-dm2-poller`'s per-feed call set is small enough that direct `aiohttp` is simpler than the abstraction)
 - **Open-Meteo (ECMWF IFS, 9 km, free since Oct 2025)** — better than NWS at 1-3 day temp forecast; worth running as second weather source
-- **Forecast bias correction** — affine intercept+slope per lead time (NOAA NCEP Office Note 520 method); needs paired observation history (Ecowitt sensor en route)
+- **Forecast bias correction** — affine intercept+slope per lead time (NOAA NCEP Office Note 520 method); observation source live (`ecowitt-ingest` since May 2026), bias-fit pending
 - **EMHASS / Predheat** — open-source MILP/MPC layers for HA; worth reading even if not adopting (reference thermal model + tariff abstractions)
 - **Merlion (Salesforce, BSD-3)** — multivariate anomaly detection; better fit for the 18-channel Refoss data than the current univariate threshold approach
 - **OpenADR 3.x** — ComEd doesn't currently expose a residential VTN; revisit if/when they do
@@ -423,7 +433,7 @@ Full research output: agent reports retained in session transcripts; key finding
 | Amana ASXC160481BE | Outdoor AC condenser, 16 SEER 2-stage 4-ton | (HVAC) | Active; 2-stage capability is what makes pre-cool strategy viable |
 | Amana AMVM971005CN | Modulating gas furnace + variable-speed ECM blower | (HVAC) | Active; ECM blower enables Circulate-fan during coast at low W |
 | Control4 EA-5 controller | HA-style automation hub bridging to TCC | LAN, 192.168.1.30 | Active; pyControl4 token persisted in `hvac_scheduler_data` volume |
-| Ecowitt GW1200 + WN32 + Rain Shield | Outdoor temp/humidity/barometric sensor (local push) | LAN; en route May 2026 | **Pending hardware delivery** |
+| Ecowitt GW1200B + WS90 + WN31 | Outdoor weather (push to `ecowitt-ingest`): WS90 7-in-1 on pergola (sun-exposed comparator); WN31 on shaded N/E wall as canonical outdoor temp/RH/dewpoint; GW1200B indoor for `tempinf`/`humidityin`/`baromrelin`. Schema lives in `deploy/energy-stack/ecowitt-ingest/app.py` docstring (not yet in `docs/SERVICES.md` — gap flagged for next doc-audit pass). | LAN, push to Pi-lab `ecowitt-ingest` | Active (May 2026) |
 | ComEd Smart Meter | Utility meter | Via EAGLE-3 Zigbee HAN | Connected |
 | ~~Sense Energy Monitor~~ | ~~Whole-home power + device detection~~ | — | Removed April 2026 (replaced by Refoss EM16P) |
 

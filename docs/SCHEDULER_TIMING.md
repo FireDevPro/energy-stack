@@ -47,17 +47,18 @@ gantt
     Search 06-15 CT                    :w1, 06:00, 9h
 
     section Discrete events
+    MILD release_hold                  :milestone, 00:05, 0
     HOT_STREAK pre-cool                :milestone, 03:00, 0
     HOT pre-cool                       :milestone, 04:00, 0
-    MILD release_hold                  :milestone, 05:00, 0
-    NORMAL release_hold                :milestone, 06:00, 0
+    NORMAL PRE_COOL                    :milestone, 06:00, 0
     run_decision_revisit 06:00         :milestone, 06:00, 0
     run_decision_revisit 11:00         :milestone, 11:00, 0
+    HOT COAST                          :milestone, 12:00, 0
     NORMAL COAST                       :milestone, 13:00, 0
     pjm DA LMP publish (tomorrow EPT)  :milestone, crit, 17:00, 0
     NORMAL RECOVER                     :milestone, 19:00, 0
+    NORMAL SLEEP                       :milestone, 21:00, 0
     run_decision nightly               :milestone, crit, 21:00, 0
-    NORMAL SLEEP                       :milestone, 22:00, 0
 ```
 
 **Key observations from the timeline:**
