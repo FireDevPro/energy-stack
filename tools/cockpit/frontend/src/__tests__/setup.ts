@@ -1,11 +1,64 @@
 import '@testing-library/jest-dom/vitest'
+import { vi } from 'vitest'
+
+// jsdom doesn't implement matchMedia. Default to "no-preference" (motion
+// allowed); individual tests override with vi.mocked() / Object.defineProperty
+// to test the reduced-motion path.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation((q: string) => ({
+      matches: false,
+      media: q,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+}
 
 // React Flow requires browser APIs that jsdom doesn't ship.
 
+// ResizeObserver: jsdom no-op breaks React Flow because edges only render
+// after nodes are marked "measured" via the observer callback. Mock fires
+// the callback synchronously with stub dimensions so the internal store
+// transitions nodes into the measured state and edges render.
 class ResizeObserverMock {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  private cb: ResizeObserverCallback
+  private observed = new Set<Element>()
+  constructor(cb: ResizeObserverCallback) {
+    this.cb = cb
+  }
+  observe(target: Element) {
+    this.observed.add(target)
+    const entry = {
+      target,
+      contentRect: {
+        width: 200,
+        height: 110,
+        top: 0,
+        left: 0,
+        bottom: 110,
+        right: 200,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      },
+      borderBoxSize: [{ inlineSize: 200, blockSize: 110 }],
+      contentBoxSize: [{ inlineSize: 200, blockSize: 110 }],
+      devicePixelContentBoxSize: [{ inlineSize: 200, blockSize: 110 }],
+    } as unknown as ResizeObserverEntry
+    this.cb([entry], this as unknown as ResizeObserver)
+  }
+  unobserve(target: Element) {
+    this.observed.delete(target)
+  }
+  disconnect() {
+    this.observed.clear()
+  }
 }
 ;(globalThis as unknown as { ResizeObserver: typeof ResizeObserverMock })
   .ResizeObserver = ResizeObserverMock
@@ -39,6 +92,6 @@ HTMLElement.prototype.getBoundingClientRect = function () {
   return {
     ...rect,
     width: rect.width || 200,
-    height: rect.height || 80,
+    height: rect.height || 110,
   } as DOMRect
 }

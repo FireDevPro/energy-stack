@@ -82,9 +82,17 @@ describe('Cockpit Phase 1 outside-in acceptance', () => {
     )
 
     expect(screen.getByTestId('action-badge')).toHaveTextContent('APPLIED')
-    expect(screen.getByTestId('edge-supervisor-to-action')).toHaveAttribute(
-      'data-edge-style',
-      'solid',
+    // Edge style isn't directly assertable in jsdom because React Flow's
+    // edge SVG depends on viewport measurement that jsdom doesn't compute.
+    // Wrapper-level data attributes mirror what edges render in a real
+    // browser; assertion lives there.
+    expect(screen.getByTestId('decision-flow')).toHaveAttribute(
+      'data-writes-allowed',
+      'true',
+    )
+    expect(screen.getByTestId('decision-flow')).toHaveAttribute(
+      'data-winning-lanes',
+      'schedule',
     )
 
     expect(screen.getByTestId('node-winner')).toHaveTextContent('76')
@@ -105,9 +113,9 @@ describe('Cockpit Phase 1 outside-in acceptance', () => {
       'outside-window',
     )
     expect(screen.getByTestId('action-badge')).toHaveTextContent('SHADOW')
-    expect(screen.getByTestId('edge-supervisor-to-action')).toHaveAttribute(
-      'data-edge-style',
-      'dashed',
+    expect(screen.getByTestId('decision-flow')).toHaveAttribute(
+      'data-writes-allowed',
+      'false',
     )
   })
 
@@ -128,8 +136,8 @@ describe('Cockpit Phase 1 outside-in acceptance', () => {
 
     render(<App />)
 
-    expect(screen.getByTestId('edge-winner-active')).toHaveAttribute(
-      'data-animated',
+    expect(screen.getByTestId('decision-flow')).toHaveAttribute(
+      'data-motion-allowed',
       'false',
     )
   })
