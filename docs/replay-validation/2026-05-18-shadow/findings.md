@@ -94,20 +94,21 @@ The 42 `outdoor_*` rows on 2026-05-11 are the brief window when the shaded chann
 
 **Two-layer root cause:**
 
-1. **Production config gap:** `ECOWITT_SHADED_CHANNEL` is unset on Pi-lab `.env`. The WN31 shaded reference sensor's dip-switch channel needs to be assigned before continuous canonical writes begin.
+1. **Production config gap:** the WN31 shaded reference sensor is physically paired on channel 1 (confirmed by operator) and reporting continuously — that's the source of the 8,309 `ch1_*` rows. But `ECOWITT_SHADED_CHANNEL` is unset on Pi-lab `.env`, so the poller does not re-route the channel-1 readings into the canonical `outdoor_*` stream. Setting `ECOWITT_SHADED_CHANNEL=1` and restarting `ecowitt-ingest` causes the same readings to start writing as `outdoor_*` within a poll cycle (~60s). Note the poller's channel loop has `if ch == shaded_channel: continue` (`ecowitt-ingest/app.py:281`), so the moment the setting goes live: new readings write to `outdoor_*` AND writes to `ch1_*` stop. Historical `ch1_*` data (May 12 onward) becomes legacy data under the non-canonical name — backfill or dual-field-read may be desired for Phase 7 / operational checkpoints that reach back into the shadow window.
 2. **Analysis-code deviation:** `tools/analysis/weather_vector.py` independently picked `ch1_*` during Phase 3 and now disagrees with both the poller's canonical schema AND the rest of the analysis pipeline (Stage 1 query, Stage 2 loaders, real-shape tests). The outside-in acceptance test passes because the synthetic fixture (`synth_rebaseline_dataset.py:514-515`) hand-writes `ch1_*` columns to match the deviator — circular validation that never exercised the field-name boundary against real-ingest shape.
 
 **Impact:** if `run_full_pipeline` were invoked today against real Pi-lab Influx for any real arm, two failures occur on the same path:
 - Stage 1 / Stage 2 / `replay/weather_compat.py` pull 42 rows of `outdoor_*` across a multi-week arm window — effectively empty.
 - `weather_vector.build_weather_vector` raises `KeyError: 'ch1_temp_f'` (or `ValueError: No Ecowitt rows in arm-period window`) depending on loader ordering.
 
-**Pre-OSF follow-up (single PR):**
-1. Set `ECOWITT_SHADED_CHANNEL` on Pi-lab `.env` to the WN31's actual dip-switch channel. Verify `outdoor_temp_f` / `outdoor_dewpoint_f` writes resume.
-2. Update `tools/analysis/weather_vector.py` to consume `outdoor_temp_f` / `outdoor_dewpoint_f` instead of `ch1_*`. This brings it in line with the rest of the analysis pipeline + the poller's canonical schema.
-3. Re-shape the synthetic fixture (`tests/fixtures/synth_rebaseline_dataset.py`) so the outside-in acceptance test exercises the canonical field names, not the deviator names — closing the circular-validation hole.
-4. Add a real-shape integration test that loads from `tools/analysis/queries/ecowitt.weather.flux` (with a substituted fixture file) so the field-name boundary is exercised end-to-end against the canonical schema.
+**Pre-OSF follow-up (production change + single follow-up PR):**
+1. **Production change (Pi-lab `.env`):** add `ECOWITT_SHADED_CHANNEL=1`, restart `ecowitt-ingest`, verify `outdoor_temp_f` / `outdoor_dewpoint_f` writes resume. Refresh the SOPS-encrypted recovery copy at `deploy/energy-stack/secrets/env.sops.env` so the new value survives a Pi rebuild.
+2. **Follow-up PR (codebase):**
+   - Update `tools/analysis/weather_vector.py` to consume `outdoor_temp_f` / `outdoor_dewpoint_f` instead of `ch1_*`. This brings it in line with the rest of the analysis pipeline + the poller's canonical schema.
+   - Re-shape the synthetic fixture (`tests/fixtures/synth_rebaseline_dataset.py`) so the outside-in acceptance test exercises the canonical field names, not the deviator names — closing the circular-validation hole.
+   - Add a real-shape integration test that loads from `tools/analysis/queries/ecowitt.weather.flux` (with a substituted fixture file) so the field-name boundary is exercised end-to-end against the canonical schema.
 
-**Not Phase 6 scope.** Phase 6's job is to surface this. The follow-up PR is on the pre-OSF critical path.
+**Not Phase 6 scope.** Phase 6's job is to surface this. The Pi-lab production change and the codebase follow-up PR are on the pre-OSF critical path.
 
 ### OI-2 — Ecowitt continuous coverage starts 2026-05-12, not 2026-05-11
 
