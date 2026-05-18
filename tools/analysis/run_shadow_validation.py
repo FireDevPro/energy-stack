@@ -11,7 +11,9 @@ Validation checks:
   2. Pricing reconstruction sensible (bill_reconciliation; reason-code
      if no DTOD bill yet — first DTOD bill arrives 2026-05-24 per spec
      §14).
-  3. Refoss HVAC channels (em:2 + em:8) compute valid hourly kWh.
+  3. Refoss HVAC channels (em:2 + em:8 + em:9 per spec §7) compute valid
+     hourly kWh, plus cooling-active hour count per spec §9 (em:2 + em:8
+     mean > 100W).
   4. Refoss mains vs Eagle reconciliation — coverage + drift.
   5. Weather vector construction shape (Ecowitt + NOAA fallback
      station). build_weather_vector itself cannot be called against
@@ -420,17 +422,25 @@ def check_refoss_hvac_kwh(
     client, bucket: str, start: datetime.datetime, end: datetime.datetime,
 ) -> CheckResult:
     check_id = "refoss.hvac_kwh"
-    desc = "Refoss HVAC channels (em:2 + em:8) compute hourly kWh"
+    desc = (
+        "Refoss HVAC channels (em:2 + em:8 + em:9 per spec §7) compute "
+        "hourly kWh, plus cooling-active hour count per spec §9"
+    )
     s_iso, e_iso = _iso_z(start), _iso_z(end)
+    # Spec §7: HVAC = {em:2, em:8, em:9}. em:2/em:8 are AC compressor
+    # legs; em:9 is the furnace blower / air handler (~28W idle baseline
+    # included in HVAC$ per spec §7 rationale). Full HVAC kWh sums all
+    # three. Spec §9 separately defines cooling-active hours as
+    # em:2 + em:8 mean > 100W (compressor-only, blower excluded), so we
+    # report both metrics.
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: {s_iso}, stop: {e_iso})
   |> filter(fn: (r) => r._measurement == "refoss.channel")
   |> filter(fn: (r) => r._field == "power_w")
-  |> filter(fn: (r) => r.channel == "em:2" or r.channel == "em:8")
+  |> filter(fn: (r) => r.channel == "em:2" or r.channel == "em:8" or r.channel == "em:9")
   |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
-  |> group(columns: ["_time"])
-  |> sum()
+  |> keep(columns: ["_time", "channel", "_value"])
 '''
     try:
         df = _query_df(client, flux)
@@ -444,25 +454,40 @@ from(bucket: "{bucket}")
         return CheckResult(
             check_id=check_id, description=desc, status="FAIL",
             reason_code="no_hvac_power_data",
-            notes="No em:2/em:8 power_w samples in window.",
+            notes="No em:2/em:8/em:9 power_w samples in window.",
         )
-    # df has _value column with combined em:2+em:8 hourly mean power (W).
-    # Convert mean_w to hourly kWh: kWh = mean_w * 1h / 1000.
-    hourly_kwh = df["_value"].astype(float) / 1000.0
-    nonzero_hours = int((hourly_kwh > 0.01).sum())
+    # Pivot wide so each hour has up-to-three per-channel mean_w values.
+    wide = df.pivot_table(
+        index="_time", columns="channel", values="_value",
+        aggfunc="first",
+    ).reset_index()
+    wide.columns.name = None
+    for ch in ("em:2", "em:8", "em:9"):
+        if ch not in wide.columns:
+            wide[ch] = 0.0
+    wide = wide.fillna(0.0)
+    # Full HVAC kWh per spec §7: sum of all 3 channels' mean_w * 1h / 1000.
+    wide["hvac_kwh"] = (wide["em:2"] + wide["em:8"] + wide["em:9"]) / 1000.0
+    # Cooling-active per spec §9: em:2 + em:8 mean > 100W.
+    wide["compressor_w"] = wide["em:2"] + wide["em:8"]
+    cooling_active_hours = int((wide["compressor_w"] > 100.0).sum())
+    nonzero_hours = int((wide["hvac_kwh"] > 0.01).sum())
     return CheckResult(
         check_id=check_id, description=desc, status="PASS",
         notes=(
-            f"{len(hourly_kwh)} hourly buckets; "
-            f"{nonzero_hours} hours with >0.01 kWh HVAC draw; "
-            f"max={float(hourly_kwh.max()):.3f} kWh, "
-            f"sum={float(hourly_kwh.sum()):.1f} kWh."
+            f"{len(wide)} hourly buckets; "
+            f"{nonzero_hours} hours with >0.01 kWh HVAC draw (all channels); "
+            f"{cooling_active_hours} cooling-active hours per spec §9 "
+            f"(em:2+em:8 > 100W); "
+            f"max hvac_kwh={float(wide['hvac_kwh'].max()):.3f} kWh, "
+            f"sum hvac_kwh={float(wide['hvac_kwh'].sum()):.1f} kWh."
         ),
         metrics={
-            "hourly_bucket_count": int(len(hourly_kwh)),
+            "hourly_bucket_count": int(len(wide)),
             "nonzero_hours": nonzero_hours,
-            "max_kwh": float(hourly_kwh.max()),
-            "sum_kwh": float(hourly_kwh.sum()),
+            "cooling_active_hours_spec_p9": cooling_active_hours,
+            "max_kwh": float(wide["hvac_kwh"].max()),
+            "sum_kwh": float(wide["hvac_kwh"].sum()),
         },
     )
 
@@ -1017,8 +1042,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     for c in checks:
         log.info("  [%s] %s — %s", c.status, c.check_id, c.notes[:120])
 
-    # Exit nonzero on FAIL so the CI workflow surfaces a red build.
-    return 1 if report.overall_status() == "FAIL" else 0
+    return exit_code_for_status(report.overall_status())
+
+
+def exit_code_for_status(overall: Status) -> int:
+    """Map overall validation status to a process exit code for CI.
+
+    BLOCKED means the runner could not actually validate (e.g. InfluxDB
+    unreachable, missing required data) — for an OSF-binding validator
+    that's not a pass, even if no check returned FAIL. WARN signals
+    (e.g. M3 OSF-appendix flag, expected-empty bills) stay exit-0 since
+    they're appendix flags, not run-failures.
+    """
+    if overall == "FAIL":
+        return 1
+    if overall == "BLOCKED":
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

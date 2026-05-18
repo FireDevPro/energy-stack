@@ -26,10 +26,14 @@ from tools.analysis.run_shadow_validation import (
     _parse_iso_utc,
     check_arm_calendar,
     check_mode_classification,
+    check_refoss_hvac_kwh,
     compute_scarcity_divergence,
+    exit_code_for_status,
+    main,
     write_findings_md_draft,
     write_results_json,
 )
+import tools.analysis.run_shadow_validation as shadow_validation
 
 
 # ----- _iso_z + _parse_iso_utc -------------------------------------------
@@ -286,3 +290,29 @@ def test_scarcity_metrics_dataclass_defaults():
     assert m.p95_c_per_kwh is None
     assert m.n_scarcity_hours == 0
     assert m.flag_threshold_c == SCARCITY_DIVERGENCE_FLAG_THRESHOLD_C
+
+
+# ----- exit_code_for_status (CI red/green contract) ----------------------
+
+
+def test_exit_code_fail_returns_1():
+    assert exit_code_for_status("FAIL") == 1
+
+
+def test_exit_code_blocked_returns_2():
+    """BLOCKED means the runner could not actually validate; CI sees red."""
+    assert exit_code_for_status("BLOCKED") == 2
+
+
+def test_exit_code_warn_returns_0():
+    """WARN signals (M3 OSF-appendix flag, expected-empty bills) are
+    appendix flags, not run-failures. Stay green."""
+    assert exit_code_for_status("WARN") == 0
+
+
+def test_exit_code_pass_returns_0():
+    assert exit_code_for_status("PASS") == 0
+
+
+def test_exit_code_na_returns_0():
+    assert exit_code_for_status("N/A") == 0
