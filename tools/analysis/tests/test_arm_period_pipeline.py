@@ -317,3 +317,73 @@ def test_pipeline_accepts_production_comed_bill_shape():
     # Fixed (Customer, Standard Metering, Capacity) MUST be excluded.
     # If the orchestrator naively used total_due (234.18), this fails.
     assert br.actual_bill_variable_dollars == pytest.approx(200.0)
+
+
+def test_pipeline_accepts_stage1_long_form_bill_shape():
+    """Stage 1 (tools/analysis/pipeline.py) writes Influx output as
+    long-form parquet without a Flux ``pivot()``: each (measurement,
+    field) becomes its own row at the bill timestamp. The orchestrator
+    must accept that real shape, not just the test-convenience wide
+    shape. Without a long-form adapter Phase 6 shadow validation would
+    silently produce zero bill reconciliations against real Stage 1
+    output.
+    """
+    inputs = _build_two_arm_dataset()
+    bill_ts = datetime.datetime(2026, 6, 10, 0, 0)
+    account = "synth-test"
+    # Long-form ``comed.bill`` rows (one per field at the same timestamp).
+    # Float fields land in ``_value``; string fields (service_from /
+    # service_to / issued_date) land in ``_value_text`` after the Flux
+    # client splits mixed-type measurements.
+    bill_long = [
+        {"_time": bill_ts, "account_no": account, "_measurement": "comed.bill",
+         "_field": "total_due", "_value": 234.18, "_value_text": None},
+        {"_time": bill_ts, "account_no": account, "_measurement": "comed.bill",
+         "_field": "service_from", "_value": None, "_value_text": "2026-06-05"},
+        {"_time": bill_ts, "account_no": account, "_measurement": "comed.bill",
+         "_field": "service_to", "_value": None, "_value_text": "2026-06-07"},
+        {"_time": bill_ts, "account_no": account, "_measurement": "comed.bill",
+         "_field": "kwh", "_value": 1500.0, "_value_text": None},
+    ]
+    # Long-form ``comed.bill_lineitems`` rows. Two variable items + one
+    # fixed item (Customer Charge) that must be excluded from the
+    # variable total per spec §4.
+    lineitem_long = [
+        {"_time": bill_ts, "account_no": account, "category": "DELIVERY",
+         "line_item": "Distribution Facility Charge",
+         "_measurement": "comed.bill_lineitems",
+         "_field": "amount", "_value": 80.0, "_value_text": None},
+        {"_time": bill_ts, "account_no": account, "category": "SUPPLY",
+         "line_item": "Electricity Supply Charge",
+         "_measurement": "comed.bill_lineitems",
+         "_field": "amount", "_value": 120.0, "_value_text": None},
+        {"_time": bill_ts, "account_no": account, "category": "DELIVERY",
+         "line_item": "Customer Charge",
+         "_measurement": "comed.bill_lineitems",
+         "_field": "amount", "_value": 15.35, "_value_text": None},
+    ]
+    inputs["bills_df"] = pd.DataFrame(bill_long + lineitem_long)
+
+    # Eagle covering the bill window
+    eagle_rows = []
+    cur = 1000.0
+    start_utc = datetime.datetime(2026, 6, 5, 5, 0)
+    for k in range(72):
+        cur += 1.5
+        eagle_rows.append({
+            "_time": start_utc + datetime.timedelta(hours=k),
+            "delivered_kwh": cur, "_field": "delivered_kwh",
+        })
+    inputs["eagle_df"] = pd.DataFrame(eagle_rows)
+
+    result = run_full_pipeline(**inputs)
+    assert len(result.bill_reconciliations) == 1, (
+        "Stage 1 long-form bill shape produced zero reconciliations -- "
+        "the orchestrator's long-form adapter regressed."
+    )
+    br = result.bill_reconciliations[0]
+    assert br.bill_period_start_utc == datetime.datetime(2026, 6, 5, 5, 0)
+    assert br.bill_period_end_utc == datetime.datetime(2026, 6, 8, 5, 0)
+    # Variable derived from line items: 80 + 120 = 200; Customer Charge
+    # ($15.35) excluded.
+    assert br.actual_bill_variable_dollars == pytest.approx(200.0)

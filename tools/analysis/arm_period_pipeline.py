@@ -765,6 +765,71 @@ def run_full_pipeline(
     )
 
 
+def _pivot_long_form_bills(bills_df: pd.DataFrame) -> pd.DataFrame:
+    """Pivot Stage 1 long-form Influx output into the orchestrator's
+    production-wide shape (one row per bill summary + N rows per
+    bill's line items, all carrying ``service_from`` / ``service_to``
+    / ``total_due`` columns so the existing period-detection logic
+    works unchanged).
+
+    Stage 1 (tools/analysis/pipeline.py) writes Influx query output as
+    parquet without a ``pivot()`` step, so a real bill produces one
+    row per (_measurement, _field) at the same timestamp. This helper
+    re-assembles those into a wide shape and propagates the bill-level
+    columns onto each ``comed.bill_lineitems`` row via a join on
+    (``_time``, ``account_no``). The returned frame is empty when the
+    input is not long-form (e.g. the analysis-shape test convenience
+    DataFrame).
+    """
+    if "_measurement" not in bills_df.columns or "_field" not in bills_df.columns:
+        return pd.DataFrame()
+
+    bill_rows = bills_df[bills_df["_measurement"] == "comed.bill"].copy()
+    lineitem_rows = bills_df[bills_df["_measurement"] == "comed.bill_lineitems"].copy()
+    if bill_rows.empty:
+        return pd.DataFrame()
+
+    # Influx returns string fields under ``_value_text`` when the
+    # client splits mixed-type fields; some setups land everything in
+    # ``_value``. Coalesce so the pivot value column carries both.
+    if "_value_text" in bill_rows.columns:
+        coalesced = bill_rows["_value"].where(
+            bill_rows["_value"].notna(), bill_rows["_value_text"],
+        )
+    else:
+        coalesced = bill_rows["_value"]
+    bill_rows = bill_rows.assign(_pivot_value=coalesced)
+
+    join_keys = ["_time"]
+    if "account_no" in bill_rows.columns:
+        join_keys.append("account_no")
+
+    wide = bill_rows.pivot_table(
+        index=join_keys,
+        columns="_field",
+        values="_pivot_value",
+        aggfunc="first",
+    ).reset_index()
+    wide.columns.name = None
+
+    if lineitem_rows.empty:
+        return wide
+
+    # Pull just the amount field from line-item rows and propagate the
+    # wide bill columns onto each via a join on (_time, account_no).
+    li_amounts = lineitem_rows[lineitem_rows["_field"] == "amount"].copy()
+    if li_amounts.empty:
+        return wide
+    li_amounts = li_amounts.rename(columns={"_value": "amount"})
+    li_keep = ["_time", "category", "line_item", "amount"]
+    if "account_no" in li_amounts.columns:
+        li_keep.append("account_no")
+    li_amounts = li_amounts[[c for c in li_keep if c in li_amounts.columns]]
+
+    li_joined = li_amounts.merge(wide, on=join_keys, how="left", suffixes=("", "_bill"))
+    return pd.concat([wide, li_joined], ignore_index=True)
+
+
 def _reconcile_against_bills(
     *,
     bills_df: pd.DataFrame,
@@ -776,12 +841,20 @@ def _reconcile_against_bills(
     """Sanity-only step per spec §10. Iterates each DISTINCT bill period
     and delegates to ``reconcile_bill_period``. NEVER touches HVAC$.
 
-    Bill-period detection: accepts either the analysis-shape columns
-    (``bill_period_start_utc``, ``bill_period_end_utc``,
-    ``variable_dollars``) or the production ``comed.bill`` shape
-    (``service_from``, ``service_to``, ``total_due``). Rows are
-    deduplicated by period bounds so multi-line-item bills produce one
-    reconciliation per period, not per line.
+    Accepted input shapes:
+
+    1. Analysis-shape (test convenience): wide columns
+       ``bill_period_start_utc``, ``bill_period_end_utc``,
+       ``variable_dollars``.
+    2. Production-wide (test convenience): wide columns
+       ``service_from``, ``service_to``, ``total_due``, optionally with
+       ``category`` / ``line_item`` / ``amount`` for variable-charge
+       derivation per spec §10.
+    3. Production-long (real Stage 1 output): long-form Influx rows
+       with ``_measurement``, ``_field``, ``_value`` (and possibly
+       ``_value_text``) columns. ``comed.bill`` rows are pivoted to
+       wide internally before processing; ``comed.bill_lineitems``
+       rows feed the variable-charge derivation.
 
     Production ``comed.bill`` (deploy/energy-stack/scripts/comed_influx.py)
     writes ``total_due`` as the bill-level dollar field;
@@ -792,6 +865,12 @@ def _reconcile_against_bills(
     """
     if bills_df is None or bills_df.empty:
         return []
+
+    # Detect long-form Stage 1 output and pivot to wide before the
+    # column-shape gate so the rest of this function is schema-agnostic.
+    pivoted = _pivot_long_form_bills(bills_df)
+    if not pivoted.empty:
+        bills_df = pivoted
     analysis_cols = {"bill_period_start_utc", "bill_period_end_utc",
                      "variable_dollars"}
     production_cols = {"service_from", "service_to", "total_due"}
