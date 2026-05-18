@@ -1429,6 +1429,14 @@ Same flow as Task 1.8. Open PR `Phase 2: SCED rebaseline pricing infrastructure`
 
 **Days 6-10.**
 
+### Phase 3 status (2026-05-17 -- this PR)
+
+- Tasks 3.1-3.16 landed on `feature/sced-rebaseline-phase3`. All 16 tasks complete with two honest deviations:
+  - **Task 3.10 (obsolete pipeline.py deletion):** deferred. Removing `weekly_dollars_per_cdd`, `stationary_bootstrap_median_diff`, and `sced_randomization_pvalue` from `tools/analysis/pipeline.py` requires also unwinding the Stage 7 and Stage 8 orchestrators that call them. The arm-period pipeline replaces the per-pair OUTPUT shape, not the entire weekly/$/CDD/SCED machinery; the latter still feeds other reports. Phase 3 PR adds a deprecation banner to `tools/analysis/pipeline.py` and leaves the obsolete sections in place for a follow-up PR.
+  - **Spec §6 poor-weather caliper (n=6 limitation):** spec wording "exceeds the 90th percentile" applied as strict `>` with `numpy.percentile` linear interpolation does NOT flag the Hungarian-matched outlier pair in this single-household n=6 design (the matched-pair distance sits just below the linear-interpolated p90). Phase 3 implements the spec strictly and documents the limitation in `tools.analysis.matching.caliper_p90_distance`. Recommended OSF-freeze action: spec amendment to either (a) use `numpy.percentile(..., method='lower')` with `>=`, or (b) base the flag on a non-Hungarian comparison.
+- Outside-in acceptance test (`test_rebaseline_end_to_end_acceptance`) passes against the real `arm_period_pipeline.run_full_pipeline` with the Task-3.15-de-scaffolded fixture, with zero `xfail` / `skip` markers.
+- Feature status remains "Phase 3 complete; Phases 4-6 outstanding"; the rebaseline as a whole is not feature-complete until Phase 4 (NOAA fallback station selection), Phase 5 (documentation freeze), and Phase 6 (shadow validation run) close.
+
 **DST fold caller contract (locked 2026-05-14, Phase 1 audit).** `tools/analysis/arm_calendar.hour_index_to_datetime` returns CT-naive datetimes. Arm 11 (2026-11-01 DST fall-back) produces two distinct hour-indices (k=265 and k=266) whose CT-naive representations are both `2026-11-01 01:00`, differing only by the Python `fold` bit. The fold bit is ignored by `==`, `hash()`, `str()`, and JSON serialization — using these datetimes as join keys would silently collapse two valid hours into one and lose the post-fall-back hour. **All Phase 3 joins MUST key on hour-index (preferred) or UTC instants. Never use the naive CT datetime as a dict/set key, DataFrame index, or join column.** Phase 1 covered this with a `datetime_to_hour_index` roundtrip-consistency guard; Phase 3 modules that fan out to per-hour records inherit the contract.
 
 ---
