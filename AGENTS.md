@@ -13,7 +13,7 @@ Standing rules for every AI session. Any agent reading this (Claude, Codex, Curs
 
 Home Energy Monitoring & HVAC Optimization: real-time and historical residential energy monitoring with dynamic-pricing-aware HVAC scheduling, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance. Owner: Chris. Phase: pre-OSF-filing for a pre-registered SCED field study starting summer 2026 (Arm A baseline RBC vs Arm B thermal-model-informed controller). See [PROJECT.md](PROJECT.md), [README.md](README.md), [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md), [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md).
 
-**Pre-registration is binding.** Once filed to OSF, hypotheses, arm definitions, randomization seed, metric definitions, statistical analysis plan, and decision rules lock at a frozen commit hash. Anything touching scheduler, thermal model, or telemetry is on the critical path to June 1 experiment start. Operational features that don't serve Arm A / Arm B / observability are parked.
+**Pre-registration is binding.** Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules lock at a frozen commit hash. Anything touching scheduler, thermal model, or telemetry is on the critical path to June 1 experiment start. Operational features that don't serve Arm A / Arm B / observability are parked.
 
 ## Build & test
 

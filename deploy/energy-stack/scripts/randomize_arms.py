@@ -1,5 +1,28 @@
 #!/usr/bin/env python3
-"""Generate the pre-committed Arm A / Arm B week-level assignment for the
+"""DEPRECATED — pre-rebaseline historical artifact (do not run).
+
+Retired 2026-05-13 by docs/plans/sced-rebaseline-spec-2026-05-13.md §0 + §2.
+The current experiment uses deterministic 14-day arm alternation (12 arms,
+6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment
+CSV. The canonical arm calendar is now in tools/analysis/arm_calendar.py
+(analysis-side) and deploy/energy-stack/hvac-scheduler/arm_calendar.py
+(controller-side, byte-identical, CI hash-sync checked).
+
+This script and its output docs/experiment-assignments-summer-2026.csv are
+preserved in-tree as historical artifacts (and to keep
+tests/test_randomize_arms.py pinning the original algorithm for audit
+traceability). The OSF prereg DOES NOT reference this script's output;
+see spec §11 + §13 for the canonical OSF artifact list.
+
+Tracked since PR #137 F3 deferral
+(https://github.com/Promithius-DR/energy-stack/pull/137); deprecation
+banner added by this doc-sweep.
+
+Original docstring follows below for reference.
+
+----
+
+Generate the pre-committed Arm A / Arm B week-level assignment for the
 residential HVAC controls field study (EXPERIMENT_DESIGN.md §5).
 
 Block-of-4 randomization: every consecutive 4-week block contains 2

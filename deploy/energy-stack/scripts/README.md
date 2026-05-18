@@ -3,9 +3,14 @@
 Operator scripts for the energy-stack. Each is a single-purpose Python script
 run by hand (not a service). Tests run with `pytest`; deps in `requirements.txt`.
 
-## randomize_arms.py — pre-registered experiment-arm assignment
+## randomize_arms.py — DEPRECATED (pre-rebaseline historical artifact)
 
-Generates the binding Arm A / Arm B week-level assignment for the residential
+> [!WARNING]
+> **Retired 2026-05-13** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](../../../docs/plans/sced-rebaseline-spec-2026-05-13.md) §2 + §0. The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
+>
+> The canonical arm calendar is now generated programmatically by [`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac-scheduler/arm_calendar.py`](../hvac-scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). The original `randomize_arms.py` script and its output `docs/experiment-assignments-summer-2026.csv` are preserved in-tree as historical artifacts (and to keep `tests/test_randomize_arms.py` pinning the original algorithm for audit traceability) but **should not be run** for any current operation. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+
+Generates the original Arm A / Arm B week-level assignment for the residential
 HVAC controls field study described in [`docs/EXPERIMENT_DESIGN.md`](../../../docs/EXPERIMENT_DESIGN.md).
 Block-of-2 randomization using a pre-committed seed (default `20260601` from
 EXPERIMENT_DESIGN.md §13). Same seed + same date range → same CSV, every time.
@@ -23,10 +28,10 @@ Other invocations:
 - Inspect without writing: `--dry-run`
 - Custom output path: `--output /tmp/foo.csv`
 
-This script is the binding artifact behind the OSF pre-registration. **Do not
-modify the algorithm or default seed without filing an OSF amendment.** The
-pinned-snapshot test in `tests/test_randomize_arms.py` will fail loud if the
-seed-to-output mapping ever drifts.
+This script WAS the binding artifact behind the original OSF pre-registration draft.
+Pre-rebaseline, the directive read: **Do not modify the algorithm or default seed without filing an OSF amendment.** The
+pinned-snapshot test in `tests/test_randomize_arms.py` still fails loud if the
+seed-to-output mapping ever drifts, preserving the original artifact for audit.
 
 ## backfill_pjm.py — one-shot 5-year ComEd PJM backfill
 

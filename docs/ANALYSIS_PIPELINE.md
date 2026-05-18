@@ -1,5 +1,10 @@
 # Analysis pipeline (pre-registered, executable)
 
+> [!WARNING]
+> **SUPERSEDED** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) (Phase 0, PR #111) and `tools/analysis/arm_period_pipeline.py` (Phase 3, PR #138). The pipeline this document describes — weekly Stage 3/5 framing, PRNG-seeded bootstrap CI, SCED randomization test (Stage 7), `$/CDD` outcomes — is explicitly retired per the rebaseline spec's §0 source-of-truth declaration. The current pipeline is arm-period-shaped (12 arm-period units, not weekly), produces HVAC$ per pair (spec §4), uses Hungarian matching on a 4-component z-scored weather vector (spec §6), and reports per-pair descriptively without bootstrap CI (spec §9.5).
+>
+> Retained for historical reference. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); resolved by this doc-sweep.
+
 The binding analysis pipeline that produces every reported outcome in
 [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md). Locked at the OSF
 commit hash. Re-running this pipeline at any later date against the
