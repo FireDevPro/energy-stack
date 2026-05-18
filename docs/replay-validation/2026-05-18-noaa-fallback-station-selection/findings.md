@@ -18,7 +18,7 @@ Spec §6 uses the phrase "NOAA ASOS" as colloquial shorthand for "NOAA-archived 
 - **ASOS** (Automated Surface Observing System, jointly operated by NWS, FAA, and DoD): **KMDW** (Chicago Midway), **KORD** (Chicago O'Hare).
 - **AWOS-3** (Automated Weather Observing System, FAA-operated): **KJOT** (Joliet Regional), **KARR** (Aurora Municipal).
 
-For the temperature and dew-point fields this audit cares about, the two programs are functionally equivalent: both produce NWS-issued METARs, both run comparable hygrothermometer sensors (HO-83 / HO-1083 family), and both feed into the NCEI Integrated Surface Database (ISD-DSI-3505) via the same NOAA archive pipeline. The IEM "ASOS Network" mirror used to fetch the sample data deliberately includes AWOS-3 stations under the same network label, reflecting this functional equivalence. The Iowa Environmental Mesonet station-info page for KJOT (`https://mesonet.agron.iastate.edu/sites/site.php?station=JOT&network=IL_ASOS`) explicitly carries `IS_AWOS=1`; KARR is similarly AWOS-3 per FAA Aeronautical Information Manual records, while KMDW and KORD are not flagged.
+For the temperature and dew-point fields this audit cares about, the two programs are treated equivalently by the data layer the analysis pipeline will consume: both produce NWS-issued METARs that flow through the same NOAA archive ingest into NCEI's Integrated Surface Database, and the IEM "ASOS Network" mirror used to fetch the sample data deliberately includes AWOS-3 stations under the same network label. The Iowa Environmental Mesonet station-info page for KJOT (`https://mesonet.agron.iastate.edu/sites/site.php?station=JOT&network=IL_ASOS`) explicitly carries `IS_AWOS=1`. The station-info pages for KARR, KMDW, and KORD do NOT carry `IS_AWOS=1`; this audit does not need to lock the program assignment for those three stations because the decision is dominated by the proximity criterion, and they appear in the candidate pool by spec listing rather than by independent program verification. The audit does not assert sensor-model identity between ASOS and AWOS-3 programs — that would be a finer-grained claim than the 168-hour completeness data here can support.
 
 This document refers to the four candidates collectively as "NOAA airport weather stations" to keep the spec-language continuity, and notes the program assignment per station. If the spec's "NOAA ASOS" wording is read strictly, KJOT is not eligible and the next-closest ASOS would be KMDW at 26.3 mi. Doing that would substantially degrade the proximity criterion the spec prioritizes for what amounts to a sensor-program technicality at the analysis-relevant variables, so the audit recommends accepting KJOT and tightening the spec wording rather than trading 19 miles of proximity for a label.
 
@@ -70,18 +70,18 @@ The 7-day duration provides a single-event-period reliability check, not a multi
 
 For each candidate station, the IEM CSV response was parsed and bucketed into UTC-naive CT-local hour boundaries. An hour is counted as "covered" for `tmpf` if at least one observation within that hour carries a non-missing numeric `tmpf` value; same rule for `dwpf` independently. Completeness percentages are the number of covered hours divided by 168 (= 7 × 24).
 
-The station coordinates reported in the IEM CSV (`lat`, `lon` columns on each row, identical across rows from the same station) were used to compute haversine distance to Plainfield, IL at approximate centroid (41.6147°N, 88.2070°W). Earth-radius constant 3,958.8 statute miles.
+The station coordinates reported in the IEM CSV (`lat`, `lon` columns on each row, identical across rows from the same station) were used to compute haversine distance to Plainfield, IL at approximate centroid (41.6147°N, 88.2070°W). Earth-radius constant 3,958.8 statute miles (IAU mean radius); switching to a WGS84 ellipsoid produces sub-0.1-mile differences at these distances and does not affect the ordering.
 
 Multi-METAR hours (some stations issue 4-per-hour) inflate row counts but do not double-count the hour itself — each hour contributes at most one tick to the covered-hour count.
 
 ## Completeness results
 
-| Station | Description | Program | Lat / Lon | Distance to Plainfield | tmpf hours covered | dwpf hours covered | Both fields covered |
+| Station | Description | IEM `IS_AWOS` | Lat / Lon | Distance to Plainfield | tmpf hours covered | dwpf hours covered | Both fields covered |
 |---|---|---|---|---|---|---|---|
-| **KJOT** | Joliet Regional Airport | AWOS-3 | 41.5177 / -88.1756 | **6.9 mi** | 168 / 168 (**100.0%**) | 168 / 168 (**100.0%**) | 100.0% |
-| KARR | Aurora Municipal Airport | AWOS-3 | 41.7700 / -88.4800 | 17.7 mi | 159 / 168 (94.6%) | 159 / 168 (94.6%) | 94.6% |
-| KMDW | Chicago Midway International | ASOS | 41.7860 / -87.7524 | 26.3 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
-| KORD | Chicago O'Hare International | ASOS | 41.9602 / -87.9316 | 27.8 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
+| **KJOT** | Joliet Regional Airport | 1 (AWOS-3) | 41.5177 / -88.1756 | **6.9 mi** | 168 / 168 (**100.0%**) | 168 / 168 (**100.0%**) | 100.0% |
+| KARR | Aurora Municipal Airport | not flagged | 41.7700 / -88.4800 | 17.7 mi | 159 / 168 (94.6%) | 159 / 168 (94.6%) | 94.6% |
+| KMDW | Chicago Midway International | not flagged | 41.7860 / -87.7524 | 26.3 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
+| KORD | Chicago O'Hare International | not flagged | 41.9602 / -87.9316 | 27.8 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
 
 These percentages describe completeness *over the 168-hour sample window only*; they are not a long-term reliability claim. The fact that three of four stations cleared 100% over a derecho week supports treating the candidate pool as broadly reliable for retrospective Ecowitt-gap fill, but operators should expect occasional gaps in the actual experiment window and plan to record them via the spec §6 `pct_hours_noaa_fallback` provenance field.
 
@@ -121,6 +121,10 @@ The fallback-merge wiring itself is part of Phase 6 (shadow validation) — the 
 
 The four IEM URLs above can be re-issued at any time; the IEM endpoint serves historical ASOS data going back decades. The completeness numbers above are recomputable in under one minute via:
 
+The script was last validated against the IEM endpoint on 2026-05-18; the response shape at that time was a header row `station,valid,lon,lat,tmpf,dwpf` followed by data rows, with no `#`-comment preamble. The script strips any line starting with `#` defensively in case IEM's response format changes.
+
+The mid-July 2024 sample window is safely outside any DST transition, so naive datetime comparison against the IEM `tz=America/Chicago` response is fine for this run. If a future operator reuses this script for a window that crosses 2024-11-03 02:00 CT (or 2026-11-01 02:00 CT during the actual experiment), they should switch to `zoneinfo`-aware datetimes to handle the fall-back fold correctly. See `project-phase3-dst-fold-keying` in the memory index for the trap.
+
 ```python
 import csv, datetime, urllib.request
 
@@ -137,7 +141,11 @@ for st in ("KJOT", "KARR", "KMDW", "KORD"):
         "&tz=America%2FChicago&format=onlycomma&latlon=yes"
         "&missing=M&trace=T&direct=yes&report_type=3&report_type=4"
     )
-    text = urllib.request.urlopen(url).read().decode("utf-8").splitlines()
+    raw = urllib.request.urlopen(url).read().decode("utf-8").splitlines()
+    # Strip any #-comment preamble defensively (IEM doesn't emit one
+    # for format=onlycomma at the time of writing, but the script
+    # tolerates it if a future endpoint revision adds one).
+    text = [ln for ln in raw if not ln.startswith("#")]
     reader = csv.DictReader(text)
     tmpf_hours, dwpf_hours = set(), set()
     for row in reader:
