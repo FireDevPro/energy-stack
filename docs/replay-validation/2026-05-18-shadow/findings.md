@@ -118,23 +118,52 @@ The 42 `outdoor_*` rows on 2026-05-11 are the brief window when the shaded chann
 
 Per spec §11 #13 M3: for shadow-period hours where `comed.prices` 5-min mean exceeded its 95th percentile, compute absolute difference vs `pjm.lmp_rt_hourly` settled at the same hour. Report `n_hours_diverging_>2c`. If `>0`, flag for OSF appendix.
 
-**Result: FLAGGED for OSF appendix.**
+**Result: FLAGGED for OSF appendix — but with a strong shoulder-season caveat that is the headline of this section.**
+
+### What this audit actually measured
 
 | Metric | Value |
 |---|---|
 | Paired hours (ComEd hourly mean ∩ PJM hourly) | 459 |
 | ComEd hourly p95 (¢/kWh) | 7.71 |
 | Scarcity hours (ComEd hourly mean > p95) | 23 |
-| Max abs divergence at scarcity hours (¢/kWh) | **15.30** |
+| Max abs divergence at scarcity hours (¢/kWh) | 15.30 |
 | p95 abs divergence at scarcity hours (¢/kWh) | 14.80 |
-| Hours diverging >2 ¢/kWh | **19 of 23** |
+| Hours diverging >2 ¢/kWh | 19 of 23 |
 | Threshold (¢/kWh) | 2.0 |
 
-**Interpretation.** At ~83% of the shadow window's scarcity hours (19 of 23), the live ComEd 5-min hourly average diverges from the PJM settled hourly LMP by more than 2 ¢/kWh, and the maximum observed divergence is 15.30 ¢/kWh — comparable to the entire ComEd price level at scarcity. This is the M3 risk the spec anticipates: at the exact moments the controller's price-overlay logic fires (high real-time price), the live signal the controller observed can differ materially from the bill-canonical settled price the analysis uses.
+### Why the headline numbers are a lower bound, not a representative finding
 
-This is the kind of finding §11 #13 anticipated. The pre-registered handling is for the OSF appendix to disclose the divergence and to surface `live_price_vs_settled_price` as a §12 named sensitivity. Both are already in the spec (§12, table row 3).
+The audit ran against shoulder-season data (2026-04-29 → 2026-05-18). AC had barely cycled. The window's "scarcity hours" are p95 of *shoulder-season* prices (7.71¢/kWh) — that's not what real cooling-season scarcity looks like. The cooling-season experiment window (2026-06-01 → 2026-11-16) will be different in kind, not just degree.
 
-**Follow-up:** include this finding verbatim in the OSF appendix when filing. No spec change required; the sensitivity machinery already exists.
+Evidence from the historical RTP files in `tools/comed_price_imputation/data/rtp_*.txt` (full May-Sep cooling seasons):
+
+| Year | 5-min slots ≥$1/kWh | 5-min slots ≥$2/kWh | Peak |
+|---|---|---|---|
+| 2023 | 3 | 0 | $1.69/kWh |
+| 2024 | 4 | 1 | $2.42/kWh |
+| **2025** | **52** | **12** | **$3.43/kWh** |
+
+The 2025 cooling season had 52 five-min slots ≥$1/kWh and 12 slots ≥$2/kWh, sharply up year-over-year. Our shadow window has 2 slots ≥$2/kWh (one of which occurred during the writing of this PR, 2026-05-18 15:35-15:45 UTC, peak 214.7¢/kWh) and 4 slots ≥$1/kWh.
+
+The 15.30¢ max-divergence number captures **shoulder-season** divergence at **shoulder-season** scarcity. A summer scarcity event at $2/kWh live could pair with a $0.20/kWh PJM settled value (180¢/kWh divergence — an order of magnitude past today's audit ceiling), or it could pair within 10¢ if PJM settles the same way. Today's audit can't tell which.
+
+### What this means for the OSF appendix
+
+Include the M3 finding as **directional evidence that divergence at scarcity hours is non-zero and material**, NOT as a magnitude estimate. The OSF appendix language should:
+
+1. State the metrics as measured (above).
+2. Explicitly note the shoulder-season limitation and cite the historical 2023-2025 cooling-season spike frequency as the base rate for what the experiment will actually encounter.
+3. Commit to **re-running M3 mid-experiment** (post-Arm 1 close, ~2026-06-15, per Phase 7's first-arm-transition checkpoint) when real cooling-season scarcity hours + the corresponding PJM settled values finally coexist in the data.
+4. Surface `live_price_vs_settled_price` as the §12 sensitivity (already pre-registered) that will produce the apples-to-apples per-pair comparison once the experiment closes.
+
+The pre-registered sensitivity machinery in §12 is the right tool; this Phase 6 finding just tells the reader that running it will matter, without overclaiming a magnitude the data can't support.
+
+### Today's spike (2026-05-18 15:35-15:50 UTC) — preview of what's coming
+
+During Phase 6 PR work, ComEd live pricing spiked to **214.7¢/kWh ($2.15/kWh)** for two consecutive 5-min slots — the first $2+/kWh event in our window. The hvac-scheduler responded as designed: upgraded `normal` → `scarcity` tier at 15:41:06Z (the first decision cycle after the spike was queryable), raised cool setpoint from 67°F → 85°F, set a 30-minute hold timer for hysteresis, and stayed in scarcity through the recovery (per decision-trace logs). Scheduler is in shadow mode so no setpoint was actually pushed to the thermostat — that's correct pre-experiment behavior.
+
+PJM settlement for the 15:00-16:00 UTC hour will publish in ~2 days. When it lands, the next workflow_dispatch run of `shadow-validation.yml` will pair the ComEd 5-min hourly mean for this hour (~61¢/kWh per the poller's own published `hourly_avg`) against PJM's settled hourly LMP and produce the first real-scarcity divergence data point. That single hour will likely dominate the audit's max-divergence figure and is worth attaching to the OSF appendix as a concrete example.
 
 ## PR #109 disposition verification
 
@@ -187,19 +216,19 @@ The runner ran from a Windows workstation against pi-lab Influx over the LAN rat
 
 ## Sign-off
 
-Phase 6 shadow validation **surfaces 2 real findings** that the pre-OSF process must act on:
+Phase 6 shadow validation surfaces:
 
-- **OI-1** (two-layer Ecowitt canonical gap) — single focused pre-OSF follow-up PR:
-  1. Set `ECOWITT_SHADED_CHANNEL` on Pi-lab `.env` to the WN31 dip-switch channel.
+- **One real, blocking pre-OSF finding (OI-1)** — two-layer Ecowitt canonical gap. Single focused follow-up PR:
+  1. Set `ECOWITT_SHADED_CHANNEL=1` on Pi-lab `.env` (WN31 is on channel 1). **Done 2026-05-18T17:25Z** — canonical `outdoor_*` writes resumed. SOPS recovery copy refresh still pending.
   2. Align `tools/analysis/weather_vector.py` to consume `outdoor_temp_f` / `outdoor_dewpoint_f` instead of `ch1_*`.
   3. Re-shape the synthetic fixture (`tests/fixtures/synth_rebaseline_dataset.py`) so the outside-in acceptance test exercises canonical field names.
   4. Add a real-shape integration test loading from `tools/analysis/queries/ecowitt.weather.flux`.
-- **M3 scarcity divergence** — pre-registered handling already in spec §12 (sensitivity `live_price_vs_settled_price`). Add the observed numbers (`max_diff_c_per_kwh=15.30`, `n_diverging_over_2c=16` of 19 scarcity hours) to the OSF appendix at filing.
+- **One directional, NOT magnitude finding (M3)** — see [M3 section above](#m3-scarcity-divergence-audit). The audit ran against shoulder-season data only; the 15.30¢ max-divergence figure is a lower bound on a season ComEd had barely cycled AC for, NOT a representative number. The OSF appendix should disclose the audit ran, cite the historical 2023-2025 cooling-season spike base rate as the actual expected exposure, and commit to a mid-experiment re-run (Phase 7 first-arm-transition checkpoint, ~2026-06-15) for the real measurement.
 
 All other validation checks are PASS or the expected pre-experiment N/A. Spec deviation re: Stage 5 run is documented as LIM-0.
 
 **Phase 6 sign-off:** runner + workflow + findings deliverable complete. Spec §11 #13 closed with two follow-up items routed:
-- OI-1 → blocking pre-OSF follow-up PR (cited above).
-- M3 → OSF appendix at filing time (no code change).
+- OI-1 → blocking pre-OSF follow-up PR. The .env half is done; the codebase half (weather_vector + fixture + test) is the remaining work, must merge before 2026-05-30.
+- M3 → directional flag for OSF appendix + mid-experiment re-run scheduled into Phase 7's operational checkpoint. No code change for a magnitude estimate; that's data-collection waiting on real cooling-season events.
 
-The OI-1 follow-up must merge before OSF filing 2026-05-30, otherwise the canonical pipeline cannot produce a real arm-period weather vector from real Pi-lab Influx.
+The OI-1 codebase follow-up must merge before OSF filing 2026-05-30, otherwise the canonical pipeline cannot produce a real arm-period weather vector from real Pi-lab Influx.
