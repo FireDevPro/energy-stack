@@ -65,21 +65,46 @@ jobs:
             echo "::error::missing $ENV_FILE — deploy.yml must have run at least once on this host"
             exit 1
           fi
-          # .env contains bash-incompatible values (e.g. NWS_USER_AGENT with
-          # parentheses), so do NOT `source` it — extract specific vars
-          # line-wise instead.
-          for var in INFLUXDB_TOKEN INFLUXDB_ORG INFLUXDB_BUCKET; do
-            val=$(grep "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+          # Pi-lab .env naming convention (verified 2026-05-18):
+          #   INFLUXDB_INIT_ADMIN_TOKEN  literal admin token
+          #   INFLUXDB_INIT_ORG          literal org name
+          #   INFLUXDB_INIT_BUCKET       literal bucket name
+          # docker compose maps these to INFLUXDB_TOKEN/ORG/BUCKET when
+          # starting service containers; we do the same name remap here
+          # so the runner sees INFLUXDB_* (its consumed convention).
+          # We do NOT use the INFLUX_TOKEN/ORG/BUCKET aliases in .env
+          # because those reference $INFLUXDB_INIT_* via shell
+          # interpolation and would be returned literally by grep+cut.
+          # Disable `set -e` around the grep so a missing key prints a
+          # useful error before the script exits.
+          extract() {
+            local key="$1"
+            local val
+            val=$(grep "^${key}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
             if [ -z "$val" ]; then
-              echo "::error::$var not present in $ENV_FILE"
+              echo "::error::$key not present in $ENV_FILE"
               exit 1
             fi
-            # Mask the token in workflow logs.
-            if [ "$var" = "INFLUXDB_TOKEN" ]; then
-              echo "::add-mask::$val"
-            fi
-            echo "${var}=${val}" >> "$GITHUB_ENV"
-          done
+            echo "$val"
+          }
+          set +e
+          TOKEN=$(extract INFLUXDB_INIT_ADMIN_TOKEN); rc=$?
+          set -e
+          [ $rc -eq 0 ] || exit $rc
+          set +e
+          ORG=$(extract INFLUXDB_INIT_ORG); rc=$?
+          set -e
+          [ $rc -eq 0 ] || exit $rc
+          set +e
+          BUCKET=$(extract INFLUXDB_INIT_BUCKET); rc=$?
+          set -e
+          [ $rc -eq 0 ] || exit $rc
+          # Mask the token in workflow logs.
+          echo "::add-mask::$TOKEN"
+          echo "INFLUXDB_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "INFLUXDB_ORG=$ORG" >> "$GITHUB_ENV"
+          echo "INFLUXDB_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          echo "Extracted INFLUXDB_* creds (token masked, org=$ORG, bucket=$BUCKET)."
 
       - name: Run shadow validation
         shell: bash
