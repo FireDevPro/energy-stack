@@ -775,8 +775,14 @@ def _reconcile_against_bills(
         start_col, end_col, dollars_col = (
             "bill_period_start_utc", "bill_period_end_utc", "variable_dollars",
         )
+        service_to_inclusive = False
     elif production_cols.issubset(bills_df.columns):
-        start_col, end_col, dollars_col = "service_from", "service_to", "total_amount"
+        # Production ``comed.bill`` (deploy/energy-stack/scripts/comed_influx.py):
+        # field names are ``total_due`` (not ``total_amount``);
+        # ``service_to`` is an INCLUSIVE CT date, so the exclusive UTC
+        # bill-period-end is service_to + 1 day shifted into UTC.
+        start_col, end_col, dollars_col = "service_from", "service_to", "total_due"
+        service_to_inclusive = True
     else:
         return []
     periods = (
@@ -787,6 +793,8 @@ def _reconcile_against_bills(
     for _, row in periods.iterrows():
         start = pd.to_datetime(row[start_col])
         end = pd.to_datetime(row[end_col])
+        if service_to_inclusive:
+            end = end + pd.Timedelta(days=1)
         if hasattr(start, "tz") and start.tz is not None:
             start = start.tz_convert("UTC").tz_localize(None)
         if hasattr(end, "tz") and end.tz is not None:
