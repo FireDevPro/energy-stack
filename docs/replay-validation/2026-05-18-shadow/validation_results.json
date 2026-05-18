@@ -1,0 +1,169 @@
+{
+  "bucket": "energy",
+  "checks": [
+    {
+      "check_id": "ingestion.refoss.channel",
+      "description": "Stage 1 ingestion presence: refoss.channel",
+      "metrics": {
+        "first_ts": "2026-04-29 22:48:02.508813+00:00",
+        "last_ts": "2026-05-18 16:08:06.485161+00:00",
+        "row_count": 269495
+      },
+      "notes": "269495 rows present from 2026-04-29 22:48:02.508813+00:00 to 2026-05-18 16:08:06.485161+00:00",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "ingestion.ecowitt.weather",
+      "description": "Stage 1 ingestion presence: ecowitt.weather",
+      "metrics": {
+        "first_ts": "2026-05-12 21:03:37+00:00",
+        "last_ts": "2026-05-18 16:08:18+00:00",
+        "row_count": 8309
+      },
+      "notes": "8309 rows present from 2026-05-12 21:03:37+00:00 to 2026-05-18 16:08:18+00:00",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "ingestion.comed.prices",
+      "description": "Stage 1 ingestion presence: comed.prices",
+      "metrics": {
+        "first_ts": "2026-04-29 00:00:00+00:00",
+        "last_ts": "2026-05-18 16:00:00+00:00",
+        "row_count": 5621
+      },
+      "notes": "5621 rows present from 2026-04-29 00:00:00+00:00 to 2026-05-18 16:00:00+00:00",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "ingestion.pjm.lmp_rt_hourly",
+      "description": "Stage 1 ingestion presence: pjm.lmp_rt_hourly",
+      "metrics": {
+        "first_ts": "2026-04-29 00:00:00+00:00",
+        "last_ts": "2026-05-15 03:00:00+00:00",
+        "row_count": 388
+      },
+      "notes": "388 rows present from 2026-04-29 00:00:00+00:00 to 2026-05-15 03:00:00+00:00",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "ingestion.eagle.meter",
+      "description": "Stage 1 ingestion presence: eagle.meter",
+      "metrics": {
+        "first_ts": "2026-04-29 00:00:00.823101+00:00",
+        "last_ts": "2026-05-18 16:08:07.277620+00:00",
+        "row_count": 56569
+      },
+      "notes": "56569 rows present from 2026-04-29 00:00:00.823101+00:00 to 2026-05-18 16:08:07.277620+00:00",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "ingestion.comed.bill",
+      "description": "Stage 1 ingestion presence: comed.bill",
+      "metrics": {
+        "row_count": 0
+      },
+      "notes": "First DTOD bill arrives 2026-05-24 per spec \u00a714; pre-DTOD bills used flat rates and are tracked separately.",
+      "reason_code": "no_dtod_bill_in_window",
+      "status": "WARN"
+    },
+    {
+      "check_id": "pricing.reconstruction",
+      "description": "Pricing reconstructs sensibly across the shadow window",
+      "metrics": {
+        "bill_points_in_window": 0
+      },
+      "notes": "No bills landed in the shadow window. First DTOD bill arrives 2026-05-24 per spec \u00a714; bill_reconciliation cannot be exercised against shadow data. Pre-DTOD reconciliation uses flat rates and is tested separately. The reconciliation code path was verified by Phase 3 unit + integration tests (test_bill_reconciliation.py + test_pipeline_realshape_e2e.py).",
+      "reason_code": "no_dtod_bill_in_window",
+      "status": "N/A"
+    },
+    {
+      "check_id": "refoss.hvac_kwh",
+      "description": "Refoss HVAC channels (em:2 + em:8) compute hourly kWh",
+      "metrics": {
+        "hourly_bucket_count": 451,
+        "max_kwh": 3.393252683333334,
+        "nonzero_hours": 63,
+        "sum_kwh": 81.88096715174858
+      },
+      "notes": "451 hourly buckets; 63 hours with >0.01 kWh HVAC draw; max=3.393 kWh, sum=81.9 kWh.",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "reconciliation.refoss_eagle",
+      "description": "Refoss mains vs Eagle reconciliation runs",
+      "metrics": {
+        "eagle_coverage_pct": 100.0,
+        "eagle_sample_count": 56569
+      },
+      "notes": "eagle_coverage_pct=100.00% across 56569 Eagle samples in window. Full reconciliation against Refoss mains is exercised by bill_reconciliation when a bill closes in-window (see check pricing.reconstruction).",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "weather.vector_inputs",
+      "description": "Weather-vector inputs present + NOAA fallback station locked + Stage 1 query field-name alignment",
+      "metrics": {
+        "ch1_dewpoint_f": 8309,
+        "ch1_temp_f": 8309,
+        "noaa_fallback_station_lock": "KJOT",
+        "outdoor_dewpoint_f": 42,
+        "outdoor_temp_f": 42,
+        "stage1_query_field_drift": true,
+        "ws90_dewpoint_f": 9619,
+        "ws90_temp_f": 9619
+      },
+      "notes": "Canonical ch1_temp_f=8309, ch1_dewpoint_f=8309 (weather_vector consumes these). BUT Stage 1 Flux query (tools/analysis/queries/ecowitt.weather.flux) references outdoor_temp_f=42, outdoor_dewpoint_f=42 \u2014 drift between Stage 1 query and poller writes. WS90 sun-comparator: ws90_temp_f=9619, ws90_dewpoint_f=9619. NOAA fallback station = KJOT (spec \u00a711 #11). Pre-OSF follow-up: update Stage 1 query to ch1_*.",
+      "reason_code": "ecowitt_stage1_query_field_drift",
+      "status": "WARN"
+    },
+    {
+      "check_id": "arm_calendar.no_crash",
+      "description": "arm_calendar.current_arm_at returns None for every shadow hour",
+      "metrics": {
+        "in_arm_hours": 0,
+        "sampled_hours": 473
+      },
+      "notes": "473 shadow hours checked; 0 are inside any locked arm (expected \u2014 experiment begins 2026-06-01).",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "mode_classification.spot_test",
+      "description": "mode_classification.classify_hour produces expected enum values",
+      "metrics": {
+        "cases_checked": 5
+      },
+      "notes": "All 5 spot cases produce expected HourMode values.",
+      "reason_code": null,
+      "status": "PASS"
+    },
+    {
+      "check_id": "m3.scarcity_divergence",
+      "description": "Live ComEd 5-min vs PJM rt_hrl_lmps settled at scarcity hours (spec \u00a711 #13 M3)",
+      "metrics": {
+        "max_diff_c_per_kwh": 15.296401045454546,
+        "n_diverging_over_2c": 16,
+        "n_paired_hours": 387,
+        "n_scarcity_hours": 19,
+        "p95_c_per_kwh": 8.504999999999999,
+        "p95_diff_c_per_kwh": 15.296401045454546,
+        "scarcity_divergence_flag_threshold_c": 2.0
+      },
+      "notes": "p95=8.504999999999999, n_paired_hours=387, n_scarcity_hours=19, max_diff_c_per_kwh=15.296401045454546, p95_diff_c_per_kwh=15.296401045454546, n_diverging_over_2.0c=16. FLAGGED for OSF appendix per spec \u00a711 #13 M3.",
+      "reason_code": "osf_appendix_flag",
+      "status": "WARN"
+    }
+  ],
+  "influx_url": "http://192.168.20.10:8086",
+  "runner_commit_sha": "4f16742",
+  "runner_host": "dePaola",
+  "runner_version": "0.1.0",
+  "window_end_utc": "2026-05-18T16:08:24Z",
+  "window_start_utc": "2026-04-29T00:00:00Z"
+}
