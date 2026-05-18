@@ -157,16 +157,31 @@ def test_scarcity_divergence_warn_when_over_threshold():
 
 
 def test_scarcity_divergence_no_scarcity_when_window_too_tight():
-    """Single-hour window: max==value, no row strictly above p95 — N/A."""
+    """Single-hour window: max==p95, no hour strictly above p95 -> N/A.
+
+    Strict `>` per spec §11 #13 wording ("EXCEEDED its 95th percentile").
+    """
     times = pd.date_range("2026-05-01", periods=1, freq="h")
     comed = _hourly_frame(times, [3.0], "comed_c_per_kwh")
     pjm = _hourly_frame(times, [3.0], "pjm_c_per_kwh")
     r = compute_scarcity_divergence(comed, pjm)
-    # With 1 hour, that hour IS the p95 -> n_scarcity = 1, not N/A.
-    # Confirm the count is sane and divergence is zero.
-    assert r.status == "PASS"
+    assert r.status == "N/A"
+    assert r.reason_code == "no_scarcity_hours"
     assert r.n_paired_hours == 1
-    assert r.n_scarcity_hours == 1
+    assert r.n_scarcity_hours == 0
+
+
+def test_scarcity_divergence_strict_gt_boundary():
+    """Two-hour window with equal values: neither strictly exceeds p95.
+
+    Tests that `>` is used (not `>=`) per spec §11 #13 ("exceeded").
+    """
+    times = pd.date_range("2026-05-01", periods=2, freq="h")
+    comed = _hourly_frame(times, [3.0, 3.0], "comed_c_per_kwh")
+    pjm = _hourly_frame(times, [3.0, 3.0], "pjm_c_per_kwh")
+    r = compute_scarcity_divergence(comed, pjm)
+    assert r.status == "N/A"
+    assert r.n_scarcity_hours == 0  # neither hour strictly above p95
 
 
 def test_scarcity_divergence_threshold_is_configurable():

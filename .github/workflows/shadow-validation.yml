@@ -52,7 +52,9 @@ jobs:
           # shellcheck disable=SC1091
           source "$VENV/bin/activate"
           pip install --quiet --upgrade pip
-          pip install --quiet -r tools/analysis/requirements.txt
+          # --require-hashes: requirements.txt is pip-compile'd with hashes;
+          # enforces the locked OSF-tracked environment per requirements.in.
+          pip install --quiet --require-hashes -r tools/analysis/requirements.txt
 
       - name: Extract Influx credentials from pi-lab .env
         shell: bash
