@@ -92,7 +92,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 | `MILD` | High < 75°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 75-85°F max (and apparent < 90°F) | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
 | `HOT_5CP_RISK` | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay and 5CP-detector layers drive shutoff per the locked logic below; there is no fixed shutoff clock on HOT days. |
-| `HOT_STREAK_DAY1` | HOT + day-after also HOT | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool to bank thermal mass for the multi-day event. Day 2 of the streak runs the regular `HOT_SCHEDULE` (the mass is already there). |
+| `HOT_STREAK_DAY1` | HOT today AND day-after also HOT, OR single-day HOT with forecast 5CP-risk escalation (PJM tomorrow-peak forecast > season-5th-highest × 1.05 AND tomorrow's high ≥ 90°F per `precool.should_deepen_precool`) | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool. Day 2 of a multi-day streak runs the regular `HOT_SCHEDULE` (the mass is already there). The §7 single-day forecast 5CP-risk path catches grid-stress days that aren't multi-day heat events. See `decide_day_type` in `deploy/energy-stack/hvac-scheduler/app.py` (both escalation paths return `HOT_STREAK_DAY1`). |
 
 ---
 
@@ -126,11 +126,16 @@ All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65
 
 **Shutoff timing is dynamic, not scheduled.** Per EXPERIMENT_DESIGN.md §3 (Arm B), the fixed 14:00-18:00 CT shutoff window from the original scheduler is dropped. The §2 real-time RTP price-spike reactivity (scarcity tier ≥ 20¢ → 85°F effective shutoff) and §3 dual-scope 5CP detector (ComEd-zone + PJM-RTO, OR'd) drive 85°F shutoff timing per-tick during the 13:00-20:00 CT eligibility window. "Warmer wins" layer priority lets these dynamic layers push the effective cool above the schedule's coast baseline when conditions warrant.
 
-### HOT_STREAK_DAY1 — HOT today AND HOT tomorrow forecast
+### HOT_STREAK_DAY1 — HOT today AND HOT tomorrow forecast, OR single-day HOT with forecast 5CP-risk escalation
+
+Two escalation paths produce `HOT_STREAK_DAY1` (both return the same schedule below):
+
+1. **Multi-day heat path:** tomorrow's forecast is HOT AND the day after that is also HOT.
+2. **Single-day forecast 5CP-risk path (§7):** tomorrow's forecast is HOT AND `precool.should_deepen_precool` returns True (PJM tomorrow-peak forecast > season-5th-highest × 1.05 AND tomorrow's high ≥ 90°F).
 
 | Time | Label | Cool °F | Fan | Notes |
 |---|---|---|---|---|
-| 03:00 | STREAK_PRE_COOL_EARLY | 66 | Auto | One hour earlier, two degrees deeper than HOT — banks extra mass for day 2 |
+| 03:00 | STREAK_PRE_COOL_EARLY | 66 | Auto | One hour earlier, two degrees deeper than HOT — banks extra mass for the next-day grid event |
 | 12:00 | HOT_COAST | 80 (76 if humid) | Circulate | Same as HOT |
 | 19:00 | HOT_RECOVER | 75 | Auto | Same as HOT |
 | 21:00 | SLEEP | 73 | (unchanged) | Same as HOT |
@@ -249,12 +254,14 @@ The schedule programmed directly into the CTK04AE (via TCC web UI, applies same 
 
 | Period | Time | Heat °F | Cool °F | Fan | Reasoning |
 |---|---|---|---|---|---|
-| Wake | 5:00 AM | 68 | 74 | Auto | Light pre-cool window, off-peak pricing |
-| Leave | 1:00 PM | 68 | 78 | Circulate | **Peak avoidance** — coast through 1-7pm with circulate fan for perceived comfort. The critical setpoint. |
+| Wake | 5:00 AM | 68 | 73 | Auto | Light pre-cool window, off-peak pricing |
+| Leave | 1:00 PM | 66 | 78 | Circulate | **Peak avoidance** — coast through 1-7pm with circulate fan for perceived comfort. The critical setpoint. |
 | Return | 7:00 PM | 68 | 75 | Auto | Off-peak begins, recover to evening comfort |
 | Sleep | 10:00 PM | 65 | 74 | Auto | Cool sleep, all off-peak |
 
-**Deadbands** (Honeywell requires 5°F minimum in Auto): Wake 6°✓, Leave 10°✓, Return 7°✓, Sleep 9°✓.
+**Deadbands** (Honeywell requires 5°F minimum in Auto): Wake 5°✓, Leave 12°✓, Return 7°✓, Sleep 9°✓.
+
+This table is the authoritative Arm-A-schedule freeze; the same content with full provenance lives in [`THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md). The two are kept in sync as a Phase 5 OSF-freeze commitment.
 
 **What this fallback DOES:** competent peak avoidance for an "average summer day" + reasonable winter setbacks. ~90% of what the Pi scheduler would do for a typical NORMAL day.
 
