@@ -207,7 +207,7 @@ The overlap provenance lets reviewers detect whether exclusion silently concentr
 
 **Weather data source (mixed, with provenance):**
 - **Primary:** Ecowitt local station (microclimate-faithful to actual house conditions). Canonical channels: `ch1_temp_f` (outdoor shaded) and `ch1_dewpoint_f`. `ws90_*` (outdoor unshaded) and `outdoor_*` (gateway alias) are descriptive only, not used in the vector.
-- **Fallback:** NOAA ASOS nearest station (selected at audit phase — likely KJOT Joliet) for any Ecowitt-gap hours. Used ONLY to fill missing hours within an arm period; does NOT invalidate the arm period itself.
+- **Fallback:** NOAA ASOS **KJOT (Joliet Regional Airport)** for any Ecowitt-gap hours. Selected at audit phase per `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md` (6.9 mi from Plainfield, 100% temp + dew-point hourly completeness over a 7-day July 2024 sample). Used ONLY to fill missing hours within an arm period; does NOT invalidate the arm period itself.
 - **Provenance per arm:** report `pct_hours_ecowitt`, `pct_hours_noaa_fallback`, and fallback-source identity. No silent substitution.
 
 **Weather vector (4 components, arm-period aggregation over post-washout 12-day window):**
