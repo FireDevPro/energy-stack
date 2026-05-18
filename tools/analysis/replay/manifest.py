@@ -58,6 +58,7 @@ KNOWN_MEASUREMENTS: tuple[str, ...] = (
     "comed.bill",
     "comed.bill_lineitems",
     "comed.prices",
+    "eagle.meter",
     "ecowitt.weather",
     "hvac.5cp_state",
     "hvac.actions",
@@ -91,6 +92,10 @@ POST_2025_MEASUREMENTS: frozenset[str] = frozenset({
     # up 2026-05; backfill begins 2026-01-01. No observed_historical
     # for 2025.
     "pjm.lmp_rt_hourly",
+    # Eagle HAN-to-meter poller (eagle.meter) is post-2025
+    # instrumentation per docs/plans/sced-rebaseline-spec-2026-05-13.md
+    # §10 (bill reconciliation primary kWh source).
+    "eagle.meter",
 })
 
 

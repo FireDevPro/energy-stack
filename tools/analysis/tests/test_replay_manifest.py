@@ -265,19 +265,24 @@ def test_known_measurements_matches_analysis_pipeline_doc():
         # Phase 2 SCED rebaseline: bill-canonical settled hourly LMP
         # for COMED zone (spec §8). Backfilled from 2026-01-01.
         "pjm.lmp_rt_hourly",
+        # Phase 3 SCED rebaseline: Eagle HAN-to-meter delivered-kWh
+        # totalizer for bill reconciliation (spec §10).
+        "eagle.meter",
     }
     assert set(KNOWN_MEASUREMENTS) == expected_subset
 
 
 def test_post_2025_measurements_only_contains_new_services():
-    assert POST_2025_MEASUREMENTS == {
+    assert POST_2025_MEASUREMENTS == frozenset({
         "hvac.5cp_state", "hvac.price_overlay",
         "hvac.arm_transitions", "hvac.precool_window",
         "ecowitt.weather",
         # Phase 2 SCED rebaseline: rt_hrl_lmps polling stood up
         # 2026-05; no observed_historical for 2025.
         "pjm.lmp_rt_hourly",
-    }
+        # Phase 3 SCED rebaseline: Eagle poller stood up post-2025.
+        "eagle.meter",
+    })
 
 
 # -- Reason-report writing -------------------------------------------------
