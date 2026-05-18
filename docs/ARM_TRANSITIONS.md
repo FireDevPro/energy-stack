@@ -44,17 +44,17 @@ investigation), but until that's verified the toggle is manual.
    cd ~/energy-stack
    docker compose restart hvac-scheduler
    ```
-3.5. **Clear any Permanent hold on the thermostat (Arm B → Arm A
+4. **Clear any Permanent hold on the thermostat (Arm B → Arm A
    transitions only).** When leaving Arm B for Arm A, on the
    thermostat home screen confirm there is no Permanent hold left
    over from a Pi-pushed Arm B action. If "HOLD" is displayed,
    press CANCEL HOLD so the autonomous schedule resumes. The Pi
    scheduler does NOT clear holds during Arm A (it runs in shadow
    mode with writes blocked), so this is the sole guarantee that
-   Arm A starts with a clean schedule run.  No action needed on
+   Arm A starts with a clean schedule run. No action needed on
    Arm A → Arm B transitions because the Pi scheduler re-pushes
    Permanent holds at its next scheduled action anyway.
-4. **Log the transition**: from inside the project's deploy directory,
+5. **Log the transition**: from inside the project's deploy directory,
    run the audit script:
    ```bash
    # Arm A -> Arm B (entering Arm B):
