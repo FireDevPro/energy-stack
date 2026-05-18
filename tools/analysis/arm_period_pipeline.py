@@ -261,13 +261,24 @@ def _hourly_mode_from_telemetry(
     return modes
 
 
-# Bill line items that are NOT variable-per-kWh charges per spec §4.
-# When reconciling against production ``comed.bill_lineitems``, these
-# rows must be excluded from the "variable charges" total that the
-# reconstruction compares against -- otherwise a real bill's fixed
-# Customer Charge, Standard Metering Charge, kW-based Capacity Charge,
-# and percentage taxes would inflate the actual-bill side and produce
-# false-positive divergence flags.
+# Bill categories that contribute to spec §10 "variable charges". The
+# real comed_parser emits four categories (deploy/energy-stack/scripts/
+# comed_parser.py): SUPPLY, DELIVERY, TAXES_FEES_CREDITS, and MISC.
+# Only the first three roll up the per-kWh charges that the analysis
+# layer's hourly-kWh-times-hourly-rate reconstruction can compare
+# against. MISC carries cross-bill adjustments ("Charges/Credits from
+# previous bill", "Thank You for Your Payment of") that aren't current-
+# period charges at all -- including them inflates the actual-bill
+# side by hundreds of dollars and false-flags every reconciliation.
+VARIABLE_BILL_CATEGORIES: frozenset[str] = frozenset({
+    "SUPPLY",
+    "DELIVERY",
+    "TAXES_FEES_CREDITS",
+})
+
+# Line items that ARE in the variable categories above but represent
+# non-per-kWh charges per spec §4. Excluded from "variable charges"
+# even when their category is in the allowlist.
 FIXED_BILL_LINE_ITEMS: frozenset[str] = frozenset({
     "Customer Charge",
     "Standard Metering Charge",
@@ -928,10 +939,17 @@ def _reconcile_against_bills(
                 end = end.tz_convert("UTC").tz_localize(None)
 
         if derive_variable_from_lineitems:
+            # Spec §10 variable-charges definition: allowlist by category
+            # (SUPPLY / DELIVERY / TAXES_FEES_CREDITS only -- MISC carries
+            # cross-bill adjustments that are NOT current-period charges)
+            # AND denylist the fixed line items per spec §4 (Customer
+            # Charge, Standard Metering Charge, Capacity Charge, the
+            # three percentage taxes).
             period_lineitems = bills_df[
                 (bills_df[start_col] == row[start_col])
                 & (bills_df[end_col] == row[end_col])
                 & bills_df["line_item"].notna()
+                & bills_df["category"].isin(VARIABLE_BILL_CATEGORIES)
                 & ~bills_df["line_item"].isin(FIXED_BILL_LINE_ITEMS)
             ]
             actual_variable = float(period_lineitems["amount"].sum())

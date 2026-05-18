@@ -319,6 +319,102 @@ def test_pipeline_accepts_production_comed_bill_shape():
     assert br.actual_bill_variable_dollars == pytest.approx(200.0)
 
 
+def test_pipeline_variable_charges_excludes_misc_on_real_bill():
+    """Regression for category-allowlist derivation against the real
+    parsed-bill line-item set.
+
+    The April 2026 bill at
+    deploy/energy-stack/scripts/tests/fixtures/hourly_single_apr2026.txt
+    has line items in four categories: SUPPLY, DELIVERY,
+    TAXES_FEES_CREDITS, and MISC. The MISC category contains the
+    cross-bill rows "Charges/Credits from previous bill" ($191.22) and
+    "Thank You for Your Payment of" ($191.22, parser stores positive),
+    which together net the MISC category to $0 on the actual bill but
+    appear as +$382.44 of "non-fixed line items" if the variable-
+    charges filter only uses a denylist. That false-flags every
+    reconciliation.
+
+    Spec §10 variable-charge derivation: allowlist categories SUPPLY +
+    DELIVERY + TAXES_FEES_CREDITS only; within those exclude the spec
+    §4 fixed line items (Customer Charge, Standard Metering Charge,
+    Capacity Charge, Municipal Tax, State Tax, Franchise Cost). The
+    expected variable total for this bill is the full $247.67 total
+    minus those six fixed items ($92.30) = $155.37.
+    """
+    inputs = _build_two_arm_dataset()
+    # Reproduce the exact line-item set from the April 2026 fixture.
+    # (line_item, category, amount). Amounts taken verbatim from the
+    # bill text on deploy/energy-stack/scripts/tests/fixtures/
+    # hourly_single_apr2026.txt; signs match what comed_parser would
+    # emit (parser stores the printed dollar amount; negative-print
+    # items like CFE credit and Low Income Discount carry minus signs).
+    real_line_items = [
+        # SUPPLY
+        ("Electricity Supply Charge", "SUPPLY", 42.15),
+        ("Capacity Charge", "SUPPLY", 54.64),
+        ("Transmission Services Charge", "SUPPLY", 18.57),
+        ("Misc Procurement Components Chg", "SUPPLY", 1.06),
+        ("Purchased Electricity Adjustment", "SUPPLY", 30.41),
+        # DELIVERY
+        ("Customer Charge", "DELIVERY", 15.35),
+        ("Standard Metering Charge", "DELIVERY", 3.83),
+        ("Distribution Facility Charge", "DELIVERY", 107.48),
+        ("IL Electricity Distribution Charge", "DELIVERY", 2.16),
+        # TAXES_FEES_CREDITS
+        ("Environmental Cost Recovery Adj", "TAXES_FEES_CREDITS", 0.15),
+        ("Renewable Portfolio Standard", "TAXES_FEES_CREDITS", 8.61),
+        ("Coal to Solar and Energy Storage Fund", "TAXES_FEES_CREDITS", 0.10),
+        ("Zero Emission Standard", "TAXES_FEES_CREDITS", 3.24),
+        ("Carbon-Free Energy Resource Adj", "TAXES_FEES_CREDITS", -54.64),
+        ("Energy Efficiency Programs", "TAXES_FEES_CREDITS", 6.33),
+        ("Energy Transition Assistance", "TAXES_FEES_CREDITS", 1.44),
+        ("Low Income Discount Recovery", "TAXES_FEES_CREDITS", 1.35),
+        ("Franchise Cost", "TAXES_FEES_CREDITS", 2.05),
+        ("State Tax", "TAXES_FEES_CREDITS", 5.66),
+        ("Municipal Tax", "TAXES_FEES_CREDITS", 10.77),
+        ("Low Income Discount", "TAXES_FEES_CREDITS", -13.04),
+        # MISC -- cross-bill adjustments, NOT current-period charges
+        ("Charges/Credits from previous bill", "MISC", 191.22),
+        ("Thank You for Your Payment of", "MISC", 191.22),
+    ]
+    # Use a bill window that overlaps the two-arm test dataset (June
+    # 2026, arms 1+2) so the orchestrator has rt_hrl_lmps coverage.
+    # The line-item content is what this test exercises, not the
+    # calendar arithmetic.
+    bill_rows = []
+    for line_item, category, amount in real_line_items:
+        bill_rows.append({
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 247.67,
+            "category": category,
+            "line_item": line_item,
+            "amount": amount,
+        })
+    inputs["bills_df"] = pd.DataFrame(bill_rows)
+
+    # Eagle covering the bill window
+    start_utc = datetime.datetime(2026, 6, 5, 5, 0)
+    eagle_rows = []
+    cur = 1000.0
+    for k in range(72):
+        cur += 2.0
+        eagle_rows.append({
+            "_time": start_utc + datetime.timedelta(hours=k),
+            "delivered_kwh": cur, "_field": "delivered_kwh",
+        })
+    inputs["eagle_df"] = pd.DataFrame(eagle_rows)
+
+    result = run_full_pipeline(**inputs)
+    assert len(result.bill_reconciliations) == 1
+    br = result.bill_reconciliations[0]
+    # If MISC rows leaked in: actual would be ~$537.81.
+    # If the denylist alone misses MISC: same false-flag failure mode.
+    # Correct derivation: $247.67 - $92.30 (fixed) = $155.37.
+    assert br.actual_bill_variable_dollars == pytest.approx(155.37, abs=0.01)
+
+
 def test_pipeline_accepts_stage1_long_form_bill_shape():
     """Stage 1 (tools/analysis/pipeline.py) writes Influx output as
     long-form parquet without a Flux ``pivot()``: each (measurement,
