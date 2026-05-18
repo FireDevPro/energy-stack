@@ -1,4 +1,18 @@
-"""Tests for the randomize_arms.py pre-registration assignment generator.
+"""Tests for the DEPRECATED randomize_arms.py pre-registration assignment generator.
+
+NOTE: randomize_arms.py is a pre-rebaseline historical artifact, retired by
+docs/plans/sced-rebaseline-spec-2026-05-13.md §0 + §2 on 2026-05-13. These
+tests are preserved to pin the ORIGINAL algorithm for audit traceability —
+they ensure the historical artifact stays byte-stable even though the script
+is no longer the canonical arm calendar source. The current canonical
+calendar lives in tools/analysis/arm_calendar.py (deterministic alternation,
+no PRNG seed).
+
+Original docstring follows below for reference.
+
+----
+
+Tests for the randomize_arms.py pre-registration assignment generator.
 
 These tests pin the algorithm: changing any of them breaks the pre-registered
 contract and requires an OSF amendment with explicit justification.

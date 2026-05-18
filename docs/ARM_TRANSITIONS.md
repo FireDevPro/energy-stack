@@ -1,8 +1,11 @@
 # Monday arm-transition procedure
 
+> [!NOTE]
+> **Calendar framing updated 2026-05-18**: the experiment now uses **deterministic 14-day alternation** (12 arms total, 2026-06-01 → 2026-11-16) per [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §2 — not "randomized 4-week blocks." The arm-transition operational procedure below remains valid; only the framing of which arm runs when has changed (now deterministic, no PRNG seed, canonical calendar in `tools/analysis/arm_calendar.py` and `deploy/energy-stack/hvac-scheduler/arm_calendar.py`). Also: `SCHEDULER_DRY_RUN` env var was retired in Phase 1 #112 and replaced with `SCHEDULER_MODE` (values: `shadow` for Arm A, `active` for Arm B) per the rebaseline impl plan standing rule #5. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+
 The residential HVAC controls SCED study alternates Arm A (consumer-grade
 programmable + smart recovery) and Arm B (full forecast-and-price-aware
-reactive controller) in 2-week runs within randomized 4-week blocks. Each
+reactive controller) in **deterministic 14-day arms** (12 arms total, 6 Arm A + 6 Arm B, alternating). Each
 arm transition happens at Monday 00:00 CT and requires three coordinated
 changes:
 

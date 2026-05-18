@@ -1,5 +1,16 @@
 # Experiment Design — Residential HVAC Controls Field Study (N=1)
 
+> [!WARNING]
+> **OSF-binding analysis-design content here is SUPERSEDED** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) (Phase 0, PR #111). Per the rebaseline spec's §0 source-of-truth declaration: "Where this spec conflicts with prior documents (`docs/EXPERIMENT_DESIGN.md`, archived `docs/plans/` files, PR #109), this spec wins." Specifically superseded:
+>
+> - **Arm calendar**: deterministic alternation, 12 arms × 14 days, 2026-06-01 → 2026-11-16. No PRNG seed `20260601`, no `randomize_arms.py`, no `experiment-assignments-summer-2026.csv`, no 4-week blocks. Canonical calendar is `tools/analysis/arm_calendar.py` per spec §2.
+> - **Outcome framework**: HVAC$ per arm-period (spec §4). `$/CDD`, weekly fact-table architecture, bootstrap CI, and the SCED randomization test are explicitly retired.
+> - **Weather matching**: Hungarian on within-sample-z-scored 4-component vector (spec §6). Mahalanobis distance + ERA5 baseline + 6-component vector are dropped.
+> - **Pipeline shape**: arm-period-shaped (spec §3, §5); weekly Stage 3/5 framing is replaced. Implementation lives at `tools/analysis/arm_period_pipeline.py`.
+> - **Pre-OSF artifact list**: spec §11 + §13 govern the OSF filing.
+>
+> This document is retained for research-design context, motivation, and the §11 ethics framing. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); resolved by this doc-sweep.
+
 **Status**: Pre-registration draft (revised 2026-05-09). Binding once filed to OSF. No data unblinding before pre-registration is filed.
 **Owner**: Chris dePaola (owner-as-investigator)
 **Ethics framing**: building-as-subject measurement study with the homeowner-investigator as sole occupant. See §11.

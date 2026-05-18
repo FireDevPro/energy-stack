@@ -1,5 +1,10 @@
 # Arm B Implementation Specification
 
+> [!WARNING]
+> **Analysis-design content here is SUPERSEDED** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) — specifically the §10 OSF acceptance criteria, the assignment-CSV references, the `randomize_arms.py` references, and the bootstrap/SCED-randomization-test framing. The current OSF acceptance list lives in the rebaseline impl plan's Phase 6 section.
+>
+> **Controller / Arm B operational content** (day-type classifier, RTP price-spike reactivity, PJM 5CP detection, layer priority) remains valid where consistent with `docs/HVAC_LOGIC.md`, the rebaseline spec, and the live `deploy/energy-stack/hvac-scheduler/app.py`. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+
 **Status**: Working spec (2026-05-09). Implementation gated on this spec being approved before code changes land.
 **Owner**: Chris dePaola
 **Companion docs**: [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) (research framing, locked threshold values in Appendix A), [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (current scheduler logic, schedules, fallback)

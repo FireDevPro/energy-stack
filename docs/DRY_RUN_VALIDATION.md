@@ -1,5 +1,8 @@
 # Dry-run mode validation procedure
 
+> [!WARNING]
+> **`SCHEDULER_DRY_RUN` was retired in Phase 1 #112 (2026-05-14)** and replaced with `SCHEDULER_MODE` (values: `shadow` for Arm A, `active` for Arm B) per the rebaseline impl plan standing rule #5. The validation procedure below describes the retired env var; the operational mechanics still apply but the env var name and the values are different. See [`docs/plans/sced-rebaseline-implementation-2026-05-13.md`](plans/sced-rebaseline-implementation-2026-05-13.md) standing-rule #5 + Phase 1 deploy notes for the migration. Also: "randomization begins" framing here predates the rebaseline; the experiment starts 2026-06-01 with **deterministic alternation** (no PRNG seed). Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+
 The Pi-side `hvac-scheduler` runs in two modes:
 
   * **Active** (`SCHEDULER_DRY_RUN=false`) -- Arm B weeks. The scheduler
@@ -12,7 +15,7 @@ The Pi-side `hvac-scheduler` runs in two modes:
 Per [`EXPERIMENT_DESIGN.md§3`](EXPERIMENT_DESIGN.md#3-arms--conditions)
 and [`ARM_B_IMPLEMENTATION.md§6`](ARM_B_IMPLEMENTATION.md). This document
 specifies the binding pre-flight validation that must complete before
-randomization begins (target 2026-06-01).
+the experiment starts (2026-06-01).
 
 ---
 

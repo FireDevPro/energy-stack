@@ -1,5 +1,10 @@
 # OSF pre-registration filing procedure
 
+> [!WARNING]
+> **The OSF filing artifact list and pre-flight checklist below are SUPERSEDED.** The current binding OSF filing list is in [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §11 + §13 and [`docs/plans/sced-rebaseline-implementation-2026-05-13.md`](plans/sced-rebaseline-implementation-2026-05-13.md) (Phase 5 + Phase 6). The OSF prereg references the rebaseline spec, `docs/THERMOSTAT_ARM_A_SCHEDULE.md`, `docs/HVAC_LOGIC.md`, and the Phase 6 shadow-validation findings — NOT `randomize_arms.py`, the `20260601` seed, or `experiment-assignments-summer-2026.csv` (those are retired pre-rebaseline artifacts).
+>
+> The OSF filing procedure mechanics (how to upload, what fields OSF asks for) below remain accurate; only the artifact references and pre-flight checklist content are stale. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); resolved by this doc-sweep.
+
 OSF (Open Science Framework, <https://osf.io>) hosts the binding
 pre-registration for this study. Filing locks the experimental design,
 threshold values, analysis plan, and assignment CSV at a frozen commit

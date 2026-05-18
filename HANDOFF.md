@@ -95,8 +95,8 @@ Every replay-validation finding so far has been schema drift between the product
 
 ## OSF lock state
 
-- Tag target: 2026-05-30 (18 days). Once filed, hypotheses + arm definitions + randomization seed + metric definitions + statistical analysis plan + decision rules freeze at a frozen commit hash.
-- Randomization starts 2026-06-01. Pre-experiment replay always reasons out at Stage 2 (`no_arm_assignments_in_window`).
+- Tag target: 2026-05-30 (18 days). Once filed, hypotheses + arm definitions + arm calendar + metric definitions + statistical analysis plan + decision rules freeze at a frozen commit hash.
+- Experiment starts 2026-06-01 with deterministic 14-day arm alternation (12 arms total). Pre-experiment replay always reasons out at Stage 2 (`no_arm_assignments_in_window`).
 - Replay-validation artifacts are in `docs/replay-validation/2026-05-12/`.
 
 ## Pi-lab connection
