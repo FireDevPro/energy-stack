@@ -236,7 +236,7 @@ The overlap provenance lets reviewers detect whether exclusion silently concentr
 **Temporal gap:** Reported as `temporal_gap_days` per pair (descriptive). NOT a filter.
 
 **Audit-phase items for §6:**
-1. Confirm NOAA-archived automated airport weather station selection (KJOT Joliet, KARR Aurora, KMDW Midway, or KORD O'Hare) for fallback. Criteria: proximity to Plainfield IL + completeness of hourly temp + dewpoint. (Note: KJOT and KARR are FAA AWOS-3; KMDW and KORD are FAA ASOS. The fallback paragraph in this section uses "NOAA-archived automated airport weather station" as the program-neutral term; the colloquial "NOAA ASOS" in this checklist item covers both programs since both flow through the same NCEI archive.)
+1. Confirm NOAA-archived automated airport weather station selection (KJOT Joliet, KARR Aurora, KMDW Midway, or KORD O'Hare) for fallback. Criteria: proximity to Plainfield IL + completeness of hourly temp + dewpoint. (Note: the candidate pool spans both FAA programs — ASOS and AWOS-3 — that flow through the same NCEI archive. The selected station KJOT is verified AWOS-3; program assignment for the three non-winning candidates is not separately verified in this audit. See `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md` for details.)
 2. Implement nocturnal-min aggregation (22:00-06:00 CT window) including DST-fold handling on arms 11-12.
 3. Caliper computation: lock the "full A-B distance distribution" as N_A_valid × N_B_valid pairwise distances; 90th percentile thresholded.
 

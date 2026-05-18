@@ -104,7 +104,7 @@ The spec wording in §6 said "likely KJOT Joliet" prior to this audit. The findi
 
 ## Operational notes
 
-- **Fallback semantics (per spec §6):** the NOAA ASOS feed is only consulted for hours where Ecowitt has no observation. It does not invalidate the arm period and it does not silently substitute when Ecowitt has data. The pipeline reports `pct_hours_ecowitt`, `pct_hours_noaa_fallback`, and the fallback-source station identity per arm.
+- **Fallback semantics (per spec §6):** the KJOT fallback feed is only consulted for hours where Ecowitt has no observation. It does not invalidate the arm period and it does not silently substitute when Ecowitt has data. The pipeline reports `pct_hours_ecowitt`, `pct_hours_noaa_fallback`, and the fallback-source station identity per arm.
 - **Pull cadence:** the analysis pipeline does not need to hit IEM or NCEI in real time. Post-arm-period retrospective pulls are sufficient (analysis runs after each arm period closes per spec §8 latency notes). Operators can pull the full experiment window in one batch at analysis time rather than running a daily poller.
 - **Station identifier on the wire:** the IEM API uses the three-letter station code (`JOT` for KJOT) in the CSV response's `station` column. Wherever the pipeline tags fallback rows with a station ID, the canonical value is `KJOT` (the four-letter ICAO identifier). Both `JOT` and `KJOT` refer to Joliet Regional Airport; the analysis layer should normalize.
 
