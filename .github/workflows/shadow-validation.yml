@@ -113,28 +113,14 @@ jobs:
         if: always()
         shell: bash
         run: |
-          # Surface the latest results JSON in the workflow summary so the
-          # operator can see overall status without downloading the artifact.
+          # Dump the validation results JSON into the workflow summary so
+          # the operator can see overall status without downloading the
+          # artifact. JSON is small (<10KB) — fits the summary budget.
           for f in docs/replay-validation/*-shadow/validation_results.json; do
             if [ -f "$f" ]; then
               echo "## Shadow validation: $f" >> "$GITHUB_STEP_SUMMARY"
               echo '```json' >> "$GITHUB_STEP_SUMMARY"
-              # Truncate to keep summary readable.
-              python3 -c "
-import json,sys
-d=json.load(open('$f'))
-print(json.dumps({
-  'overall': 'FAIL' if any(c['status']=='FAIL' for c in d['checks']) else (
-    'BLOCKED' if any(c['status']=='BLOCKED' for c in d['checks']) else (
-    'WARN' if any(c['status']=='WARN' for c in d['checks']) else 'PASS')),
-  'commit': d.get('runner_commit_sha'),
-  'window': [d['window_start_utc'], d['window_end_utc']],
-  'checks': [
-    {'id': c['check_id'], 'status': c['status'], 'reason': c.get('reason_code')}
-    for c in d['checks']
-  ],
-}, indent=2))
-" >> "$GITHUB_STEP_SUMMARY"
+              cat "$f" >> "$GITHUB_STEP_SUMMARY"
               echo '```' >> "$GITHUB_STEP_SUMMARY"
             fi
           done
