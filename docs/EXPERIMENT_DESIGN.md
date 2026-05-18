@@ -69,7 +69,7 @@ The kWh outcomes (O7, O8) exist to distinguish "saved money by using less energy
 
 ### Operational safety floor (not a measured outcome)
 
-The CTK04AE installer-menu safety supervisor in Arm B clamps any pushed setpoint to `[65°F, 86°F]` cool. The thermostat-programmed fallback schedule used in Arm A is ASHRAE 55-compliant throughout (cool setpoints 74-78°F, see [HVAC_LOGIC.md§Thermostat fallback](HVAC_LOGIC.md#thermostat-fallback-when-pi-is-offline)). Indoor temperature is monitored continuously and reported as a descriptive accompaniment to outcomes; comfort is not a hypothesis or measured outcome of the study. If the household reports unacceptable conditions during any arm, the deviation is logged and reported transparently in the final paper.
+The CTK04AE installer-menu safety supervisor in Arm B clamps any pushed setpoint to `[65°F, 86°F]` cool. The thermostat-programmed schedule used in Arm A is ASHRAE 55-compliant throughout (cool setpoints 73-78°F per the OSF-frozen schedule at [`THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md), mirrored at [HVAC_LOGIC.md§Thermostat fallback](HVAC_LOGIC.md#thermostat-fallback-when-pi-is-offline)). Indoor temperature is monitored continuously and reported as a descriptive accompaniment to outcomes; comfort is not a hypothesis or measured outcome of the study. If the household reports unacceptable conditions during any arm, the deviation is logged and reported transparently in the final paper.
 
 ---
 
@@ -430,7 +430,7 @@ This study is conducted as **building-as-subject measurement** by an unaffiliate
 
 The subject of measurement is the HVAC system and the building envelope. Measured outcomes are kWh, $, peak kW, and PJM 5CP coincident-peak demand. The setpoint envelope (cool setpoint range across both arms) is set by homeowner preference and is identical across arms by construction; it is an **input** to the experiment, not an outcome being optimized or measured. The experiment compares the cost of reaching the same homeowner-set envelope under two different control strategies.
 
-The thermostat-programmed fallback schedule running in Arm A operates entirely within the ASHRAE 55-2020 summer comfort envelope (cool setpoints 74-78°F). Arm B's setpoints during pre-cool and 5CP-shutoff windows are deliberately outside ASHRAE 55, as a homeowner-set cost-optimization choice that predates this study. The smart-system safety supervisor enforces a hard `[65°F, 86°F]` cool setpoint clamp on every push, so no controller bug can drive the house outside engineering-safe operating bounds.
+The thermostat-programmed schedule running in Arm A operates entirely within the ASHRAE 55-2020 summer comfort envelope (cool setpoints 73-78°F per [`THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md)). Arm B's setpoints during pre-cool and 5CP-shutoff windows are deliberately outside ASHRAE 55, as a homeowner-set cost-optimization choice that predates this study. The smart-system safety supervisor enforces a hard `[65°F, 86°F]` cool setpoint clamp on every push, so no controller bug can drive the house outside engineering-safe operating bounds.
 
 ### No institutional affiliation
 
