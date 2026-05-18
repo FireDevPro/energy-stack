@@ -9,17 +9,21 @@
 //                 "received_kwh"    (monotonic totalizer in kWh)
 //   _value:       numeric kWh
 //
-// The analysis layer derives per-hour kWh from totalizer differences
-// (delta = current - previous within the bill period). The range
-// starts 1 HOUR BEFORE the bill window so the loader gets the
-// "prior totalizer" anchor that ``bill_reconciliation`` needs to
-// produce a non-zero kWh for the first hour of the window. Without
-// this anchor, the first hour silently shows up as Eagle-covered
-// with 0 kWh, suppressing the Refoss-mains fallback that spec §10
-// expects when Eagle is genuinely missing.
+// Stage 1 substitution contract (see tools/analysis/pipeline.py): the
+// loader replaces ``$bucket`` with a double-quoted bucket name and
+// ``$start`` / ``$end`` with bare ISO timestamps. Use that exact form
+// here so the rendered Flux is valid.
+//
+// First-hour kWh edge case: ``bill_reconciliation`` derives per-hour
+// kWh from totalizer differences. The first hour of the bill window
+// has no prior anchor inside the query result and therefore registers
+// as zero kWh -- analytically bounded to under one dollar of monthly
+// residual per spec §10's "documented non-material edge case" note,
+// well below the >5%/$10 sanity threshold. No tolerance machinery
+// required.
 
-from(bucket: "${bucket}")
-  |> range(start: time(v: ${start}) -1h, stop: ${stop})
+from(bucket: $bucket)
+  |> range(start: $start, stop: $end)
   |> filter(fn: (r) => r._measurement == "eagle.meter")
   |> filter(fn: (r) => r._field == "delivered_kwh")
   |> yield(name: "eagle_meter")

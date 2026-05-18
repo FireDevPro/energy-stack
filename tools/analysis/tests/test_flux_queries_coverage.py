@@ -35,6 +35,40 @@ def test_every_known_measurement_has_a_flux_query():
     )
 
 
+def test_each_flux_file_uses_only_stage1_placeholders():
+    """The Stage 1 loader (tools/analysis/pipeline.py) substitutes
+    ``$bucket``, ``$start``, ``$end`` and nothing else. A query that
+    uses ``${bucket}``, ``${start}``, ``$stop`` (etc.) will render with
+    literal placeholder characters and produce an invalid Flux body --
+    the Influx client either rejects it or returns empty rows.
+
+    Catch any future drift by asserting that after the Stage 1
+    substitution no ``$``-prefixed identifier survives in the rendered
+    Flux body.
+    """
+    import re
+    placeholder_re = re.compile(r"\$\{?[A-Za-z_][A-Za-z_0-9]*\}?")
+    allowed = {"$bucket", "$start", "$end"}
+    for flux_file in QUERIES_DIR.glob("*.flux"):
+        text = flux_file.read_text()
+        # Strip line comments before scanning; placeholder words in
+        # documentation comments aren't a runtime concern.
+        body_lines = [
+            line for line in text.splitlines()
+            if not line.lstrip().startswith("//")
+        ]
+        body = "\n".join(body_lines)
+        used = set(placeholder_re.findall(body))
+        unexpected = used - allowed
+        assert not unexpected, (
+            f"{flux_file.name}: uses placeholder(s) {sorted(unexpected)} "
+            f"that Stage 1 will not substitute. Allowed: "
+            f"{sorted(allowed)}. The Stage 1 loader at "
+            f"tools/analysis/pipeline.py does string-replace on the "
+            f"three allowed names only."
+        )
+
+
 def test_no_orphan_flux_files():
     """A flux file with no corresponding KNOWN_MEASUREMENT entry would
     be queried but never tracked in the manifest. Catch that too."""

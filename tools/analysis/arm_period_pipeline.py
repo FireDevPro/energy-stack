@@ -261,6 +261,23 @@ def _hourly_mode_from_telemetry(
     return modes
 
 
+# Bill line items that are NOT variable-per-kWh charges per spec §4.
+# When reconciling against production ``comed.bill_lineitems``, these
+# rows must be excluded from the "variable charges" total that the
+# reconstruction compares against -- otherwise a real bill's fixed
+# Customer Charge, Standard Metering Charge, kW-based Capacity Charge,
+# and percentage taxes would inflate the actual-bill side and produce
+# false-positive divergence flags.
+FIXED_BILL_LINE_ITEMS: frozenset[str] = frozenset({
+    "Customer Charge",
+    "Standard Metering Charge",
+    "Capacity Charge",
+    "Municipal Tax",
+    "State Tax",
+    "Franchise Cost",
+})
+
+
 _KNOWN_MODE_STRINGS: dict[str, HourMode] = {
     "A-active": HourMode.A_ACTIVE,
     "B-active": HourMode.B_ACTIVE,
@@ -784,10 +801,23 @@ def _reconcile_against_bills(
         )
         service_to_inclusive = False
         ct_local_dates = False
+        derive_variable_from_lineitems = False
     elif production_cols.issubset(bills_df.columns):
         start_col, end_col, dollars_col = "service_from", "service_to", "total_due"
         service_to_inclusive = True
         ct_local_dates = True
+        # Production ``comed.bill`` ``total_due`` is the FULL bill total
+        # (variable + fixed monthly charges + percentage taxes + kW-based
+        # Capacity Charge). Spec §10 says reconciliation compares the
+        # reconstructed VARIABLE charges to the actual VARIABLE charges,
+        # so when line-item data is available we derive variable_dollars
+        # by summing ``comed.bill_lineitems.amount`` excluding the
+        # spec §4 fixed-charge set.
+        derive_variable_from_lineitems = (
+            "category" in bills_df.columns
+            and "line_item" in bills_df.columns
+            and "amount" in bills_df.columns
+        )
     else:
         return []
     periods = (
@@ -817,6 +847,18 @@ def _reconcile_against_bills(
                 start = start.tz_convert("UTC").tz_localize(None)
             if hasattr(end, "tz") and end.tz is not None:
                 end = end.tz_convert("UTC").tz_localize(None)
+
+        if derive_variable_from_lineitems:
+            period_lineitems = bills_df[
+                (bills_df[start_col] == row[start_col])
+                & (bills_df[end_col] == row[end_col])
+                & bills_df["line_item"].notna()
+                & ~bills_df["line_item"].isin(FIXED_BILL_LINE_ITEMS)
+            ]
+            actual_variable = float(period_lineitems["amount"].sum())
+        else:
+            actual_variable = float(row[dollars_col])
+
         out.append(
             reconcile_bill_period(
                 bill_period_start_utc=start.to_pydatetime() if hasattr(start, "to_pydatetime") else start,
@@ -825,7 +867,7 @@ def _reconcile_against_bills(
                 refoss_df=refoss_df,
                 rt_hrl_lmps_df=rt_hrl_lmps_df,
                 rate_snapshot=rate_snapshot,
-                actual_bill_variable_dollars=float(row[dollars_col]),
+                actual_bill_variable_dollars=actual_variable,
             )
         )
     return out

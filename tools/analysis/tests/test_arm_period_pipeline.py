@@ -241,21 +241,53 @@ def test_pipeline_accepts_production_comed_bill_shape():
             "_time": datetime.datetime(2026, 6, 10, 0, 0),
             "service_from": "2026-06-05",
             "service_to": "2026-06-07",
-            "total_due": 200.0,
+            "total_due": 234.18,  # variable 200 + fixed 34.18
             "category": "DELIVERY",
             "line_item": "Distribution Facility Charge",
             "amount": 80.0,
         },
-        # A second line item for the same bill -- must NOT cause a
-        # duplicate reconciliation.
+        # Second variable line item for the same bill -- must NOT cause
+        # a duplicate reconciliation.
         {
             "_time": datetime.datetime(2026, 6, 10, 0, 0),
             "service_from": "2026-06-05",
             "service_to": "2026-06-07",
-            "total_due": 200.0,
+            "total_due": 234.18,
             "category": "SUPPLY",
             "line_item": "Electricity Supply Charge",
             "amount": 120.0,
+        },
+        # Spec §4 fixed line items: MUST be excluded from the variable
+        # total that reconciliation compares against. If a real bill's
+        # Customer Charge / Standard Metering Charge / Capacity Charge
+        # were treated as variable, the reconstructed-vs-actual delta
+        # would false-flag divergence.
+        {
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 234.18,
+            "category": "DELIVERY",
+            "line_item": "Customer Charge",
+            "amount": 15.35,
+        },
+        {
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 234.18,
+            "category": "DELIVERY",
+            "line_item": "Standard Metering Charge",
+            "amount": 3.83,
+        },
+        {
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 234.18,
+            "category": "DELIVERY",
+            "line_item": "Capacity Charge",
+            "amount": 15.00,
         },
     ])
     # Eagle totalizer covering the bill window (UTC 06-05 05:00 -> 06-08 05:00)
@@ -272,7 +304,7 @@ def test_pipeline_accepts_production_comed_bill_shape():
     inputs["eagle_df"] = pd.DataFrame(eagle_rows)
     inputs["bills_df"] = bills_df
     result = run_full_pipeline(**inputs)
-    # Two line items, one bill period -> one reconciliation.
+    # Five line items, one bill period -> one reconciliation.
     assert len(result.bill_reconciliations) == 1
     br = result.bill_reconciliations[0]
     # Window bounds were CT-localised. service_from 06-05 -> UTC 05:00.
@@ -281,4 +313,7 @@ def test_pipeline_accepts_production_comed_bill_shape():
     assert br.bill_period_end_utc == datetime.datetime(2026, 6, 8, 5, 0)
     # Eagle covered every hour of the window.
     assert br.pct_hours_eagle == pytest.approx(100.0)
+    # Variable charges = 80 (DFC) + 120 (Supply) = $200.
+    # Fixed (Customer, Standard Metering, Capacity) MUST be excluded.
+    # If the orchestrator naively used total_due (234.18), this fails.
     assert br.actual_bill_variable_dollars == pytest.approx(200.0)
