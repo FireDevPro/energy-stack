@@ -249,12 +249,14 @@ The schedule programmed directly into the CTK04AE (via TCC web UI, applies same 
 
 | Period | Time | Heat °F | Cool °F | Fan | Reasoning |
 |---|---|---|---|---|---|
-| Wake | 5:00 AM | 68 | 74 | Auto | Light pre-cool window, off-peak pricing |
-| Leave | 1:00 PM | 68 | 78 | Circulate | **Peak avoidance** — coast through 1-7pm with circulate fan for perceived comfort. The critical setpoint. |
+| Wake | 5:00 AM | 68 | 73 | Auto | Light pre-cool window, off-peak pricing |
+| Leave | 1:00 PM | 66 | 78 | Circulate | **Peak avoidance** — coast through 1-7pm with circulate fan for perceived comfort. The critical setpoint. |
 | Return | 7:00 PM | 68 | 75 | Auto | Off-peak begins, recover to evening comfort |
 | Sleep | 10:00 PM | 65 | 74 | Auto | Cool sleep, all off-peak |
 
-**Deadbands** (Honeywell requires 5°F minimum in Auto): Wake 6°✓, Leave 10°✓, Return 7°✓, Sleep 9°✓.
+**Deadbands** (Honeywell requires 5°F minimum in Auto): Wake 5°✓, Leave 12°✓, Return 7°✓, Sleep 9°✓.
+
+This table is the authoritative Arm-A-schedule freeze; the same content with full provenance lives in [`THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md). The two are kept in sync as a Phase 5 OSF-freeze commitment.
 
 **What this fallback DOES:** competent peak avoidance for an "average summer day" + reasonable winter setbacks. ~90% of what the Pi scheduler would do for a typical NORMAL day.
 

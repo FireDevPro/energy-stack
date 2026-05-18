@@ -81,7 +81,7 @@ Both arms run on identical equipment (Amana ASXC160481BE 2-stage AC + AMVM971005
 
 **Configuration:** CTK04AE running its programmed 4-event schedule natively. Pi-based scheduler in dry-run mode (logs intended actions to InfluxDB but pushes no setpoints). CTK04 ISU 4090 (Adaptive Intelligent Recovery) set ON, matching Ecobee Smart Recovery and Nest learned-recovery behavior.
 
-**Schedule:** the CTK04AE-programmed fallback documented at [HVAC_LOGIC.md§Thermostat fallback](HVAC_LOGIC.md#thermostat-fallback-when-pi-is-offline). Cool setpoints 74°F / 78°F / 75°F / 74°F at 5am / 1pm / 7pm / 10pm. ASHRAE 55-compliant throughout.
+**Schedule:** the CTK04AE-programmed schedule frozen at [`THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md) (and mirrored at [HVAC_LOGIC.md§Thermostat fallback](HVAC_LOGIC.md#thermostat-fallback-when-pi-is-offline)). Cool setpoints 73°F / 78°F / 75°F / 74°F at 5am / 1pm / 7pm / 10pm. ASHRAE 55-compliant throughout.
 
 **What Arm A does:**
 - 4-event programmable schedule
