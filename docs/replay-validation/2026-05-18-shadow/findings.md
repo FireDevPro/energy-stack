@@ -36,7 +36,7 @@ PYTHONPATH=. \
 python tools/analysis/run_shadow_validation.py
 ```
 
-**Provenance caveat.** The `runner_commit_sha` recorded in `validation_results.json` is `4f16742` (the parent of this PR's commit, because the runner was invoked from a workstation checked out at `main` before the runner was committed locally — i.e. `git rev-parse HEAD` ran at parent SHA). The runner source code is committed in this PR at SHA `<filled-in-at-PR-merge>`. A second canonical run against pi-lab via the Actions workflow will record the merged SHA properly; both runs use the same shadow data and produce the same findings.
+**Provenance caveat.** The `runner_commit_sha` recorded in the in-PR `validation_results.json` is `4f16742` (the parent of PR #142's merge commit `3bbd270`, because the runner was invoked from a workstation checked out at `main` before the runner was committed locally — `git rev-parse HEAD` ran at parent SHA). A canonical pi-lab-side run was captured post-merge as GitHub Actions run `26056757401` at SHA `4ad147e` (post-PR-#146 retraction main); that artifact has the correct provenance and should be the one OSF reviewers consume. Both runs use the same shadow data and produce equivalent findings; only the execution host and the recorded SHA differ.
 
 After this PR merges to main, the canonical re-run path is the Actions UI → "Shadow validation" → Run workflow. That run will execute on pi-lab itself (self-hosted runner) and upload the validation JSON + findings draft as a workflow artifact. The local fallback documented here remains valid for ad-hoc re-runs from a developer workstation.
 
