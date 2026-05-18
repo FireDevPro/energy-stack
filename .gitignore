@@ -48,6 +48,7 @@ docs/test-reports/*.md
 
 # Cockpit dev artifacts (local-only; should never be committed)
 /node_modules/
+.vite/
 .playwright-mcp/
 reticule-*.png
 reference-original.png
