@@ -207,7 +207,7 @@ The overlap provenance lets reviewers detect whether exclusion silently concentr
 
 **Weather data source (mixed, with provenance):**
 - **Primary:** Ecowitt local station (microclimate-faithful to actual house conditions). Canonical channels: `ch1_temp_f` (outdoor shaded) and `ch1_dewpoint_f`. `ws90_*` (outdoor unshaded) and `outdoor_*` (gateway alias) are descriptive only, not used in the vector.
-- **Fallback:** NOAA ASOS **KJOT (Joliet Regional Airport)** for any Ecowitt-gap hours. Selected at audit phase per `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md` (6.9 mi from Plainfield, 100% temp + dew-point hourly completeness over a 7-day July 2024 sample). Used ONLY to fill missing hours within an arm period; does NOT invalidate the arm period itself.
+- **Fallback:** NOAA-archived automated airport weather station **KJOT (Joliet Regional Airport, AWOS-3)** for any Ecowitt-gap hours. Selected at audit phase per `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md` (6.9 mi from Plainfield, 100% temp + dew-point hourly completeness over a 7-day July 2024 sample including the 2024-07-15 derecho). The audit confirms AWOS-3 and ASOS METAR observations are functionally equivalent for the temperature and dew-point fields the spec §6 weather vector consumes — both flow through the same NWS METAR feed and the same NCEI archive — and proximity criterion favours KJOT over the nearest ASOS-program station (KMDW at 26.3 mi). Used ONLY to fill missing hours within an arm period; does NOT invalidate the arm period itself.
 - **Provenance per arm:** report `pct_hours_ecowitt`, `pct_hours_noaa_fallback`, and fallback-source identity. No silent substitution.
 
 **Weather vector (4 components, arm-period aggregation over post-washout 12-day window):**
@@ -498,7 +498,7 @@ This is a **single-household n-of-1 case study**. Results are not generalizable.
 These items need concrete numbers/specs in the audit/tasks phase, not blocking OSF:
 
 - Refoss-mains vs Eagle whole-home discrepancy tolerance for bill-reconciliation provenance: TBD per audit (production data shows close tracking; set tolerance based on observed agreement)
-- NOAA ASOS fallback station selection (KJOT Joliet / KARR Aurora / KMDW Midway / KORD O'Hare): TBD per audit (criteria: proximity to Plainfield IL + hourly temp + dewpoint completeness)
+- ~~NOAA ASOS fallback station selection (KJOT Joliet / KARR Aurora / KMDW Midway / KORD O'Hare): TBD per audit (criteria: proximity to Plainfield IL + hourly temp + dewpoint completeness)~~ **Resolved 2026-05-18:** locked to KJOT Joliet (AWOS-3) per `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md`. See §6 for the data-source paragraph.
 - Day-type schedule completeness audit: verify every Arm B day-type schedule (MILD / NORMAL / HOT / HOT_STREAK_DAY1 / etc.) is enumerated in `docs/HVAC_LOGIC.md` at the OSF-freeze commit; patch any gaps
 - DST-fold handling in arms 11-12 (2026-11-01 02:00 → 01:00 CT): nocturnal-min aggregation window (22:00-06:00 CT) needs `zoneinfo` not hardcoded offset
 - Sensitivity table format and report layout: spec/implementation phase

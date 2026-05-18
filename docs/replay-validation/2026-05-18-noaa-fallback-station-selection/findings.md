@@ -5,21 +5,32 @@ status: active
 role-label: code-team
 ---
 
-# NOAA ASOS fallback station selection
+# NOAA fallback station selection (ASOS / AWOS-3)
 
 **Spec anchor:** `docs/plans/sced-rebaseline-spec-2026-05-13.md` §6 (Weather data source — Fallback) and §11 #11 (Pre-OSF audit-phase deliverable).
 
-**Decision:** lock **KJOT (Joliet Regional Airport)** as the NOAA ASOS fallback station for Ecowitt-gap hours during the Summer 2026 experiment window.
+**Decision:** lock **KJOT (Joliet Regional Airport, AWOS-3)** as the NOAA-archived automated airport weather station that serves as fallback for Ecowitt-gap hours during the Summer 2026 experiment window.
+
+## Terminology clarification (spec wording vs FAA station-type)
+
+Spec §6 uses the phrase "NOAA ASOS" as colloquial shorthand for "NOAA-archived automated airport surface weather observations." The four candidates the spec lists span two distinct FAA station-type programs:
+
+- **ASOS** (Automated Surface Observing System, jointly operated by NWS, FAA, and DoD): **KMDW** (Chicago Midway), **KORD** (Chicago O'Hare).
+- **AWOS-3** (Automated Weather Observing System, FAA-operated): **KJOT** (Joliet Regional), **KARR** (Aurora Municipal).
+
+For the temperature and dew-point fields this audit cares about, the two programs are functionally equivalent: both produce NWS-issued METARs, both run comparable hygrothermometer sensors (HO-83 / HO-1083 family), and both feed into the NCEI Integrated Surface Database (ISD-DSI-3505) via the same NOAA archive pipeline. The IEM "ASOS Network" mirror used to fetch the sample data deliberately includes AWOS-3 stations under the same network label, reflecting this functional equivalence. The Iowa Environmental Mesonet station-info page for KJOT (`https://mesonet.agron.iastate.edu/sites/site.php?station=JOT&network=IL_ASOS`) explicitly carries `IS_AWOS=1`; KARR is similarly AWOS-3 per FAA Aeronautical Information Manual records, while KMDW and KORD are not flagged.
+
+This document refers to the four candidates collectively as "NOAA airport weather stations" to keep the spec-language continuity, and notes the program assignment per station. If the spec's "NOAA ASOS" wording is read strictly, KJOT is not eligible and the next-closest ASOS would be KMDW at 26.3 mi. Doing that would substantially degrade the proximity criterion the spec prioritizes for what amounts to a sensor-program technicality at the analysis-relevant variables, so the audit recommends accepting KJOT and tightening the spec wording rather than trading 19 miles of proximity for a label.
 
 ## Scope of this document
 
-Phase 4 of the SCED rebaseline implementation plan asks for a single audit deliverable: pick which NOAA ASOS station serves as the fallback when the Ecowitt local station has gaps. Spec §6 names four candidates: KJOT (Joliet), KARR (Aurora), KMDW (Chicago Midway), KORD (Chicago O'Hare). Spec criteria: proximity to Plainfield, IL first, hourly temperature and dew-point completeness second. **No historical baseline pull is needed**, because spec §6's matching uses within-sample standardization across the 12 experiment blocks rather than an external multi-year baseline. The pre-Phase-4 plan called for a 6-year ERA5 reanalysis pull plus z-score-parameter freeze; the H2 adversarial review collapsed that work in favour of within-sample standardization, leaving Phase 4 as a station-selection audit only.
+Phase 4 of the SCED rebaseline implementation plan asks for a single audit deliverable: pick which NOAA-archived station serves as the fallback when the Ecowitt local station has gaps. Spec §6 names four candidates: KJOT (Joliet), KARR (Aurora), KMDW (Chicago Midway), KORD (Chicago O'Hare). Spec criteria: proximity to Plainfield, IL first, hourly temperature and dew-point completeness second. **No historical baseline pull is needed**, because spec §6's matching uses within-sample standardization across the 12 experiment blocks rather than an external multi-year baseline. The pre-Phase-4 plan called for a 6-year ERA5 reanalysis pull plus z-score-parameter freeze; the H2 adversarial review collapsed that work in favour of within-sample standardization, leaving Phase 4 as a station-selection audit only.
 
 This document does not implement the fallback logic. It records the audit decision so the spec can drop the "likely KJOT Joliet" hedge in §6, and so a future operator running the analysis pipeline knows which station identifier to point the fallback at.
 
 ## Data source
 
-**Iowa Environmental Mesonet (IEM) ASOS Network — request_asos endpoint.** IEM mirrors NOAA's ASOS observations from MADIS / the National Weather Service ASOS feed and exposes them via a public HTTP API. It is the standard authoritative source for ASOS data in research workflows; the underlying observations are NOAA-issued METARs, not derived IEM products.
+**Iowa Environmental Mesonet (IEM) ASOS Network — request_asos endpoint.** IEM provides a convenience HTTP mirror of NOAA-archived METAR observations from ASOS and AWOS airport weather stations. The underlying observations are the same NWS-issued METARs that flow into NCEI's Integrated Surface Database (DSI-3505 / DSI-3283 hourly); IEM is widely used in research as an easier access layer than NCEI's bulk archive, but the citable authoritative archive of record is NCEI. For Phase 4's purposes IEM and NCEI return identical observation values at the per-hour granularity this audit checks — IEM was chosen for endpoint friction reasons (the Phase 4 goal explicitly allows "another authoritative NOAA ASOS source if NCEI endpoint friction blocks progress"), and a future operator can re-pull from NCEI for OSF deposit if a stricter chain-of-custody is desired.
 
 Endpoint base: `https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py`
 
@@ -49,9 +60,11 @@ Both routine hourly METARs (`report_type=3`) and special observations (`report_t
 
 **2024-07-15 00:00 CT through 2024-07-21 23:59 CT (7 days, 168 hours).**
 
-This is the exact window the goal-condition specified. It sits in mid-July of the most recent complete summer prior to the OSF filing, which is the season the experiment will run in. The week is climatologically representative — afternoon highs in the 80s and 90s F, overnight lows in the high 60s and low 70s, consistent with a typical Chicago-area cooling-season pattern. No major data-collection issues were flagged for this period in NWS post-event summaries.
+This is the exact window the goal-condition specified. It sits in mid-July of the most recent complete summer prior to the OSF filing, which is the season the experiment will run in.
 
-The 7-day duration is sufficient to surface station-outage patterns: a station with chronic flakiness or a one-time multi-hour interruption shows up in 168 hours of observations. It is *not* sufficient to characterise multi-year reliability, but spec §6 does not require that — the fallback is "fill missing hours within an arm period," not "validate the station against long-term climatology."
+**Severe-weather note:** the sample week contains the 2024-07-15 northern Illinois derecho — the NWS Chicago / Lot office documented widespread wind damage and 32 tornadoes in its county warning area on that date (https://www.weather.gov/lot/2024_07_15_Derecho). This is the opposite of a "quiet representative week." The audit explicitly keeps the window anyway because a 100% completeness result *through a derecho* is a stronger reliability signal than completeness during a quiet week: a station that keeps reporting METARs hourly while a severe-weather event passes overhead is demonstrating sensor and uplink resilience under stress. This is the most useful reliability evidence a 168-hour sample can produce — more useful than picking an undisturbed week and getting trivially-clean data.
+
+The 7-day duration provides a single-event-period reliability check, not a multi-week or multi-year reliability characterization. Spec §6 does not require multi-year — the fallback is "fill missing hours within an arm period," not "validate the station against long-term climatology." If a future audit needs to characterize multi-year reliability (for OSF supplementary material, e.g.), the same IEM endpoint can be re-issued with a longer window.
 
 ## Method
 
@@ -63,12 +76,14 @@ Multi-METAR hours (some stations issue 4-per-hour) inflate row counts but do not
 
 ## Completeness results
 
-| Station | Description | Lat / Lon | Distance to Plainfield | tmpf hours covered | dwpf hours covered | Both fields covered |
-|---|---|---|---|---|---|---|
-| **KJOT** | Joliet Regional Airport | 41.5177 / -88.1756 | **6.9 mi** | 168 / 168 (**100.0%**) | 168 / 168 (**100.0%**) | 100.0% |
-| KARR | Aurora Municipal Airport | 41.7700 / -88.4800 | 17.7 mi | 159 / 168 (94.6%) | 159 / 168 (94.6%) | 94.6% |
-| KMDW | Chicago Midway International | 41.7860 / -87.7524 | 26.3 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
-| KORD | Chicago O'Hare International | 41.9602 / -87.9316 | 27.8 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
+| Station | Description | Program | Lat / Lon | Distance to Plainfield | tmpf hours covered | dwpf hours covered | Both fields covered |
+|---|---|---|---|---|---|---|---|
+| **KJOT** | Joliet Regional Airport | AWOS-3 | 41.5177 / -88.1756 | **6.9 mi** | 168 / 168 (**100.0%**) | 168 / 168 (**100.0%**) | 100.0% |
+| KARR | Aurora Municipal Airport | AWOS-3 | 41.7700 / -88.4800 | 17.7 mi | 159 / 168 (94.6%) | 159 / 168 (94.6%) | 94.6% |
+| KMDW | Chicago Midway International | ASOS | 41.7860 / -87.7524 | 26.3 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
+| KORD | Chicago O'Hare International | ASOS | 41.9602 / -87.9316 | 27.8 mi | 168 / 168 (100.0%) | 168 / 168 (100.0%) | 100.0% |
+
+These percentages describe completeness *over the 168-hour sample window only*; they are not a long-term reliability claim. The fact that three of four stations cleared 100% over a derecho week supports treating the candidate pool as broadly reliable for retrospective Ecowitt-gap fill, but operators should expect occasional gaps in the actual experiment window and plan to record them via the spec §6 `pct_hours_noaa_fallback` provenance field.
 
 The KARR shortfall is a single contiguous 9-hour outage from 2024-07-15 21:00 CT through 2024-07-16 05:00 CT inclusive — an overnight station gap, not a chronic-flakiness signal. It does not change the decision (KJOT wins on proximity regardless) but is worth noting if KARR is ever reconsidered as a secondary fallback.
 
@@ -76,7 +91,7 @@ The KARR shortfall is a single contiguous 9-hour outage from 2024-07-15 21:00 CT
 
 The plan's coarse distance estimates were KJOT ~10 mi, KARR ~15 mi, KMDW ~30 mi, KORD ~35 mi. Haversine-from-station-lat-lon-to-Plainfield-centroid produces KJOT 6.9 mi, KARR 17.7 mi, KMDW 26.3 mi, KORD 27.8 mi. The plan's estimates were directionally correct; the precise figures shorten KJOT slightly and bring KMDW / KORD closer together than the plan suggested. None of these revisions change the ordering on the proximity criterion.
 
-Plainfield, IL is a village of 45 square miles; the centroid used here approximates the residence location to within roughly one mile, which is well below the station-to-station spread. The decision is not sensitive to small choices of reference point within Plainfield proper.
+Plainfield, IL is a village of approximately 25 square miles (Village of Plainfield published figures). The audit reference point is the village geographic centroid — the precise residence location is not used. The decision is not sensitive to within-village reference-point choice because the nearest-candidate distance (KJOT at 6.9 mi) is large relative to Plainfield's diameter, and the next-nearest candidate (KARR at 17.7 mi) is more than twice as far again.
 
 ## Decision and rationale
 
