@@ -221,3 +221,64 @@ def test_pipeline_bill_reconciliations_populated_when_bill_period_columns_presen
     assert len(result.bill_reconciliations) == 1
     br = result.bill_reconciliations[0]
     assert br.reconstructed_variable_dollars > 0
+
+
+def test_pipeline_accepts_production_comed_bill_shape():
+    """Production ``comed.bill`` (deploy/energy-stack/scripts/comed_influx.py)
+    writes ``service_from`` / ``service_to`` (ISO dates, CT-local,
+    inclusive) and ``total_due``. The orchestrator must accept that
+    schema; otherwise Phase 6 shadow validation silently runs zero
+    bill reconciliations.
+    """
+    inputs = _build_two_arm_dataset()
+    # Build a tiny bill that overlaps the two-arm window. Two-arm window
+    # spans arms 1 (CT 2026-06-01 -> 2026-06-15) and 2 (2026-06-15 ->
+    # 2026-06-29). Use service_from=2026-06-05, service_to=2026-06-07
+    # (inclusive), so the UTC bill period is 2026-06-05 05:00 ->
+    # 2026-06-08 05:00 UTC.
+    bills_df = pd.DataFrame([
+        {
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 200.0,
+            "category": "DELIVERY",
+            "line_item": "Distribution Facility Charge",
+            "amount": 80.0,
+        },
+        # A second line item for the same bill -- must NOT cause a
+        # duplicate reconciliation.
+        {
+            "_time": datetime.datetime(2026, 6, 10, 0, 0),
+            "service_from": "2026-06-05",
+            "service_to": "2026-06-07",
+            "total_due": 200.0,
+            "category": "SUPPLY",
+            "line_item": "Electricity Supply Charge",
+            "amount": 120.0,
+        },
+    ])
+    # Eagle totalizer covering the bill window (UTC 06-05 05:00 -> 06-08 05:00)
+    eagle_rows = []
+    cur = 1000.0
+    start_utc = datetime.datetime(2026, 6, 5, 5, 0)
+    for k in range(72):
+        cur += 1.5
+        eagle_rows.append({
+            "_time": start_utc + datetime.timedelta(hours=k),
+            "delivered_kwh": cur,
+            "_field": "delivered_kwh",
+        })
+    inputs["eagle_df"] = pd.DataFrame(eagle_rows)
+    inputs["bills_df"] = bills_df
+    result = run_full_pipeline(**inputs)
+    # Two line items, one bill period -> one reconciliation.
+    assert len(result.bill_reconciliations) == 1
+    br = result.bill_reconciliations[0]
+    # Window bounds were CT-localised. service_from 06-05 -> UTC 05:00.
+    # service_to 06-07 inclusive -> +1 day -> 06-08 CT -> UTC 05:00.
+    assert br.bill_period_start_utc == datetime.datetime(2026, 6, 5, 5, 0)
+    assert br.bill_period_end_utc == datetime.datetime(2026, 6, 8, 5, 0)
+    # Eagle covered every hour of the window.
+    assert br.pct_hours_eagle == pytest.approx(100.0)
+    assert br.actual_bill_variable_dollars == pytest.approx(200.0)

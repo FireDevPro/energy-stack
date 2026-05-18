@@ -762,27 +762,32 @@ def _reconcile_against_bills(
     Bill-period detection: accepts either the analysis-shape columns
     (``bill_period_start_utc``, ``bill_period_end_utc``,
     ``variable_dollars``) or the production ``comed.bill`` shape
-    (``service_from``, ``service_to``, ``total_amount``). Rows are
+    (``service_from``, ``service_to``, ``total_due``). Rows are
     deduplicated by period bounds so multi-line-item bills produce one
     reconciliation per period, not per line.
+
+    Production ``comed.bill`` (deploy/energy-stack/scripts/comed_influx.py)
+    writes ``total_due`` as the bill-level dollar field;
+    ``service_from`` / ``service_to`` are ISO date strings representing
+    CT-local midnights and ``service_to`` is INCLUSIVE (last day of
+    service), so the exclusive UTC bill-period-end is
+    CT-localised(service_to + 1 day) -> UTC.
     """
     if bills_df is None or bills_df.empty:
         return []
     analysis_cols = {"bill_period_start_utc", "bill_period_end_utc",
                      "variable_dollars"}
-    production_cols = {"service_from", "service_to", "total_amount"}
+    production_cols = {"service_from", "service_to", "total_due"}
     if analysis_cols.issubset(bills_df.columns):
         start_col, end_col, dollars_col = (
             "bill_period_start_utc", "bill_period_end_utc", "variable_dollars",
         )
         service_to_inclusive = False
+        ct_local_dates = False
     elif production_cols.issubset(bills_df.columns):
-        # Production ``comed.bill`` (deploy/energy-stack/scripts/comed_influx.py):
-        # field names are ``total_due`` (not ``total_amount``);
-        # ``service_to`` is an INCLUSIVE CT date, so the exclusive UTC
-        # bill-period-end is service_to + 1 day shifted into UTC.
         start_col, end_col, dollars_col = "service_from", "service_to", "total_due"
         service_to_inclusive = True
+        ct_local_dates = True
     else:
         return []
     periods = (
@@ -795,10 +800,23 @@ def _reconcile_against_bills(
         end = pd.to_datetime(row[end_col])
         if service_to_inclusive:
             end = end + pd.Timedelta(days=1)
-        if hasattr(start, "tz") and start.tz is not None:
-            start = start.tz_convert("UTC").tz_localize(None)
-        if hasattr(end, "tz") and end.tz is not None:
-            end = end.tz_convert("UTC").tz_localize(None)
+        # Production bills are CT-local dates; analysis-shape bounds are
+        # already UTC. Localise + convert to naive UTC at the boundary
+        # so the downstream reconciliation iterates on UTC hours.
+        if ct_local_dates:
+            if start.tzinfo is None:
+                start = start.tz_localize(_CT).tz_convert("UTC").tz_localize(None)
+            else:
+                start = start.tz_convert("UTC").tz_localize(None)
+            if end.tzinfo is None:
+                end = end.tz_localize(_CT).tz_convert("UTC").tz_localize(None)
+            else:
+                end = end.tz_convert("UTC").tz_localize(None)
+        else:
+            if hasattr(start, "tz") and start.tz is not None:
+                start = start.tz_convert("UTC").tz_localize(None)
+            if hasattr(end, "tz") and end.tz is not None:
+                end = end.tz_convert("UTC").tz_localize(None)
         out.append(
             reconcile_bill_period(
                 bill_period_start_utc=start.to_pydatetime() if hasattr(start, "to_pydatetime") else start,
