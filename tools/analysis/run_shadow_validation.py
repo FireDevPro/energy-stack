@@ -254,26 +254,30 @@ def check_ingestion(client, bucket: str, start: datetime.datetime, end: datetime
 def check_ecowitt_weather_ingestion(
     client, bucket: str, start: datetime.datetime, end: datetime.datetime,
 ) -> CheckResult:
-    """Ecowitt ingestion check that respects the canonical/non-canonical split.
+    """Ecowitt ingestion check, aligned to spec §6 canonical.
 
-    Per deploy/energy-stack/ecowitt-ingest/app.py docstring:
-      - outdoor_*  = CANONICAL shaded outdoor (WN31 on ECOWITT_SHADED_CHANNEL).
-                     NOT WRITTEN if ECOWITT_SHADED_CHANNEL is unset — "fail
-                     loud rather than silently substituting sun data."
-      - ch{N}_*    = other paired WH31 channels (loop explicitly SKIPS the
-                     shaded channel).
-      - ws90_*     = WS90 onboard, sun-exposed comparator (always present).
+    Per docs/plans/sced-rebaseline-spec-2026-05-13.md §6 line 209:
+      "Canonical channels: ch1_temp_f (outdoor shaded) and ch1_dewpoint_f.
+       ws90_* (outdoor unshaded) and outdoor_* (gateway alias) are
+       descriptive only, not used in the vector."
 
-    The runner does NOT treat ch1_* presence as success — that masks the
-    production config gap of ECOWITT_SHADED_CHANNEL being unset. Status:
-      PASS:    outdoor_temp_f + outdoor_dewpoint_f both present
-      WARN:    ws90_* present but outdoor_* missing AND ch{N}_* present
-               (poller alive, config gap)
-      FAIL:    no outdoor + no ch + no ws90 → poller is down or schema is
-               completely broken.
+    The operator pairs the WN31 shaded reference sensor on channel 1 of
+    the Ecowitt gateway; the poller writes that reading as ch1_temp_f
+    / ch1_dewpoint_f. The spec author deliberately picked this
+    channel-form name (transparent and binding-specific) over the
+    space-form `outdoor_*` (which is ambiguous because the WS90 sun
+    comparator is also outdoor). See findings.md OI-1 retraction for
+    the full reasoning.
+
+    Status:
+      PASS:    ch1_temp_f + ch1_dewpoint_f both meaningfully present
+      WARN:    canonical ch1_* missing but ws90_* / outdoor_* present
+               (WN31 may be unpaired or moved to a different channel;
+                spec assumes WN31 on channel 1)
+      FAIL:    nothing in ecowitt.weather (poller down or schema broken)
     """
     check_id = "ingestion.ecowitt.weather"
-    desc = "Stage 1 ingestion presence: ecowitt.weather (canonical-aware)"
+    desc = "Stage 1 ingestion presence: ecowitt.weather (spec §6 canonical ch1_*)"
     s_iso = _iso_z(start)
     e_iso = _iso_z(end)
     flux = f'''
@@ -281,9 +285,9 @@ from(bucket: "{bucket}")
   |> range(start: {s_iso}, stop: {e_iso})
   |> filter(fn: (r) => r._measurement == "ecowitt.weather")
   |> filter(fn: (r) =>
-        r._field == "outdoor_temp_f" or r._field == "outdoor_dewpoint_f"
+        r._field == "ch1_temp_f" or r._field == "ch1_dewpoint_f"
+     or r._field == "outdoor_temp_f" or r._field == "outdoor_dewpoint_f"
      or r._field == "ws90_temp_f" or r._field == "ws90_dewpoint_f"
-     or r._field == "ch1_temp_f" or r._field == "ch1_dewpoint_f"
      or r._field == "ch2_temp_f" or r._field == "ch3_temp_f"
      or r._field == "ch4_temp_f" or r._field == "ch5_temp_f"
      or r._field == "ch6_temp_f" or r._field == "ch7_temp_f"
@@ -303,52 +307,61 @@ from(bucket: "{bucket}")
     if not df.empty and "_field" in df.columns:
         for _, row in df.iterrows():
             by_field[str(row["_field"])] = int(row["_value"])
-    # ws90_temp_f is "always present" per ecowitt-ingest/app.py docstring;
-    # treat outdoor_* as meaningfully populated only if it covers >50% of
-    # ws90_*'s row count. The 42 outdoor_* rows from a 40-min one-off
-    # window must NOT slip through as "canonical present".
+    # Coverage-fraction guard: treat ch1_* as meaningfully populated only
+    # if it covers >=50% of ws90_* row count (ws90_* is "always present"
+    # per ecowitt-ingest/app.py and serves as the natural baseline).
     CANONICAL_COVERAGE_FRACTION_OF_WS90 = 0.5
-    outdoor_temp_n = by_field.get("outdoor_temp_f", 0)
-    outdoor_dewpt_n = by_field.get("outdoor_dewpoint_f", 0)
+    ch1_temp_n = by_field.get("ch1_temp_f", 0)
+    ch1_dewpt_n = by_field.get("ch1_dewpoint_f", 0)
     ws90_temp_n = by_field.get("ws90_temp_f", 0)
-    min_outdoor_for_canonical = max(
+    outdoor_temp_n = by_field.get("outdoor_temp_f", 0)
+    min_ch1_for_canonical = max(
         100, int(ws90_temp_n * CANONICAL_COVERAGE_FRACTION_OF_WS90)
     )
-    outdoor_present = (
-        outdoor_temp_n >= min_outdoor_for_canonical
-        and outdoor_dewpt_n >= min_outdoor_for_canonical
+    ch1_present = (
+        ch1_temp_n >= min_ch1_for_canonical
+        and ch1_dewpt_n >= min_ch1_for_canonical
     )
-    any_ch = sum(by_field.get(f"ch{n}_temp_f", 0) for n in range(1, 9))
+    any_other_ch = sum(by_field.get(f"ch{n}_temp_f", 0) for n in range(2, 9))
     ws90_present = ws90_temp_n > 0
-    if not outdoor_present and any_ch == 0 and not ws90_present:
+    if (not ch1_present and any_other_ch == 0 and not ws90_present
+            and outdoor_temp_n == 0):
         return CheckResult(
             check_id=check_id, description=desc, status="FAIL",
             reason_code="no_ecowitt_data",
-            notes="No outdoor, ch{N}, or ws90 fields in window — ecowitt-ingest is down or schema is broken.",
-            metrics=by_field,
-        )
-    if outdoor_present:
-        return CheckResult(
-            check_id=check_id, description=desc, status="PASS",
             notes=(
-                f"outdoor_temp_f={by_field.get('outdoor_temp_f', 0)}, "
-                f"outdoor_dewpoint_f={by_field.get('outdoor_dewpoint_f', 0)}, "
-                f"ws90_temp_f={by_field.get('ws90_temp_f', 0)}, "
-                f"sum(ch{{N}}_temp_f)={any_ch}. Canonical shaded stream present."
+                "No ch1_*, ch{N}, outdoor_*, or ws90_* fields in window — "
+                "ecowitt-ingest is down or schema is broken."
             ),
             metrics=by_field,
         )
-    # outdoor_* missing but ws90_*/ch_* present → poller alive, config gap.
+    if ch1_present:
+        return CheckResult(
+            check_id=check_id, description=desc, status="PASS",
+            notes=(
+                f"ch1_temp_f={ch1_temp_n}, ch1_dewpoint_f={ch1_dewpt_n}, "
+                f"ws90_temp_f={ws90_temp_n}, outdoor_temp_f={outdoor_temp_n}, "
+                f"sum(ch2-8_temp_f)={any_other_ch}. Canonical shaded stream "
+                f"(ch1_* per spec §6) present."
+            ),
+            metrics=by_field,
+        )
+    # ch1_* missing or near-empty but other ecowitt data present →
+    # WN31 may be unpaired, moved, or the operator routed it via
+    # ECOWITT_SHADED_CHANNEL (which would write outdoor_* instead).
     return CheckResult(
         check_id=check_id, description=desc, status="WARN",
-        reason_code="ecowitt_shaded_channel_unset",
+        reason_code="canonical_ch1_stream_empty",
         notes=(
-            f"Canonical outdoor_temp_f / outdoor_dewpoint_f missing "
-            f"(outdoor_temp_f={by_field.get('outdoor_temp_f', 0)}); "
-            f"poller alive (ws90_temp_f={by_field.get('ws90_temp_f', 0)}, "
-            f"sum(ch{{N}}_temp_f)={any_ch}). Per ecowitt-ingest/app.py: "
-            "ECOWITT_SHADED_CHANNEL must be set on Pi-lab .env to the "
-            "WN31's dip-switch channel. See OI-1 in findings.md."
+            f"Canonical ch1_temp_f / ch1_dewpoint_f below coverage threshold "
+            f"(ch1_temp_f={ch1_temp_n}, threshold={min_ch1_for_canonical}); "
+            f"poller alive (ws90_temp_f={ws90_temp_n}, outdoor_temp_f="
+            f"{outdoor_temp_n}, sum(ch2-8_temp_f)={any_other_ch}). Per spec "
+            f"§6: WN31 paired on channel 1 of the Ecowitt gateway is the "
+            f"canonical shaded outdoor source. If outdoor_temp_f is "
+            f"populated, the poller's ECOWITT_SHADED_CHANNEL is set and "
+            f"re-routing channel-1 readings away from ch1_* — unset to "
+            f"restore canonical behavior."
         ),
         metrics=by_field,
     )
@@ -512,26 +525,24 @@ def check_weather_vector_inputs(
 ) -> CheckResult:
     check_id = "weather.vector_inputs"
     desc = (
-        "Weather-vector canonical inputs present + NOAA fallback station "
-        "locked + weather_vector.py / pipeline field-name alignment"
+        "Canonical weather-vector inputs (ch1_* per spec §6) present + "
+        "NOAA fallback station locked"
     )
     s_iso, e_iso = _iso_z(start), _iso_z(end)
-    # Per deploy/energy-stack/ecowitt-ingest/app.py docstring + .env.example,
-    # outdoor_* IS the canonical shaded outdoor stream (written when
-    # ECOWITT_SHADED_CHANNEL names the WN31 channel). ch{N}_* is the
-    # "other paired WH31 channels" loop, which explicitly skips the
-    # shaded channel (app.py:281). Most of the analysis pipeline
-    # consumes outdoor_* (pipeline.py:1033, 1052, 2087, 2101, 2242);
-    # weather_vector.py is the lone deviator that consumes ch1_*.
-    # This check surfaces (a) whether the canonical stream is populated
-    # and (b) the weather_vector.py vs rest-of-pipeline schema mismatch.
+    # Per docs/plans/sced-rebaseline-spec-2026-05-13.md §6 line 209:
+    # "Canonical channels: ch1_temp_f (outdoor shaded) and ch1_dewpoint_f.
+    #  ws90_* (outdoor unshaded) and outdoor_* (gateway alias) are
+    #  descriptive only, not used in the vector."
+    # build_weather_vector consumes ch1_*. This check verifies the
+    # canonical stream is populated. See findings.md OI-1 retraction
+    # for the chronology of how this was briefly mis-identified.
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: {s_iso}, stop: {e_iso})
   |> filter(fn: (r) => r._measurement == "ecowitt.weather")
   |> filter(fn: (r) =>
-        r._field == "outdoor_temp_f" or r._field == "outdoor_dewpoint_f"
-     or r._field == "ch1_temp_f" or r._field == "ch1_dewpoint_f"
+        r._field == "ch1_temp_f" or r._field == "ch1_dewpoint_f"
+     or r._field == "outdoor_temp_f" or r._field == "outdoor_dewpoint_f"
      or r._field == "ws90_temp_f" or r._field == "ws90_dewpoint_f")
   |> group(columns: ["_field"])
   |> count()
@@ -548,72 +559,55 @@ from(bucket: "{bucket}")
     if not df.empty and "_field" in df.columns:
         for _, row in df.iterrows():
             by_field[str(row["_field"])] = int(row["_value"])
-    outdoor_temp_n = by_field.get("outdoor_temp_f", 0)
-    outdoor_dewpt_n = by_field.get("outdoor_dewpoint_f", 0)
     ch1_temp_n = by_field.get("ch1_temp_f", 0)
     ch1_dewpt_n = by_field.get("ch1_dewpoint_f", 0)
+    outdoor_temp_n = by_field.get("outdoor_temp_f", 0)
+    outdoor_dewpt_n = by_field.get("outdoor_dewpoint_f", 0)
     ws90_temp_n = by_field.get("ws90_temp_f", 0)
     ws90_dewpt_n = by_field.get("ws90_dewpoint_f", 0)
-    # Same coverage-fraction guard as check_ecowitt_weather_ingestion: 42
-    # rows of outdoor_* over 20 days is NOT meaningful presence vs ws90's
-    # always-present baseline.
-    min_outdoor_for_canonical = max(100, int(ws90_temp_n * 0.5))
+    # Coverage-fraction guard: a brief one-off write must NOT slip
+    # through as "present" relative to ws90's always-on baseline.
+    min_ch1_for_canonical = max(100, int(ws90_temp_n * 0.5))
     canonical_present = (
-        outdoor_temp_n >= min_outdoor_for_canonical
-        and outdoor_dewpt_n >= min_outdoor_for_canonical
+        ch1_temp_n >= min_ch1_for_canonical
+        and ch1_dewpt_n >= min_ch1_for_canonical
     )
 
-    # weather_vector.py consumes ch1_*; the rest of the analysis pipeline
-    # consumes outdoor_*. The schema mismatch is independent of whether
-    # the canonical stream is populated — it's an analysis-code bug.
-    weather_vector_uses_noncanonical = True  # known from code inspection
-
     if not canonical_present:
-        # The most likely cause is ECOWITT_SHADED_CHANNEL unset on Pi-lab
-        # .env (the poller explicitly suppresses outdoor_* in that case
-        # to "fail loud rather than silently substituting sun data").
         return CheckResult(
             check_id=check_id, description=desc, status="WARN",
-            reason_code="canonical_outdoor_stream_empty",
+            reason_code="canonical_ch1_stream_empty",
             notes=(
-                f"Canonical outdoor_temp_f={outdoor_temp_n}, outdoor_dewpoint_f="
-                f"{outdoor_dewpt_n} — the canonical shaded outdoor stream is "
-                f"empty / near-empty. Per ecowitt-ingest/app.py, outdoor_* is "
-                f"only written when ECOWITT_SHADED_CHANNEL is set. Pi-lab .env "
-                f"check confirmed it is unset. Non-canonical fields present: "
-                f"ch1_temp_f={ch1_temp_n}, ws90_temp_f={ws90_temp_n}. "
-                f"build_weather_vector consumes ch1_* (the lone deviator vs "
-                f"the rest of the pipeline). Pre-OSF follow-up: set "
-                f"ECOWITT_SHADED_CHANNEL on Pi-lab AND align weather_vector.py "
-                f"to outdoor_*. See OI-1 in findings.md. "
+                f"Canonical ch1_temp_f={ch1_temp_n}, ch1_dewpoint_f="
+                f"{ch1_dewpt_n} below coverage threshold "
+                f"(min={min_ch1_for_canonical}, ws90_baseline={ws90_temp_n}). "
+                f"Per spec §6, weather_vector consumes ch1_*. Confirm WN31 "
+                f"is paired on channel 1 of the Ecowitt gateway. If "
+                f"outdoor_temp_f={outdoor_temp_n} is non-zero, the poller's "
+                f"ECOWITT_SHADED_CHANNEL is set and re-routing channel-1 "
+                f"readings to outdoor_* — unset to restore canonical naming. "
                 f"NOAA fallback station = {NOAA_FALLBACK_STATION_LOCK} (spec §11 #11)."
             ),
             metrics={
                 **by_field,
-                "canonical_outdoor_present": False,
-                "weather_vector_uses_noncanonical_field": weather_vector_uses_noncanonical,
+                "canonical_ch1_present": False,
                 "noaa_fallback_station_lock": NOAA_FALLBACK_STATION_LOCK,
             },
         )
-    # Canonical present. Even so, weather_vector.py reads ch1_* which is
-    # the wrong field per canonical schema → WARN until weather_vector.py
-    # is aligned.
     return CheckResult(
-        check_id=check_id, description=desc, status="WARN",
-        reason_code="weather_vector_consumes_noncanonical_field",
+        check_id=check_id, description=desc, status="PASS",
         notes=(
-            f"Canonical outdoor stream present (outdoor_temp_f={outdoor_temp_n}, "
-            f"outdoor_dewpoint_f={outdoor_dewpt_n}). However, "
-            f"tools/analysis/weather_vector.py reads ch1_* (ch1_temp_f="
-            f"{ch1_temp_n}) — disagreeing with the canonical schema in "
-            f"ecowitt-ingest/app.py and the rest of pipeline.py. "
-            f"Pre-OSF follow-up: align weather_vector.py to outdoor_*. "
-            f"NOAA fallback station = {NOAA_FALLBACK_STATION_LOCK} (spec §11 #11)."
+            f"Canonical ch1_* stream populated: ch1_temp_f={ch1_temp_n}, "
+            f"ch1_dewpoint_f={ch1_dewpt_n}. ws90 baseline: {ws90_temp_n}/"
+            f"{ws90_dewpt_n} rows. outdoor_* (descriptive-only per spec §6): "
+            f"{outdoor_temp_n}/{outdoor_dewpt_n}. NOAA fallback station = "
+            f"{NOAA_FALLBACK_STATION_LOCK} (spec §11 #11). "
+            f"build_weather_vector consumes ch1_* directly; verified by "
+            f"test_weather_vector.py."
         ),
         metrics={
             **by_field,
-            "canonical_outdoor_present": True,
-            "weather_vector_uses_noncanonical_field": weather_vector_uses_noncanonical,
+            "canonical_ch1_present": True,
             "noaa_fallback_station_lock": NOAA_FALLBACK_STATION_LOCK,
         },
     )
