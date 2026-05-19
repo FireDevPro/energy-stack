@@ -41,15 +41,15 @@ Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.
 
 ## Entry points
 
-- Project index: [PROJECT.md](PROJECT.md)
-- Per-service detail: [docs/SERVICES.md](docs/SERVICES.md)
-- HVAC scheduler logic + fallback: [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)
-- Scheduler timing + decision diagrams (Mermaid): [docs/SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md)
+For the canonical doc map (all active docs grouped by intent), see
+[INDEX.md](INDEX.md). That file is the WHAT (content map); this one
+is the HOW (behavior contract).
+
+Most-touched anchors if you want jump-links instead of the full index:
 - Binding pre-registration spec: [docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)
-- CTK04AE Arm A schedule: [docs/THERMOSTAT_ARM_A_SCHEDULE.md](docs/THERMOSTAT_ARM_A_SCHEDULE.md)
-- Pollers, scripts, ad-hoc tooling: `tools/`
-- Workstation-local Controller Cockpit (read-only live dashboard): [tools/cockpit/](tools/cockpit/)
-- Stack compose + provisioning: `deploy/energy-stack/`
+- HVAC scheduler logic: [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)
+- Per-service detail: [docs/SERVICES.md](docs/SERVICES.md)
+- Project narrative: [PROJECT.md](PROJECT.md)
 
 ## Tone
 
