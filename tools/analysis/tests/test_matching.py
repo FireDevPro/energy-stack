@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from tools.analysis.matching import (
-    caliper_p90_distance,
     hungarian_match,
     pairwise_distance_matrix,
     within_sample_zscore,
@@ -90,14 +89,3 @@ def test_pairwise_distance_matrix_known_values():
     np.testing.assert_allclose(d, [[5.0, 1.0]])
 
 
-def test_caliper_p90_is_percentile_of_all_pair_distances():
-    """Spec §6 caliper: 90th percentile across the full A-B distribution.
-    Uses np.percentile linear interpolation per spec strict reading."""
-    arm_a_z = np.array([[0.0, 0.0, 0.0, 0.0]])
-    arm_b_z = np.array([[1.0, 0.0, 0.0, 0.0],
-                        [2.0, 0.0, 0.0, 0.0],
-                        [3.0, 0.0, 0.0, 0.0],
-                        [4.0, 0.0, 0.0, 0.0]])
-    p90 = caliper_p90_distance(arm_a_z, arm_b_z)
-    # Distances {1,2,3,4} -> linear p90 = 3.7
-    assert p90 == pytest.approx(3.7, abs=1e-6)

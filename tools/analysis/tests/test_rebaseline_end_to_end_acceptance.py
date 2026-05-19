@@ -51,13 +51,19 @@ def test_rebaseline_end_to_end_acceptance():
 
     # 1. Per-pair table exists and has required spec §9 columns.
     actual = result.per_pair_table
+    # Per binding spec §9 (amended 2026-05-18 via D3): poor_weather_match_flag
+    # is dropped from the per-pair table. Match quality is reported per pair
+    # via weather_distance_zscore + per-component diffs + temporal_gap_days
+    # + Ecowitt/NOAA source split; no binary classification.
+    # Per D2: valid_pair_hours is a single column emitted only after the
+    # pipeline asserts A-side count == B-side count (the D2 invariant lives
+    # in arm_period_pipeline._build_pair_row).
     required_columns = {
         "pair_id", "arm_a_id", "arm_b_id",
         "arm_a_dates", "arm_b_dates",
         "temporal_gap_days", "weather_distance_zscore",
         "weather_vector_a", "weather_vector_b",
         "weather_component_diffs_raw", "weather_component_diffs_zscored",
-        "poor_weather_match_flag",
         "valid_pair_hours", "excluded_hours_count",
         "excluded_hours_breakdown_a", "excluded_hours_breakdown_b",
         "cost_match_quality_median_diff_c_per_kwh",
@@ -145,32 +151,26 @@ def test_rebaseline_end_to_end_acceptance():
     )
 
     # 9. Cost-matched symmetric exclusion preserves equal valid hour counts
-    #    on both arms of every pair (per spec §5).
-    if "valid_pair_hours_a" in actual.columns and "valid_pair_hours_b" in actual.columns:
-        equal_counts = (actual["valid_pair_hours_a"]
-                        == actual["valid_pair_hours_b"]).all()
-        assert equal_counts, (
-            "Cost-matched exclusion must leave equal hour counts in both arms "
-            "of every pair. Per-pair counts:\n"
-            f"  a: {actual['valid_pair_hours_a'].tolist()}\n"
-            f"  b: {actual['valid_pair_hours_b'].tolist()}"
-        )
-
-    # 10. Poor-weather-match flag count matches the fixture's hand-pinned
-    #     expectation. NOTE: spec §6 ("exceeds 90th percentile") strictly
-    #     applied at linear-interp p90 does NOT fire on the single-outlier
-    #     pair in this n=6 design (the Hungarian-matched outlier pair sits
-    #     just below the linear-interpolated boundary). The fixture pins
-    #     expected_poor_weather_match_flag = False for ALL pairs to honor
-    #     the spec rule strictly. The detection limitation is a Phase 3
-    #     finding for the OSF freeze, not a flag-logic bug. See
-    #     ``tools.analysis.matching.caliper_p90_distance``.
-    poor_match_flagged = actual["poor_weather_match_flag"].sum()
-    expected_poor_match = expected["poor_weather_match_flag"].sum()
-    assert poor_match_flagged == expected_poor_match, (
-        f"poor_weather_match_flag count mismatch: "
-        f"actual={poor_match_flagged} expected={expected_poor_match}"
+    #    on both arms of every pair (per spec §5). Per D2, the pipeline
+    #    asserts A-side count == B-side count BEFORE emitting and raises
+    #    AssertionError on divergence (D2 invariant inside
+    #    arm_period_pipeline._build_pair_row line ~501-505). The fact that
+    #    valid_pair_hours emits at all therefore proves the symmetry held
+    #    for every pair in this run — this assertion is a tautology against
+    #    the invariant, retained as documentation.
+    assert (actual["valid_pair_hours"] >= 0).all(), (
+        "valid_pair_hours must be non-negative on every pair; negative "
+        "values would indicate cost-matched exclusion bookkeeping is "
+        "broken."
     )
+
+    # 10. (Poor-weather-match flag check removed per binding spec §6
+    #     amendment 2026-05-18 via D3. The flag and the corresponding
+    #     exclude_poor_weather_match_pairs sensitivity were dropped from
+    #     the spec; match quality is now reported per pair as descriptive
+    #     provenance only — no binary classification, no threshold rule
+    #     on N=6 pairs. See docs/plans/sced-rebaseline-spec-2026-05-13.md
+    #     §6 + §12.)
 
     # 11. Bill reconciliation runs once per DISTINCT bill period -- the
     #     fixture has 5 distinct bill periods, so the pipeline output

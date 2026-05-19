@@ -70,23 +70,10 @@ def hungarian_match(arm_a_z: np.ndarray, arm_b_z: np.ndarray) -> list[tuple[int,
     return list(zip(row_ind.tolist(), col_ind.tolist()))
 
 
-def caliper_p90_distance(arm_a_z: np.ndarray, arm_b_z: np.ndarray) -> float:
-    """90th percentile of the full A-B pairwise z-distance distribution.
-
-    Used per spec §6 to flag pairs as ``poor_weather_match_flag`` (NOT
-    excluded). Returns NaN if either pool is empty.
-
-    **Known limitation (Phase 3 finding, surfaced to OSF):** with the
-    spec wording "exceeds the 90th percentile" interpreted as strict
-    ``>`` and ``numpy.percentile`` linear interpolation, the 36-distance
-    distribution from 6 A and 6 B arms is too coarse for the boundary
-    to discriminate a single weather outlier. The Hungarian-matched
-    outlier pair systematically sits just BELOW the linear-interpolated
-    90th percentile (the boundary falls between the smallest and
-    second-smallest distance in the 6-distance outlier cluster). This
-    is a spec-clarification item, not an implementation choice.
-    """
-    if arm_a_z.shape[0] == 0 or arm_b_z.shape[0] == 0:
-        return float("nan")
-    cost = pairwise_distance_matrix(arm_a_z, arm_b_z)
-    return float(np.percentile(cost.flatten(), 90))
+# caliper_p90_distance removed 2026-05-18 per binding spec §6 amendment
+# (D3). The poor_weather_match_flag and the exclude_poor_weather_match_pairs
+# sensitivity were dropped from the spec; match quality is now reported
+# per pair as descriptive provenance only (weather_distance_zscore +
+# per-component diffs + temporal_gap_days + Ecowitt/NOAA source split).
+# No binary classification, no threshold rule on n=6 pairs. See
+# docs/plans/sced-rebaseline-spec-2026-05-13.md §6 + §12.

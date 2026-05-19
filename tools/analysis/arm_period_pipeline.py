@@ -48,7 +48,6 @@ from tools.analysis.hvac_telemetry_validity import (
     hour_is_telemetry_valid,
 )
 from tools.analysis.matching import (
-    caliper_p90_distance,
     hungarian_match,
     pairwise_distance_matrix,
     within_sample_zscore,
@@ -446,7 +445,6 @@ def _build_pair_row(
     vec_b: WeatherVector,
     z_a: np.ndarray,
     z_b: np.ndarray,
-    p90_dist: float,
     rate_snapshot: dict[str, float],
 ) -> dict:
     initial_valid_a = [is_fully_valid_for_arm(m, "A") for m in modes_a]
@@ -487,15 +485,16 @@ def _build_pair_row(
                                  if em28_w_b[k] > COOLING_ACTIVE_W)
 
     weather_distance = float(np.linalg.norm(z_a - z_b))
-    # Spec §6: strict `>` ("exceeds the 90th percentile"). See the
-    # ``caliper_p90_distance`` docstring for the n=6 boundary case
-    # where this rule under-flags single weather outliers; that is a
-    # spec-clarification item, not an implementation deviation.
-    poor_weather_match = weather_distance > p90_dist
+    # Spec §6 (amended 2026-05-18 via D3): no poor_weather_match_flag.
+    # Match quality is reported per pair as descriptive provenance
+    # (weather_distance_zscore + per-component diffs + temporal_gap_days
+    # + Ecowitt/NOAA source split). Readers sort by these themselves.
 
     # Spec §5 produces equal-size valid sets in both arms after
     # cost-matched exclusion. valid_pair_hours therefore equals the
-    # per-arm valid count. Sanity-check both sides agree.
+    # per-arm valid count. The assertion below is the D2 invariant:
+    # the pipeline MUST raise on divergence rather than emit asymmetric
+    # counts via a single column.
     valid_a_count = sum(valid_a)
     valid_b_count = sum(valid_b)
     if valid_a_count != valid_b_count:
@@ -550,10 +549,7 @@ def _build_pair_row(
         "weather_vector_b": tuple(vec_b.as_array().tolist()),
         "weather_component_diffs_raw": tuple(raw_diffs.tolist()),
         "weather_component_diffs_zscored": tuple(z_diffs.tolist()),
-        "poor_weather_match_flag": bool(poor_weather_match),
         "valid_pair_hours": int(valid_pair_hours),
-        "valid_pair_hours_a": int(valid_a_count),
-        "valid_pair_hours_b": int(valid_b_count),
         "excluded_hours_count": int(excluded_hours_count),
         "excluded_hours_breakdown_a": dict(excl_a),
         "excluded_hours_breakdown_b": dict(excl_b),
@@ -717,7 +713,6 @@ def run_full_pipeline(
     z_b_matrix = np.stack([z_by_arm_id[_arm_id(b)] for b in pass_b]) if pass_b \
         else np.empty((0, 4))
     pair_indices = hungarian_match(z_a_matrix, z_b_matrix)
-    p90_dist = caliper_p90_distance(z_a_matrix, z_b_matrix)
 
     # Step 5: build per-pair rows
     pair_rows: list[dict] = []
@@ -744,7 +739,6 @@ def run_full_pipeline(
             vec_b=st_b["weather"],
             z_a=z_by_arm_id[_arm_id(arm_a)],
             z_b=z_by_arm_id[_arm_id(arm_b)],
-            p90_dist=p90_dist,
             rate_snapshot=rate_snapshot,
         )
         pair_rows.append(row)

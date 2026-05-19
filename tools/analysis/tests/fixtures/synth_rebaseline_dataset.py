@@ -357,12 +357,11 @@ def _expected_per_pair_row(scenario_tuple: tuple) -> dict:
     # Symmetric: valid_pair_hours equal on both sides.
     valid_pair_hours = min(valid_a, valid_b)
 
-    # Spec §6 strict-`>` interpretation: with n=6 and a single weather
-    # outlier, the Hungarian-matched outlier pair's distance sits below
-    # the linear-interpolated 90th percentile (boundary case). Expected
-    # poor_weather_match_flag is therefore False even for the outlier
-    # scenario -- see ``caliper_p90_distance`` docstring. This is a
-    # known spec-clarification item, not a fixture bug.
+    # Per binding spec §6 (amended 2026-05-18 via D3): poor_weather_match_flag
+    # is dropped from the per-pair table. Match quality is reported per pair
+    # as descriptive provenance (weather_distance_zscore + per-component
+    # diffs + temporal_gap_days + Ecowitt/NOAA source split). Fixture no
+    # longer pins the flag value.
     return {
         "pair_id": pair_id,
         "scenario_label": label,
@@ -372,7 +371,6 @@ def _expected_per_pair_row(scenario_tuple: tuple) -> dict:
         "hvac_dollars_a": round(dollars_a, 4),
         "hvac_dollars_b": round(dollars_b, 4),
         "diff_dollars_b_minus_a": round(dollars_b - dollars_a, 4),
-        "poor_weather_match_flag": False,
         "low_cooling_exposure_flag": cooling_per_day * 12 < 6,
         "expected_savings_pct": (SAVINGS_PCT if dollars_a > 5.0 else None),
         "dst_crossing_arm": dst,
