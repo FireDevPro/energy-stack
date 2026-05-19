@@ -51,9 +51,10 @@ most controls until after the flip. Two features remain gated:
 - **CodeQL default setup** requires the GitHub Code Security add-on
   (separate paid product, ~$48/repo/month, NOT included in Pro). Defer
   to post-public-flip when CodeQL is free for public repos.
-- **Private vulnerability reporting** API endpoint returns 404 on the
-  private Pro repo; reachable via the Security tab UI toggle. Enable
-  manually pre-flip or post-flip.
+- **Private vulnerability reporting** is not available on private
+  repos even on Pro — neither the API nor the Settings → Code
+  security UI surfaces the option. The toggle only appears once the
+  repo is public. Enable as part of the at-flip sequence.
 
 ## Status legend
 
@@ -145,12 +146,14 @@ Two items remain gated (see "Account context" above).
   secrets are tested against the originating provider to confirm
   they're still active.
 
-### 5b. Manual / deferred
+### 5b. Deferred to at-flip
 
-- [ ] **TODO-MANUAL: Private vulnerability reporting.** API returns
-  404 on the private Pro repo; reachable via Security tab UI:
-  Settings → Code security → "Private vulnerability reporting" →
-  Enable. One click.
+- [⏸] **AT-FLIP: Private vulnerability reporting.** Not available on
+  private repos even on Pro — the option does not appear in the
+  Settings → Code security UI and the API returns 404 on a private
+  Pro repo. Confirmed by direct operator inspection. The toggle
+  surfaces only once the repo is public. At flip time: Settings →
+  Code security → "Private vulnerability reporting" → Enable.
 - [⏸] **AT-FLIP: CodeQL default setup.** Requires the GitHub Code
   Security add-on on private repos (separate ~$48/repo/month cost).
   Free for public repos after flip. At flip time: Settings → Code
@@ -245,11 +248,9 @@ gh-api). The remaining work is:
 
 ### Phase A — Pre-flip (any time before 2026-05-30)
 
-1. **§5b: Enable private vulnerability reporting via Security tab UI**
-   (one click).
-2. Merge this PR so the URL renames and updated checklist reach
+1. Merge this PR so the URL renames and updated checklist reach
    `main`.
-3. Any additional content / spec / impl PRs that need to land before
+2. Any additional content / spec / impl PRs that need to land before
    the OSF freeze tag (per `OSF_FILING_MECHANICS.md` pre-flight).
 
 ### Phase B — At the visibility flip (~5 min)
@@ -258,7 +259,10 @@ gh-api). The remaining work is:
    Public. Confirm the typed-name modal.
 2. **§4: Set fork-PR workflow approval to strictest** via Settings →
    Actions → General.
-3. **§5b: Enable CodeQL default setup** via Settings → Code security
+3. **§5b: Enable private vulnerability reporting** via Settings →
+   Code security → "Private vulnerability reporting" → Enable
+   (option only appears post-flip).
+4. **§5b: Enable CodeQL default setup** via Settings → Code security
    → Code scanning → "Set up" → "Default" → Python +
    JavaScript/TypeScript.
 
