@@ -33,6 +33,78 @@ Pre-rebaseline, the directive read: **Do not modify the algorithm or default see
 pinned-snapshot test in `tests/test_randomize_arms.py` still fails loud if the
 seed-to-output mapping ever drifts, preserving the original artifact for audit.
 
+## commission_decision_trace_path_c.py — synthetic decision-trace event exerciser
+
+Path C of the decision-trace commissioning: exercises every `decision_trace.*`
+event type via controlled synthetic inputs through real production functions
+inside a running `hvac-scheduler` container. Emitted lines go to stdout
+→ promtail → Loki, where they're discoverable forever by `tick_id` prefix
+`commission_<ISO-UTC>_<event>_<scenario>`.
+
+**Scope:** runs the real `decide_day_type`, `resolve_layer_priority`,
+`validate_setpoints`, and `compute_price_aware_precool_window` rule functions
+with synthetic in-memory inputs. Each trace line uses its real `_trace_*`
+helper so shape, level filtering, and JSON serialisation all run through
+production code.
+
+**Out of scope:** does NOT run the scheduler's tick loop, does NOT write to
+InfluxDB, does NOT modify the running scheduler. Separate Python process,
+separate in-memory state, separate `app` module instance.
+
+**Skipped event type:** `decision_trace.price_overlay_eval` — already verified
+live via ambient operation (fires every minute at real ComEd prices). Re-testing
+in Path C would duplicate ~30 lines of inline emission code; documented in the
+[2026-05-14 commissioning findings](../../../docs/replay-validation/2026-05-14-decision-trace-commissioning/findings.md)
+as "verified live via ambient operation."
+
+**Usage (inside the live scheduler container):**
+
+```bash
+# Copy the script into the container, then run with stdout to promtail's pipe
+docker cp deploy/energy-stack/scripts/commission_decision_trace_path_c.py \
+    hvac-scheduler:/tmp/
+docker exec hvac-scheduler bash -c \
+    "python /tmp/commission_decision_trace_path_c.py 1>>/proc/1/fd/1"
+```
+
+**When to run:** after a controller-side change that adds or modifies a
+`decision_trace.*` event type, to confirm the production emission path
+produces correctly-shaped Loki lines.
+
+## log_arm_transition.py — manual Monday Arm A ↔ Arm B audit row
+
+Writes an audit row to `hvac.arm_transitions` documenting a Monday arm
+boundary, including the CTK04AE ISU 4090 (Adaptive Intelligent Recovery,
+"AIR") setting that flips with each transition:
+
+- **Arm A**: AIR = ON (thermostat learns recovery timing, matches consumer
+  Nest/Ecobee Smart Recovery behaviour)
+- **Arm B**: AIR = OFF (Pi setpoint pushes are honored at the scheduled
+  minute, not pre-emptively reinterpreted by the thermostat)
+
+The AIR toggle itself is currently a manual TCC-web-UI step (v1). This
+script just writes the experimental-record row so the analysis side knows
+which arm was live at each transition.
+
+**Usage:**
+
+```bash
+# Arm A → Arm B (manual TCC flip done; AIR now OFF):
+python log_arm_transition.py --from A --to B --air off --mode manual
+
+# Arm B → Arm A (manual TCC flip done; AIR now ON):
+python log_arm_transition.py --from B --to A --air on --mode auto
+```
+
+**Required env** (reads from `~/energy-stack/.env`): `INFLUXDB_URL`,
+`INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET`.
+
+**When to run:** every Monday at the arm-boundary crossover (2026-06-01,
+2026-06-15, 2026-06-29, ... per the canonical arm calendar at
+[`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py)).
+Once `hvac-scheduler` writes `hvac.switch_event` automatically per spec §11
+#3, this script becomes a manual override / backfill tool only.
+
 ## backfill_pjm.py — one-shot 5-year ComEd PJM backfill
 
 Pulls historical hourly data the live `pjm-dm2-poller` doesn't cover (it only

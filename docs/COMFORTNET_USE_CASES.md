@@ -1,8 +1,8 @@
 # ComfortNet Use Cases
 
-Pre-integration design doc for the `Promithius-DR/comfortnet` HVAC sniffer. Captures *what we'll do with the data* before standing up Mosquitto + Telegraf + the `hvac.comfortnet` measurement, so the plumbing follows the use cases instead of the other way around.
+Use-case reference for the `Promithius-DR/comfortnet` HVAC sniffer. Captures *what we do with the data* now that the bus → MQTT → Telegraf → InfluxDB pipeline is live, so the use cases stay tied to the consumers.
 
-**Status**: pre-integration. Capture and decode are working on a Pi 3B; bus → MQTT → Telegraf → InfluxDB is HANDOFF steps 7-8, not started.
+**Status**: live as of 2026-05-06. Capture, decode, and the bus → MQTT → Telegraf → InfluxDB pipeline are all shipped. `hvac.comfortnet` is flowing fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct`, etc. (see [`SERVICES.md#mosquitto--telegraf--mosquitto-init`](SERVICES.md#mosquitto--telegraf--mosquitto-init) for the full schema). Pipeline implementation lives in [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet).
 
 **Cross-reference**: [`comfortnet/docs/SETTING_REVIEW.md`](https://github.com/Promithius-DR/comfortnet/blob/main/docs/SETTING_REVIEW.md) covers the dealer-tunable settings exposed by the user-menu decoder and the recommended changes (DEHUM=ON, CL OFF=60-90s).
 

@@ -83,6 +83,37 @@ docker exec influxdb rm -rf /tmp/influx-backup
 
 `--full` overwrites everything in the target Influx instance with the backup. For a fresh post-rebuild Pi this is what you want. For partial restore (e.g. just one bucket) read `influx restore --help`.
 
+### Verify the restore landed data
+
+`influx restore --full` exits 0 even if the source backup was empty or partial. Always verify the restored database has data before considering the restore complete:
+
+```bash
+TOKEN=$(grep '^INFLUXDB_INIT_ADMIN_TOKEN=' ~/energy-stack/.env | cut -d= -f2-)
+ORG=$(grep '^INFLUXDB_INIT_ORG=' ~/energy-stack/.env | cut -d= -f2-)
+
+# 1. Bucket exists with data in the last 24h
+docker exec influxdb influx query \
+    -t "$TOKEN" -o "$ORG" \
+    'from(bucket:"energy") |> range(start:-24h) |> count() |> sum()'
+# Expect: a non-zero `_value` per measurement. Empty result = restore did not land data.
+
+# 2. Most-recent timestamp is recent (within the backup's last-write window)
+docker exec influxdb influx query \
+    -t "$TOKEN" -o "$ORG" \
+    'from(bucket:"energy") |> range(start:-7d) |> last() |> keep(columns:["_measurement","_time"])'
+# Expect: rows for `eagle.meter`, `refoss.channel`, `comed.prices`, `pjm.*`, etc.,
+# with `_time` near the timestamp of the source backup. A 7-day gap between
+# backup time and the latest restored row means partial / stale data.
+
+# 3. Bill data round-trips (slowest-changing, easiest to eyeball)
+docker exec influxdb influx query \
+    -t "$TOKEN" -o "$ORG" \
+    'from(bucket:"energy") |> range(start:-365d) |> filter(fn:(r) => r._measurement == "comed.bill") |> count()'
+# Expect: ≥12 points (one per monthly bill over the past year). Zero = restore lost bill history.
+```
+
+If any of these come back empty or with stale timestamps, the restore is incomplete — investigate before bringing services that depend on Influx data (HVAC scheduler, dashboards) into production use. Common causes: source backup tar was corrupted, `--full` collided with a non-empty target, or the `STAGE` path was wrong (no error from `docker cp` if the source dir exists but is empty).
+
 ## Restoring n8n
 
 The n8n backup is a plain SQL dump of the Postgres database staged inside the snapshot at `/tmp/pi-backup.<random>/n8n-postgres.sql`. The `~/n8n/.env` (also restored) contains the encryption key and Postgres password — both are required.
