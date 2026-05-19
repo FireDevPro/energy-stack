@@ -3,9 +3,13 @@ date: 2026-05-12
 owner: chris
 status: locked
 role-label: chris
+supersession_note: pre-rebaseline (Stage 1-9 / weekly-fact-table pipeline framing retired per docs/plans/sced-rebaseline-spec-2026-05-13.md §0); retained as frozen evidence artifact. See companion run [2026-05-12-stage8-complete/README.md](../2026-05-12-stage8-complete/README.md) for the Stage 8 close-out work; current binding methodology is [docs/REPLAY_VALIDATION.md](../../REPLAY_VALIDATION.md).
 ---
 
 # Real-shape replay validation — 2026-05-12
+
+> [!NOTE]
+> **Pre-rebaseline artifact.** This validation exercised the Stage 1-9 weekly-fact-table pipeline that was subsequently retired per the 2026-05-13 SCED rebaseline. The methodology described here (per-stage CSV/parquet outputs + reason-code sidecars + manifest schema) is the conceptual ancestor of the current binding methodology in [`docs/REPLAY_VALIDATION.md`](../../REPLAY_VALIDATION.md), but the specific stage-by-stage shape is post-superseded. Retained as evidence of the validation discipline that motivated the rebaseline's `REPLAY_VALIDATION.md` and `tools/analysis/replay/` design.
 
 Pre-OSF-filing audit artifact. Demonstrates the analysis pipeline can run end-to-end against a live Stage 1 export from pi-lab InfluxDB, with every empty output reason-coded for a classifiable cause rather than caused by silent schema mismatches.
 

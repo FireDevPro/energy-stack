@@ -52,3 +52,11 @@ docs/test-reports/*.md
 .playwright-mcp/
 reticule-*.png
 reference-original.png
+
+# Replay-validation runner output (per spec §11 #13 artifact policy):
+# Intermediate runs live on GitHub Actions and are not committed.
+# The canonical validation_results.json is committed only at the
+# OSF-freeze commit. findings_draft.md is a runner template;
+# findings.md (human-curated) is the canonical narrative.
+docs/replay-validation/**/validation_results.json
+docs/replay-validation/**/findings_draft.md

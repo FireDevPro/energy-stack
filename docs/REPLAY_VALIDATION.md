@@ -109,43 +109,38 @@ An empty CSV without a matching reason-report entry fails the filing-gate audit.
 
 ## Locked injection cases
 
-(Stub — full pre-registered list lands with the injection-case generator PR. Below is the initial draft from the 2026-05-11 design discussion; subject to refinement before being locked at OSF tag.)
+Locked 2026-05-18 per [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](plans/pre-osf-doc-audit-execution-2026-05-18.md) F-007 resolution. 19 cases. Generator code lands in a follow-up PR (PR4b in the execution plan); the locked methodology gate is the list below.
 
-Bad-data / quality-rule coverage:
+**Bad-data / quality-rule coverage:**
 
-- Missing weather rows (test Rule 5 NWS fallback)
-- Duplicate timestamps (test deduplication)
-- Partial price hours (test Rule 3 observation-count threshold)
-- Stale price feed: `comed.prices` returns the same `price_cents` value for ≥6 consecutive 5-min ticks (definition pending)
-- Scheduler outages: ≥5-min gap in both `hvac.5cp_state` and `hvac.actions` writes (test Rule 7)
-- Manual operational override
-- Missing or late arm transition (test Rule 10)
-- Refoss channel gaps (Tier 1, 2, 3, 4 each)
-- CT-slip-like interval (one Refoss channel suspiciously low while others normal)
-- One week that must be excluded by a specific rule
-- One week that barely qualifies after Tier 1-3 imputation (just under 10% cap)
+1. **Missing weather rows** — tests Ecowitt-gap NOAA fallback per binding spec §6 (KJOT). Inject hours with no Ecowitt rows, verify NOAA fill.
+2. **Duplicate timestamps** — tests deduplication. Inject duplicate rows on a single timestamp.
+3. **Partial price hours** — tests hour-validity per spec §5. Drop minute-tick rows within an hour so coverage falls below the per-hour threshold.
+4. **Stale price feed** — `comed.prices` returns the same `price_cents_per_kwh` value for ≥6 consecutive 5-min ticks. Inject by copying a value across 6 rows.
+5. **Scheduler outages** — ≥5-min gap in both `hvac.5cp_state` and `hvac.actions` writes. Inject a gap.
+6. **Refoss channel gaps (Tier 1-4)** — drop specific channels for specific durations to exercise each Refoss-gap tier classification.
+7. **Detector false positive** — inject `hvac.5cp_state="holding"` row at a non-5CP hour.
+8. **Detector false negative** — inject 5CP hour list AND ensure no `holding` row exists during that hour.
+9. **Injected published 5CP hour list** — load fixture (since post-summer publication won't exist before OSF tag).
+10. **Bill window with no `comed.bill` entry** — tests `no_comed_bills_in_window` reason code (Layer 3).
+11. **Bill window with one `comed.bill` entry** — tests Layer 3 single-entry sum path.
 
-Threshold-boundary coverage:
+**Boundary / qualification coverage:**
 
-- Exactly 10% imputed kWh (Rule 1 threshold)
-- Exactly 20% imputed price hours (Rule 3 threshold)
+12. **CT-slip-like interval** — one Refoss channel suspiciously low while others normal. Tests ratio-anomaly detection.
+13. **Manual operational override** — inject `hvac.overrides` row; verify pipeline tags the affected hour.
+14. **Synthetic arm transition on 2026-06-01** — inject `hvac.arm_transitions` row at the experiment-start boundary (since the natural transition hasn't fired yet pre-experiment).
+15. **Successful verification action within 6h** — pair an arm transition with a follow-up `hvac.actions` row.
+16. **Failure to verify** — arm transition without follow-up action (or with wrong-arm action).
+17. **Missed / late arm switch** — inject `hvac.switch_event` row with `boundary_actual_ts` delayed past `boundary_planned_ts`; verify the affected hours are classified as not-fully-valid in `hvac.arm_mode` and dropped from `fully_valid_hours_count` per spec §5.
+18. **Arm period at exactly 259 valid hours** — validity-gate boundary case (spec §5 line 168). Construct a fixture with exactly 259 fully-valid hours; verify the arm enters the matching pool.
+19. **Arm period that fails the ≥259 gate** — construct a fixture with <259 fully-valid hours (e.g., 258); verify (a) the arm is dropped from the matching pool and (b) the pipeline emits the descriptive output for the dropped arm (not silently disappeared) per spec §5 line 170.
 
-Detector accuracy coverage:
+**Cases dropped from the pre-rebaseline draft** (no translation to current pipeline):
 
-- Injected `hvac.5cp_state="holding"` at a non-5CP hour (false positive)
-- Injected non-holding at a published 5CP hour (false negative)
-- Injected published 5CP hour list (since post-summer publication won't exist before OSF tag)
-
-Bill-availability coverage:
-
-- Window with no `comed.bill` entry (test Layer 3 `no_comed_bills_in_window` reason code)
-- Window with one bill entry (test Layer 3 sum)
-
-Arm-transition coverage:
-
-- Synthetic arm transition on 2026-06-01 (since natural transition hasn't fired yet)
-- Successful verification action within 6h
-- Failure to verify (missing or wrong-arm action)
+- "Exactly 10% imputed kWh (Rule 1 threshold)" and "Exactly 20% imputed price hours (Rule 3 threshold)" — pre-rebaseline tiered-imputation concepts; the rebaseline pipeline has a single binary validity gate (≥259 fully-valid hours per arm per spec §5), with no per-source tiered imputation. The validity-gate boundary case (18) is the closest rebaseline equivalent.
+- "One week that barely qualifies after Tier 1-3 imputation (just under 10% cap)" — same retired framing; case 18 (exactly 259 hours) is the rebaseline equivalent.
+- "One week that must be excluded by a specific rule" — weekly framing retired; case 19 (arm period that fails the gate) is the rebaseline equivalent.
 
 ## Audit invariants
 

@@ -112,6 +112,8 @@ Deeper research surfaced two facts the original review missed:
 
 ### OI-2 — Ecowitt continuous coverage starts 2026-05-12, not 2026-05-11
 
+**Status:** informational, open (deferred to next OSF doc pass — small drift, no impact on shadow window validity).
+
 **Severity:** informational. Spec §14 says Ecowitt instrumentation begins 2026-05-11; canonical `ch1_*` writes actually start 2026-05-12T21:03Z. ~1 day later than the spec-claimed limitation. Update the spec or accept the small drift in the next OSF doc pass.
 
 ## M3 scarcity-divergence audit
@@ -188,7 +190,7 @@ The Phase 6 runner exercises Stage 1 ingestion presence + a few isolated analysi
 - `test_rebaseline_end_to_end_acceptance.py` exercises `run_full_pipeline` end-to-end against synthetic fixtures with hand-pinned expected values.
 - OI-1 above is exactly the kind of real-shape gap a literal "Stage 5 dry-run" would have surfaced.
 
-**Pre-OSF recommendation:** when the OI-1 follow-up PR fixes `ECOWITT_SHADED_CHANNEL` + aligns `weather_vector.py`, also re-fixture the acceptance test against real-ingest column shape (not the deviator `ch1_*`). That closes the circular-validation hole and partially answers the spec's "Stage 5" requirement against the canonical schema.
+**Pre-OSF recommendation (post-retraction):** OI-1 was retracted on 2026-05-18 — `ch1_*` IS the canonical field per spec §6:209 and the system was already correctly aligned. No `outdoor_*` re-fixturing is needed. The circular-validation concern (test fixtures echoing implementation rather than real-ingest schema) remains a known limitation of the current acceptance-test design, but is unrelated to OI-1's specific framing.
 
 ### LIM-1 — Pre-experiment data is outside any locked Arm
 
@@ -196,15 +198,15 @@ Spec §2 locks Arm 1 start at 2026-06-01 00:00 CT. The shadow window 2026-04-29 
 
 ### LIM-2 — `weather_vector.build_weather_vector(arm, ecowitt_df)` cannot be exercised against shadow data
 
-The function requires an `ArmPeriod` and the post-washout window of that arm to overlap the data. Schema + NOAA-fallback lock are validated upstream as proxy; the function itself is covered by `test_weather_vector.py` against synthetic `ArmPeriod` fixtures. The OI-1 follow-up PR will re-fixture this to consume the canonical `outdoor_*` field.
+The function requires an `ArmPeriod` and the post-washout window of that arm to overlap the data. Schema + NOAA-fallback lock are validated upstream as proxy; the function itself is covered by `test_weather_vector.py` against synthetic `ArmPeriod` fixtures consuming the canonical `ch1_*` fields per spec §6:209. (Pre-retraction this paragraph mentioned an OI-1 follow-up to re-fixture against `outdoor_*`; OI-1 was retracted on 2026-05-18 and no re-fixturing is needed.)
 
 ### LIM-3 — First DTOD bill arrives 2026-05-24
 
 Per spec §14. `bill_reconciliation.reconcile_bill_period` cannot be exercised against shadow window data. Pre-DTOD reconciliation uses flat rates and is tracked separately.
 
-### LIM-4 — Ecowitt push receiver started 2026-05-11 but canonical `outdoor_*` writes lasted ~40 minutes
+### LIM-4 — Ecowitt push receiver started 2026-05-11 but canonical `ch1_*` writes started ~25 hours later
 
-The push receiver came up 2026-05-11 22:30 UTC and wrote 42 rows of `outdoor_*` over ~40 minutes before `ECOWITT_SHADED_CHANNEL` was unset (or the WN31 channel changed). Continuous non-canonical `ch1_*` writes began 2026-05-12T21:03Z. Spec §14's "2026-05-11" instrumentation-start date is still correct for the push receiver coming online; the canonical-stream gap is OI-1.
+The push receiver came up 2026-05-11 22:30 UTC and wrote 42 rows of `outdoor_*` over ~40 minutes (this is the descriptive gateway-alias field, NOT the canonical analysis source). Continuous canonical `ch1_*` writes began 2026-05-12T21:03Z. Spec §14's "2026-05-11" instrumentation-start date is correct for the push receiver coming online; the canonical-stream start lags by ~25 hours, captured as OI-2. (Pre-retraction this paragraph framed the timeline around `outdoor_*` being canonical; OI-1 was retracted on 2026-05-18 — `ch1_*` is canonical per spec §6:209, so the timeline above is the corrected framing.)
 
 ### LIM-5 — PJM `rt_hrl_lmps` data lags real-time by ~2 days
 
@@ -227,4 +229,4 @@ All other validation checks are PASS or the expected pre-experiment N/A. Spec de
 - OI-1 → RETRACTED. The system was already correctly aligned with spec §6. No follow-up PR required.
 - M3 → directional flag for OSF appendix + mid-experiment re-run scheduled into Phase 7's operational checkpoint. No code change for a magnitude estimate; that's data-collection waiting on real cooling-season events.
 
-**Lesson preserved from the back-and-forth:** when a code review surfaces a perceived spec/impl mismatch, read the binding spec text BEFORE recommending which direction to align. The Phase 6 superpowers reviewer reasoned outward from the poller's docstring + pre-rebaseline pipeline.py and concluded `outdoor_*` was canonical; that reasoning missed spec §6 line 209's explicit declaration that `ch1_*` is canonical and `outdoor_*` is "gateway alias, descriptive only." Both directions were technically defensible, but the spec is the binding artifact — the spec wins ties. Memory added: `feedback_check_binding_spec_before_recommending_canonical`.
+**Lesson preserved from the back-and-forth:** when a code review surfaces a perceived spec/impl mismatch, read the binding spec text BEFORE recommending which direction to align. The Phase 6 superpowers reviewer reasoned outward from the poller's docstring + pre-rebaseline pipeline.py and concluded `outdoor_*` was canonical; that reasoning missed spec §6 line 209's explicit declaration that `ch1_*` is canonical and `outdoor_*` is "gateway alias, descriptive only." Both directions were technically defensible, but the spec is the binding artifact — the spec wins ties. Memory captured: `feedback-check-binding-spec-before-canonical`.

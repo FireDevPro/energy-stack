@@ -8,6 +8,9 @@ supersession_note: Stage 8 framing retired per docs/plans/sced-rebaseline-spec-2
 
 # Stage 8 close-out replay validation (2026-05-12)
 
+> [!NOTE]
+> **Pre-rebaseline artifact.** The Stage 8 decomposition loader was retired per the 2026-05-13 SCED rebaseline (spec §0). This doc captures the validation run that closed out the Stage 8 work right before the rebaseline decision was made. The companion run is at [2026-05-12/README.md](../2026-05-12/README.md) (full Stage 1-9 pipeline validation, same date). Current binding methodology is [docs/REPLAY_VALIDATION.md](../../REPLAY_VALIDATION.md).
+
 Phase 5 of the Stage 8 decomposition loader thread. Replay-validation 7d
 + 90d run against pi-lab Influx, exercising the Phase 0-5 Stage 8 code
 path end-to-end against real production data.
