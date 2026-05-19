@@ -15,7 +15,7 @@ traceability). The OSF prereg DOES NOT reference this script's output;
 see spec §11 + §13 for the canonical OSF artifact list.
 
 Tracked since PR #137 F3 deferral
-(https://github.com/Promithius-DR/energy-stack/pull/137); deprecation
+(https://github.com/FireDevPro/energy-stack/pull/137); deprecation
 banner added by this doc-sweep.
 
 Original docstring follows below for reference.

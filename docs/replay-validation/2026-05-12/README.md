@@ -55,10 +55,10 @@ The replay validation surfaced four schema-drift / production-shape bugs that pr
 
 | # | PR | Issue | Severity |
 |---|---|---|---|
-| 1 | [#94](https://github.com/Promithius-DR/energy-stack/pull/94) | Stage 2/3 loaders filtered `_field=energy_wh`; production refoss writes only `power_w` + cumulative kWh counters. | Silently returned 0 kWh against real data. |
-| 2 | [#95](https://github.com/Promithius-DR/energy-stack/pull/95) | `hvac.actions` mixes numeric + string `_value` rows; pyarrow rejected parquet write. | Pipeline crashed mid-export. Fixed by splitting `_value` (float64) + `_value_text` (object), preserving audit-signal strings. |
-| 3 | [#96](https://github.com/Promithius-DR/energy-stack/pull/96) | `comed.prices` schema: producer writes `price_cents_per_kwh` with `period_type` tag; flux + Stage 2/3 loaders filtered `price_cents`. | Stage 2 Rule 3 silently counted zero observations; Stage 3 dollar arithmetic saw zero prices. |
-| 4 | [#97](https://github.com/Promithius-DR/energy-stack/pull/97) | `comed.bill_lineitems.flux` query file did not exist; Stage 1 silently skipped the measurement. | Stage 6 Layer 3 had no Capacity Charge rows to sum even when bills were present. Audit test added to catch the bug class at PR time. |
+| 1 | [#94](https://github.com/FireDevPro/energy-stack/pull/94) | Stage 2/3 loaders filtered `_field=energy_wh`; production refoss writes only `power_w` + cumulative kWh counters. | Silently returned 0 kWh against real data. |
+| 2 | [#95](https://github.com/FireDevPro/energy-stack/pull/95) | `hvac.actions` mixes numeric + string `_value` rows; pyarrow rejected parquet write. | Pipeline crashed mid-export. Fixed by splitting `_value` (float64) + `_value_text` (object), preserving audit-signal strings. |
+| 3 | [#96](https://github.com/FireDevPro/energy-stack/pull/96) | `comed.prices` schema: producer writes `price_cents_per_kwh` with `period_type` tag; flux + Stage 2/3 loaders filtered `price_cents`. | Stage 2 Rule 3 silently counted zero observations; Stage 3 dollar arithmetic saw zero prices. |
+| 4 | [#97](https://github.com/FireDevPro/energy-stack/pull/97) | `comed.bill_lineitems.flux` query file did not exist; Stage 1 silently skipped the measurement. | Stage 6 Layer 3 had no Capacity Charge rows to sum even when bills were present. Audit test added to catch the bug class at PR time. |
 
 ## Final state (this artifact)
 

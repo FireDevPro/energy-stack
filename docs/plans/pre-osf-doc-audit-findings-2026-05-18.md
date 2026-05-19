@@ -238,7 +238,7 @@ Where sources conflict, the question is raised but no winner is picked. Operator
 | OPS-010 | high | tools/cockpit/README.md:104 | Cites `docs/plans/archive/cockpit-plan.md` as "locked design decisions" — archived plan treated as binding | Move decisions to non-archive doc |
 | OPS-012 | high | deploy/energy-stack/README.md:207,29-31 | mosquitto/telegraf rows co-list archived COMFORTNET_PIPELINE.md alongside live COMFORTNET_USE_CASES.md | Drop archive link from row-detail |
 | OPS-014 | high | deploy/energy-stack/README.md:35,144 | Compose detection caveat (multi-commit pushes may miss earlier-commit changes) | Add caveat |
-| OPS-015 | med | deploy/energy-stack/scripts/README.md:11 | Linked PR `Promithius-DR/energy-stack/pull/137` — repo name clash with `energy-proxy` working dir | No fix; clarity hazard |
+| OPS-015 | med | deploy/energy-stack/scripts/README.md:11 | Linked PR `FireDevPro/energy-stack/pull/137` — repo name clash with `energy-proxy` working dir | No fix; clarity hazard |
 | OPS-020 | high | deploy/energy-stack/backup/RESTORE.md | Restore procedure has no verification step | Append verification snippet (PR7) |
 
 ### P3 (~47 items)
