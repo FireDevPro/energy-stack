@@ -2,7 +2,7 @@
 name: pre-osf-doc-audit-execution-2026-05-18
 date: 2026-05-18
 owner: chris
-status: draft
+status: in-progress
 role-label: execution-plan
 osf-filing-target: 2026-05-30
 related:
@@ -11,6 +11,20 @@ related:
   - pre-osf-doc-audit-codex-2026-05-18.md
   - sced-rebaseline-spec-2026-05-13.md
   - sced-rebaseline-implementation-2026-05-13.md
+progress_2026-05-18:
+  - PR1 spec/impl P0 fixes — merged (#152, 7103769)
+  - PR2 root OSF story — merged (#153, 615af9c)
+  - PR3 runtime ops — merged (#156, 63f38b1)
+  - PR4a replay doc-fixes + injection-case lock — merged (#159, ecc9260)
+  - PR5 weather naming — merged (#154, b09dd4a)
+  - PR6 supersession — merged (#157, b08b5a0)
+  - PR7 coverage/ops docs — merged (#155, 0e1c7be)
+  - PR8 YAML hygiene — merged (#158, fa537c1)
+  - PR1-cleanup code-side — merged (#160, e7a8906)
+remaining:
+  - PR4b 19-case injection generator code (~1-2 days; can ship between OSF deposit and 2026-06-01 experiment start)
+  - Q2 Flux query against pjm.coincident_peak → HVAC_LOGIC.md:316-318 RTO peak distribution edit (operator task)
+  - PR9 freeze-day (last; status flips + Zenodo tag + OSF open-ended registration + README badge per OSF_FILING_MECHANICS.md)
 ---
 
 # Pre-OSF Documentation Audit — Execution Plan
@@ -548,18 +562,20 @@ tools/analysis/pipeline.py:3:
 
 ## Status tracking
 
-| PR | Branch | Status | Merged commit | Notes |
-|---|---|---|---|---|
-| Pre-PR0 | — | pending | — | Q2 Flux query before PR3 |
-| PR1 Spec/Impl P0 | pre-osf/pr1-spec-impl-p0 | pending | — | Trunk |
-| PR2 Root OSF Story | pre-osf/pr2-root-osf-story | pending | — | Includes THERMAL_MODEL archive |
-| PR3 Runtime Ops | pre-osf/pr3-runtime-ops | pending | — | Blocked by Q2 |
-| PR4 Replay | pre-osf/pr4-replay-validation | pending | — | Includes 19-case generator code |
-| PR5 Weather Naming | pre-osf/pr5-weather-naming | pending | — | |
-| PR6 Supersession | pre-osf/pr6-supersession | pending | — | 3 archives + extractions |
-| PR7 Coverage Docs | pre-osf/pr7-coverage-ops | pending | — | |
-| PR8 YAML Hygiene | pre-osf/pr8-yaml-hygiene | pending | — | After PR2 + PR6 |
-| PR9 Freeze-Day | pre-osf/pr9-freeze-day | pending | — | OSF deposit commit |
+| PR | Branch | Status | Merged commit | PR # | Notes |
+|---|---|---|---|---|---|
+| Pre-PR0 | — | pending | — | — | Q2 Flux query before HVAC_LOGIC.md:316-318 follow-up edit |
+| PR1 Spec/Impl P0 | pre-osf/pr1-spec-impl-p0 | merged | 7103769 | #152 | Trunk; resolved 12 P0 + 5 P1 |
+| PR2 Root OSF Story | pre-osf/pr2-root-osf-story | merged | 615af9c | #153 | Includes THERMAL_MODEL archive |
+| PR3 Runtime Ops | pre-osf/pr3-runtime-ops | merged | 63f38b1 | #156 | HVAC_LOGIC RTO-peak edit still pending Q2 |
+| PR4a Replay doc-fixes | pre-osf/pr4a-replay-doc-fixes | merged | ecc9260 | #159 | Methodology lock + stale-artifact cleanup |
+| PR4b Replay generator code | — | pending | — | — | 19-case generator; can ship between OSF deposit and 2026-06-01 |
+| PR5 Weather Naming | pre-osf/pr5-weather-naming | merged | b09dd4a | #154 | |
+| PR6 Supersession | pre-osf/pr6-supersession | merged | b08b5a0 | #157 | 3 archives + 4 new top-level docs |
+| PR7 Coverage Docs | pre-osf/pr7-coverage-ops | merged | 0e1c7be | #155 | |
+| PR8 YAML Hygiene | pre-osf/pr8-yaml-hygiene | merged | fa537c1 | #158 | Headers + status vocab |
+| PR1-cleanup code-side | pre-osf/pr1-cleanup-spec-amendment-code | merged | e7a8906 | #160 | Removed caliper_p90_distance + redundant valid_pair_hours_a/_b |
+| PR9 Freeze-Day | pre-osf/pr9-freeze-day | pending | — | — | OSF deposit commit; last |
 
 ## Post-freeze cleanup
 
