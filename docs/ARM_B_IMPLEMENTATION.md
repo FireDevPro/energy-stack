@@ -20,7 +20,7 @@ supersession_note: largely-superseded; sections retained as historical primer pe
 >
 > **Operational content still useful as primer:** day-type classifier rules (§1 thresholds), RTP price-spike reactivity (§2 module structure), PJM 5CP detection (§3 dual-scope state machine), layer priority (§4 formula). Authoritative locked values for all of these live in [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md); deviations from CONTROLLER_CONSTANTS.md or the live `deploy/energy-stack/hvac-scheduler/app.py` are bugs in THIS doc, not in those sources.
 >
-> Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); supersession-tightening landed in [PR6 of the pre-OSF doc audit](plans/pre-osf-doc-audit-execution-2026-05-18.md).
+> Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137); supersession-tightening landed in [PR6 of the pre-OSF doc audit](plans/pre-osf-doc-audit-execution-2026-05-18.md).
 
 **Status**: Working spec (2026-05-09). Most content shipped; see banner above for the post-rebaseline reframe.
 **Owner**: Chris dePaola

@@ -9,7 +9,7 @@
 > - **Pipeline shape**: arm-period-shaped (spec §3, §5); weekly Stage 3/5 framing is replaced. Implementation lives at `tools/analysis/arm_period_pipeline.py`.
 > - **Pre-OSF artifact list**: spec §11 + §13 govern the OSF filing.
 >
-> This document is retained for research-design context, motivation, and the §11 ethics framing. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); resolved by this doc-sweep.
+> This document is retained for research-design context, motivation, and the §11 ethics framing. Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137); resolved by this doc-sweep.
 
 **Status**: Pre-registration draft (revised 2026-05-09). Binding once filed to OSF. No data unblinding before pre-registration is filed.
 **Owner**: Chris dePaola (owner-as-investigator)

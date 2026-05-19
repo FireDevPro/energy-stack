@@ -48,11 +48,11 @@ The tag name pattern is `osf-prereg-YYYY-MM-DD` so the relationship between OSF 
 GitHub-Zenodo integration auto-archives tagged releases if Zenodo is enabled for the repo:
 
 - Confirm Zenodo connection at <https://zenodo.org/account/settings/github/>
-- Repo `Promithius-DR/energy-stack` should appear in the toggle list with archiving enabled
+- Repo `FireDevPro/energy-stack` should appear in the toggle list with archiving enabled
 - Pushing the tag triggers Zenodo to mint a DOI (typically within ~5 minutes)
 - Capture the DOI from the Zenodo dashboard or the new GitHub release's badge
 
-If Zenodo integration isn't pre-configured, do that first; otherwise manually create a release at <https://github.com/Promithius-DR/energy-stack/releases/new> pointing at the tag, then Zenodo picks it up.
+If Zenodo integration isn't pre-configured, do that first; otherwise manually create a release at <https://github.com/FireDevPro/energy-stack/releases/new> pointing at the tag, then Zenodo picks it up.
 
 ### 3. Create the OSF open-ended registration
 

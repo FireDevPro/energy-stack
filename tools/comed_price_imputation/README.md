@@ -139,4 +139,4 @@ not modelling scarcity; median is the right estimator for that.
 ```
 
 `PLACEHOLDER: true` is the sentinel that prevents OSF lock; the
-file shipped on `main` has `PLACEHOLDER: false` (see [PR #71](https://github.com/Promithius-DR/energy-stack/pull/71)).
+file shipped on `main` has `PLACEHOLDER: false` (see [PR #71](https://github.com/FireDevPro/energy-stack/pull/71)).
