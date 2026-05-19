@@ -77,7 +77,7 @@ Does a smart RTP/DTOD/5CP-aware HVAC controller, **when operating as intended**,
 
 | Arm | Controller behavior | Setpoint source | Failure mode |
 |---|---|---|---|
-| A | hvac-scheduler runs in dry-run/shadow/observation mode only. Does NOT push setpoints. | CTK04AE thermostat's internal programmed schedule runs autonomously. | N/A (thermostat is the floor.) |
+| A | hvac-scheduler runs in `shadow` mode (no writes). Does NOT push setpoints. | CTK04AE thermostat's internal programmed schedule runs autonomously. | N/A (thermostat is the floor.) |
 | B | hvac-scheduler active. Day-type classification + price overlays + capacity-risk overlays + precool deepening + safety supervisor. Pushes setpoints to CTK04AE. | Scheduler commands → CTK04AE. | If scheduler dies → CTK04AE program resumes (= effectively-A behavior during that window). Per Section 5: hour classified as B-down, EXCLUDED from primary. |
 
 **Arm A schedule (CTK04AE programmed):** Documented in `docs/THERMOSTAT_ARM_A_SCHEDULE.md` (pre-OSF deliverable). Frozen at OSF-filing commit. Changes to thermostat program post-OSF = protocol deviation.
@@ -115,6 +115,7 @@ HVAC$_hour = HVAC_kWh_hour × (
   + dtod_resultant_per_kwh[band(hour)] # DTOD Distribution Facilities, ¢/kWh, 4 hour-bands (Section 8)
   + iedt_per_kwh                      # 0.126¢/kWh flat
   + variable_riders_per_kwh           # Σ per-kWh TAXES_FEES_CREDITS (excluding flat/% items)
+  + carbon_free_credit_per_kwh        # Carbon-Free Energy Resource Adjustment, monthly snapshot (negative = credit; see §8 and §10)
 )
 ```
 
@@ -134,7 +135,7 @@ Where `HVAC_kWh_hour` = sum across Refoss channels {em:2, em:8, em:9} of (mean `
 
 ## 5. Exclusion rule and validity gate
 
-**Hour-level classification** (4 modes, one per hour per arm):
+**Hour-level classification** (5 modes, one per hour per arm):
 
 | Mode | Definition |
 |---|---|
@@ -189,9 +190,9 @@ Rule:
 **Why cost-matched over same-indices:** for a controller whose treatment IS responding to price, cost-matched conditioning is more aligned with the treatment mechanism than time-of-day conditioning. Same-indices was the earlier proposal; cost-matched supersedes it. Rate data is available for ALL hours (including excluded ones) since rt_hrl_lmps and DTOD are independent of HVAC measurement.
 
 **Provenance per pair:** report:
-- `excluded_hours_a_count`, `excluded_hours_b_count`
-- `excluded_hours_breakdown_a` (counts of telemetry-invalid in Arm A)
-- `excluded_hours_breakdown_b` (counts of B-fallback / B-down / telemetry-invalid in Arm B)
+- `excluded_hours_count` (single column — symmetric by construction under cost-matched exclusion; pipeline asserts A-side count == B-side count before emitting and raises on divergence)
+- `excluded_hours_breakdown_a` (counts of telemetry-invalid in Arm A, kept split — exclusion reasons are genuinely asymmetric per side)
+- `excluded_hours_breakdown_b` (counts of B-fallback / B-down / telemetry-invalid in Arm B, kept split)
 - `cost_match_quality_median_diff_c_per_kwh` (median `|hourly_rate_a[h] − hourly_rate_b[k]|` across cost-matched pairs)
 - `excluded_hourly_rate_distribution` (mean, p5, p50, p95 of `hourly_rate[k]` for excluded hours)
 - Overlap of excluded hours with: elevated-price-tier windows, scarcity-price-tier windows, 5CP-active windows, high-temperature windows (≥85°F outdoor)
@@ -227,11 +228,11 @@ The overlap provenance lets reviewers detect whether exclusion silently concentr
 
 **Standardization:** Each component is z-scored (mean 0, SD 1) across all 12 experiment blocks (within-sample standardization). No external historical baseline. This avoids cross-source z-scoring concerns; means and stds are computed from the same data source as the vectors themselves.
 
-**Distance metric:** Euclidean distance on the 4-component z-scored vector. Equal weights (primary). Sensitivity: re-run with `w_CDD = w_peak = 1.5`, others = 1.0.
+**Distance metric:** Euclidean distance on the 4-component z-scored vector. Equal weights (primary). Sensitivity: re-run with `w_CDD = w_mean_daily_max_temp = 1.5`, others = 1.0.
 
 **Matching algorithm:** Hungarian algorithm (optimal 1:1 bipartite matching). Constructs a 12×12 cost matrix (6 A-blocks × 6 B-blocks if all arms pass the validity gate), assigns to minimize total weather distance. If unequal counts (some arms dropped by validity gate), rectangular Hungarian over min(n_A_valid, n_B_valid).
 
-**Poor-weather-match flag (NOT an exclusion):** Matched pairs whose weather distance exceeds the 90th percentile of the full A-B distance distribution (all possible A-B pairings, not just matched) are flagged as `poor_weather_match_flag = True`, but are **NOT excluded** from the primary per-pair table or aggregate summaries. The final report includes weather distance and per-component differences for every pair. A sensitivity summary may optionally show results excluding flagged poor-weather-match pairs, but the primary descriptive result includes all valid matched pairs. This preserves the discovery-framing principle (no hidden filters; reader sees everything and judges).
+**Match quality reporting (descriptive provenance, no classification):** Match quality is reported per pair via `weather_distance_zscore`, per-component differences (raw and z-scored), `temporal_gap_days`, and the Ecowitt/NOAA source split per arm. No binary good/poor classification is applied and no sensitivity is computed on a subset; with N=6 any threshold rule would be arbitrary. Readers can sort the per-pair table by match quality and form their own view of which pairs are well-matched. This is consistent with the §9.5 discovery-framing principle (no hidden filters; no pre-aggregated subset).
 
 **Temporal gap:** Reported as `temporal_gap_days` per pair (descriptive). NOT a filter.
 
@@ -268,7 +269,7 @@ Continuous-invalid cap: no >24h contiguous run of telemetry-invalid OR exposure-
 Arms failing the gate are dropped from the matching pool entirely and reported descriptively. The math `2 × 259 − 288 = 230` guarantees that any pair of passing arms produces ≥230 time-aligned fully-valid hour-indices, so no separate post-matching pair-level threshold is needed.
 
 **Pipeline order of operations:**
-1. Per-hour mode classification (4 modes: A-active / B-active / B-fallback / B-down / telemetry-invalid)
+1. Per-hour mode classification (5 modes: A-active / B-active / B-fallback / B-down / telemetry-invalid)
 2. Per-arm fully-valid hour count + single validity gate → arms passing enter matching pool
 3. Weather-matched pairing via rectangular Hungarian (Section 6)
 4. Cost-matched symmetric exclusion within each pair (Section 5)
@@ -333,9 +334,8 @@ Source: ComEd April 2026 Tariff Worksheet (Residential Single Family Without Ele
 | `weather_vector_b` | 4-tuple |
 | `weather_component_diffs_raw` | per-component (B − A) raw differences in physical units |
 | `weather_component_diffs_zscored` | per-component (B − A) standardized differences |
-| `poor_weather_match_flag` | True if `weather_distance_zscore` > 90th percentile of full A-B distance distribution. **NOT excluded from primary.** Optional sensitivity may rerun excluding flagged pairs (see §12). |
-| `valid_pair_hours` | After cost-matched exclusion |
-| `excluded_hours_count` | Total excluded |
+| `valid_pair_hours` | After cost-matched exclusion. Single column — symmetric by construction (pipeline asserts A-count == B-count before emitting and raises on divergence). |
+| `excluded_hours_count` | Total excluded per side (symmetric by construction; same invariant as `valid_pair_hours`) |
 | `excluded_hours_breakdown_a` | Counts of telemetry-invalid hours in Arm A |
 | `excluded_hours_breakdown_b` | Counts of B-fallback / B-down / telemetry-invalid in Arm B |
 | `cost_match_quality_median_diff_c_per_kwh` | Median \|rate_a − rate_b\| across cost-matched exclusion pairs |
@@ -347,6 +347,9 @@ Source: ComEd April 2026 Tariff Worksheet (Residential Single Family Without Ele
 | `cooling_active_hours_a` | Hours where em:2+em:8 > 100W |
 | `cooling_active_hours_b` | Hours where em:2+em:8 > 100W |
 | `low_cooling_exposure_flag` | True if cooling_active_hours < 6 over 12-day window (either arm) — descriptive only |
+| `cfe_c_per_kwh_a` | Carbon-Free Energy Resource Adjustment rate in effect during Arm A's bill cycle (¢/kWh; negative = credit). Per-side because paired arms can straddle bill cycles with different CFE rates. See §10. |
+| `cfe_c_per_kwh_b` | Carbon-Free Energy Resource Adjustment rate in effect during Arm B's bill cycle (¢/kWh; negative = credit). |
+| `cfe_shift_flag` | True if `|cfe_c_per_kwh_a − cfe_c_per_kwh_b| > 0.5¢/kWh (paired arms in different bill cycles with materially different CFE rates). Descriptive provenance only. |
 | `hvac_dollars_a` | $ over valid pair hours |
 | `hvac_dollars_b` | $ over valid pair hours |
 | `diff_dollars_b_minus_a` | Arm B − Arm A |
@@ -420,7 +423,7 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 - Per hour: `(em:2 + em:8 + em:9) ≤ (em:1 + em:7) × 1.10`
 - Violation → flag in provenance, NOT drop. Catches channel-mapping errors and CT-calibration drift.
 
-**Refoss-mains-vs-Eagle sanity:** Refoss mains (em:1 + em:7) and Eagle whole-home should track within a tolerance band TBD at audit phase based on observed agreement (production data so far shows them closely aligned). Flag-not-drop.
+**Refoss-mains-vs-Eagle sanity:** Refoss mains (em:1 + em:7) and Eagle whole-home are both reported as descriptive provenance per pair / bill period — no pre-registered tolerance threshold or binary flag is applied. Eagle is the bill-canonical whole-home reference when available (closest to the ComEd revenue meter); Refoss mains is sanity/fallback. Per-pair / per-bill-period fields: `eagle_coverage_pct`, `refoss_mains_coverage_pct`, `refoss_fallback_usage_pct`, `overlapping_hours_count`, `eagle_kwh`, `refoss_mains_kwh`, `abs_diff_kwh`, `pct_diff_vs_eagle`. If post-experiment agreement shows notable divergence, it is discussed in the final report narrative with the actual numbers visible; no data drops.
 
 **Arm 11 fall-back hour (documented non-material edge case):** Arm 11's analysis window contains the 2026-11-01 DST fall-back. The two UTC hours `2026-11-01T06:00Z` (CT 01:00 CDT) and `2026-11-01T07:00Z` (CT 01:00 CST) share the wall-clock label "2026-11-01 01:00" but represent distinct physical hours. Bill-reconciliation lookups and primary HVAC$ computation MUST key on UTC instant or arm-relative hour-index to keep them distinct. Reports and provenance fields that display CT labels for this interval should include the UTC instant or hour-index alongside the label so readers can disambiguate. Materiality: even if a display layer visually conflated the two labels, the maximum monthly bill-reconciliation residual is analytically below $0.01 under realistic overnight load/rate assumptions (overnight DTOD band, ~0.4 kWh whole-home at 01:00 CT) and cannot move the >5%/$10 sanity threshold. No reconciliation-side tolerance machinery is required; this is a display-layer disambiguation note, not a computation defect.
 
@@ -430,7 +433,7 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 
 **Critical-path deliverables before 2026-05-30 OSF filing:**
 
-1. **Arm calendar + mode gating in hvac-scheduler**: read locked A/B calendar; gate `execute_action` setpoint-write path; Arm A dry-run/shadow only; Arm B active.
+1. **Arm calendar + mode gating in hvac-scheduler**: read locked A/B calendar; gate `execute_action` setpoint-write path; Arm A periods = shadow / no-write per §3 `SCHEDULER_MODE=experiment` semantics; Arm B periods = active / write.
 2. **Mode telemetry**: write `hvac.arm_mode` with values `A-active` / `B-active` / `B-fallback` / `B-down` every 5-min decision cycle. (Manual-override is NOT tracked per operator commitment; protocol deviations handled via amendment.)
 3. **Switch-event logging**: write `hvac.switch_event` row at each boundary with `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`.
 4. **Input-feed health telemetry**: per cycle, log health of price feed, weather/forecast feed, PJM capacity-risk inputs. B-active classification uses the conditional rule from §5: PJM capacity-risk feeds are only "required for B-active" inside the §5.1 capacity-risk operating window.
@@ -442,7 +445,7 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 10. **Analysis pipeline rewrite**: Stage 3 / Stage 5 reframed around arm-period unit; remove $/CDD scaffolding; remove weekly aggregation. Implement single pre-matching gate (Section 5) + cost-matched exclusion (Section 5). Cherry-pick Eagle manifest/query work + actual-dollar helpers from PR #109. PR #109 closed as superseded after spec lands.
 11. **NOAA-archived automated airport weather station fallback selection**: lock station ID for Ecowitt-gap fallback (candidates KJOT Joliet, KARR Aurora, KMDW Midway, KORD O'Hare; mix of FAA AWOS-3 and ASOS, all in the same NCEI archive). Criteria: proximity to Plainfield IL + completeness of hourly temp + dewpoint. No historical pull needed — within-sample standardization makes ERA5 unnecessary.
 12. **Day-type schedule completeness**: verify `docs/HVAC_LOGIC.md` enumerates every Arm B day-type schedule (MILD / NORMAL / HOT / HOT_STREAK_DAY1 / etc.) with hour-by-hour setpoints. Patch any gaps before OSF. **Status (2026-05-18 Phase 5):** verified against `deploy/energy-stack/hvac-scheduler/app.py` — the four day types defined in code (MILD, NORMAL, HOT_5CP_RISK, HOT_STREAK_DAY1) are each documented with hour-by-hour setpoint tables in HVAC_LOGIC.md "Day types" and "Schedules" sections. The HOT_STREAK_DAY1 trigger description was patched in this PR to document both escalation paths (multi-day heat AND single-day forecast 5CP-risk per §7), matching `decide_day_type` in `app.py`. No day-type / schedule gaps remain.
-13. **Shadow validation run**: full dry-run on pre-experiment shadow data, exercising pipeline through Stage 5 outcome table. Validates ingestion, pricing, Refoss HVAC, Refoss-mains/Eagle reconciliation, weather-vector construction, arm calendar logic, no-write Arm A behavior. Pass/fail report artifact (NOT outcome evidence). **Scarcity-divergence audit (M3):** for shadow-period hours where `comed.prices` 5-min average exceeded its 95th percentile, compute abs diff vs `rt_hrl_lmps` settled. Report `max`, `p95`, `n_hours_diverging_>2c`. This characterizes how much the live-vs-settled split matters at the hours where controller decisions matter most.
+13. **Shadow validation run**: full dry-run on pre-experiment shadow data, exercising pipeline through Stage 5 outcome table. Validates ingestion, pricing, Refoss HVAC, Refoss-mains/Eagle reconciliation, weather-vector construction, arm calendar logic, no-write Arm A behavior. Pass/fail report artifact (NOT outcome evidence). **Artifact commit policy:** the final validation artifact (`validation_results.json`) is committed at the OSF-freeze commit only; intermediate runs live on GitHub Actions and are NOT committed (gitignored). The human-curated `findings.md` is the canonical narrative throughout. **Scarcity-divergence audit (M3):** for shadow-period hours where `comed.prices` 5-min average exceeded its 95th percentile, compute abs diff vs `rt_hrl_lmps` settled. Report `max`, `p95`, `n_hours_diverging_>2c`. This characterizes how much the live-vs-settled split matters at the hours where controller decisions matter most.
 
 ## 12. Sensitivities (Q9 #3 lock)
 
@@ -453,9 +456,8 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 | `include_washout` | Re-run primary including the first 48h post-switch in aggregation. Descriptive: does the washout exclusion change the conclusion? |
 | `weighted_matching` | Re-run Hungarian matching with weights `w_CDD = w_mean_daily_max_temp = 1.5`, others = 1.0. Tests sensitivity to component weighting. |
 | `live_price_vs_settled_price` | Re-compute HVAC$ supply component using 5-min `comed.prices` hourly average instead of `rt_hrl_lmps`. Descriptive: how much does the bill-canonical choice matter? |
-| `exclude_poor_weather_match_pairs` | Re-run aggregate summary EXCLUDING pairs flagged `poor_weather_match_flag = True` (>90th-percentile weather distance). Descriptive: how much do poorly-matched pairs influence the summary? Note: primary INCLUDES these pairs by default; this sensitivity flips that to provide the "if we had excluded" view. |
 
-**Dropped:** $/CDD, kWh/CDD, cooling-relevance gates, `five_min_pricing` as outcome sensitivity, `em2_em8_only` as major sensitivity (at most a minor diagnostic), `include_fallback_as_arm_b` (old Q4 framing — NOT added; this study isn't about reliability), `mahalanobis_matching` (within-sample standardization makes Euclidean fully defensible; Mahalanobis on N=12 has unstable covariance).
+**Dropped:** $/CDD, kWh/CDD, cooling-relevance gates, `five_min_pricing` as outcome sensitivity, `em2_em8_only` as major sensitivity (at most a minor diagnostic), `include_fallback_as_arm_b` (old Q4 framing — NOT added; this study isn't about reliability), `mahalanobis_matching` (within-sample standardization makes Euclidean fully defensible; Mahalanobis on N=12 has unstable covariance), `exclude_poor_weather_match_pairs` (per §6 there is no poor-match flag; match quality is reported per pair as descriptive provenance and readers can sort by it).
 
 **Reporting:** Each sensitivity appears alongside primary in a sensitivity table. Differences from primary surface as `Δ_sensitivity` columns. NO p-values on sensitivities (descriptive only).
 
@@ -497,7 +499,7 @@ This is a **single-household n-of-1 case study**. Results are not generalizable.
 
 These items need concrete numbers/specs in the audit/tasks phase, not blocking OSF:
 
-- Refoss-mains vs Eagle whole-home discrepancy tolerance for bill-reconciliation provenance: TBD per audit (production data shows close tracking; set tolerance based on observed agreement)
+- ~~Refoss-mains vs Eagle whole-home discrepancy tolerance for bill-reconciliation provenance: TBD per audit (production data shows close tracking; set tolerance based on observed agreement)~~ **Resolved 2026-05-18 (distribution-not-flag):** no pre-registered tolerance threshold. Agreement reported as descriptive provenance per pair / bill period per §10. If post-experiment agreement shows notable divergence, discussed in the final report narrative with actual numbers visible; no data drops.
 - ~~NOAA ASOS fallback station selection (KJOT Joliet / KARR Aurora / KMDW Midway / KORD O'Hare): TBD per audit (criteria: proximity to Plainfield IL + hourly temp + dewpoint completeness)~~ **Resolved 2026-05-18:** locked to KJOT Joliet (AWOS-3) per `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md`. See §6 for the data-source paragraph.
 - ~~Day-type schedule completeness audit: verify every Arm B day-type schedule (MILD / NORMAL / HOT / HOT_STREAK_DAY1 / etc.) is enumerated in `docs/HVAC_LOGIC.md` at the OSF-freeze commit; patch any gaps~~ **Resolved 2026-05-18:** verified and patched per §11 #12 status note. HOT_STREAK_DAY1 trigger description in HVAC_LOGIC.md expanded to document both escalation paths (multi-day heat AND single-day forecast 5CP-risk per §7).
 - DST-fold handling in arms 11-12 (2026-11-01 02:00 → 01:00 CT): nocturnal-min aggregation window (22:00-06:00 CT) needs `zoneinfo` not hardcoded offset
