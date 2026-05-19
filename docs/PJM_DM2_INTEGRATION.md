@@ -3,7 +3,7 @@
 **Status**: Phases 1 + 2 shipped May 2026. `pjm-dm2-poller` running in production; backfill complete; 5CP PDF scraper ready for the Nov 2026 annual run. Forward work below.
 **Owner**: Chris dePaola
 **Depends on**: existing `energy-stack` (InfluxDB, Telegram notifier), Non-Member API key on `pi-lab`
-**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) (the field study this data feeds), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (Step 1 controller). Operational details in [`SERVICES.md#pjm-dm2-poller`](SERVICES.md#pjm-dm2-poller).
+**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) (binding spec for the field study this data feeds). Operational details in [`SERVICES.md#pjm-dm2-poller`](SERVICES.md#pjm-dm2-poller).
 
 ---
 

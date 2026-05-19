@@ -3,8 +3,8 @@ and an emergency-indoor-temperature override before they reach the
 thermostat.
 
 This is RBC infrastructure that runs regardless of which controller
-(baseline RBC or future Step 1 model-informed) is generating the
-proposed action. Any future controller hangs off the same gate.
+variant is generating the proposed action. Any future controller
+hangs off the same gate.
 
 What this catches (v1 scope):
 

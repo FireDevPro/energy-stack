@@ -1,11 +1,15 @@
 ---
 date: 2026-05-12
 owner: chris
-status: live
+status: superseded
 role-label: chris
+superseded_by: docs/plans/pre-osf-doc-audit-execution-2026-05-18.md
 ---
 
-# Session handoff (2026-05-12)
+> [!WARNING]
+> **SUPERSEDED 2026-05-18.** This handoff was written before the 2026-05-13 SCED rebaseline and the 2026-05-18 pre-OSF doc audit. Its description of the in-flight branch (`feature/stage8-decomp`), open PRs, locked priority queue, and Stage 8/9 framing all predate the rebaseline — Stage 8 loader, weekly fact-table architecture, formal SCED randomization-test machinery, and bootstrap CI framing are explicitly retired per [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md) §0. Current execution plan and PR queue: [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](docs/plans/pre-osf-doc-audit-execution-2026-05-18.md). Retained here as historical context only — do NOT act on this document.
+
+# Session handoff (2026-05-12, SUPERSEDED)
 
 Picked-up by: any fresh Claude session. **Read this first.** Skip the rest of the conversation history unless you need specific verbiage.
 

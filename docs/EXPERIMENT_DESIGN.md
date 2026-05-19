@@ -14,7 +14,7 @@
 **Status**: Pre-registration draft (revised 2026-05-09). Binding once filed to OSF. No data unblinding before pre-registration is filed.
 **Owner**: Chris dePaola (owner-as-investigator)
 **Ethics framing**: building-as-subject measurement study with the homeowner-investigator as sole occupant. See §11.
-**Companion docs**: [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (scheduler logic, including the thermostat fallback that defines Arm A), [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) (thermal model used as one component of Arm B), [`INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md) (data persistence guarantees).
+**Companion docs**: [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (scheduler logic, including the thermostat fallback that defines Arm A), [`THERMAL_MODEL_DESIGN.md`](archive/THERMAL_MODEL_DESIGN.md) (thermal model used as one component of Arm B), [`INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md) (data persistence guarantees).
 
 ---
 
@@ -142,7 +142,7 @@ This represents what a Chicago Hourly Pricing customer running a Nest, Ecobee, H
    ```
    Safety supervisor always wins. 5CP shutoff wins over price-spike (5CP capacity-charge dollars > hourly arbitrage). Price-spike wins over schedule (real-time signal beats forecast). Humid override applies to schedule baseline only. "Warmer wins" prevents accidental over-cooling.
 
-9. **Optional: thermal-model-informed pre-cool depth, coast lead time, and stage-2 advisory.** If the operational thermal model fit per [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) ratifies (skill score ≥ 0.5 on holdout), these three setpoint-adjustment integrations are active. If the model fails ratification, Arm B operates with hand-tuned constants for these three parameters and the model dependency is reported as a limitation.
+9. **Optional: thermal-model-informed pre-cool depth, coast lead time, and stage-2 advisory.** If the operational thermal model fit per [`THERMAL_MODEL_DESIGN.md`](archive/THERMAL_MODEL_DESIGN.md) ratifies (skill score ≥ 0.5 on holdout), these three setpoint-adjustment integrations are active. If the model fails ratification, Arm B operates with hand-tuned constants for these three parameters and the model dependency is reported as a limitation.
 
 The thermal model is one component of Arm B, not the headline contribution. The headline contribution is "fully aware reactive controller vs consumer baseline" with everything bundled.
 
