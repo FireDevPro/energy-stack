@@ -1,2 +1,2 @@
-aiohttp==3.11.10
+aiohttp==3.13.4
 influxdb-client==1.48.0
