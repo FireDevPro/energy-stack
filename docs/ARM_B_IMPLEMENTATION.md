@@ -1,3 +1,11 @@
+---
+date: 2026-05-18
+owner: chris
+status: superseded
+role-label: code-team
+supersession_note: largely-superseded; sections retained as historical primer per banner below
+---
+
 # Arm B Implementation Specification
 
 > [!WARNING]

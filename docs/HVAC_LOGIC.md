@@ -1,3 +1,11 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+binding_for: scheduler-controller logic per binding spec §3 + §11 #12
+---
+
 # HVAC Scheduler Logic
 
 Companion to [`SERVICES.md#hvac-scheduler`](SERVICES.md#hvac-scheduler) (which covers operational concerns: env vars, what it writes to InfluxDB, healthcheck). This doc covers the **logic** — day-type decision tree, all schedules, override mechanism, comfort math, and the fallback schedule programmed into the thermostat for Pi-down scenarios.

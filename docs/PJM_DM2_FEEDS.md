@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # PJM Data Miner 2 — Feed Catalog
 
 Auto-generated metadata catalog for the candidate feeds we surveyed for residential energy-management use cases (5CP probabilistic forecasting, LMP forecast-bias correction, historical training data). One row per feed, sourced from `https://api.pjm.com/api/v1/<feed>/metadata` on 2026-05-06.

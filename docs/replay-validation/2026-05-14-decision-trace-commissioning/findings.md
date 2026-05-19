@@ -1,8 +1,9 @@
 ---
 date: 2026-05-14
 owner: chris
-status: path-c-complete-b1-pending
+status: locked
 role-label: chris
+disposition_note: Path C commissioning complete; B1 deferred per the rebaseline (no B1 pre-OSF). Frozen as evidence artifact of decision-trace commissioning state on 2026-05-14.
 ---
 
 # Decision-trace commissioning findings — 2026-05-14

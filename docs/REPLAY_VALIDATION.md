@@ -1,3 +1,11 @@
+---
+date: 2026-05-18
+owner: chris
+status: locked
+role-label: code-team
+binding_for: pre-OSF-tag replay validation methodology per binding spec §11 #13
+---
+
 # Replay validation: pre-flight cases and source-type catalog
 
 This document is the locked methodology for the pre-OSF-tag replay validation that satisfies [binding spec §11 #13](plans/sced-rebaseline-spec-2026-05-13.md). Two things live here:

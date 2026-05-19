@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # energy-stack
 
 Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + 19 pollers/services (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.

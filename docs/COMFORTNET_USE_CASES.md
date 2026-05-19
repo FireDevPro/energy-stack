@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # ComfortNet Use Cases
 
 Use-case reference for the `Promithius-DR/comfortnet` HVAC sniffer. Captures *what we do with the data* now that the bus → MQTT → Telegraf → InfluxDB pipeline is live, so the use cases stay tied to the consumers.
