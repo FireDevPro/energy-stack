@@ -23,7 +23,7 @@ Headline observations driving these thresholds:
 - **Hour-of-day pattern** over Jun-Sep 2025: 18:00 CT is the highest-mean hour (mean 11.03¢/kWh) and the highest-frequency spike hour (23.8% of its hours ≥10¢, the highest fraction of any hour). The overall hourly max in the dataset was 161.29¢/kWh at 17:00 CT on 2025-06-24; 18:00 CT's own max was 146.29¢/kWh on the same day. Both 17:00 and 18:00 fall outside the original 14-18 CT scheduler shutoff window's effective center.
 - **Day-level forecast tractability:** 8 of 17 scarcity days had max temp <87°F (motivating real-time price reactivity rather than pure forecast-driven control).
 
-All values pre-committed before OSF filing and frozen at the OSF commit hash.
+All values pre-committed before OSF filing and frozen at the OSF freeze tag (e.g. `osf-prereg-2026-05-30`). In-repo files cite the tag; the literal commit SHA is recoverable from `git rev-parse <tag>` or from the OSF/Zenodo deposit metadata.
 
 ## Day-type classification (recalibrated)
 

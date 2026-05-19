@@ -4,12 +4,12 @@ owner: chris
 status: locked
 role-label: spec
 name: thermostat-arm-a-schedule
-effective_at_osf_commit: pending-osf-filing
+effective_at_osf_tag: <FREEZE-TAG>  # tag NAME (e.g. osf-prereg-2026-05-30); matches the spec's frozen_at_tag
 ---
 
 # Arm A thermostat schedule (CTK04AE programmed)
 
-**OSF pre-registration freeze:** this document binds the CTK04AE thermostat's autonomous programmed schedule that runs during every Arm A period of the Summer 2026 experiment. Spec section 3 of `docs/plans/sced-rebaseline-spec-2026-05-13.md` references this file as the source of truth for Arm A setpoint behavior. The schedule is frozen at the OSF-filing commit hash. Any change to the thermostat's TCC-programmed weekly schedule after that commit is a protocol deviation requiring an OSF amendment.
+**OSF pre-registration freeze:** this document binds the CTK04AE thermostat's autonomous programmed schedule that runs during every Arm A period of the Summer 2026 experiment. Spec section 3 of `docs/plans/sced-rebaseline-spec-2026-05-13.md` references this file as the source of truth for Arm A setpoint behavior. The schedule is frozen at the OSF freeze tag (see `effective_at_osf_tag` in the YAML frontmatter; literal commit SHA captured in OSF/Zenodo deposit metadata, not in-repo). Any change to the thermostat's TCC-programmed weekly schedule after that commit is a protocol deviation requiring an OSF amendment.
 
 The schedule documented here is the same 4-event daily program applied to all seven days of the week (Monday through Sunday identical). There is no weekday/weekend distinction in the programmed schedule, and there is no per-arm-period variation — the same fixed schedule runs autonomously across all six Arm A periods regardless of weather, calendar date, or PJM signals.
 
@@ -44,7 +44,7 @@ This document lists the equipment-side settings that are most directly relevant 
 | IFC user-menu | DEHUM | Dehumidification active flag | ON | Equipment-side flag that enables the IFC blower-slowdown behavior during cool+DH calls. |
 | IFC user-menu | CL OFF | Cool blower-off delay | 60 seconds (OEM default) | Blower runs 60 seconds after compressor cutoff, pulling residual latent cooling off the wet coil. |
 
-The CTK04 ISU 4090 = ON setting is the single behavioral difference between Arm A and Arm B on the thermostat itself. During Arm A periods this setting stays ON; on the transition from Arm A to Arm B the operator flips it to OFF in the TCC installer menu (see `docs/ARM_TRANSITIONS.md`). All other settings above are unchanged across arms. Arm A's equipment-side freeze is therefore: ISU 4090 = ON plus whatever value each row in the HVAC_LOGIC.md authoritative table holds at the OSF-filing commit hash; changes to either after that commit are protocol deviations on the same footing as setpoint changes.
+The CTK04 ISU 4090 = ON setting is the single behavioral difference between Arm A and Arm B on the thermostat itself. During Arm A periods this setting stays ON; on the transition from Arm A to Arm B the operator flips it to OFF in the TCC installer menu (see `docs/ARM_TRANSITIONS.md`). All other settings above are unchanged across arms. Arm A's equipment-side freeze is therefore: ISU 4090 = ON plus whatever value each row in the HVAC_LOGIC.md authoritative table holds at the commit the OSF freeze tag points at; changes to either after that commit are protocol deviations on the same footing as setpoint changes.
 
 ## Hold, vacation, and manual override assumptions
 
@@ -64,10 +64,10 @@ The scheduler does run in shadow mode during Arm A periods and writes mode telem
 - **Evidence artifact:** `docs/THERMOSTAT_ARM_A_TCC_SCREENSHOT_2026-05-18.png` — the TCC web UI screenshot taken at the pull date, showing all seven days with identical 4-event schedules. The transcription in the daily-schedule table above matches the screenshot cell-for-cell.
 - **Discrepancies surfaced and corrected:** the prior transcription embedded in `docs/HVAC_LOGIC.md` "Thermostat fallback" table and the cited Wake cool setpoint in `docs/EXPERIMENT_DESIGN.md` had two cells out of sync with the actual TCC schedule (Wake cool was documented at 74°F instead of 73°F; Leave heat was documented at 68°F instead of 66°F). Both are corrected in the same Phase 5 PR that introduces this document. The freeze cited in this document is the corrected, screenshot-verified version.
 - **Verifier:** Chris (operator, sole household occupant).
-- **OSF commit hash:** filled at OSF filing. Currently shown in the YAML frontmatter as `pending-osf-filing`; will be replaced with the commit SHA at the OSF deposit moment.
+- **OSF freeze tag:** the YAML frontmatter `effective_at_osf_tag` is filled with the actual tag name (e.g. `osf-prereg-2026-05-30`) BEFORE merging PR9, so the fill is a clean commit on the branch — no `--amend` games. The tag is then pushed against the merged commit, and Zenodo/OSF cite that tag. The literal commit SHA appears in OSF/Zenodo deposit metadata (not in this in-repo file) so renames/squashes don't break the citation chain.
 
 ## Change-control
 
-Post-OSF changes to any cell of the daily schedule table, to any value in the equipment-settings table, or to the hold-and-override commitments above are protocol deviations under the OSF pre-registration. The amendment procedure documented at the OSF project page applies. The amendment must cite this file's then-current commit hash as the pre-change baseline.
+Post-OSF changes to any cell of the daily schedule table, to any value in the equipment-settings table, or to the hold-and-override commitments above are protocol deviations under the OSF pre-registration. The amendment procedure documented at the OSF project page applies. The amendment must cite the OSF freeze tag (`effective_at_osf_tag` in the YAML frontmatter, e.g. `osf-prereg-2026-05-30`) as the pre-change baseline; the literal commit SHA is recoverable from `git rev-parse <tag>` or from the OSF/Zenodo deposit metadata.
 
 In-experiment programmed-schedule changes by the thermostat (firmware update changing defaults, TCC web UI auto-save corrupting a row) are also deviations and would be caught by the `hvac.thermostat` poller's `cool_setpoint_f` / `heat_setpoint_f` field readings drifting from the expected values for the current period.

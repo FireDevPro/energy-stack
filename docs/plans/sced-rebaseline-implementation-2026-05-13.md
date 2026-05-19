@@ -2,11 +2,20 @@
 name: sced-rebaseline-implementation
 date: 2026-05-13
 owner: chris
-status: in-progress
+status: phases-1-6-complete-phase-7-deferred
 role-label: chris
 companion-spec: docs/plans/sced-rebaseline-spec-2026-05-13.md
 osf_filing_target: 2026-05-30
+frozen_at_tag: <FREEZE-TAG>  # tag NAME (e.g. osf-prereg-2026-05-30); matches the spec's frozen_at_tag
 experiment_start: 2026-06-01
+phase_status_2026-05-18:
+  - Phase 1 (controller-side telemetry + arm-mode gating) - complete
+  - Phase 2 (bill-canonical pricing infrastructure) - complete
+  - Phase 3 (analysis pipeline rewrite to arm-period units) - complete
+  - Phase 4 (NOAA fallback station selection) - complete
+  - Phase 5 (documentation freeze) - complete (PR9 freeze)
+  - Phase 6 (shadow validation run) - complete
+  - Phase 7 (post-experiment-start checkpoint, 2026-06-15) - deferred to operational checkpoint
 ---
 
 # SCED Rebaseline Implementation Plan
@@ -2861,7 +2870,7 @@ date: 2026-05-18
 owner: chris
 status: locked
 role-label: spec
-effective_at_osf_commit: <hash>
+effective_at_osf_tag: <FREEZE-TAG>
 ---
 
 # CTK04AE Arm A Baseline Schedule
@@ -2889,7 +2898,7 @@ that runs autonomously during Arm A periods of the SCED experiment
 - ...
 
 ## Provenance
-Pulled from CTK04AE on 2026-05-18. Frozen at OSF filing commit.
+Pulled from CTK04AE on 2026-05-18. Frozen at the OSF freeze tag (see `effective_at_osf_tag` in YAML frontmatter).
 ```
 
 - [ ] **Step 3: Commit**
@@ -3194,7 +3203,7 @@ git commit -m "ops(experiment): first-arm-transition operational checkpoint (spe
 ## OSF prereg filing (2026-05-30)
 
 After Phases 1-6 merged (Phase 7 happens post-experiment-start; not pre-OSF), file OSF prereg referencing:
-- `docs/plans/sced-rebaseline-spec-2026-05-13.md` — frozen at the OSF-filing commit hash
+- `docs/plans/sced-rebaseline-spec-2026-05-13.md` — frozen at the OSF freeze tag (`frozen_at_tag` in frontmatter; literal commit SHA captured in OSF/Zenodo deposit metadata, not in-repo)
 - `docs/THERMOSTAT_ARM_A_SCHEDULE.md` — frozen
 - `docs/HVAC_LOGIC.md` — frozen (Arm B controller spec)
 - `docs/replay-validation/2026-05-18-shadow/findings.md` — shadow validation evidence (incl. M3 scarcity-divergence audit)
@@ -3208,7 +3217,7 @@ Phase 7 (post-experiment-start checkpoint) is referenced in OSF as a future oper
 
 **Spec coverage check:** every section of `docs/plans/sced-rebaseline-spec-2026-05-13.md` traced to at least one task in this plan. §0 source-of-truth declaration is procedural. §14 limitations are documentation-only.
 
-**Placeholder scan:** No "TBD" inside steps. Task 4.1 has audit task with table headers awaiting data — that's the audit's purpose. Task 5.1 has `<hash>` placeholder for OSF commit hash — intentionally unknowable until OSF filing day. Task 7.1 dates reference 2026-06-15 calendar event.
+**Placeholder scan:** No "TBD" inside steps. Task 4.1 has audit task with table headers awaiting data — that's the audit's purpose. Task 5.1's template `effective_at_osf_tag` field carries an OSF-freeze-tag placeholder — knowable BEFORE tagging (just a string Chris picks); filled at PR9 final pass before merge. Task 7.1 dates reference 2026-06-15 calendar event.
 
 **Type consistency:** `HourMode` enum used consistently across modules. `ArmPeriod` dataclass used consistently. `HourlyRateInputs` dataclass referenced same way across pipeline tasks.
 

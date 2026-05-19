@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+message: "If you reference this study or its supporting code, please cite both the OSF pre-registration and the archived release of this repository."
+type: software
+title: "energy-proxy: SCED rebaseline analysis stack for a single-household HVAC controller field study"
+abstract: >
+  Real-time and historical residential energy monitoring with dynamic-pricing-aware
+  HVAC scheduling, plus the analysis pipeline that supports a pre-registered
+  single-case experimental design (SCED) field study comparing the CTK04AE
+  thermostat's programmed schedule (Arm A) against the active hvac-scheduler
+  controller (Arm B: RTP/DTOD/5CP-risk-aware RBC with safety supervisor).
+  Conducted as building-as-subject measurement by an unaffiliated owner-investigator
+  in a single Plainfield, IL household over the 2026 cooling season (2026-06-01
+  through 2026-11-16, 12 arm periods of 14 days each).
+authors:
+  - family-names: dePaola
+    given-names: Chris
+    affiliation: "Independent (unaffiliated owner-investigator)"
+repository-code: "https://github.com/Promithius-DR/energy-stack"
+url: "https://github.com/Promithius-DR/energy-stack"
+license: MIT  # confirm against actual repo license file before freeze
+version: <FREEZE-TAG>          # set to the OSF-pre-reg tag at freeze (e.g. osf-prereg-2026-05-30)
+date-released: <FREEZE-DATE>   # set to the freeze date at freeze
+keywords:
+  - residential HVAC
+  - demand response
+  - dynamic pricing
+  - ComEd Hourly Pricing
+  - PJM 5CP avoidance
+  - SCED
+  - single-case experimental design
+  - field study
+  - pre-registration
+references:
+  - type: report
+    title: "SCED rebaseline spec — HVAC controller effectiveness, Summer 2026 (binding pre-registration)"
+    authors:
+      - family-names: dePaola
+        given-names: Chris
+    url: "https://github.com/Promithius-DR/energy-stack/blob/<FREEZE-TAG>/docs/plans/sced-rebaseline-spec-2026-05-13.md"
+    date-released: <FREEZE-DATE>

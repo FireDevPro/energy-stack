@@ -9,7 +9,7 @@ role-label: chris
 
 Real-time and historical residential energy monitoring with **dynamic-pricing-aware HVAC scheduling**, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance.
 
-> **Research project**: starting summer 2026, this stack runs a pre-registered SCED field study comparing the CTK04AE thermostat's programmed schedule (Arm A) against the active `hvac-scheduler` (Arm B: RTP/DTOD/5CP-risk-aware RBC with safety supervisor), targeting a peer-reviewed publication. Binding pre-registration spec: **[docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)** (frozen at OSF-filing commit, target 2026-05-30).
+> **Research project**: starting summer 2026, this stack runs a pre-registered SCED field study comparing the CTK04AE thermostat's programmed schedule (Arm A) against the active `hvac-scheduler` (Arm B: RTP/DTOD/5CP-risk-aware RBC with safety supervisor), targeting a peer-reviewed publication. Binding pre-registration spec: **[docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)** (frozen at the OSF freeze tag, target 2026-05-30; literal commit SHA captured in OSF/Zenodo deposit metadata).
 
 > Full project history, decisions, and roadmap: **[PROJECT.md](PROJECT.md)**.
 > Operational guide for the stack: **[deploy/energy-stack/README.md](deploy/energy-stack/README.md)**.
@@ -161,7 +161,7 @@ UniFi-managed home network with multiple VLANs. Relevant for ops:
 See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path items for the June 1, 2026 SCED experiment start (binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md)):
 
 - **Pre-OSF spec §11 deliverables** — 13 binding items including arm-calendar + `SCHEDULER_MODE=experiment` gating in `hvac-scheduler`, mode telemetry (`hvac.arm_mode`), switch-event logging, input-feed health, controller watchdog, `rt_hrl_lmps` poller, DTOD analysis-rate table, CTK04AE Arm A schedule freeze ([`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)), dry-run guard audit, analysis-pipeline rewrite, NOAA fallback station selection, day-type schedule verification, shadow validation run. Progress in [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](docs/plans/pre-osf-doc-audit-execution-2026-05-18.md).
-- **OSF pre-registration filing** — binding spec frozen (`status: frozen` + `frozen_at_commit: <SHA>`) at the OSF-filing commit, target 2026-05-30. Filing uses the OSF open-ended template with the spec attached via Zenodo DOI.
+- **OSF pre-registration filing** — binding spec frozen (`status: frozen` + `frozen_at_tag: <tag name>`, e.g. `osf-prereg-2026-05-30`), target 2026-05-30. Literal commit SHA captured in OSF/Zenodo deposit metadata; in-repo files cite the tag (stable across squash/amend). Filing uses the OSF open-ended template with the spec attached via Zenodo DOI.
 
 Other open items, parked behind the experiment:
 

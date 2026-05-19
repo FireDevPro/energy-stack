@@ -1,0 +1,25 @@
+{
+  "title": "energy-proxy: SCED rebaseline analysis stack for a single-household HVAC controller field study",
+  "description": "Real-time and historical residential energy monitoring with dynamic-pricing-aware HVAC scheduling, plus the analysis pipeline that supports a pre-registered single-case experimental design (SCED) field study comparing the CTK04AE thermostat's programmed schedule (Arm A) against the active hvac-scheduler controller (Arm B: RTP/DTOD/5CP-risk-aware RBC with safety supervisor). Conducted as building-as-subject measurement by an unaffiliated owner-investigator in a single Plainfield, IL household over the 2026 cooling season (2026-06-01 through 2026-11-16, 12 arm periods of 14 days each). Binding pre-registration spec lives at docs/plans/sced-rebaseline-spec-2026-05-13.md within the tagged release.",
+  "creators": [
+    {
+      "name": "dePaola, Chris",
+      "affiliation": "Independent (unaffiliated owner-investigator)"
+    }
+  ],
+  "keywords": [
+    "residential HVAC",
+    "demand response",
+    "dynamic pricing",
+    "ComEd Hourly Pricing",
+    "PJM 5CP avoidance",
+    "single-case experimental design",
+    "field study",
+    "pre-registration",
+    "open science"
+  ],
+  "license": "MIT",
+  "upload_type": "software",
+  "access_right": "open",
+  "version": "<FREEZE-TAG>"
+}

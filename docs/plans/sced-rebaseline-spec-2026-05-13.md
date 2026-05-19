@@ -2,12 +2,18 @@
 name: sced-rebaseline-spec
 date: 2026-05-13
 owner: chris
-status: draft
+status: frozen
 role-label: spec
-supersedes: docs/plans/archive/analysis-rebaseline-plan-2026-05-13.md, docs/EXPERIMENT_DESIGN.md (analysis portions)
+supersedes: docs/plans/archive/analysis-rebaseline-plan-2026-05-13.md, docs/archive/EXPERIMENT_DESIGN.md (analysis portions), docs/archive/OSF_FILING.md (artifact list + pre-flight checklist)
 osf_filing_target: 2026-05-30
+frozen_at_tag: <FREEZE-TAG>  # tag NAME (e.g. osf-prereg-2026-05-30); knowable BEFORE tagging so it survives squash/amend
 experiment_start: 2026-06-01
 experiment_end: 2026-11-16
+# Post-deposit metadata (zenodo_doi, osf_registration_url, osf_filed_at)
+# is filled in a separate post-deposit-fills PR on main AFTER the tag is
+# pushed + Zenodo mints + OSF approves. Those fields are intentionally
+# absent here so the tagged Zenodo archive does not freeze placeholder
+# strings into its metadata snapshot.
 ---
 
 # SCED Rebaseline Spec — HVAC Controller Effectiveness, Summer 2026
@@ -80,9 +86,9 @@ Does a smart RTP/DTOD/5CP-aware HVAC controller, **when operating as intended**,
 | A | hvac-scheduler runs in `shadow` mode (no writes). Does NOT push setpoints. | CTK04AE thermostat's internal programmed schedule runs autonomously. | N/A (thermostat is the floor.) |
 | B | hvac-scheduler active. Day-type classification + price overlays + capacity-risk overlays + precool deepening + safety supervisor. Pushes setpoints to CTK04AE. | Scheduler commands → CTK04AE. | If scheduler dies → CTK04AE program resumes (= effectively-A behavior during that window). Per Section 5: hour classified as B-down, EXCLUDED from primary. |
 
-**Arm A schedule (CTK04AE programmed):** Documented in `docs/THERMOSTAT_ARM_A_SCHEDULE.md` (pre-OSF deliverable). Frozen at OSF-filing commit. Changes to thermostat program post-OSF = protocol deviation.
+**Arm A schedule (CTK04AE programmed):** Documented in `docs/THERMOSTAT_ARM_A_SCHEDULE.md` (pre-OSF deliverable). Frozen at the OSF freeze tag (literal commit SHA captured in OSF/Zenodo deposit metadata; in-repo files cite the tag for stability across history rewrites). Changes to thermostat program post-OSF = protocol deviation.
 
-**Arm B controller spec:** Frozen at hvac-scheduler `main` commit hash at OSF filing time. Pre-freeze fix list (Section 11) lands before freeze. Post-freeze logic changes = protocol deviation.
+**Arm B controller spec:** Frozen at the OSF freeze tag pointing at the hvac-scheduler `main` commit at OSF filing time. Pre-freeze fix list (Section 11) lands before freeze. Post-freeze logic changes = protocol deviation.
 
 **Switching mechanism:** Scheduler operates in one of three explicit top-level modes, controlled by `SCHEDULER_MODE` (env var, no default — must be set explicitly). The mode gates the `execute_action` setpoint-write path. Container runs continuously across all states for telemetry observation.
 
@@ -440,7 +446,7 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 5. **Controller heartbeat / liveness**: out-of-band watchdog (systemd timer or external cron) writes `controller_alive=false` if no `hvac.arm_mode` row in last 10 min. Distinguishes B-down from missing-data.
 6. **rt_hrl_lmps poller**: add `rt_hrl_lmps` feed to `pjm-dm2-poller`. Backfill from 2026-01-01 (minimum) or 24-month retention (ideal).
 7. **DTOD analysis-rate table**: load resultant rates (Section 8 table) into analysis pipeline. Controller continues using base rates unless explicitly changed pre-freeze.
-8. **CTK04AE Arm A schedule documentation**: lock `docs/HVAC_LOGIC.md` plus a referenced `docs/THERMOSTAT_ARM_A_SCHEDULE.md` (if not already present) with weekday/weekend schedule, setpoints, time boundaries, AIR/recovery settings, effective date. Cite OSF commit hash. **Status (2026-05-18 Phase 5):** schedule frozen at `docs/THERMOSTAT_ARM_A_SCHEDULE.md` with TCC web UI screenshot evidence at `docs/THERMOSTAT_ARM_A_TCC_SCREENSHOT_2026-05-18.png`. Two cells of the prior HVAC_LOGIC.md transcription (Wake cool, Leave heat) were corrected against the screenshot. OSF commit hash remains `pending-osf-filing` until OSF deposit; the YAML header in the new doc carries that placeholder explicitly.
+8. **CTK04AE Arm A schedule documentation**: lock `docs/HVAC_LOGIC.md` plus a referenced `docs/THERMOSTAT_ARM_A_SCHEDULE.md` (if not already present) with weekday/weekend schedule, setpoints, time boundaries, AIR/recovery settings, effective date. Cite OSF freeze tag in YAML frontmatter (literal commit SHA goes in OSF/Zenodo deposit metadata, not the in-repo file). **Status (2026-05-18 Phase 5):** schedule frozen at `docs/THERMOSTAT_ARM_A_SCHEDULE.md` with TCC web UI screenshot evidence at `docs/THERMOSTAT_ARM_A_TCC_SCREENSHOT_2026-05-18.png`. Two cells of the prior HVAC_LOGIC.md transcription (Wake cool, Leave heat) were corrected against the screenshot. The YAML `effective_at_osf_tag` field is filled with the actual tag name (e.g. `osf-prereg-2026-05-30`) before merging PR9.
 9. **Dry-run guard audit**: verify NO Control4 setpoint-write path is invoked during dry-run. Comprehensive audit of all `execute_action` branches. Test coverage proving non-touch behavior.
 10. **Analysis pipeline rewrite**: Stage 3 / Stage 5 reframed around arm-period unit; remove $/CDD scaffolding; remove weekly aggregation. Implement single pre-matching gate (Section 5) + cost-matched exclusion (Section 5). Cherry-pick Eagle manifest/query work + actual-dollar helpers from PR #109. PR #109 closed as superseded after spec lands.
 11. **NOAA-archived automated airport weather station fallback selection**: lock station ID for Ecowitt-gap fallback (candidates KJOT Joliet, KARR Aurora, KMDW Midway, KORD O'Hare; mix of FAA AWOS-3 and ASOS, all in the same NCEI archive). Criteria: proximity to Plainfield IL + completeness of hourly temp + dewpoint. No historical pull needed — within-sample standardization makes ERA5 unnecessary.
@@ -483,7 +489,7 @@ Purpose: verify that our Refoss/Eagle measurements + pricing primitives produce 
 This is a **single-household n-of-1 case study**. Results are not generalizable. Specifically:
 
 - **Estimand is per-protocol, not intent-to-treat.** The primary outcome answers "when the smart controller operated as intended, did its strategy reduce cost vs the standard schedule at matched cost conditions?" It does NOT answer "would this controller, including its reliability failures, save money under continuous real-world operation." This study explicitly excludes controller-failure hours from the primary aggregate. Whether the algorithm plus a reliability layer would produce real-world savings is a separate question not addressed here.
-- **N = 6 matched pairs at best** (fewer if the per-arm validity gate drops any arms). The per-pair table is the deliverable, not aggregate inference. This is a discovery study (§9.5) — no statistical claim is made about effect size, significance, or direction. Poor-weather-match pairs are flagged but kept in primary; an optional sensitivity (§12) shows the alternative.
+- **N = 6 matched pairs at best** (fewer if the per-arm validity gate drops any arms). The per-pair table is the deliverable, not aggregate inference. This is a discovery study (§9.5) — no statistical claim is made about effect size, significance, or direction. Match quality is reported per pair as descriptive provenance (`weather_distance_zscore` + per-component diffs + `temporal_gap_days` + Ecowitt/NOAA source split per §6 and §9). There is no poor-weather-match flag and no subset sensitivity on poorly-matched pairs; with N=6, any threshold rule would be arbitrary, so the rule is "publish all per-pair match-quality columns; readers sort and judge."
 - **Single household**, single climate (Chicago, IL), single HVAC system (gas furnace + central AC), single occupant pattern.
 - **Single cooling season** (Summer 2026). No multi-year replication.
 - **No retrospective baseline**: instrumentation begins 2026-04-29 (Refoss) and 2026-05-11 (Ecowitt). No 2024/2025 pre-experiment history.
