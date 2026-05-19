@@ -42,10 +42,13 @@ A new service in `deploy/energy-stack/docker-compose.yml`: `pjm-dm2-poller`. Con
 | `da_hrl_lmps` for ComEd zone | Once daily, ~17:00 CT (after DA market clear) | 1 | Tomorrow's DA LMP for forecast-bias correction |
 | `load_frcstd_7_day` for ComEd | Twice daily (06:00 CT, 13:00 CT) | 2 | Tomorrow + day-after load forecast for 5CP-probability inference |
 | `ops_sum_frcst_peak_rto` | Twice daily (06:00 CT, 13:00 CT), Jun-Sep only | 2 (cooling-season-only) | RTO peak-day signal |
-| `hrl_load_metered` for ComEd | Weekly (Sundays, 02:00 CT) | <1 amortized | Keep training set fresh |
+| `hrl_load_metered` for ComEd (`zone=CE`) | Hourly, 5-day lookback | ~24 | Live ComEd-zone metered load for §3 5CP detector + training set |
+| `hrl_load_metered_rto` (`zone=RTO`) | Hourly, 5-day lookback | ~24 | RTO-wide aggregate companion for the §3 dual-scope 5CP detector |
+| `inst_load` for ComEd (`area=COMED`) + `inst_load_rto` (`area=PJM RTO`) | Every 5 min, both scopes | ~288 each | Sub-hourly approximate load for §3 5CP detector live signal |
+| `rt_hrl_lmps` for ComEd zonal pnode | Daily ~12:00 CT (~1h after PJM 11-12 ET settled-data publish) | 1 | Settled hourly LMP for §8 bill-canonical HVAC$ |
 | `annual_zonal_nspl` for ComEd | Annually (December 1) | <0.01 amortized | NSPL change detection |
 
-Steady-state daily call budget: 5–6 calls. With the 6 calls/min ceiling, all calls space ≥ 11 seconds apart automatically.
+Steady-state daily call budget: ~340 calls per scope per day for the `inst_load` 5-minute feeds, plus ~24 hourly for each metered-load scope, plus a handful of daily-cadence feeds. Total ~700-720 calls/day. With the 6 calls/min ceiling and 5-min tick spacing, the wake loop paces well under the rate limit (each tick fires at most 2-4 feeds, all space ≥ 5 s apart).
 
 ### Out-of-band scrapers
 

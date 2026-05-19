@@ -2,6 +2,8 @@
 
 Auto-generated metadata catalog for the candidate feeds we surveyed for residential energy-management use cases (5CP probabilistic forecasting, LMP forecast-bias correction, historical training data). One row per feed, sourced from `https://api.pjm.com/api/v1/<feed>/metadata` on 2026-05-06.
 
+**Refresh cadence:** annually, or on PJM OpenAPI schema changes (feed add/deprecate, cadence change, column add/remove). Last refresh: 2026-05-06.
+
 **Tier**: Non-Member API. Rate ceiling: 6 calls/min. Row ceiling: 50,000 per call.
 **Auth**: header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`.
 **Base URL**: `https://api.pjm.com/api/v1/`.

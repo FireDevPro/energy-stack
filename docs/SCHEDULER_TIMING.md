@@ -63,8 +63,8 @@ gantt
 
 **Key observations from the timeline:**
 
-- The §7 cheap-window search (06:00-15:00 CT) sits inside the Morning DTOD period (4.01¢/kWh, second-cheapest of the day) and ends as the Mid-Day Peak (10.71¢/kWh) starts. By design — pre-cool during cheap morning, ride out the expensive mid-day with thermal mass.
-- PJM publishes tomorrow's EPT-day DA LMP at 17:00 CT. `run_decision` consumes it at 21:00 CT — a 4-hour buffer. Recent fix (PR #121) accepts the structurally-missing CT-hour-23 at the EPT/CT day boundary; see §EPT-vs-CT precool boundary below.
+- The §7 cheap-window search (06:00-15:00 CT) sits inside the Morning DTOD period (controller-side base rate 4.01¢/kWh, second-cheapest of the day) and ends as the Mid-Day Peak (10.71¢/kWh base) starts. By design — pre-cool during cheap morning, ride out the expensive mid-day with thermal mass. (Note: these are base/sensitivity DTOD rates the controller uses for cheap-window ranking; the bill-canonical resultant rates per binding spec §8 are 4.428 / 11.727 / 4.142 / 3.311 ¢/kWh for Morning / Mid-Day Peak / Evening / Overnight respectively.)
+- PJM publishes tomorrow's EPT-day DA LMP at 17:00 CT. `run_decision` consumes it at 21:00 CT — a 4-hour buffer. Per PR #121 (merged) the structurally-missing CT-hour-23 at the EPT/CT day boundary is accepted; see §EPT-vs-CT precool boundary below.
 - Day-type pre-cool actions fire before 06:00 CT on HOT (04:00) and HOT_STREAK_DAY1 (03:00) days. The §7 path is currently bounded ≥06:00; that asymmetry is open for discussion (separate from the boundary fix).
 - All discrete actions have a 5-minute makeup window, so an action at e.g. 13:00 fires on the first tick at or after 13:00 (up to 13:05) where the prior tick hasn't already marked it fired.
 
@@ -120,7 +120,7 @@ flowchart TD
 
 **Where bugs surface in this picture:**
 
-- The `FetchBoundary` diamond is the EPT-vs-CT structural boundary. Pre-PR-#121, this defaulted to "No" for the 23-hour-only-hour-23-missing case → every nightly §7 precool decision rejected silently → no `hvac.precool_window` rows ever written → no §7 precool action injected tomorrow. PR #121 (merged or pending — check repo state) accepts the 23 + hour-23-padded case, allowing the path to actually fire.
+- The `FetchBoundary` diamond is the EPT-vs-CT structural boundary. Pre-PR-#121, this defaulted to "No" for the 23-hour-only-hour-23-missing case → every nightly §7 precool decision rejected silently → no `hvac.precool_window` rows ever written → no §7 precool action injected tomorrow. PR #121 (merged) accepts the 23 + hour-23-padded case, allowing the path to actually fire.
 - The `Cheap` diamond's search range (indices 6-14) is the source of the "precool can't start before 06:00 CT" constraint Chris flagged. Separate from the boundary fix; not changed in PR #121.
 
 ## Diagram 3 — Per-tick scheduler decisions
