@@ -184,7 +184,7 @@ This pattern is encoded in `execute_action()`: `set_cool_setpoint_f(...)` → `s
 
 Precedence is emergency > clamp > approved (first match wins). Each `hvac.actions` row is tagged with `supervisor_decision` and carries `supervisor_reason` + `cool_setpoint_proposed_f` fields, so an audit query can compare what the controller asked for against what actually got pushed. The supervisor logs at `warn` for `clamped` and `error` for `emergency` (so Loki LogQL `{compose_service="hvac-scheduler", level=~"warn|error"}` surfaces them immediately).
 
-**Why this exists:** the supervisor is shared infrastructure that gates every controller — baseline RBC today, model-informed Arm B controller in the SCED experiment, anything later. The intent is that no future controller (including a buggy one mid-development) can put unsafe setpoints on the thermostat without crossing this gate.
+**Why this exists:** the supervisor is shared infrastructure that gates every controller variant — current `hvac-scheduler` (Arm B in the SCED experiment) and any future variants. The intent is that no controller (including a buggy one mid-development) can put unsafe setpoints on the thermostat without crossing this gate.
 
 **Bounds rationale:**
 
@@ -351,5 +351,5 @@ Deliberately scoped out (for clarity, and to avoid future scope creep):
 - **EV charging coordination.** No EV in service yet. When one arrives, charging would naturally overlap with the off-peak overnight window, no scheduler involvement needed initially.
 - **Solar awareness.** No PV system. If installed, would need additional inputs (production forecast) and the COAST window logic would change (run AC during midday solar surplus instead of coasting).
 - **Demand response participation in OpenADR.** ComEd doesn't currently expose a residential VTN. Would be straightforward to add as another input to the day-type decision when it does.
-- **Day-ahead pricing forecasts.** ComEd doesn't expose. PJM DataMiner2 day-ahead LMP is now ingested by `pjm-dm2-poller` into `pjm.lmp_da_hourly` (Phase 9, May 2026), but the scheduler's day-type classifier doesn't yet consume it — that work feeds the forthcoming 5CP-probability classifier and the Arm B model-informed controller.
+- **Day-ahead pricing forecasts.** ComEd doesn't expose. PJM DataMiner2 day-ahead LMP is now ingested by `pjm-dm2-poller` into `pjm.lmp_da_hourly` (Phase 9, May 2026), but the scheduler's day-type classifier doesn't yet consume it — that work feeds a forthcoming 5CP-probability classifier as a future Arm B enhancement.
 - **Comfort-aware adaptation.** Override-event logging shipped May 2026 via `thermostat-poller` (writes `hvac.overrides`). The scheduler doesn't yet *consume* that data to tighten/loosen coast ceilings; that's a follow-on once enough data accumulates.

@@ -9,7 +9,7 @@ role-label: chris
 
 Real-time and historical residential energy monitoring with **dynamic-pricing-aware HVAC scheduling**, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance.
 
-> **Research project**: starting summer 2026, this stack runs a pre-registered SCED field study comparing baseline RBC vs. a thermal-model-informed controller, targeting a peer-reviewed publication. Pre-registration: **[docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md)**. Thermal-model methodology: **[docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md)**.
+> **Research project**: starting summer 2026, this stack runs a pre-registered SCED field study comparing the CTK04AE thermostat's programmed schedule (Arm A) against the active `hvac-scheduler` (Arm B: RTP/DTOD/5CP-risk-aware RBC with safety supervisor), targeting a peer-reviewed publication. Binding pre-registration spec: **[docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)** (frozen at OSF-filing commit, target 2026-05-30).
 
 > Full project history, decisions, and roadmap: **[PROJECT.md](PROJECT.md)**.
 > Operational guide for the stack: **[deploy/energy-stack/README.md](deploy/energy-stack/README.md)**.
@@ -158,17 +158,16 @@ UniFi-managed home network with multiple VLANs. Relevant for ops:
 
 ## Roadmap
 
-See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path items for the June 1, 2026 SCED experiment start (see [`docs/EXPERIMENT_DESIGN.md`](docs/EXPERIMENT_DESIGN.md)):
+See **[PROJECT.md](PROJECT.md)** for the full phased history. Critical-path items for the June 1, 2026 SCED experiment start (binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md)):
 
-- **Arm B controller (Step 1 model-informed)** — three integration points from [`docs/THERMAL_MODEL_DESIGN.md`](docs/THERMAL_MODEL_DESIGN.md): pre-cool depth from envelope-ODE, COAST shutoff lead time closed-form, Stage-2-during-5CP advisory log. Prereq: per-house thermal model fit.
-- **Arm-switch wiring in `hvac-scheduler`** — read [`docs/experiment-assignments-summer-2026.csv`](docs/experiment-assignments-summer-2026.csv) at week boundary, branch logic, tag `hvac.actions` with `arm`.
-- **OSF pre-registration filing** — both arms pinned to one frozen commit hash before week 1.
+- **Pre-OSF spec §11 deliverables** — 13 binding items including arm-calendar + `SCHEDULER_MODE=experiment` gating in `hvac-scheduler`, mode telemetry (`hvac.arm_mode`), switch-event logging, input-feed health, controller watchdog, `rt_hrl_lmps` poller, DTOD analysis-rate table, CTK04AE Arm A schedule freeze ([`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)), dry-run guard audit, analysis-pipeline rewrite, NOAA fallback station selection, day-type schedule verification, shadow validation run. Progress in [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](docs/plans/pre-osf-doc-audit-execution-2026-05-18.md).
+- **OSF pre-registration filing** — binding spec frozen (`status: frozen` + `frozen_at_commit: <SHA>`) at the OSF-filing commit, target 2026-05-30. Filing uses the OSF open-ended template with the spec attached via Zenodo DOI.
 
 Other open items, parked behind the experiment:
 
 - **ComfortNet decoder extension for write-side opcodes** — the live publisher decodes the read side of the user-menu protocol; capturing a setting change to extract the SetUserMenu opcode is a follow-on (see `Promithius-DR/comfortnet` `docs/SETTING_REVIEW.md`)
 - **Open-Meteo (ECMWF) as second weather source** — Free; better than NWS for 1-3 day temp since their Oct 2025 IFS upgrade
 - **Forecast bias correction** — pair NWS observations against local Ecowitt sensor (en route May 2026), fit per-station affine bias by lead time
-- **Pre-cool depth retune** — research suggests `HOT_PRE_COOL` could shift 68°F → 71-72°F starting 3am instead of 4am @ 68°F. Will fall out of the SCED study if run as an Arm B variant.
+- **Pre-cool depth retune** — research suggests `HOT_PRE_COOL` could shift 68°F → 71-72°F starting 3am instead of 4am @ 68°F. May inform a post-experiment retune; mid-experiment variant changes would be protocol deviations.
 - **Fridge anomaly detection upgrade** to Merlion (multivariate, currently univariate threshold)
 - **Phase 8 forward-projection panel** — full bill-vs-projected formula lands after a few cycles of bill data accumulate

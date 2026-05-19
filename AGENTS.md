@@ -11,9 +11,9 @@ Standing rules for every AI session. Any agent reading this (Claude, Codex, Curs
 
 ## Project
 
-Home Energy Monitoring & HVAC Optimization: real-time and historical residential energy monitoring with dynamic-pricing-aware HVAC scheduling, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance. Owner: Chris. Phase: pre-OSF-filing for a pre-registered SCED field study starting summer 2026 (Arm A baseline RBC vs Arm B thermal-model-informed controller). See [PROJECT.md](PROJECT.md), [README.md](README.md), [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md), [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md).
+Home Energy Monitoring & HVAC Optimization: real-time and historical residential energy monitoring with dynamic-pricing-aware HVAC scheduling, running as a Docker Compose stack on Pi-lab. Built around ComEd Hourly Pricing + PJM 5CP avoidance. Owner: Chris. Phase: pre-OSF-filing for a pre-registered SCED field study starting summer 2026 (Arm A = CTK04AE programmed schedule; Arm B = active `hvac-scheduler` with RTP/DTOD/5CP-risk-aware RBC + safety supervisor). See [PROJECT.md](PROJECT.md), [README.md](README.md), [docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md) (binding spec), [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md), [docs/THERMOSTAT_ARM_A_SCHEDULE.md](docs/THERMOSTAT_ARM_A_SCHEDULE.md).
 
-**Pre-registration is binding.** Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules lock at a frozen commit hash. Anything touching scheduler, thermal model, or telemetry is on the critical path to June 1 experiment start. Operational features that don't serve Arm A / Arm B / observability are parked.
+**Pre-registration is binding.** Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules lock at a frozen commit hash. Anything touching scheduler or telemetry is on the critical path to June 1 experiment start. Operational features that don't serve Arm A / Arm B / observability are parked.
 
 ## Build & test
 
@@ -45,8 +45,8 @@ Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.
 - Per-service detail: [docs/SERVICES.md](docs/SERVICES.md)
 - HVAC scheduler logic + fallback: [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md)
 - Scheduler timing + decision diagrams (Mermaid): [docs/SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md)
-- Experiment design (binding once filed): [docs/EXPERIMENT_DESIGN.md](docs/EXPERIMENT_DESIGN.md)
-- Thermal model design: [docs/THERMAL_MODEL_DESIGN.md](docs/THERMAL_MODEL_DESIGN.md)
+- Binding pre-registration spec: [docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)
+- CTK04AE Arm A schedule: [docs/THERMOSTAT_ARM_A_SCHEDULE.md](docs/THERMOSTAT_ARM_A_SCHEDULE.md)
 - Pollers, scripts, ad-hoc tooling: `tools/`
 - Workstation-local Controller Cockpit (read-only live dashboard): [tools/cockpit/](tools/cockpit/)
 - Stack compose + provisioning: `deploy/energy-stack/`

@@ -251,7 +251,7 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 |---|---|---|
 | `for_period=today`, `tomorrow`, `day2` | `high_f`, `low_f`, `max_dewpoint_f`, `precip_prob`, `is_heat_advisory` (0/1), `alert_summary` (string) | One point per period per poll; idempotent on the period's date |
 
-> **No hourly forecast points are written today.** The poller calls the `forecastHourly` endpoint internally but rolls those periods up into the three daily aggregates above. If the thermal-model fit (or any other consumer) needs hourly outdoor temperature, that's a future poller change — see [`THERMAL_MODEL_DESIGN.md`](THERMAL_MODEL_DESIGN.md) data-cadence section.
+> **No hourly forecast points are written today.** The poller calls the `forecastGridData` endpoint internally but rolls those periods up into the three daily aggregates above. If a future consumer needs hourly outdoor temperature, that's a future poller change.
 
 **Important:** the gridpoint resolution call can be slow on first cycle — poller uses 30 s aiohttp timeout (was 15 s earlier, increased after observed timeouts).
 
