@@ -21,69 +21,31 @@ Current month's reading is Actual.APRMAYJUNJULAUGSEPOCTNOVDECJANFEBMARAPR
 Payment Deducted on 5/18/26$247.67Payment Amount:
 999999999100002476761380247675
 Account #  9999999991
-0005341    SL         H    1083 60000                   -C23-00-P00000-I            
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
+0005341    SL         H    1083 60000                   -C23-00-P00000-I
 [imb-barcode-redacted]
 9999-99-9999992-9999-9999992
 [imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-EXAMPLE CUSTOMER                               
-123 EXAMPLE ST                             
-ANYTOWN, IL 60000                              
-                                                  
-                                                  
+EXAMPLE CUSTOMER
+123 EXAMPLE ST
+ANYTOWN, IL 60000
+
+
 [postnet-barcode-redacted]
-COMED                         
-PO BOX 6111                   
-CAROL STREAM, IL 60197-6111   
-                              
-                              
+COMED
+PO BOX 6111
+CAROL STREAM, IL 60197-6111
+
+
 English 1.800.EDISON1 (1.800.334.7661)Español 1.800.95.LUCES (1.800.955.8237)Hearing/Speech Impaired1.800.526.0844 (TTY)
 Read DatesMeter NumberLoad TypeReading TypePreviousPresentDifferenceMultiplierUsage3/24-4/23999999990General ServiceTotal kWhActualActual 1715METER INFORMATION
   Issued 4/24/26        Account #  9999999991
 1SERVICE ADDRESS123 Example St Anytown, IL 60000Electric Choice ID: 9999999992$247.67
-(continued on next page) 
+(continued on next page)
 Page 2 of 3
 CHARGE DETAILSResidential - Hourly Single 3/24/26 - 4/23/26   (30 Days)
-    
+
 SUPPLY  - ComEd $146.83Electricity Supply Charge1,715 kWh$42.15Capacity Charge6.56 kWX8.32925$54.64Transmission Services Charge1,715 kWhX0.01083$18.57Misc Procurement Components Chg1,715 kWhX0.00062$1.06Purchased Electricity Adjustment$30.41
-    
+
 DELIVERY  - ComEd $128.82Customer Charge $15.35Standard Metering Charge$3.83Distribution Facility Charge1,715 kWhX0.06267$107.48IL Electricity Distribution Charge1,715 kWhX0.00126$2.16TAXES, FEES & OTHER CREDITS-$27.98Environmental Cost Recovery Adj1,715 kWhX0.00009$0.15Renewable Portfolio Standard1,715 kWhX0.00502$8.61Coal to Solar and Energy Storage Fund1,715 kWhX0.00006$0.10Zero Emission Standard1,715 kWhX0.00189$3.24Carbon-Free Energy Resource Adj1,715 kWhX-0.03186-$54.64Energy Efficiency Programs1,715 kWhX0.00369$6.33Energy Transition Assistance1,715 kWhX0.00084$1.44Low Income Discount Recovery$1.35Franchise Cost$117.67X1.73900%$2.05State Tax $5.66
 Municipal Tax $10.77Low Income Discount$260.71X-5% -$13.04Service Period Total$247.67MISCELLANEOUS$0.00Charges/Credits from previous bill$191.22Thank You for Your Payment of $191.22on April 16, 2026Total Amount Due$247.67UPDATESComEd•PRICE TO COMPARE: The ComEd electric supply price to compare is 9.66 cents per kWh. This price does not include a monthly purchased electricity adjustment factor. For more information and supplier offers visit https://www.pluginillinois.org/fixedrate.aspx. For more information on ComEd bill line items go to ComEd.com/UnderstandBill.•The amount of this bill will be automatically deducted from your bank account on May 18, 2026.
 Payment Deducted on 5/18/26$247.67

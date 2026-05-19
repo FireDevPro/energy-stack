@@ -17,59 +17,21 @@ LastYear 0ºavg.temp
 PaymentDeductedon9/16/25 $64.51PaymentAmount:
 999999999100000645152590064516
 Account#9999999991
-0000534    SL         H    1167 60000                   -C24-00-P00000-I            
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
+0000534    SL         H    1167 60000                   -C24-00-P00000-I
 [imb-barcode-redacted]
 9999-99-9999993-9999-9999993
 [imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-[imb-barcode-redacted]
-EXAMPLE CUSTOMER                               
-123 EXAMPLE ST                             
-ANYTOWN, IL 60000                              
-                                                  
-                                                  
+EXAMPLE CUSTOMER
+123 EXAMPLE ST
+ANYTOWN, IL 60000
+
+
 [postnet-barcode-redacted]
-COMED                         
-PO BOX 6111                   
-CAROL STREAM, IL 60197-6111   
-                              
-                              
+COMED
+PO BOX 6111
+CAROL STREAM, IL 60197-6111
+
+
 English 1.800.EDISON1(1.800.334.7661)Español 1.800.95.LUCES(1.800.955.8237)Hearing/SpeechImpaired 1.800.526.0844(TTY)
 ReadDatesMeterNumber LoadType ReadingType Previous Present DifferenceMultiplier Usage8/18-8/25999999990 GeneralService TotalkWh Actual Actual 340METERINFORMATION
 Issued8/25/25Account#9999999991

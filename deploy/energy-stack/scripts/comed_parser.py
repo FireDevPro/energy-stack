@@ -19,6 +19,7 @@ behavior: writes with the same (measurement, tag set, timestamp) tuple
 collide and overwrite. No application-level dedup needed.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -363,8 +364,10 @@ def parse_line_items(body: str, category: str) -> list[LineItem]:
 
 # Single-account guard. The script is intentionally pinned to one account so
 # accidentally feeding another household's bill (template-shared utility) fails
-# loudly. If the home ever has a second meter, this becomes a set/env var.
-EXPECTED_ACCOUNT = "9999999991"
+# loudly. The real account is private and lives in the Pi-lab .env as
+# COMED_EXPECTED_ACCOUNT; the fallback below matches the public fixtures so
+# the test suite runs without operator configuration.
+EXPECTED_ACCOUNT = os.environ.get("COMED_EXPECTED_ACCOUNT", "9999999991")
 
 # Cycle-adjustment / final / first-month bills observed at 2-7 days with 0 kWh.
 # Padded to 10 to absorb future variance without flipping legit short cycles.

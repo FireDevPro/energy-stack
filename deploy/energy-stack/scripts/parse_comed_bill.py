@@ -5,10 +5,13 @@ Usage:
     python parse_comed_bill.py <bill.pdf>
 
 Environment (with defaults pointing at Pi-lab energy-stack):
-    INFLUX_URL    (default http://localhost:8086)
-    INFLUX_TOKEN  (required)
-    INFLUX_ORG    (default 'depaola-home')
-    INFLUX_BUCKET (default 'energy')
+    INFLUX_URL              (default http://localhost:8086)
+    INFLUX_TOKEN            (required)
+    INFLUX_ORG              (default 'depaola-home')
+    INFLUX_BUCKET           (default 'energy')
+    COMED_EXPECTED_ACCOUNT  (default matches the public test fixtures; set
+                             to the household's real account on Pi-lab so
+                             the single-account guard fires correctly)
 
 On success: moves the PDF to inbox/comed/processed/comed-YYYY-MM-DD-<period>.pdf
 On failure: leaves the PDF in place, prints error, exits non-zero.
