@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # energy-stack scripts
 
 Operator scripts for the energy-stack. Each is a single-purpose Python script

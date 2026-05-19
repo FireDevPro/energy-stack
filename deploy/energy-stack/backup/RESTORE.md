@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # Pi-lab restore procedure
 
 The Pi backs up to Backblaze B2 nightly at 02:00 CDT via `/usr/local/bin/pi-backup.sh` (root cron). Repo: `b2:crd-pi-backups`.

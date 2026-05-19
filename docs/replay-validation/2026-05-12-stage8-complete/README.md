@@ -1,8 +1,9 @@
 ---
 date: 2026-05-12
 owner: chris
-status: live
+status: locked
 role-label: chris
+supersession_note: Stage 8 framing retired per docs/plans/sced-rebaseline-spec-2026-05-13.md §0; retained as frozen evidence artifact of pre-rebaseline pipeline state
 ---
 
 # Stage 8 close-out replay validation (2026-05-12)

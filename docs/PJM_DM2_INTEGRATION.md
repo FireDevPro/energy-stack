@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # PJM Data Miner 2 Integration Design
 
 **Status**: Phases 1 + 2 shipped May 2026. `pjm-dm2-poller` running in production; backfill complete; 5CP PDF scraper ready for the Nov 2026 annual run. Forward work below.

@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # Dry-run mode validation procedure
 
 > [!WARNING]

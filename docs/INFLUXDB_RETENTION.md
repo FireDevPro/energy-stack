@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # InfluxDB Retention and Downsampling Design
 
 **Status**: shipped May 2026. `influx-init` provisions the `energy-longterm` bucket and applies the 1-minute downsample task on every `compose up -d`. Live Flux task: [`deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux`](../deploy/energy-stack/influx-init/tasks/downsample-energy-1m.flux). Provisioning script: [`deploy/energy-stack/influx-init/apply.sh`](../deploy/energy-stack/influx-init/apply.sh).

@@ -1,3 +1,10 @@
+---
+date: 2026-05-18
+owner: chris
+status: active
+role-label: code-team
+---
+
 # Services
 
 Per-service reference for the energy-stack Docker Compose project. Companion to [`deploy/energy-stack/README.md`](../deploy/energy-stack/README.md) (which covers operational tasks across the whole stack).
