@@ -1,13 +1,22 @@
 # Arm B Implementation Specification
 
 > [!WARNING]
-> **Analysis-design content here is SUPERSEDED** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) — specifically the §10 OSF acceptance criteria, the assignment-CSV references, the `randomize_arms.py` references, and the bootstrap/SCED-randomization-test framing. The current OSF acceptance list lives in the rebaseline impl plan's Phase 6 section.
+> **Largely superseded as of 2026-05-18.** Sections retained as historical implementation narrative — full archive deferred until [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) absorbs a "controller layers" primer citing the extracted [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md).
 >
-> **Controller / Arm B operational content** (day-type classifier, RTP price-spike reactivity, PJM 5CP detection, layer priority) remains valid where consistent with `docs/HVAC_LOGIC.md`, the rebaseline spec, and the live `deploy/energy-stack/hvac-scheduler/app.py`. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+> **Superseded sections:**
+> - **§0a (NWS poller migration)** — completed; historical narrative of the migration to `forecastGridData`.
+> - **§0b (PJM hourly metered load)** — completed; historical narrative of the cadence migration.
+> - **§1 (Day-type classifier recalibration)** — locked values now live in [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md) §Day-type classification.
+> - **§10 (Acceptance criteria for OSF filing)** — fully superseded by binding spec [`plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §11 + the pre-OSF doc-audit execution plan.
+> - Any assignment-CSV references, `randomize_arms.py` references, the `20260601` seed, and bootstrap/SCED-randomization-test framing — retired per spec §0.
+>
+> **Operational content still useful as primer:** day-type classifier rules (§1 thresholds), RTP price-spike reactivity (§2 module structure), PJM 5CP detection (§3 dual-scope state machine), layer priority (§4 formula). Authoritative locked values for all of these live in [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md); deviations from CONTROLLER_CONSTANTS.md or the live `deploy/energy-stack/hvac-scheduler/app.py` are bugs in THIS doc, not in those sources.
+>
+> Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137); supersession-tightening landed in [PR6 of the pre-OSF doc audit](plans/pre-osf-doc-audit-execution-2026-05-18.md).
 
-**Status**: Working spec (2026-05-09). Implementation gated on this spec being approved before code changes land.
+**Status**: Working spec (2026-05-09). Most content shipped; see banner above for the post-rebaseline reframe.
 **Owner**: Chris dePaola
-**Companion docs**: [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) (research framing, locked threshold values in Appendix A), [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (current scheduler logic, schedules, fallback)
+**Companion docs**: [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md) (locked Arm B threshold values, formerly EXPERIMENT_DESIGN Appendix A), [`HVAC_LOGIC.md`](HVAC_LOGIC.md) (current scheduler logic, schedules, fallback), [`plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) (binding spec)
 
 ---
 
@@ -119,12 +128,12 @@ Variables of interest:
 
 **Location:** [`deploy/energy-stack/hvac-scheduler/app.py:396`](../deploy/energy-stack/hvac-scheduler/app.py) (`_classify_one_day()`)
 
-**Current thresholds (from HVAC_LOGIC.md§82):**
+**Prior thresholds (pre-recalibration, historical reference):**
 - MILD if forecast high < 82°F
 - NORMAL if 82-94°F
 - HOT if ≥95°F or heat advisory
 
-**New thresholds (locked per EXPERIMENT_DESIGN Appendix A):**
+**Locked thresholds (current, per [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md) §Day-type classification):**
 - MILD if forecast high < 75°F
 - NORMAL if 75-85°F max
 - HOT if ≥85°F max OR forecast apparent ≥90°F OR heat advisory
@@ -463,7 +472,7 @@ Both measurements gain a second tag value via P1.1's added poller entries (`hrl_
   - Hold continues for 30 min past end-of-hour
   - Release only when load ratio < 0.90 AND derivative < 0 AND hold elapsed
   - Season 5th-highest computation correct on synthetic data
-  - Pre-season fallback (< 5 observations) uses 130,000 MW
+  - Pre-season fallback (< 5 observations) uses scope-aware fallbacks: 20,375 MW (ComEd-zone) and 151,525 MW (RTO) per [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md) §PJM 5CP-eligibility detection. (The prior 130,000 MW value was RTO-scale misapplied to the zone path and is retired.)
 - Integration test: replay June 24, 2025 PJM zone load history (the 161¢/kWh day) through the detector. Should trigger 5CP risk during the 14-19 CT window.
 
 ### Validation criterion

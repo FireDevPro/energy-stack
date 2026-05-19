@@ -78,7 +78,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
                    ─► Write hvac.actions row
 ```
 
-`_classify_one_day` thresholds (recalibrated against 2025 ComEd RTP price-spike distribution — see [EXPERIMENT_DESIGN.md Appendix A](EXPERIMENT_DESIGN.md#appendix-a-locked-threshold-values-data-grounded)):
+`_classify_one_day` thresholds (recalibrated against 2025 ComEd RTP price-spike distribution — see [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md) for the locked threshold values + derivation):
 - `MILD` if forecast high < 75°F
 - `NORMAL` if 75-85°F max (and apparent < 90°F)
 - `HOT` if forecast max ≥ 85°F **OR** apparent ≥ 90°F **OR** active heat advisory
@@ -328,7 +328,7 @@ For residential customers on Hourly Pricing + Delivery TOD, capacity-charge impa
   - If `ACustCPL >= ACustPL`: `CPLC = ACustCPL`.
   - If `ACustCPL <  ACustPL`: `CPLC = ACustCPL + (ComEdNPL - AComEdCPL) * (ACustPL - ACustCPL) / Σ_5Pc(ACustPL - ACustCPL)` where `ComEdNPL` is ComEd's weather-normalized peak and `AComEdCPL` is the ComEd zone's average coincident peak at the PJM five peaks.
 
-Casual phrasings like "each kW = same full-year dollar value" gloss over this — a single-hour reduction is diluted through a five-hour average, and the dollar value depends on which Att. M-2 branch the customer's annual usage profile sits in. The scheduler still doesn't need to predict WHICH days are 5CP days (PJM/ComEd don't declare them until post-season); aggressive shedding on every HOT day is still the right operational strategy. See O2 in [`EXPERIMENT_DESIGN.md`](EXPERIMENT_DESIGN.md) for how this study models the dollar impact.
+Casual phrasings like "each kW = same full-year dollar value" gloss over this — a single-hour reduction is diluted through a five-hour average, and the dollar value depends on which Att. M-2 branch the customer's annual usage profile sits in. The scheduler still doesn't need to predict WHICH days are 5CP days (PJM/ComEd don't declare them until post-season); aggressive shedding on every HOT day is still the right operational strategy. See [`O2_CAPACITY_RECONSTRUCTION.md`](O2_CAPACITY_RECONSTRUCTION.md) for the three-layer measurement framing and named-scenarios denominator approach.
 
 The scheduler doesn't need to predict WHICH days are 5CP days (neither PJM nor ComEd declares them until after the season); it just needs to be aggressive on every HOT day.
 
