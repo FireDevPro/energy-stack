@@ -15,7 +15,7 @@ experiment_start: 2026-06-01
 
 **Goal:** Ship all pre-OSF dependencies for the rebaselined SCED experiment by 2026-05-30, enabling the 24-week summer-2026 single-household HVAC controller study to start 2026-06-01 with a complete telemetry, pricing, analysis, and documentation stack.
 
-**Architecture:** Six phases. Phase 1 lands controller-side telemetry + arm-mode gating (foundation for everything). Phase 2 adds bill-canonical pricing infrastructure. Phase 3 rewrites the analysis pipeline around arm-period units with cost-matched exclusion + single validity gate. Phase 4 pulls the historical weather baseline for z-score scaling. Phase 5 freezes documentation. Phase 6 runs end-to-end shadow validation. Phase 2 + Phase 4 can run in parallel with Phase 3.
+**Architecture:** Six phases. Phase 1 lands controller-side telemetry + arm-mode gating (foundation for everything). Phase 2 adds bill-canonical pricing infrastructure. Phase 3 rewrites the analysis pipeline around arm-period units with cost-matched exclusion + single validity gate. Phase 4 selects the NOAA-archived ASOS fallback station for Ecowitt-gap hours (NO historical baseline pull — spec §6 within-sample standardization eliminates the need for ERA5 / 2020-2025 historical data). Phase 5 freezes documentation. Phase 6 runs end-to-end shadow validation. Phase 2 + Phase 4 can run in parallel with Phase 3.
 
 **Tech Stack:** Python 3.11 + pytest, InfluxDB 2 + Flux, Docker Compose on Pi-lab, ComEd parse_comed_bill + PJM DataMiner2 + Ecowitt + Refoss EM16P + Eagle-3 HAN. Existing tooling in `tools/analysis/`, `deploy/energy-stack/hvac-scheduler/`, `deploy/energy-stack/pjm-dm2-poller/`.
 
@@ -40,7 +40,7 @@ experiment_start: 2026-06-01
 | `tools/analysis/queries/rt_hrl_lmps.flux` | Settled hourly LMP Flux query |
 | `tools/analysis/queries/hvac_arm_mode.flux` | Controller mode telemetry query |
 | `docs/THERMOSTAT_ARM_A_SCHEDULE.md` | CTK04AE programmed schedule (referenced from OSF spec) |
-| `docs/replay-validation/2026-05-2X-shadow/findings.md` | Shadow validation report |
+| `docs/replay-validation/2026-05-18-shadow/findings.md` | Shadow validation report |
 
 ### Existing files to modify
 
@@ -156,7 +156,7 @@ Built with known properties so the acceptance test can assert exact answers:
 - Arm B periods: HVAC kWh = baseline_a × (1 - savings_pct) per hour during cooling
 - Some hours injected as B-fallback (price feed stale)
 - Some hours injected as telemetry-invalid (Refoss gap >2min)
-- Weather vectors constructed so 5 of 6 expected pairs match within caliper, 1 pair above 90th-percentile distance (poor_weather_match_flag)
+- Weather vectors constructed so 5 of 6 expected pairs have small weather distance and 1 pair has a notably larger distance (exercises match-quality reporting per pair; no flag is asserted — flag was dropped per D3)
 - Known cost-matched exclusion result: 12 hours excluded from each pair (4 in A, 4 in B asymmetric → 8 cost-matched symmetric)
 """
 import datetime
@@ -187,7 +187,7 @@ def build_synth_dataset() -> SynthDataset:
     # using known-answer construction:
     # - Pair 1: ARMs 1+2, mild weather, B saves 15%, all hours fully-valid
     # - Pair 2: ARMs 3+4, heat wave, B saves 15%, some B-fallback in Arm 4
-    # - Pair 3: ARMs 5+6, weather outlier triggering poor_weather_match_flag
+    # - Pair 3: ARMs 5+6, weather outlier (larger weather distance — exercises match-quality reporting; no flag asserted per D3)
     # - Pair 4: ARMs 7+8, telemetry-invalid hours in both arms
     # - Pair 5: ARMs 9+10, shoulder season, low HVAC$ (tests denominator-small handling)
     # - Pair 6: ARMs 11+12, DST-crossing arm 11 + November cool weather
@@ -304,12 +304,16 @@ def test_rebaseline_end_to_end_acceptance():
     # 5. Validity gate drops expected arms (per known-answer construction)
     assert result.arms_passed_validity == synth.expected_arms_passed_validity
 
-    # 6. Caliper flag triggers on the constructed poor-match pair
-    assert (actual["poor_weather_match_flag"] == True).sum() == 1, \
-        "Exactly one pair should hit the >90th-percentile poor-match flag"
+    # 6. (No poor-weather-match flag assertion — flag dropped per D3.
+    #     Match quality is reported per pair as descriptive provenance; no
+    #     binary classification, no sensitivity on a subset.)
 
-    # 7. Cost-matched exclusion preserved equal counts in both arms of every pair
-    assert (actual["valid_pair_hours_a"] == actual["valid_pair_hours_b"]).all()
+    # 7. Cost-matched exclusion preserved equal counts in both arms of every pair.
+    #     Per D2, valid_pair_hours is a single column emitted only after the
+    #     pipeline asserts A-side count == B-side count and raises on divergence.
+    #     The acceptance test verifies the emitted single column matches the
+    #     expected count from the fixture's known-answer construction.
+    assert (actual["valid_pair_hours"] == synth.expected_valid_pair_hours).all()
 
     # 8. Per-pair table has all spec §9 required columns
     required_columns = {
@@ -317,11 +321,10 @@ def test_rebaseline_end_to_end_acceptance():
         "temporal_gap_days", "weather_distance_zscore",
         "weather_vector_a", "weather_vector_b",
         "weather_component_diffs_raw", "weather_component_diffs_zscored",
-        "poor_weather_match_flag",
         "valid_pair_hours", "excluded_hours_count",
         "excluded_hours_breakdown_a", "excluded_hours_breakdown_b",
         "cost_match_quality_median_diff_c_per_kwh",
-        "cfe_c_per_kwh_a", "cfe_c_per_kwh_b",
+        "cfe_c_per_kwh_a", "cfe_c_per_kwh_b", "cfe_shift_flag",
         "cooling_active_hours_a", "cooling_active_hours_b",
         "low_cooling_exposure_flag",
         "hvac_dollars_a", "hvac_dollars_b",
@@ -1433,7 +1436,7 @@ Same flow as Task 1.8. Open PR `Phase 2: SCED rebaseline pricing infrastructure`
 
 - Tasks 3.1-3.16 landed on `feature/sced-rebaseline-phase3`. All 16 tasks complete with two honest deviations:
   - **Task 3.10 (obsolete pipeline.py deletion):** deferred. Removing `weekly_dollars_per_cdd`, `stationary_bootstrap_median_diff`, and `sced_randomization_pvalue` from `tools/analysis/pipeline.py` requires also unwinding the Stage 7 and Stage 8 orchestrators that call them. The arm-period pipeline replaces the per-pair OUTPUT shape, not the entire weekly/$/CDD/SCED machinery; the latter still feeds other reports. Phase 3 PR adds a deprecation banner to `tools/analysis/pipeline.py` and leaves the obsolete sections in place for a follow-up PR.
-  - **Spec §6 poor-weather caliper (n=6 limitation):** spec wording "exceeds the 90th percentile" applied as strict `>` with `numpy.percentile` linear interpolation does NOT flag the Hungarian-matched outlier pair in this single-household n=6 design (the matched-pair distance sits just below the linear-interpolated p90). Phase 3 implements the spec strictly and documents the limitation in `tools.analysis.matching.caliper_p90_distance`. Recommended OSF-freeze action: spec amendment to either (a) use `numpy.percentile(..., method='lower')` with `>=`, or (b) base the flag on a non-Hungarian comparison.
+  - **Spec §6 poor-weather caliper (n=6 limitation):** spec wording "exceeds the 90th percentile" applied as strict `>` with `numpy.percentile` linear interpolation does NOT flag the Hungarian-matched outlier pair in this single-household n=6 design (the matched-pair distance sits just below the linear-interpolated p90). Phase 3 implemented the spec strictly and documented the limitation in `tools.analysis.matching.caliper_p90_distance`. **Resolved 2026-05-18 via spec amendment (D3):** the poor-weather-match flag and the `exclude_poor_weather_match_pairs` sensitivity were dropped entirely from §6 and §12. Match quality is now reported per pair as descriptive provenance (`weather_distance_zscore` + per-component diffs + `temporal_gap_days` + Ecowitt/NOAA source split). No binary classification, no sensitivity-on-subset. With N=6 any threshold rule would be arbitrary; readers can sort the per-pair table by match quality. `tools.analysis.matching.caliper_p90_distance` becomes dead code post-amendment; removal is a follow-up code cleanup (out of PR1 docs scope).
 - Outside-in acceptance test (`test_rebaseline_end_to_end_acceptance`) passes against the real `arm_period_pipeline.run_full_pipeline` with the Task-3.15-de-scaffolded fixture, with zero `xfail` / `skip` markers.
 - Feature status remains "Phase 3 complete; Phases 4-6 outstanding"; the rebaseline as a whole is not feature-complete until Phase 4 (NOAA fallback station selection), Phase 5 (documentation freeze), and Phase 6 (shadow validation run) close.
 
@@ -2083,21 +2086,21 @@ from tools.analysis.weather_vector import WeatherVector
 
 
 def test_zscore_vectors_uses_baseline_means_stds():
-    vecs = [WeatherVector(100, 1000, 5, 80, 60), WeatherVector(150, 1500, 6, 85, 65)]
-    baseline_means = np.array([100, 1000, 5, 80, 60])
-    baseline_stds = np.array([50, 500, 1, 10, 5])
+    vecs = [WeatherVector(100, 80, 60, 65), WeatherVector(150, 85, 65, 68)]
+    baseline_means = np.array([100, 80, 60, 65])
+    baseline_stds = np.array([50, 10, 5, 5])
     z = zscore_vectors(vecs, baseline_means, baseline_stds)
-    assert z.shape == (2, 5)
-    assert z[0].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.0])
-    assert z[1].tolist() == pytest.approx([1.0, 1.0, 1.0, 0.5, 1.0])
+    assert z.shape == (2, 4)
+    assert z[0].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert z[1].tolist() == pytest.approx([1.0, 0.5, 1.0, 0.6])
 
 
 def test_hungarian_match_3x3_returns_optimal_pairs():
     """3 Arm A vs 3 Arm B with known optimal assignment."""
-    arm_a_z = np.array([[0, 0, 0, 0, 0], [1, 1, 1, 1, 1], [2, 2, 2, 2, 2]])
-    arm_b_z = np.array([[0.1, 0.1, 0.1, 0.1, 0.1],
-                        [1.1, 1.1, 1.1, 1.1, 1.1],
-                        [2.1, 2.1, 2.1, 2.1, 2.1]])
+    arm_a_z = np.array([[0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2]])
+    arm_b_z = np.array([[0.1, 0.1, 0.1, 0.1],
+                        [1.1, 1.1, 1.1, 1.1],
+                        [2.1, 2.1, 2.1, 2.1]])
     pairs = hungarian_match(arm_a_z, arm_b_z)
     # Each A_i should pair with B_i (closest)
     assert pairs == [(0, 0), (1, 1), (2, 2)]
@@ -2105,10 +2108,10 @@ def test_hungarian_match_3x3_returns_optimal_pairs():
 
 def test_rectangular_hungarian_n_a_less_than_n_b():
     """2 Arm A vs 3 Arm B → 2 pairs, 1 unmatched B."""
-    arm_a_z = np.array([[0, 0, 0, 0, 0], [1, 1, 1, 1, 1]])
-    arm_b_z = np.array([[0.5, 0.5, 0.5, 0.5, 0.5],
-                        [1.5, 1.5, 1.5, 1.5, 1.5],
-                        [10, 10, 10, 10, 10]])
+    arm_a_z = np.array([[0, 0, 0, 0], [1, 1, 1, 1]])
+    arm_b_z = np.array([[0.5, 0.5, 0.5, 0.5],
+                        [1.5, 1.5, 1.5, 1.5],
+                        [10, 10, 10, 10]])
     pairs = hungarian_match(arm_a_z, arm_b_z)
     assert len(pairs) == 2
     # B index 2 (far away) should NOT be in the pairs
@@ -2788,7 +2791,7 @@ Open PR `Phase 3: SCED rebaseline analysis pipeline`. Substantial diff; expect e
 ### Task 4.1: Evaluate NOAA ASOS station candidates
 
 **Files:**
-- Create: `docs/replay-validation/2026-05-XX-noaa-fallback-station-selection/findings.md`
+- Create: `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md`
 
 - [ ] **Step 1: Pull 7 days of sample data from each candidate station**
 
@@ -2815,7 +2818,7 @@ These are the only two components needed for spec §6's 4-component vector (CDD 
 
 ```bash
 git checkout main && git pull && git checkout -b sced-rebaseline-phase4
-git add docs/replay-validation/2026-05-XX-noaa-fallback-station-selection/findings.md
+git add docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md
 git commit -m "docs(weather): lock NOAA ASOS fallback station (spec §11 #11)"
 ```
 
@@ -2854,7 +2857,7 @@ ssh pi-lab 'python3 /home/chris/scripts/dump_ctk04ae_schedule.py'
 ```markdown
 ---
 name: thermostat-arm-a-schedule
-date: 2026-05-XX
+date: 2026-05-18
 owner: chris
 status: locked
 role-label: spec
@@ -2886,7 +2889,7 @@ that runs autonomously during Arm A periods of the SCED experiment
 - ...
 
 ## Provenance
-Pulled from CTK04AE on 2026-05-XX. Frozen at OSF filing commit.
+Pulled from CTK04AE on 2026-05-18. Frozen at OSF filing commit.
 ```
 
 - [ ] **Step 3: Commit**
@@ -2974,12 +2977,12 @@ ssh pi-lab 'cd /home/chris/energy-stack && python tools/analysis/run_shadow_vali
 - [ ] **Step 3: Generate findings.md from results**
 
 ```markdown
-# Shadow Validation Findings — 2026-05-XX
+# Shadow Validation Findings — 2026-05-18
 
 Per docs/plans/sced-rebaseline-spec-2026-05-13.md §11 #13.
 
 ## Inputs window
-2026-04-29 → 2026-05-XX (~XX days).
+2026-04-29 → 2026-05-18 (~19 days).
 
 ## Pipeline-stage results
 | Stage | Status | Notes |
@@ -3004,7 +3007,7 @@ Per docs/plans/sced-rebaseline-spec-2026-05-13.md §11 #13.
 
 ```bash
 git checkout main && git pull && git checkout -b sced-rebaseline-phase6
-git add tools/analysis/run_shadow_validation.py docs/replay-validation/2026-05-XX-shadow/
+git add tools/analysis/run_shadow_validation.py docs/replay-validation/2026-05-18-shadow/
 git commit -m "feat(validation): shadow validation runner + findings (spec §11 #13)"
 ```
 
@@ -3078,7 +3081,7 @@ Section: "Live-vs-settled scarcity divergence (M3)". If `n_diverging_over_2c > 0
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tools/analysis/run_shadow_validation.py docs/replay-validation/2026-05-XX-shadow/findings.md
+git add tools/analysis/run_shadow_validation.py docs/replay-validation/2026-05-18-shadow/findings.md
 git commit -m "feat(validation): add scarcity-divergence audit step (spec §11 #13 M3)"
 ```
 
@@ -3194,8 +3197,8 @@ After Phases 1-6 merged (Phase 7 happens post-experiment-start; not pre-OSF), fi
 - `docs/plans/sced-rebaseline-spec-2026-05-13.md` — frozen at the OSF-filing commit hash
 - `docs/THERMOSTAT_ARM_A_SCHEDULE.md` — frozen
 - `docs/HVAC_LOGIC.md` — frozen (Arm B controller spec)
-- `docs/replay-validation/2026-05-XX-shadow/findings.md` — shadow validation evidence (incl. M3 scarcity-divergence audit)
-- `docs/replay-validation/2026-05-XX-noaa-fallback-station-selection/findings.md` — NOAA fallback station lock
+- `docs/replay-validation/2026-05-18-shadow/findings.md` — shadow validation evidence (incl. M3 scarcity-divergence audit)
+- `docs/replay-validation/2026-05-18-noaa-fallback-station-selection/findings.md` — NOAA fallback station lock
 
 Phase 7 (post-experiment-start checkpoint) is referenced in OSF as a future operational checkpoint to be run on 2026-06-15.
 
