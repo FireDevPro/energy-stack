@@ -1,6 +1,6 @@
 # energy-stack
 
-Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + ~14 pollers/services + log aggregation (3 of the 14 only run under the `mqtt` profile for the ComfortNet pipeline), optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
+Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + 19 pollers/services (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
 
 > **Per-service detail:** [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
 > **HVAC scheduler logic + thermostat fallback:** [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
@@ -32,7 +32,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 
 ## Authoring & deployment
 
-Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. **Deployment is automatic via GitHub Actions** — `git push` to `main` triggers the [Deploy to Pi workflow](../../.github/workflows/deploy.yml), which runs on a self-hosted runner installed on Pi-lab itself. The runner detects which compose project changed (`deploy/energy-stack/` vs `deploy/n8n-stack/`), rsyncs it into place, runs `docker compose build && docker compose up -d`, and verifies services are healthy. End-to-end ~30-60 s for a single-service change.
+Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. **Deployment is automatic via GitHub Actions** — `git push` to `main` triggers the [Deploy to Pi workflow](../../.github/workflows/deploy.yml), which runs on a self-hosted runner installed on Pi-lab itself. The runner detects which compose project changed (`deploy/energy-stack/` vs `deploy/n8n-stack/`), rsyncs it into place, runs `docker compose build && docker compose up -d`, and verifies services are healthy. Single-service deploys typically complete in ~1 minute; cache misses may extend this. Detection uses `git diff HEAD^ HEAD` (single-commit lookback) — multi-commit pushes touching `deploy/**` in earlier commits may need a manual workflow_dispatch to deploy.
 
 Manual deployment is still supported for local-only testing:
 
@@ -89,7 +89,7 @@ For service-specific operations (manually trigger an HVAC decision, force a poll
 
 ## Running tests
 
-Pure-logic unit tests live alongside each service's source as `test_<service>.py` (not shipped to the container — every Dockerfile only `COPY app.py .`). Tests run on the operator's machine against the source.
+Pure-logic unit tests live alongside each service's source as `test_<service>.py` (not shipped to the container — every Dockerfile `COPY`s only the production source modules; test files live alongside but are excluded by virtue of not being listed). Tests run on the operator's machine against the source.
 
 One-time setup:
 ```bash
@@ -113,7 +113,7 @@ python -m pytest .
 
 `pytest.ini` at `deploy/energy-stack/` is the single source of truth for shared config (currently `asyncio_mode = auto` for the async-using services). Pytest's config discovery walks up from cwd, so individual services don't carry their own.
 
-Currently covered (16 test files across 11 services as of 2026-05-17):
+Currently covered (22 test files across 11 services + scripts/ suite as of 2026-05-18):
 
 - `comed-poller/test_comed_poller.py`
 - `eagle-poller/test_eagle_poller.py`
@@ -126,6 +126,7 @@ Currently covered (16 test files across 11 services as of 2026-05-17):
 - `refoss-poller/test_refoss_poller.py`
 - `telegram-notifier/test_telegram_notifier.py`
 - `thermostat-poller/test_thermostat_poller.py`
+- `scripts/tests/` — six test files: `test_backfill_pjm.py`, `test_influx.py`, `test_log_arm_transition.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
 
 Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot provisioning shell), `telegraf` (config-only). The compose-controlled containers (`influxdb`, `grafana`, `loki`, `promtail`, `mosquitto`) are all upstream images with no Python under test.
 
@@ -137,7 +138,7 @@ Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot
 |---|---|---|
 | 8086 | InfluxDB API + UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3000 | Grafana UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
-| 3100 | Loki (Grafana queries it via container network) | Pi-lab localhost only |
+| 3100 | Loki (Grafana queries it via container network) | Reachable on the homelab 192.168.20.x subnet (used by the workstation cockpit per `tools/cockpit/.env.example:9`) + Pi-lab localhost |
 | 8088 | ecowitt-ingest HTTP receiver | LAN — GW1200B pushes here every 60 s |
 
 No firewall changes required — existing "Allow Trusted to Homelab" ZBF rule covers the user-facing ports.

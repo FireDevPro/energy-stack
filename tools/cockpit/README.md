@@ -17,7 +17,7 @@ One-click launcher (Windows). First-time setup:
 ```pwsh
 cp tools/cockpit/.env.example tools/cockpit/.env.local
 # edit .env.local — fill INFLUXDB_TOKEN + confirm URLs.
-# Pi-lab token lives in /home/chris/energy-proxy/.env as INFLUXDB_TOKEN.
+# Pi-lab token lives in /home/chris/energy-stack/.env as INFLUXDB_INIT_ADMIN_TOKEN.
 
 pwsh tools/cockpit/install-shortcut.ps1   # creates Cockpit.lnk on desktop
 ```
@@ -28,10 +28,10 @@ Then double-click the Cockpit desktop icon. The launcher:
 - kills any prior cockpit backend on `:8000` / Vite on `:5173`
   (only if the bound process command line matches the cockpit — leaves
   unrelated python/node alone)
-- spawns uvicorn (live mode) and Vite in two visible pwsh windows
+- spawns uvicorn (live mode) and Vite as hidden background processes; logs at `tools/cockpit/logs/backend.log` and `tools/cockpit/logs/frontend.log`
 - waits for both to be healthy, then opens <http://localhost:5173/>
 
-Close the two spawned pwsh windows to stop the cockpit.
+To stop the cockpit, re-run `start-cockpit.ps1` (its first action is killing any prior bound process), or kill the uvicorn/Vite processes manually via Task Manager.
 
 Backend port `:8000` is pinned in `vite.config.ts` (proxy target) and
 in `start-cockpit.ps1` (`$BackendPort`). Frontend port `:5173` is
@@ -69,7 +69,7 @@ in a static snapshot from `src/fixtures/`. The full set:
 | `npm run test:watch` | Vitest watch mode |
 | `npm run lint` | ESLint |
 | `pytest tools/cockpit/backend/tests/` | backend pytest (snapshot + freshness) |
-| `uvicorn tools.cockpit.backend.app:app --reload` | run backend dev server |
+| `uvicorn tools.cockpit.backend.app:app --reload` | run backend dev server (set `COCKPIT_BACKEND_MODE=live` explicitly — the launcher sets it, but bare `uvicorn` may default to canned-fixture mode) |
 
 ## Architecture
 

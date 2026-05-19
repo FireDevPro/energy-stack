@@ -197,7 +197,7 @@ Polls the public ComEd Hourly Pricing API (`hourlypricing.comed.com/api`). Two e
 | `period_type=5min` | Latest 5-min interval | `millisUTC` from API |
 | `period_type=hourly_avg` | Current hour average | Hour-truncated UTC (idempotent — repeated polls upsert) |
 
-> **Note:** ComEd does NOT publicly expose day-ahead forecast prices. The undocumented `?type=daynexttoday` endpoint returns today's *settled* day-ahead prices (not tomorrow's). PJM DataMiner2 is the upstream source but requires an API key gated by member status. See [PROJECT.md decision log](../PROJECT.md).
+> **Note:** ComEd does NOT publicly expose day-ahead forecast prices. The undocumented `?type=daynexttoday` endpoint returns today's *settled* day-ahead prices (not tomorrow's). PJM DataMiner2 is the upstream source but requires an API key gated by member status. See [PROJECT.md decision log](../PROJECT.md). For day-ahead LMP, the `pjm-dm2-poller` writes `pjm.lmp_da_hourly` from `da_hrl_lmps` at 17:00 CT daily — see [pjm-dm2-poller](#pjm-dm2-poller) below.
 
 **Healthcheck:** `/tmp/last_poll_ok` marker, same pattern as eagle-poller.
 
@@ -219,6 +219,18 @@ Channel labels (`name` field) are pulled from the device itself via `Refoss.Conf
 |---|---|---|
 | `refoss.channel` | `channel` (`em:1`..`em:18`), `name` | `power_w`, `voltage_v`, `current_a`, `power_factor`, `day_energy_kwh`, `day_ret_energy_kwh`, `week_energy_kwh`, `week_ret_energy_kwh`, `month_energy_kwh`, `month_ret_energy_kwh` |
 | `refoss.system` | (none) | `uptime_s`, `wifi_rssi_dbm`, `cfg_rev` |
+
+**Channel mapping** (Refoss app labels A/B/C ↔ InfluxDB `em:N` tag ↔ monitored circuit). The EM16P device exposes 18 channels; this household monitors 5:
+
+| Refoss app label | InfluxDB tag | Circuit | Spec role |
+|---|---|---|---|
+| A1 | `em:1` | Mains leg A (split-phase 240V) | mains-sanity subset `em:1 + em:7` per spec §10:420 |
+| B1 | `em:7` | Mains leg B (split-phase 240V) | mains-sanity subset |
+| A2 | `em:2` | HVAC compressor leg A (split-phase 240V) | HVAC analysis subset `em:2 + em:8 + em:9` per spec §4:121 |
+| B2 | `em:8` | HVAC compressor leg B (split-phase 240V) | HVAC analysis subset |
+| B3 | `em:9` | Furnace blower / control board (single-phase 120V) | HVAC analysis subset |
+
+Other `em:N` channels are device-side capacity, not monitored for this study. The A/B/em:N gap (mains = `em:1 + em:7` rather than adjacent numbers) is because the Refoss EM16P puts A-side and B-side channels in different numeric bands — A1 and B1 are physically the two legs of the same split-phase breaker.
 
 **Critical: energy fields are bucketed, not lifetime totalizers.** `day_energy_kwh` resets at midnight, `week_energy_kwh` on Monday, `month_energy_kwh` on the 1st — inside the device. For monotonically-increasing cumulative kWh in Grafana, integrate `power_w` over time in Flux.
 
@@ -261,7 +273,7 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 
 ## pjm-dm2-poller
 
-Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 3600 s = 1 h, sourced from `.env` / `.env.example`. `docker-compose.yml`'s `${PJM_DM2_POLL_INTERVAL:-300}` substitution falls back to 300 s only if `.env` is missing the variable — a stale fallback worth aligning the next time compose is touched.)
+Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 300 s = 5 min, sourced from `.env` / `.env.example`. `docker-compose.yml`'s `${PJM_DM2_POLL_INTERVAL:-300}` substitution matches; the wake loop ticks every 5 min so sub-hourly feeds like `inst_load` fire on every tick and hourly feeds fire on the `:00` tick.)
 
 Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles where it shouldn't fire. Auth header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`. Non-Member tier (6 calls/min ceiling, 50,000 rows/call) is plenty for the steady-state load.
 
@@ -273,7 +285,8 @@ Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles 
 | `rt_hrl_lmps` (ComEd zonal pnode) | 12:00 daily (~1h after PJM 11–12 ET publish per Phase 2 spec §8) | `pjm.lmp_rt_hourly` |
 | `inst_load` (`area=COMED`) + `inst_load_rto` (`area=PJM RTO`) | every 5 min, both scopes | `pjm.inst_load` (single measurement, distinguished by `area` tag) |
 | `load_frcstd_7_day` (`forecast_area=COMED`) | 06:00 + 13:00 daily | `pjm.load_forecast` |
-| `hrl_load_metered` (`zone=CE` — note: ComEd's PJM zone code is `CE`, not `COMED`, for this feed) | Sundays 02:00 (last 7 days) | `pjm.metered_load` |
+| `hrl_load_metered` (`zone=CE` — note: ComEd's PJM zone code is `CE`, not `COMED`, for this feed) | every hour, 5-day lookback | `pjm.metered_load` |
+| `hrl_load_metered_rto` (`zone=RTO` — RTO-wide aggregate companion for the §3 dual-scope 5CP detector) | every hour, 5-day lookback | `pjm.metered_load` (distinguished by `zone` tag) |
 | `ops_sum_frcst_peak_rto` (`area=PJM RTO`) | 06:00 + 13:00 in Jun–Sep only | `pjm.peak_forecast_rto` |
 | `annual_zonal_nspl` (`zone=COMED` — note: this feed uses `COMED`, not `CE`) | Dec 1, 03:00 | `pjm.nspl_zonal` |
 
@@ -319,7 +332,7 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 - `CONTROL4_EMAIL`, `CONTROL4_PASSWORD` — Control4 cloud login
 - `CONTROL4_CONTROLLER_IP` — local Director (default `192.168.1.30`)
 - `CONTROL4_THERMOSTAT_ID` — item ID of the THERMOSTAT proxy (default `3231` — **NOT** `3230` which is the Cinegration backing driver)
-- `SCHEDULER_DRY_RUN` — if `true`, logs actions but doesn't push (default `true` until you flip it; safer)
+- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid). Accepted values: `shadow` (never writes, logs decisions only — safe pre-experiment default), `experiment` (writes only during Arm B periods inside the locked 2026-06-01..2026-11-16 calendar; outside that window or during Arm A periods = no writes), `production` (writes always, ignores A/B calendar — deliberate non-study operation only). Replaces the retired `SCHEDULER_DRY_RUN` env var per binding spec §3 + the SCED rebaseline plan.
 - `SCHEDULER_DECISION_HOUR` — hour-of-day for daily decision (default 21)
 - `SCHEDULER_REVISIT_HOURS` — comma-separated local hours for intra-day forecast revisit (default `6,11`). Each revisit re-classifies today and overwrites the stored `hvac.decisions` row if the day-type shifted. See [`HVAC_LOGIC.md#decision-flow`](HVAC_LOGIC.md#decision-flow).
 - `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)

@@ -32,11 +32,12 @@ Every measurement currently or imminently writing to the `energy` bucket, classi
 | `comed.prices` | `comed-poller` | 5 min | already coarse | Direct write to longterm |
 | `comed.bill` | bill ingest (Phase 8) | monthly | already coarse | Direct write to longterm |
 | `nws.forecast` | `nws-poller` | 30 min | already coarse | Direct write to longterm |
+| `ecowitt.weather` | `ecowitt-ingest` (Ecowitt GW1200 push receiver) | 60 s (gateway upload interval) | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm (canonical weather source per spec §6) |
 | `haven.indoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
 | `haven.outdoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
 | `pjm.lmp_da_hourly` | `pjm-dm2-poller` | hourly (per-feed schedule) | already coarse | Direct write to longterm |
 | `pjm.load_forecast` | `pjm-dm2-poller` | 2× daily (per-feed schedule) | already coarse | Direct write to longterm |
-| `pjm.metered_load` | `pjm-dm2-poller` | weekly | already coarse | Direct write to longterm |
+| `pjm.metered_load` | `pjm-dm2-poller` | hourly (per-scope: `zone=CE` ComEd + `zone=RTO` aggregate) | already coarse | Direct write to longterm |
 | `pjm.peak_forecast_rto` | `pjm-dm2-poller` | 2× daily, summer only | already coarse | Direct write to longterm |
 | `pjm.nspl_zonal` | `pjm-dm2-poller` | annual | already coarse | Direct write to longterm |
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` | annual | event | Direct write to longterm |

@@ -1,7 +1,7 @@
 # Monday arm-transition procedure
 
 > [!NOTE]
-> **Calendar framing updated 2026-05-18**: the experiment now uses **deterministic 14-day alternation** (12 arms total, 2026-06-01 → 2026-11-16) per [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §2 — not "randomized 4-week blocks." The arm-transition operational procedure below remains valid; only the framing of which arm runs when has changed (now deterministic, no PRNG seed, canonical calendar in `tools/analysis/arm_calendar.py` and `deploy/energy-stack/hvac-scheduler/arm_calendar.py`). Also: `SCHEDULER_DRY_RUN` env var was retired in Phase 1 #112 and replaced with `SCHEDULER_MODE` (values: `shadow` for Arm A, `active` for Arm B) per the rebaseline impl plan standing rule #5. Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
+> **Calendar framing updated 2026-05-18**: the experiment now uses **deterministic 14-day alternation** (12 arms total, 2026-06-01 → 2026-11-16) per [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §2 — not "randomized 4-week blocks." The arm-transition operational procedure below remains valid; only the framing of which arm runs when has changed (now deterministic, no PRNG seed, canonical calendar in `tools/analysis/arm_calendar.py` and `deploy/energy-stack/hvac-scheduler/arm_calendar.py`). Also: `SCHEDULER_DRY_RUN` env var was retired in Phase 1 #112 and replaced with `SCHEDULER_MODE` (required, no default; values: `shadow`, `experiment`, `production` per binding spec §3 — set `SCHEDULER_MODE=experiment` during the study window for automatic per-arm-period A/B gating; no per-Monday env flip needed). Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
 
 The residential HVAC controls SCED study alternates Arm A (consumer-grade
 programmable + smart recovery) and Arm B (full forecast-and-price-aware
@@ -14,9 +14,7 @@ changes:
    timing, matches consumer Nest/Ecobee behaviour); OFF during Arm B
    (Pi setpoint pushes are honored at the scheduled minute, not
    pre-emptively reinterpreted).
-2. **Pi scheduler dry-run mode** — Arm A runs the scheduler in
-   `SCHEDULER_DRY_RUN=true` (intended actions logged but no setpoints
-   pushed); Arm B sets it to `false`.
+2. **Pi scheduler mode gating** — `SCHEDULER_MODE=experiment` set ONCE before the experiment starts; the scheduler reads the locked arm calendar and automatically blocks writes during Arm A periods and writes during Arm B periods. No per-Monday env-var flip needed. (Pre-rebaseline this step manually flipped `SCHEDULER_DRY_RUN=true|false` weekly; that env var is retired per binding spec §3 + Phase 1 #112.)
 3. **Audit row** in `hvac.arm_transitions` so the experimental record
    reflects which arm was live at each transition.
 
@@ -32,21 +30,12 @@ investigation), but until that's verified the toggle is manual.
 
 ### Each Monday at 00:00 CT (or shortly after the previous arm-week ends)
 
-1. Read this week's arm from
-   [`docs/experiment-assignments-summer-2026.csv`](experiment-assignments-summer-2026.csv).
+1. Read this week's arm from the canonical calendar at [`tools/analysis/arm_calendar.py`](../tools/analysis/arm_calendar.py) (mirror at [`deploy/energy-stack/hvac-scheduler/arm_calendar.py`](../deploy/energy-stack/hvac-scheduler/arm_calendar.py)). The retired `docs/experiment-assignments-summer-2026.csv` is preserved as a pre-rebaseline historical artifact only — do NOT read it.
 2. **Toggle AIR**: open <https://mytotalconnectcomfort.com/>, navigate to
    the CTK04AE installer menu, set ISU 4090 = ON (Arm A) or OFF (Arm B).
    Verify the change took effect by reading back the value from the menu
    on the device itself.
-3. **Toggle Pi dry-run**: SSH to pi-lab and edit
-   `~/energy-stack/.env`:
-   - Arm A: `SCHEDULER_DRY_RUN=true`
-   - Arm B: `SCHEDULER_DRY_RUN=false`
-   Then restart the scheduler:
-   ```bash
-   cd ~/energy-stack
-   docker compose restart hvac-scheduler
-   ```
+3. **Pi scheduler mode**: no per-Monday change. `SCHEDULER_MODE=experiment` set once at experiment start handles arm-period gating automatically (writes blocked during Arm A windows, active during Arm B windows). This step exists only as a pre-rebaseline historical reference; the per-Monday env-var flip + `docker compose restart hvac-scheduler` is retired.
 4. **Clear any Permanent hold on the thermostat (Arm B → Arm A
    transitions only).** When leaving Arm B for Arm A, on the
    thermostat home screen confirm there is no Permanent hold left

@@ -3,17 +3,20 @@
 > [!WARNING]
 > **`SCHEDULER_DRY_RUN` was retired in Phase 1 #112 (2026-05-14)** and replaced with `SCHEDULER_MODE` (values: `shadow` for Arm A, `active` for Arm B) per the rebaseline impl plan standing rule #5. The validation procedure below describes the retired env var; the operational mechanics still apply but the env var name and the values are different. See [`docs/plans/sced-rebaseline-implementation-2026-05-13.md`](plans/sced-rebaseline-implementation-2026-05-13.md) standing-rule #5 + Phase 1 deploy notes for the migration. Also: "randomization begins" framing here predates the rebaseline; the experiment starts 2026-06-01 with **deterministic alternation** (no PRNG seed). Tracked since [PR #137 F3 deferral](https://github.com/Promithius-DR/energy-stack/pull/137).
 
-The Pi-side `hvac-scheduler` runs in two modes:
+The Pi-side `hvac-scheduler` runs in one of three modes, controlled by `SCHEDULER_MODE` (required env var, no default; container exits with code 2 on missing or invalid):
 
-  * **Active** (`SCHEDULER_DRY_RUN=false`) -- Arm B weeks. The scheduler
-    pushes cool setpoints + Permanent hold to the CTK04AE via Control4.
-  * **Dry-run** (`SCHEDULER_DRY_RUN=true`) -- Arm A weeks. The scheduler
-    runs all classification, schedule firing, price-overlay evaluation,
-    and 5CP detection, logs every intended action to `hvac.actions` with
-    `dry_run=true`, and pushes nothing.
+  * **`shadow`** -- never writes. Logs every decision/telemetry but pushes
+    no setpoints. Safe pre-experiment default.
+  * **`experiment`** -- reads the locked A/B calendar
+    ([`tools/analysis/arm_calendar.py`](../tools/analysis/arm_calendar.py)).
+    Arm A periods = no writes (Arm A is the CTK04AE programmed schedule);
+    Arm B periods = active writes (cool setpoints + Permanent hold pushed
+    to CTK04AE via Control4). Outside the 2026-06-01..2026-11-16 window =
+    no writes.
+  * **`production`** -- writes always, ignores A/B calendar. Used only for
+    deliberate non-study operation. Excluded from analysis.
 
-Per [`EXPERIMENT_DESIGN.md§3`](EXPERIMENT_DESIGN.md#3-arms--conditions)
-and [`ARM_B_IMPLEMENTATION.md§6`](ARM_B_IMPLEMENTATION.md). This document
+Per [binding spec §3](plans/sced-rebaseline-spec-2026-05-13.md). This document
 specifies the binding pre-flight validation that must complete before
 the experiment starts (2026-06-01).
 
@@ -21,17 +24,20 @@ the experiment starts (2026-06-01).
 
 ## Env var contract
 
-`SCHEDULER_DRY_RUN` (default `true`). Read at scheduler startup; the
-arm-transition Monday procedure flips it alongside the AIR toggle (see
+`SCHEDULER_MODE` (required, no default). Read at scheduler startup; container
+refuses to start (`sys.exit(2)`) on missing or invalid value. The arm-transition
+Monday procedure does NOT flip this env var — set it once before the experiment
+starts; arm-period gating happens automatically via the locked calendar (see
 [`ARM_TRANSITIONS.md`](ARM_TRANSITIONS.md)).
 
 ```bash
 # In ~/energy-stack/.env on pi-lab:
-SCHEDULER_DRY_RUN=true   # Arm A weeks
-SCHEDULER_DRY_RUN=false  # Arm B weeks
+SCHEDULER_MODE=shadow      # pre-experiment-start (before 2026-06-01)
+SCHEDULER_MODE=experiment  # during the experiment window (2026-06-01..2026-11-16)
+SCHEDULER_MODE=production  # post-experiment, deliberate non-study operation
 ```
 
-A change requires `docker compose restart hvac-scheduler` to pick up.
+A change requires `docker compose restart hvac-scheduler` to pick up. The retired `SCHEDULER_DRY_RUN` env var (replaced 2026-05-14 per Phase 1 #112) is ignored with a warning if still set.
 
 ---
 
@@ -63,13 +69,13 @@ below. Any failure blocks randomization start.
 1. Pick a forecast-NORMAL day (high 75-85F, no heat advisory). Skip MILD
    days because the only scheduled action is `MILD_RELEASE_HOLD` at 00:05
    and there's nothing meaningful to validate.
-2. SSH to pi-lab and confirm dry-run mode:
+2. SSH to pi-lab and confirm scheduler mode:
    ```bash
    ssh chris@192.168.20.10 \
-     'grep SCHEDULER_DRY_RUN ~/energy-stack/.env && \
-      docker exec hvac-scheduler env | grep SCHEDULER_DRY_RUN'
+     'grep ^SCHEDULER_MODE= ~/energy-stack/.env && \
+      docker exec hvac-scheduler env | grep ^SCHEDULER_MODE='
    ```
-   Both must report `SCHEDULER_DRY_RUN=true`.
+   Both must report `SCHEDULER_MODE=shadow` (pre-experiment) or `SCHEDULER_MODE=experiment` (during the study, in which case the validation window must be inside an Arm A period for no-write expectations to hold).
 3. Note the start time (UTC). The validation window is `[start, start+24h]`.
 
 ### Pass conditions
