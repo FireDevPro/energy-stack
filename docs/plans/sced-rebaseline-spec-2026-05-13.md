@@ -381,7 +381,7 @@ Each bucket reports the following statistics, computed over the pairs meeting it
 
 | Bucket | Defining condition |
 |---|---|
-| `all_valid_pairs` | All matched pairs (including poor-weather-match-flagged ones; nothing is filtered by weather distance) |
+| `all_valid_pairs` | All matched pairs; nothing is filtered by weather distance (per §6 amendment, no poor-weather-match flag exists) |
 | `high_cooling_pairs` | `hvac_dollars_a + hvac_dollars_b ≥ $50` |
 | `medium_cooling_pairs` | `hvac_dollars_a + hvac_dollars_b` in [$5, $50) |
 | `low_cooling_pairs` (shoulder) | `hvac_dollars_a + hvac_dollars_b < $5` |

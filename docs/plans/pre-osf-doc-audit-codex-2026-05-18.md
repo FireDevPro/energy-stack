@@ -1,9 +1,15 @@
 ---
 date: 2026-05-18
 owner: chris
-status: active
+status: locked
 role-label: code-team
+audit_role: raw-codex-input (pre-reconciliation)
+reconciled_by: pre-osf-doc-audit-findings-2026-05-18.md
+reconciled_findings: pre-osf-doc-audit-execution-2026-05-18.md
 ---
+
+> [!WARNING]
+> **Raw Codex audit input — preserved as evidence, NOT operative.** This is Codex's audit verbatim from 2026-05-18 before reconciliation with the Claude audit. Some findings here were rejected during reconciliation (notably F-004's "unresolved canonical field choice" framing — repo evidence at spec §6:209 + commit 4ad147e OI-1 retraction conclusively makes `ch1_*` canonical; drift is one-directional, not unresolved). The reconciled accounting + canonical recommended fixes live in [`pre-osf-doc-audit-findings-2026-05-18.md`](pre-osf-doc-audit-findings-2026-05-18.md) (§"Reconciliation summary"). The execution plan that drove the resulting 9 PRs is [`pre-osf-doc-audit-execution-2026-05-18.md`](pre-osf-doc-audit-execution-2026-05-18.md). When investigating any finding ID prefixed `F-N`, cross-check against the reconciliation summary before acting.
 
 # Documentation drift audit before OSF filing
 

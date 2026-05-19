@@ -28,7 +28,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `hvac-scheduler-watchdog` | Out-of-band controller-liveness beacon (writes `hvac.heartbeat controller_alive=false` when no `hvac.arm_mode` row appears in 10 min) | — | [SERVICES.md#hvac-scheduler-watchdog](../../docs/SERVICES.md#hvac-scheduler-watchdog) |
 | `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
 | `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
-| `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → canonical `outdoor_*`, WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
+| `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → `ch1_*` (canonical analysis field per spec §6) + gateway alias `outdoor_*` (descriptive), WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
