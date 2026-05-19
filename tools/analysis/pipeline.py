@@ -1,6 +1,9 @@
-"""Pre-registered SCED analysis pipeline (Stages 1-9).
+"""Pre-registered SCED analysis pipeline (Stages 1-9). DEPRECATED.
 
-Binding contract: docs/ANALYSIS_PIPELINE.md.
+Binding contract: docs/plans/sced-rebaseline-spec-2026-05-13.md (since
+2026-05-13 rebaseline; the prior binding doc docs/ANALYSIS_PIPELINE.md
+is archived at docs/archive/ANALYSIS_PIPELINE.md).
+Current pipeline: ``tools.analysis.arm_period_pipeline``.
 
 DEPRECATION NOTE (Phase 3, 2026-05-17): the arm-period-shaped
 ``tools.analysis.arm_period_pipeline`` supersedes the weekly Stage 3

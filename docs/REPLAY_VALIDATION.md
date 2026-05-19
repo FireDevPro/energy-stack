@@ -1,6 +1,6 @@
 # Replay validation: pre-flight cases and source-type catalog
 
-This document is the locked methodology for the pre-OSF-tag replay validation that satisfies [`OSF_FILING.md` criterion 14](OSF_FILING.md#acceptance-criteria-pre-flight-checklist). Two things live here:
+This document is the locked methodology for the pre-OSF-tag replay validation that satisfies [binding spec §11 #13](plans/sced-rebaseline-spec-2026-05-13.md). Two things live here:
 
 1. The **source-type catalog**: which categories of data the replay bundle can include and what each one is for (this section is locked at OSF tag).
 2. The **locked injection-case list**: pre-registered list of synthetic fault/event cases that get generated into the bundle to exercise paths that don't fire naturally before the experiment starts (initial stub here; full list lands with the injection-case generator PR).
@@ -71,7 +71,7 @@ The locked list of injection cases lives in `## Locked injection cases` below.
 
 ## Bundle-level requirement
 
-The replay bundle MUST contain at least some real observed data (`observed_historical` OR `observed_recent`). At least one measurement must have at least one row with an `observed_*` source type. A purely-synthetic bundle does not satisfy [criterion 14](OSF_FILING.md#acceptance-criteria-pre-flight-checklist).
+The replay bundle MUST contain at least some real observed data (`observed_historical` OR `observed_recent`). At least one measurement must have at least one row with an `observed_*` source type. A purely-synthetic bundle does not satisfy [binding spec §11 #13](plans/sced-rebaseline-spec-2026-05-13.md).
 
 ## Per-output provenance requirement
 

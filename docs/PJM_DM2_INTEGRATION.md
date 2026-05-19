@@ -15,7 +15,7 @@ Three open scheduler / experiment work items need PJM-zone data we don't current
 2. **Forecast bias correction for ComEd retail hourly pricing**: ComEd's retail hourly rate is derived from PJM zonal RT-LMP plus a retail markup. Having the raw zonal LMP lets us decompose retail-price spikes into "LMP movement" vs "retail markup tier change" and detect sustained mismatch.
 3. **Real-time peak-day signal**: PJM publishes its own daily projected peak load and projected peak hour. A scheduler-side cross-check against our day-type classifier catches days where PJM's signal disagrees with ours.
 
-All three are supporting work for the [field study](EXPERIMENT_DESIGN.md). None is in the critical path for summer 2026 alternation start, but all should be in place before summer ramps in.
+All three are supporting work for the [field study](plans/sced-rebaseline-spec-2026-05-13.md) (binding spec). None is in the critical path for summer 2026 alternation start, but all should be in place before summer ramps in.
 
 ## Goals
 

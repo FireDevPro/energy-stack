@@ -18,7 +18,7 @@ changes:
 3. **Audit row** in `hvac.arm_transitions` so the experimental record
    reflects which arm was live at each transition.
 
-Per [`EXPERIMENT_DESIGN.md§5`](EXPERIMENT_DESIGN.md#5-randomization-and-assignment).
+Per [`plans/sced-rebaseline-spec-2026-05-13.md` §2 (calendar)](plans/sced-rebaseline-spec-2026-05-13.md).
 
 ---
 
