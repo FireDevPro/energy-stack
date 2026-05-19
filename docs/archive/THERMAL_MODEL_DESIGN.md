@@ -2,7 +2,7 @@
 
 **Status**: Design proposed (2026-05-05), implementation gated on Ecowitt deployment + ~30 days of paired observation history
 **Owner**: Chris dePaola
-**Depends on**: existing `energy-stack` (InfluxDB `hvac.thermostat`, `hvac.comfortnet`, `nws.forecast`, `refoss.channel`) plus `weather.ecowitt` once that station is online
+**Depends on**: existing `energy-stack` (InfluxDB `hvac.thermostat`, `hvac.comfortnet`, `nws.forecast`, `refoss.channel`) plus `ecowitt.weather` once that station is online
 **Methodological anchor**: Bacher & Madsen 2011, *Identifying suitable models for the heat dynamics of buildings*, Energy and Buildings 43(7), [doi:10.1016/j.enbuild.2011.02.005](https://doi.org/10.1016/j.enbuild.2011.02.005)
 
 ---
@@ -102,7 +102,7 @@ All sources already write to InfluxDB except Ecowitt, which arrives in May 2026 
 | `comfortnet` (CT-485 sniffer → MQTT → Telegraf) | `hvac.comfortnet` | `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` | live (May 2026), sub-minute | sub-minute |
 | `refoss-poller` | `refoss.channel` | `power_w` on the HVAC circuit channels | 30 s | 30 s (independent kW witness, no gap) |
 | `nws-poller` | `nws.forecast` | `high_f`, `low_f`, `max_dewpoint_f` | **daily rollup only** (today/tomorrow/day2) | hourly outdoor temp series — gap |
-| Ecowitt (planned) | `weather.ecowitt` | `outdoor_temp_f`, `solar_radiation_w_m2`, `outdoor_humidity_pct` | not yet installed | 30 s |
+| Ecowitt (planned) | `ecowitt.weather` | `outdoor_temp_f`, `solar_radiation_w_m2`, `outdoor_humidity_pct` | not yet installed | 30 s |
 | `hvac-scheduler` | `hvac.actions` | `cool_setpoint_f`, `applied`, `dry_run` | event-driven | event-driven (no gap) |
 
 ### Cadence reality check (CodeX 2026-05-07)
@@ -190,7 +190,7 @@ A workstation alias `thermal-fit` invokes it on demand: `ssh pi-lab "cd ~/energy
 | Date (target) | Milestone |
 |---|---|
 | 2026-05-05 | Design doc landed (this PR). |
-| ~2026-05-08 | Ecowitt station installed, `weather.ecowitt` measurement in InfluxDB, paired observation history begins. |
+| ~2026-05-08 | Ecowitt station installed, `ecowitt.weather` measurement in InfluxDB, paired observation history begins. |
 | ~2026-06-07 | 30 days of paired Ecowitt + indoor data accumulated. First `fit_thermal_model.py` run produces a candidate ratifiable fit. |
 | 2026-06-15 to 2026-06-30 | Implementation PR: `fit_thermal_model.py` + `thermal_model.py` + scheduler integration call sites + tests. Lands behind a `THERMAL_MODEL_ENABLED=false` env flag. |
 | 2026-07 (first heat wave) | Validation in production. `THERMAL_MODEL_ENABLED=true` flipped after one heat-wave cycle confirms the integrated envelope predictions match observed indoor traces within the holdout RMSE bound. |
