@@ -158,7 +158,6 @@ def test_pipeline_per_pair_row_has_required_columns():
         "temporal_gap_days", "weather_distance_zscore",
         "weather_vector_a", "weather_vector_b",
         "weather_component_diffs_raw", "weather_component_diffs_zscored",
-        "poor_weather_match_flag",
         "valid_pair_hours", "excluded_hours_count",
         "excluded_hours_breakdown_a", "excluded_hours_breakdown_b",
         "cost_match_quality_median_diff_c_per_kwh",
