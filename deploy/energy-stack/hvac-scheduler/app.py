@@ -2076,7 +2076,9 @@ def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> N
         return
 
     tomorrow_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
-    comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
+    now_utc = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
     tz = ZoneInfo(cfg.tz_name)
     target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
         query_api, cfg.influx_bucket, today_iso, tz,
@@ -2121,7 +2123,9 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
     """Read tomorrow's forecast (with day-after lookahead), decide day-type, log."""
     forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
     day2 = fetch_latest_forecast(query_api, cfg.influx_bucket, "day2")
-    comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
+    now_utc_for_comed = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc_for_comed)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
     decision_date = (datetime.now(tz).date() + timedelta(days=1)).isoformat()
     target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
         query_api, cfg.influx_bucket, decision_date, tz,
@@ -2277,7 +2281,9 @@ def fetch_today_decision(query_api, write_api, bucket: str, today_iso: str) -> s
     # Day-after for streak detection — today might be HOT_STREAK_DAY1 if
     # tomorrow is also HOT.
     tomorrow_forecast = fetch_latest_forecast(query_api, bucket, "tomorrow")
-    comed_price = fetch_latest_comed(query_api, bucket)
+    now_utc = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, bucket, now_utc=now_utc)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
 
     # §7 forecast 5CP-risk inputs. fetch_today_decision doesn't carry a tz
     # in its signature; resolve it from the SCHEDULER_TZ env var the same
