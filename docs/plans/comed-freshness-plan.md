@@ -23,6 +23,36 @@ branch: fix/comed-freshness
 
 ---
 
+## Execution guardrails (operator-locked)
+
+These constraints apply to every implementer subagent and every reviewer subagent dispatched during execution. Quote them verbatim in dispatch prompts.
+
+### 1. Serial execution only — no broad-parallel fan-out
+
+Tasks execute one at a time, in order. Even where two tasks are technically independent (e.g., Task 2 freshness module vs. Task 4 CI workflow), do NOT dispatch them in parallel. Reasons:
+
+- Each task builds on prior tasks' commits and FiringState shape; parallel work would race on the same file edits.
+- The TDD discipline (failing test → minimal implementation → green test → commit) is invariant per-task. Parallel tasks would compromise the green-bar discipline.
+- Five review iterations on the spec showed how subtle terminology drift breaks correctness; serial execution catches drift the moment a subagent introduces it.
+
+### 2. Hard checkpoints (operator approval required to proceed past)
+
+The orchestrator MUST stop and request operator approval at three points before continuing:
+
+- **After Task 4 (`check-freshness-drift.yml` workflow committed).** Validates that the CI infrastructure is correct before downstream tasks rely on it.
+- **After Task 16 (xfail marker removed from acceptance test — Phase 1 closed).** Validates that the tracer bullet works end-to-end before starting Phase 2.
+- **After Task 19 (safety-release timer landed — Phase 2 closed).** Validates the controller-observation wall-clock timer before starting Phase 3 verification and PR creation.
+
+At each checkpoint, the orchestrator reports: tasks completed, tests passing, any unexpected diff vs. plan, and explicitly waits for operator "go" before dispatching the next subagent.
+
+### 3. Canonical rule — quote verbatim in every dispatch prompt
+
+> **Safety release uses `firing.nonfresh_after_hold_started_at_utc` (controller-observation wall clock; set to `now_utc` on the first post-hold non-fresh observation). NEVER use `sample.source_ts` or `firing.last_fresh_bucket_source_ts` as the safety-release clock. Those are data-source timestamps; spec §3.5 explicitly forbids using them for the release timer. The data-source clock is for the freshness label and the broad-feed-health audit derivation ONLY.**
+
+Every implementer subagent prompt and every reviewer subagent prompt must include this paragraph verbatim. The spec went through five review iterations because this distinction is easy to slip on; the canonical rule is the load-bearing guard against regression.
+
+---
+
 ## File Structure
 
 ### New files created in this plan
