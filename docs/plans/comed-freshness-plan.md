@@ -118,8 +118,7 @@ Append the following to the bottom of `deploy/energy-stack/hvac-scheduler/test_h
     strict=True,
     reason="Pending recency gate implementation (Phase 1 tracer bullet)",
 )
-@pytest.mark.asyncio
-async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
+def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     """At 19:18Z on 2026-05-19, scheduler was in elevated tier with min-hold
     elapsed. Latest bucket was [19:05Z, 19:10Z] (price 2.5¢, age 8 min).
     Pre-fix: scheduler downgraded based on the stale 2.5¢. Two minutes later
@@ -134,7 +133,7 @@ async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
       (broad-health uses 30-min threshold; the 8-min bucket is within)
     """
     from app import (
-        PriceSample, FiringState, _evaluate_layer_inputs, app as _app,  # noqa
+        PriceSample, FiringState, _evaluate_layer_inputs,
     )
     from price_overlay import PriceOverlayState
 
@@ -197,6 +196,10 @@ async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     # derivation gets its own dedicated test in Task 11 against a real
     # production helper. Keep this acceptance test focused on the gate.
 ```
+
+**Note on test structure:** the test is plain `def` (not `async def`). `_evaluate_layer_inputs` is synchronous, and the test body has no `await`. Earlier draft of this plan had `@pytest.mark.asyncio` + `async def` — that was wrong and was removed during pre-execution review. The acceptance test is sync.
+
+**Note on imports:** earlier draft included `app as _app, # noqa` in the import tuple — that was a copy-paste error. There is no module-level `app` symbol in `app.py`; including it would have made `ImportError` persist indefinitely and defeated the strict-xfail signal. Removed.
 
 - [ ] **Step 2: Confirm the test discovers and runs as xfail**
 
@@ -2244,15 +2247,13 @@ Find the test added in Task 1:
     strict=True,
     reason="Pending recency gate implementation (Phase 1 tracer bullet)",
 )
-@pytest.mark.asyncio
-async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
+def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
 ```
 
-Delete the `@pytest.mark.xfail(...)` decorator (keep `@pytest.mark.asyncio`):
+Delete the `@pytest.mark.xfail(...)` decorator entirely (the `def` signature remains as-is; the test was already sync per the Task 1 review fix):
 
 ```python
-@pytest.mark.asyncio
-async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
+def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
 ```
 
 - [ ] **Step 2: Verify the test passes cleanly**
