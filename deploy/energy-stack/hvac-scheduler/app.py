@@ -1411,6 +1411,19 @@ class FiringState:
     # (nonfresh_after_hold_started_at_utc, §3.5) added in Phase 2;
     # do not conflate the two clocks.
     last_fresh_bucket_source_ts: datetime | None = None
+    # Per spec §3.5 controller-observation wall-clock safety-release timer.
+    # Set to `now_utc` on the first tick where (a) min-hold has elapsed for
+    # the current non-normal tier AND (b) the current sample is non-fresh.
+    # Cleared on any fresh sample / return to normal / min-hold-not-elapsed.
+    # The release fires when (now_utc - nonfresh_after_hold_started_at_utc)
+    # >= PRICE_FEED_STALE_THRESHOLD.
+    #
+    # CRITICAL: this is CONTROLLER-OBSERVATION wall-clock, NOT the bucket's
+    # _time (sample.source_ts). The data-source clock counts bucket aging
+    # during min-hold against the controller, which is wrong. See spec
+    # §3.5 guard: "Do not use sample.source_ts or last_fresh_bucket_source_ts
+    # as the safety-release clock."
+    nonfresh_after_hold_started_at_utc: datetime | None = None
 
 
 def fetch_day_ahead_prices_for_date(
