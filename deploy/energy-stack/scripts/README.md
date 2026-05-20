@@ -10,6 +10,73 @@ role-label: code-team
 Operator scripts for the energy-stack. Each is a single-purpose Python script
 run by hand (not a service). Tests run with `pytest`; deps in `requirements.txt`.
 
+## fit_thermal_observer.py — read-only house thermal response fit
+
+Fits the house thermal response from existing telemetry and prints diagnostics.
+This script is **strictly read-only**: it does not write thermostat setpoints,
+does not write derived InfluxDB measurements, does not write JSON artifacts, and
+does not feed `hvac-scheduler` decisions.
+
+Inputs:
+
+- `hvac.thermostat` for indoor temperature and thermostat state.
+- `hvac.comfortnet` for equipment stage/runtime signals.
+- Local weather, defaulting to `ecowitt.outdoor`.
+
+Override the weather measurement when needed:
+
+```bash
+python fit_thermal_observer.py --outdoor-measurement weather.ecowitt
+```
+
+### One-time setup
+
+On Pi-lab:
+
+```bash
+cd ~/energy-stack/scripts
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Manual runs
+
+Run against the existing stack environment:
+
+```bash
+cd ~/energy-stack/scripts
+source .venv/bin/activate
+set -a; source ~/energy-stack/.env; set +a
+export INFLUX_URL="${INFLUXDB_URL:-${INFLUX_URL:-http://localhost:8086}}"
+export INFLUX_TOKEN="${INFLUXDB_TOKEN:-${INFLUXDB_INIT_ADMIN_TOKEN:-${INFLUX_TOKEN}}}"
+export INFLUX_ORG="${INFLUXDB_ORG:-${INFLUXDB_INIT_ORG:-${INFLUX_ORG}}}"
+export INFLUX_BUCKET="${INFLUXDB_BUCKET:-${INFLUXDB_INIT_BUCKET:-${INFLUX_BUCKET}}}"
+python fit_thermal_observer.py --window-days 14
+```
+
+`--dry-run` is accepted as a compatibility no-op. All runs are read-only.
+
+### Printed diagnostics
+
+Key printed fields:
+
+| Name | Notes |
+|---|---|
+| `accepted` | Whether plausibility and skill gates accepted the fit. |
+| `tau_hours` | Fitted thermal time constant. |
+| `stage1_cooling_f_per_hr` | Stage-1 cooling rate. |
+| `stage2_cooling_f_per_hr` | Full stage-2 cooling rate. |
+| `skill_score` | Holdout skill vs baseline. |
+| `filter_counts` | Gap, setpoint mask, heating-active, non-finite, and valid interval counts. |
+
+### Suggested cron
+
+After several manual runs have been validated, log nightly output only:
+
+```cron
+17 3 * * * bash -lc 'cd ~/energy-stack/scripts && . .venv/bin/activate && set -a; . ~/energy-stack/.env; set +a; export INFLUX_URL="${INFLUXDB_URL:-${INFLUX_URL:-http://localhost:8086}}"; export INFLUX_TOKEN="${INFLUXDB_TOKEN:-${INFLUXDB_INIT_ADMIN_TOKEN:-${INFLUX_TOKEN}}}"; export INFLUX_ORG="${INFLUXDB_ORG:-${INFLUXDB_INIT_ORG:-${INFLUX_ORG}}}"; export INFLUX_BUCKET="${INFLUXDB_BUCKET:-${INFLUXDB_INIT_BUCKET:-${INFLUX_BUCKET}}}"; python fit_thermal_observer.py --window-days 14 >> /var/log/thermal-observer.log 2>&1'
+```
+
 ## randomize_arms.py — DEPRECATED (pre-rebaseline historical artifact)
 
 > [!WARNING]

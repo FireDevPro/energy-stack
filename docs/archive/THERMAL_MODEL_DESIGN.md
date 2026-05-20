@@ -7,6 +7,14 @@
 
 ---
 
+## Implementation Note
+
+The first implementation slice is a separate read-only `thermal_observer` under
+`deploy/energy-stack/scripts`. It estimates house thermal response from
+telemetry and writes diagnostics to `hvac.thermal_observer`, but it does not
+feed scheduler decisions. Scheduler integration remains a later explicit
+change, after fits are stable and physically plausible.
+
 ## Problem
 
 The `hvac-scheduler` today is house-agnostic. Day-type setbacks, pre-cool depths, COAST shutoff lead times, and the HOT-window pre-cool target are constants in `app.py`. They were chosen by hand to be "safe" for an unknown thermal envelope. That leaves money on the table on both sides of the trade:
