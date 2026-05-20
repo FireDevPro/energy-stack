@@ -2944,10 +2944,6 @@ async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
 # xfail(strict=True) until the recency gate lands; marker comes off in the
 # same commit that finishes the implementation.
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Pending recency gate implementation (Phase 1 tracer bullet)",
-)
 def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     """At 19:18Z on 2026-05-19, scheduler was in elevated tier with min-hold
     elapsed. Latest bucket was [19:05Z, 19:10Z] (price 2.5¢, age 8 min).
