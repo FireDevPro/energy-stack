@@ -29,6 +29,10 @@ class PriceOverlayCode(str, Enum):
     NORMAL_BELOW_TRIGGER = "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"
     HELD_IN_TIER = "PRICE_OVERLAY_HELD_IN_TIER"
 
+    # NEW (spec §3.7): recency gate refused a would-be downgrade because
+    # the latest bucket is older than the 7-min fresh threshold.
+    HELD_DOWNGRADE_BUCKET_AGE = "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+
     # Tier changed this tick.
     UPGRADED_TO_ELEVATED = "PRICE_OVERLAY_UPGRADED_TO_ELEVATED"
     UPGRADED_TO_SCARCITY = "PRICE_OVERLAY_UPGRADED_TO_SCARCITY"
@@ -37,7 +41,10 @@ class PriceOverlayCode(str, Enum):
 
     # Feed-unavailable branches.
     FEED_UNAVAILABLE_TIER_PRESERVED = "PRICE_OVERLAY_FEED_UNAVAILABLE_TIER_PRESERVED"
-    STALE_FEED_RELEASED = "PRICE_OVERLAY_STALE_FEED_RELEASED"
+    # Renamed from STALE_FEED_RELEASED — was True only when sample was None
+    # at release time. Spec §3.5 / §3.7 forensic-split.
+    RELEASED_NO_DATA = "PRICE_OVERLAY_RELEASED_NO_DATA"
+    RELEASED_PERSISTENT_STALE = "PRICE_OVERLAY_RELEASED_PERSISTENT_STALE"
 
 
 class LayerResolutionCode(str, Enum):

@@ -1,0 +1,56 @@
+# .github/workflows/check-freshness-drift.yml
+name: Check freshness module drift
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/energy-stack/hvac-scheduler/freshness.py'
+      - 'tools/cockpit/backend/freshness.py'
+      - '.github/workflows/check-freshness-drift.yml'
+
+jobs:
+  check-drift:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Diff the two Python freshness files
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Strip the leading docstring (header block) from each file before
+          # diffing, since the canonical-vs-paired files differ only in their
+          # opening docstring (one points to the other).
+          strip_header() {
+            python3 -c '
+          import ast, sys
+          src = open(sys.argv[1]).read()
+          tree = ast.parse(src)
+          body = tree.body
+          # If first node is a docstring expression, drop it.
+          if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+              start = body[0].end_lineno
+              lines = src.splitlines()
+              src = "\n".join(lines[start:])
+          print(src)
+          ' "$1"
+          }
+
+          A=$(strip_header deploy/energy-stack/hvac-scheduler/freshness.py)
+          B=$(strip_header tools/cockpit/backend/freshness.py)
+          if [ "$A" != "$B" ]; then
+            echo "ERROR: freshness modules have drifted (excluding header docstrings)."
+            echo "Canonical: deploy/energy-stack/hvac-scheduler/freshness.py"
+            echo "Cockpit:   tools/cockpit/backend/freshness.py"
+            echo ""
+            echo "Both files must contain the same Freshness Literal, Thresholds"
+            echo "class, THRESHOLDS dict, and classify() function. If you're"
+            echo "intentionally updating one, update BOTH in the same PR."
+            echo ""
+            diff <(echo "$A") <(echo "$B") || true
+            exit 1
+          fi
+          echo "OK: freshness modules in sync (excluding header docstrings)."

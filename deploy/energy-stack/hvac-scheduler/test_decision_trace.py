@@ -98,7 +98,7 @@ class TestPhase1PriceOverlay:
         assert t0["prev_tier"] == "normal"
         assert t0["new_tier"] == "normal"
         assert t0["price_cents"] == 5.0
-        assert t0["price_is_stale"] is False
+        assert t0["price_feed_unavailable"] is False
 
         assert t1["outcome"] == "upgraded"
         assert t1["reason_code"] == "PRICE_OVERLAY_UPGRADED_TO_ELEVATED"

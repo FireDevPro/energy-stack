@@ -48,15 +48,16 @@ export const FRESHNESS_THRESHOLDS: Record<string, FreshnessThresholds> = {
     warn_max_ms: min(20),
     stale_max_ms: min(30),
   },
-  // ComEd writes new 5min rows with `_time` = END of the 5-min price
-  // interval (e.g. _time=18:15 represents 18:10-18:15). ComEd's
-  // upstream publication carries a multi-minute delay past interval
-  // close, so a freshly-written row's age vs wall clock is typically
-  // ~6 min (observed 2026-05-17), climbing to ~11 min just before the
-  // next publish lands. Fresh ≤ 11 min covers one healthy cycle;
-  // warn = one missed publish; stale = multi-cycle outage.
+  // 7-min fresh = controller's downgrade-recency cutoff. Cockpit mirrors
+  // the scheduler so operator sees exactly the same actionability the
+  // controller does. Bucket-age sawtooth typically spans 6-11 min between
+  // publishes, so the freshness indicator naturally cycles green→warn→green
+  // every 5-min publish cycle. Warn does NOT indicate a feed problem —
+  // it indicates the controller would refuse a downgrade decision if
+  // asked this tick. See spec §3.1.
+  // Hand-paired with deploy/energy-stack/hvac-scheduler/freshness.py.
   'comed.prices': {
-    fresh_max_ms: min(11),
+    fresh_max_ms: min(7),
     warn_max_ms: min(16),
     stale_max_ms: min(30),
   },

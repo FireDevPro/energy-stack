@@ -1,14 +1,16 @@
-"""Staleness classification per source cadence (cockpit hand-paired copy).
+"""Staleness classification per source cadence.
 
-CANONICAL SOURCE: deploy/energy-stack/hvac-scheduler/freshness.py.
-This file is byte-identical to the canonical except for this header
-docstring. Drift is enforced by the CI workflow at
-.github/workflows/check-freshness-drift.yml — any edit must land in
-BOTH files in the same PR or CI will fail.
+Canonical scheduler-side module. The cockpit's
+`tools/cockpit/backend/freshness.py` is a hand-paired copy of this file;
+the CI workflow at `.github/workflows/check-freshness-drift.yml`
+enforces byte-equality of the two files at PR merge time.
+
+The frontend TS mirror at `tools/cockpit/frontend/src/freshness.ts`
+stays a separate hand-paired copy (TS cannot import Python).
 
 Per spec §3.1: `comed.prices` fresh threshold of 7 min is the
-controller's downgrade-recency cutoff. Cockpit mirrors so the operator
-sees exactly the same actionability the controller does.
+controller's downgrade-recency cutoff. The cockpit mirrors so the
+operator sees exactly the same actionability the controller does.
 
 `hvac.actions` is event-driven and NOT a staleness signal — Action
 node uses NOT-FIRED-THIS-TICK / last-fire / APPLIED / SHADOW semantics.

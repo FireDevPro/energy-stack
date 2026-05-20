@@ -109,7 +109,9 @@ from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
     evaluate_price_overlay,
+    hold_elapsed,
     offset_and_override_for_tier,
+    tier_priority,
 )
 from safety_supervisor import validate_setpoints
 from decision_codes import (
@@ -786,6 +788,21 @@ class Config:
 
 # ---- Influx queries --------------------------------------------------------
 
+from freshness import Freshness, classify, THRESHOLDS  # noqa: E402
+
+# PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
+# label. Per spec §3.3 — the per-tick freshness label uses the data-source
+# wall clock (now - sample.source_ts), the cockpit's `"comed.prices"` 7-min
+# threshold. Do NOT use sample.source_ts as the safety-release clock (spec §3.5).
+
+
+@dataclass(frozen=True)
+class PriceSample:
+    cents_per_kwh: float
+    source_ts: datetime  # The bucket's _time (interval-end of the 5-min window).
+    freshness: Freshness  # "fresh" | "warn" | "stale" (never "missing" — that's the None return).
+
+
 def fq_latest_forecast(bucket: str, for_period: str) -> str:
     return f'''
 from(bucket: "{bucket}")
@@ -818,12 +835,31 @@ def fetch_latest_forecast(query_api, bucket: str, for_period: str) -> dict | Non
     return rows[0]
 
 
-def fetch_latest_comed(query_api, bucket: str) -> float | None:
+def fetch_latest_comed(query_api, bucket: str, *, now_utc: datetime) -> "PriceSample | None":
+    """Read the latest comed.prices 5-min bucket, bundle value + _time + freshness.
+
+    Returns None when:
+      - No bucket exists in the 30-min Influx query window, OR
+      - The latest row has a null `_time` (malformed Influx state — log error,
+        do not raise; supervisor-continuity per spec §7).
+    """
     for table in query_api.query(fq_latest_comed_5min(bucket)):
         for record in table.records:
             v = record.get_value()
-            if v is not None:
-                return float(v)
+            if v is None:
+                continue
+            source_ts = record.get_time()
+            if source_ts is None:
+                log("error", "comed_row_missing_time",
+                    bucket=bucket, value=float(v))
+                return None
+            age_ms = int((now_utc - source_ts).total_seconds() * 1000)
+            label = classify("comed.prices", age_ms)
+            return PriceSample(
+                cents_per_kwh=float(v),
+                source_ts=source_ts,
+                freshness=label,
+            )
     return None
 
 
@@ -1368,13 +1404,27 @@ class FiringState:
     # experiment start (boundary, log).
     last_observed_arm: str | None = None
     arm_observed: bool = False
-    # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
-    # where ``fetch_latest_comed`` returned a real price. Used to release
-    # a carried-forward price-overlay tier when the feed has been
-    # unavailable for longer than ``PRICE_FEED_STALE_THRESHOLD``. Without
-    # this, a scarcity tier active when the feed dropped would hold the
-    # 85F effective setpoint indefinitely.
-    price_feed_last_ok_at_utc: datetime | None = None
+    # Per spec §3.6: timestamp of the bucket's _time on the most recent
+    # tick where fetch_latest_comed returned a sample with
+    # freshness == "fresh". The audit telemetry's broad-feed-health
+    # derivation (price_feed_healthy, §3.6) uses this. The safety-release
+    # timer uses a SEPARATE controller-observation field
+    # (nonfresh_after_hold_started_at_utc, §3.5) added in Phase 2;
+    # do not conflate the two clocks.
+    last_fresh_bucket_source_ts: datetime | None = None
+    # Per spec §3.5 controller-observation wall-clock safety-release timer.
+    # Set to `now_utc` on the first tick where (a) min-hold has elapsed for
+    # the current non-normal tier AND (b) the current sample is non-fresh.
+    # Cleared on any fresh sample / return to normal / min-hold-not-elapsed.
+    # The release fires when (now_utc - nonfresh_after_hold_started_at_utc)
+    # >= PRICE_FEED_STALE_THRESHOLD.
+    #
+    # CRITICAL: this is CONTROLLER-OBSERVATION wall-clock, NOT the bucket's
+    # _time (sample.source_ts). The data-source clock counts bucket aging
+    # during min-hold against the controller, which is wrong. See spec
+    # §3.5 guard: "Do not use sample.source_ts or last_fresh_bucket_source_ts
+    # as the safety-release clock."
+    nonfresh_after_hold_started_at_utc: datetime | None = None
 
 
 def fetch_day_ahead_prices_for_date(
@@ -1778,7 +1828,7 @@ CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
 CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
 
 
-def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
+def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
                                   weather_ok: bool,
                                   pjm_capacity_risk_ok: bool) -> dict:
     """Return the dict of input-feed health flags REQUIRED for B-active
@@ -1793,7 +1843,7 @@ def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
     status) is written separately by ``write_input_feed_health``.
     """
     when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
-    feeds = {"price": price_ok, "weather": weather_ok}
+    feeds = {"price": price_feed_healthy, "weather": weather_ok}
     if CAPACITY_RISK_WINDOW_START_CT <= when_naive < CAPACITY_RISK_WINDOW_END_CT:
         feeds["pjm_capacity_risk"] = pjm_capacity_risk_ok
     return feeds
@@ -2041,7 +2091,9 @@ def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> N
         return
 
     tomorrow_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
-    comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
+    now_utc = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
     tz = ZoneInfo(cfg.tz_name)
     target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
         query_api, cfg.influx_bucket, today_iso, tz,
@@ -2086,7 +2138,9 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
     """Read tomorrow's forecast (with day-after lookahead), decide day-type, log."""
     forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
     day2 = fetch_latest_forecast(query_api, cfg.influx_bucket, "day2")
-    comed_price = fetch_latest_comed(query_api, cfg.influx_bucket)
+    now_utc_for_comed = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc_for_comed)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
     decision_date = (datetime.now(tz).date() + timedelta(days=1)).isoformat()
     target_peak_mw, season_5th_mw = _fetch_pjm_inputs_for_target_date(
         query_api, cfg.influx_bucket, decision_date, tz,
@@ -2242,7 +2296,9 @@ def fetch_today_decision(query_api, write_api, bucket: str, today_iso: str) -> s
     # Day-after for streak detection — today might be HOT_STREAK_DAY1 if
     # tomorrow is also HOT.
     tomorrow_forecast = fetch_latest_forecast(query_api, bucket, "tomorrow")
-    comed_price = fetch_latest_comed(query_api, bucket)
+    now_utc = datetime.now(timezone.utc)
+    _sample = fetch_latest_comed(query_api, bucket, now_utc=now_utc)
+    comed_price = _sample.cents_per_kwh if _sample is not None else None
 
     # §7 forecast 5CP-risk inputs. fetch_today_decision doesn't carry a tz
     # in its signature; resolve it from the SCHEDULER_TZ env var the same
@@ -2329,6 +2385,34 @@ _ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 # similar length is plausibly a real release rather than a brief blip.
 PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)
 
+
+def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
+    """Broad feed-health verdict per spec §3.6.
+
+    Returns True iff the controller has observed a fresh ComEd bucket
+    within the last PRICE_FEED_STALE_THRESHOLD (30 min wall-clock).
+
+    Used by:
+      * The hvac.input_feed_health audit row (run_schedule_check).
+      * required_feeds_for_arm_mode for B-active classification.
+
+    This is DISTINCT from per-tick downgrade actionability
+    (sample.freshness == "fresh", 7-min threshold). The named-split in
+    spec §3.6 prevents implementation-time conflation: an implementer
+    cannot accidentally write
+        return sample.freshness == "fresh"
+    because the function reads firing state, not the per-tick sample.
+
+    The safety-release timer (firing.nonfresh_after_hold_started_at_utc,
+    spec §3.5) is yet a third concept -- uses controller-observation wall
+    clock, not data-source. All three are independent.
+    """
+    last_fresh = firing.last_fresh_bucket_source_ts
+    if last_fresh is None:
+        return False
+    return (now_utc - last_fresh) <= PRICE_FEED_STALE_THRESHOLD
+
+
 # Action make-up window: a scheduled action that didn't successfully
 # apply on its exact-minute tick (Control4 transient error, network
 # blip, partial snapshot) can be retried on the next N ticks until
@@ -2380,81 +2464,126 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         tick_id = uuid.uuid4().hex
 
     # ---- Price overlay (§2) ----
-    current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
+    # Read the latest ComEd bucket with now_utc for freshness classification.
+    sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
+    current_price_cents = sample.cents_per_kwh if sample is not None else None
     prev_tier = firing.price_overlay_state.current_tier
-    # Tracks the §2 stale-release branch (line below) so the trace
-    # emission at the end of the block can pick the correct reason code
-    # without re-deriving the stale condition.
-    stale_release_fired = False
-    if current_price_cents is None:
-        # Price feed unavailable: preserve the active tier's effective
-        # setpoint contributions UNTIL the feed has been stale for too
-        # long (PRICE_FEED_STALE_THRESHOLD, default 30 min). Pre-PR #60
-        # the offset/override were zeroed immediately, dropping the
-        # scarcity 85F shutoff silently. PR #60 preserved them but
-        # without a max-age -- a feed that stalls during scarcity
-        # could hold 85F indefinitely. P2.2 splits the difference: a
-        # brief gap carries the tier; a sustained gap releases.
-        # Fallback for the cold-start / state-restore case: a non-NORMAL
-        # prev_tier had to have been triggered by a real price reading,
-        # so its triggered_at_utc is a reasonable floor for
-        # last_ok_at_utc if the explicit timestamp is missing.
-        last_ok = firing.price_feed_last_ok_at_utc
-        if last_ok is None:
-            last_ok = firing.price_overlay_state.triggered_at_utc
-        stale = (
-            last_ok is None
-            or now_utc - last_ok > PRICE_FEED_STALE_THRESHOLD
+
+    # Update last-fresh field on fresh reads (independent of timer; used by
+    # audit telemetry's broad-feed-health derivation, §3.6).
+    if sample is not None and sample.freshness == "fresh":
+        firing.last_fresh_bucket_source_ts = sample.source_ts
+
+    # Safety-release TIMER update (spec §3.5, controller-observation wall-clock).
+    # IMPORTANT: this is the CONTROLLER-OBSERVATION clock. Do NOT use
+    # sample.source_ts or last_fresh_bucket_source_ts for this timer --
+    # those are data-source timestamps; spec §3.5 explicitly forbids it.
+    sample_is_fresh = sample is not None and sample.freshness == "fresh"
+    min_hold_is_elapsed = hold_elapsed(
+        firing.price_overlay_state, now_utc, DEFAULT_MINIMUM_HOLD_MINUTES,
+    )
+
+    if prev_tier == NORMAL_TIER_NAME or not min_hold_is_elapsed:
+        firing.nonfresh_after_hold_started_at_utc = None
+    elif sample_is_fresh:
+        firing.nonfresh_after_hold_started_at_utc = None
+    elif firing.nonfresh_after_hold_started_at_utc is None:
+        firing.nonfresh_after_hold_started_at_utc = now_utc
+    # else: timer was already set on a prior tick; leave it alone.
+
+    # Initialize trace-field defaults BEFORE the release/gate branches (spec §3.5 P2).
+    safety_release_fired = False
+    release_reason = None
+    downgrade_gate_held = False
+    active_tier = None
+    price_offset_f = 0
+    price_override_f = None
+    price_tier_name = prev_tier  # default; branches below override.
+
+    # Safety release check -- uses ONLY the controller-observation timer.
+    if (firing.nonfresh_after_hold_started_at_utc is not None
+            and (now_utc - firing.nonfresh_after_hold_started_at_utc)
+                >= PRICE_FEED_STALE_THRESHOLD
+            and prev_tier != NORMAL_TIER_NAME):
+        # Forensic split: which kind of failure accumulated to 30 wall-clock min?
+        release_reason = (
+            PriceOverlayCode.RELEASED_NO_DATA if sample is None
+            else PriceOverlayCode.RELEASED_PERSISTENT_STALE
         )
-        if stale and prev_tier != NORMAL_TIER_NAME:
-            log("warn", "price_feed_stale_tier_released",
-                prev_tier=prev_tier,
-                last_ok_at_utc=last_ok.isoformat() if last_ok else None,
-                threshold_min=PRICE_FEED_STALE_THRESHOLD.total_seconds() / 60.0)
-            # Release the overlay state cleanly so a later feed
-            # recovery starts from NORMAL rather than re-entering the
-            # stale tier's hold window.
-            firing.price_overlay_state = PriceOverlayState(
-                current_tier=NORMAL_TIER_NAME,
-                triggered_at_utc=None,
-            )
-            active_tier = None
-            price_offset_f = 0
-            price_override_f = None
-            price_tier_name = NORMAL_TIER_NAME
-            stale_release_fired = True
-        else:
-            active_tier = None
-            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
-            price_tier_name = prev_tier
-    else:
-        # Feed is healthy this tick; record the timestamp for the
-        # stale-detection path above.
-        firing.price_feed_last_ok_at_utc = now_utc
-        active_tier, firing.price_overlay_state = evaluate_price_overlay(
+        log("warn", "price_feed_stale_tier_released",
+            reason=release_reason.value,
+            timer_started_at=firing.nonfresh_after_hold_started_at_utc.isoformat(),
+            wall_clock_elapsed_sec=(now_utc - firing.nonfresh_after_hold_started_at_utc).total_seconds())
+        firing.price_overlay_state = PriceOverlayState(
+            current_tier=NORMAL_TIER_NAME,
+            triggered_at_utc=None,
+        )
+        firing.nonfresh_after_hold_started_at_utc = None  # clear after release
+        safety_release_fired = True
+        # Explicit normal outputs -- do NOT inherit prev_tier's offset/override.
+        price_tier_name = NORMAL_TIER_NAME
+        price_offset_f = 0
+        price_override_f = None
+        active_tier = None
+
+    elif sample is not None:
+        # State machine + caller-side gate (T12 logic).
+        proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
-        if active_tier is None:
-            price_offset_f = 0
-            price_override_f = None
-            price_tier_name = NORMAL_TIER_NAME
+        proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
+        is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
+
+        if is_downgrade and not sample_is_fresh:
+            # Recency gate refuses downgrade. Hold prev_tier.
+            downgrade_gate_held = True
+            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+            price_tier_name = prev_tier
         else:
-            price_offset_f = active_tier.cool_setpoint_offset_f
-            price_override_f = active_tier.cool_setpoint_override_f
-            price_tier_name = active_tier.name
+            # Detect protective upgrade and clear the safety-release timer so
+            # the new tier gets its own observation window. Without this clear,
+            # a delayed-next-tick after a non-fresh upgrade could fire release
+            # against the old tier's accumulated non-fresh time. See Codex
+            # Checkpoint-3 finding. Unconditional clear: no-op during the
+            # previous tier's min-hold (timer was already None per the reset
+            # rules above), necessary post-min-hold.
+            is_upgrade = tier_priority(proposed_name) > tier_priority(prev_tier)
+            if is_upgrade:
+                firing.nonfresh_after_hold_started_at_utc = None
+            # Apply state machine proposal.
+            firing.price_overlay_state = proposed_state
+            active_tier = proposed_tier
+            if active_tier is None:
+                price_offset_f = 0
+                price_override_f = None
+                price_tier_name = NORMAL_TIER_NAME
+            else:
+                price_offset_f = active_tier.cool_setpoint_offset_f
+                price_override_f = active_tier.cool_setpoint_override_f
+                price_tier_name = active_tier.name
+
+    else:
+        # sample is None, timer not yet at 30-min threshold: carry-forward.
+        # Preserve prev_tier's offset/override.
+        price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+        price_tier_name = prev_tier
 
     # ---- Phase 1 decision-trace: price overlay per-eval ---------------
     # One trace line per `_evaluate_layer_inputs` call. Classifies the
     # outcome from caller-observable state (prev_tier, new_tier,
-    # current_price, stale_release_fired) — never re-implements the
+    # current_price, safety_release_fired) — never re-implements the
     # internal state machine. Held outcomes go at `debug` level (gated
     # on `SCHEDULER_DECISION_TRACE_VERBOSE`); transitions and releases at
     # `info`. See `docs/plans/archive/decision-trace-plan.md` Phase 1.
     new_tier = price_tier_name
-    if current_price_cents is None and stale_release_fired:
-        po_outcome = "released"
-        po_reason = PriceOverlayCode.STALE_FEED_RELEASED
+    if downgrade_gate_held:
+        po_outcome = "held"
+        po_reason = PriceOverlayCode.HELD_DOWNGRADE_BUCKET_AGE
         po_level = "info"
+    elif safety_release_fired:
+        po_outcome = "released"
+        po_reason = release_reason  # RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE
+        po_level = "warn"  # warn level — real degraded state
     elif current_price_cents is None:
         po_outcome = "held"
         po_reason = PriceOverlayCode.FEED_UNAVAILABLE_TIER_PRESERVED
@@ -2484,13 +2613,19 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_reason = PriceOverlayCode.RELEASED_TO_NORMAL
         po_level = "info"
 
+    bucket_age_sec = (
+        (now_utc - sample.source_ts).total_seconds()
+        if sample is not None
+        else None
+    )
     _trace(
         "decision_trace.price_overlay_eval",
         level=po_level,
         tick_id=tick_id,
         now_ct=now_local,
         price_cents=current_price_cents,
-        price_is_stale=(current_price_cents is None),
+        price_feed_unavailable=(current_price_cents is None),
+        bucket_age_sec=bucket_age_sec,
         prev_tier=prev_tier,
         new_tier=new_tier,
         outcome=po_outcome,
@@ -2856,17 +2991,18 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     if (firing.last_arm_mode_audit_at_utc is None
             or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
             >= _ARM_MODE_AUDIT_INTERVAL):
-        price_ok = (
-            firing.price_feed_last_ok_at_utc is not None
-            and (now_utc_for_audit - firing.price_feed_last_ok_at_utc)
-            <= PRICE_FEED_STALE_THRESHOLD
-        )
+        # Single source of truth -- same helper the tests in
+        # test_derive_price_feed_healthy_* assert against. See spec §3.6
+        # named-split rationale: this is the 30-min broad-health verdict,
+        # distinct from per-tick downgrade actionability (7-min) and the
+        # safety-release timer (controller-observation wall clock).
+        price_feed_healthy = derive_price_feed_healthy(firing, now_utc_for_audit)
         weather_ok = today_forecast is not None
         pjm_ok = layer_inputs.fivecp_data_available
         # FULL feed-health dict, written for audit regardless of
         # required-status (spec §5.1).
         all_feeds = {
-            "price": price_ok,
+            "price": price_feed_healthy,
             "weather": weather_ok,
             "pjm_capacity_risk": pjm_ok,
         }
@@ -2876,7 +3012,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         # FILTERED dict for B-active classification (spec §5).
         required_feeds = required_feeds_for_arm_mode(
             when_ct=now_local,
-            price_ok=price_ok,
+            price_feed_healthy=price_feed_healthy,
             weather_ok=weather_ok,
             pjm_capacity_risk_ok=pjm_ok,
         )
