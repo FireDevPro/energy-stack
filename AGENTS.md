@@ -83,6 +83,24 @@ Follow Superpowers protocol (`using-superpowers` auto-loads). User instructions 
 - **Unfamiliar code region:** `zoom-out`.
 - **Session compact / handoff:** `handoff`.
 
+## n8n workflows
+
+**Authoring is via the n8n SDK MCP only.** Use `mcp__n8n__*` tools. Never edit workflow JSON files with the Edit tool — that path has burned multiple agent sessions on escape-encoded strings and Postgres publish corruption.
+
+Canonical SDK source lives in `tools/n8n/<workflow>.workflow.ts`. Workflow JSON in `docs/n8n/` is a derived export for diff visibility only; never hand-edit. Re-export from SDK after each change.
+
+Authoring flow:
+
+1. Read SDK reference once per session: `mcp__n8n__get_sdk_reference`.
+2. Discover nodes: `search_nodes` + `get_node_types` for exact parameter shapes — never guess.
+3. Edit the `.workflow.ts`. Validate: `mcp__n8n__validate_workflow`.
+4. Deploy to draft: `mcp__n8n__update_workflow` (live cron stays on prior active version).
+5. Test with pin data: `prepare_test_pin_data` + `test_workflow`. Pin-data fixtures live in `tools/n8n/fixtures/<workflow>.pin.json`.
+6. Live-data manual run: `execute_workflow` (`executionMode="manual"`).
+7. Publish: `publish_workflow`.
+8. Verify post-publish: `execute_workflow` (`executionMode="production"`) per memory `project-n8n-publish-may-corrupt-jscode`.
+9. Rollback path: `unpublish_workflow` if production-mode run reveals corruption.
+
 ## Session-start working-tree audit
 
 Every session and every dispatched subagent runs `git status` and `git stash list` BEFORE any other action.
