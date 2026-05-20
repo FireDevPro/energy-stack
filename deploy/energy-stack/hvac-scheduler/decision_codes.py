@@ -41,7 +41,10 @@ class PriceOverlayCode(str, Enum):
 
     # Feed-unavailable branches.
     FEED_UNAVAILABLE_TIER_PRESERVED = "PRICE_OVERLAY_FEED_UNAVAILABLE_TIER_PRESERVED"
-    STALE_FEED_RELEASED = "PRICE_OVERLAY_STALE_FEED_RELEASED"
+    # Renamed from STALE_FEED_RELEASED — was True only when sample was None
+    # at release time. Spec §3.5 / §3.7 forensic-split.
+    RELEASED_NO_DATA = "PRICE_OVERLAY_RELEASED_NO_DATA"
+    RELEASED_PERSISTENT_STALE = "PRICE_OVERLAY_RELEASED_PERSISTENT_STALE"
 
 
 class LayerResolutionCode(str, Enum):

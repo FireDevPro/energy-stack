@@ -2553,7 +2553,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_level = "info"
     elif current_price_cents is None and stale_release_fired:
         po_outcome = "released"
-        po_reason = PriceOverlayCode.STALE_FEED_RELEASED
+        po_reason = PriceOverlayCode.RELEASED_NO_DATA
         po_level = "info"
     elif current_price_cents is None:
         po_outcome = "held"
