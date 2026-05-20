@@ -1813,7 +1813,7 @@ CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
 CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
 
 
-def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
+def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
                                   weather_ok: bool,
                                   pjm_capacity_risk_ok: bool) -> dict:
     """Return the dict of input-feed health flags REQUIRED for B-active
@@ -1828,7 +1828,7 @@ def required_feeds_for_arm_mode(*, when_ct: datetime, price_ok: bool,
     status) is written separately by ``write_input_feed_health``.
     """
     when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
-    feeds = {"price": price_ok, "weather": weather_ok}
+    feeds = {"price": price_feed_healthy, "weather": weather_ok}
     if CAPACITY_RISK_WINDOW_START_CT <= when_naive < CAPACITY_RISK_WINDOW_END_CT:
         feeds["pjm_capacity_risk"] = pjm_capacity_risk_ok
     return feeds
@@ -2370,6 +2370,34 @@ _ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 # similar length is plausibly a real release rather than a brief blip.
 PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)
 
+
+def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
+    """Broad feed-health verdict per spec §3.6.
+
+    Returns True iff the controller has observed a fresh ComEd bucket
+    within the last PRICE_FEED_STALE_THRESHOLD (30 min wall-clock).
+
+    Used by:
+      * The hvac.input_feed_health audit row (run_schedule_check).
+      * required_feeds_for_arm_mode for B-active classification.
+
+    This is DISTINCT from per-tick downgrade actionability
+    (sample.freshness == "fresh", 7-min threshold). The named-split in
+    spec §3.6 prevents implementation-time conflation: an implementer
+    cannot accidentally write
+        return sample.freshness == "fresh"
+    because the function reads firing state, not the per-tick sample.
+
+    The safety-release timer (firing.nonfresh_after_hold_started_at_utc,
+    spec §3.5) is yet a third concept -- uses controller-observation wall
+    clock, not data-source. All three are independent.
+    """
+    last_fresh = firing.last_fresh_bucket_source_ts
+    if last_fresh is None:
+        return False
+    return (now_utc - last_fresh) <= PRICE_FEED_STALE_THRESHOLD
+
+
 # Action make-up window: a scheduled action that didn't successfully
 # apply on its exact-minute tick (Control4 transient error, network
 # blip, partial snapshot) can be retried on the next N ticks until
@@ -2907,17 +2935,18 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
     if (firing.last_arm_mode_audit_at_utc is None
             or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
             >= _ARM_MODE_AUDIT_INTERVAL):
-        price_ok = (
-            firing.last_fresh_bucket_source_ts is not None
-            and (now_utc_for_audit - firing.last_fresh_bucket_source_ts)
-            <= PRICE_FEED_STALE_THRESHOLD
-        )
+        # Single source of truth -- same helper the tests in
+        # test_derive_price_feed_healthy_* assert against. See spec §3.6
+        # named-split rationale: this is the 30-min broad-health verdict,
+        # distinct from per-tick downgrade actionability (7-min) and the
+        # safety-release timer (controller-observation wall clock).
+        price_feed_healthy = derive_price_feed_healthy(firing, now_utc_for_audit)
         weather_ok = today_forecast is not None
         pjm_ok = layer_inputs.fivecp_data_available
         # FULL feed-health dict, written for audit regardless of
         # required-status (spec §5.1).
         all_feeds = {
-            "price": price_ok,
+            "price": price_feed_healthy,
             "weather": weather_ok,
             "pjm_capacity_risk": pjm_ok,
         }
@@ -2927,7 +2956,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
         # FILTERED dict for B-active classification (spec §5).
         required_feeds = required_feeds_for_arm_mode(
             when_ct=now_local,
-            price_ok=price_ok,
+            price_feed_healthy=price_feed_healthy,
             weather_ok=weather_ok,
             pjm_capacity_risk_ok=pjm_ok,
         )

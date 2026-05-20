@@ -2633,7 +2633,7 @@ def test_required_feeds_includes_pjm_inside_capacity_risk_window():
     (2026-06-01 .. 2026-09-30 inclusive), pjm_capacity_risk is required."""
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
-        price_ok=True,
+        price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
@@ -2646,7 +2646,7 @@ def test_required_feeds_excludes_pjm_outside_capacity_risk_window():
     per spec §5.1. The feed is therefore omitted from the required set."""
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 15, 13, 0),
-        price_ok=True,
+        price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=False,
     )
@@ -2658,7 +2658,7 @@ def test_required_feeds_window_boundary_inclusive_of_september():
     2026-09-30 23:59 CT. September 30 must still require pjm_capacity_risk."""
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 9, 30, 23, 59),
-        price_ok=True,
+        price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=False,
     )
@@ -2669,7 +2669,7 @@ def test_required_feeds_window_boundary_inclusive_of_september():
 def test_required_feeds_window_boundary_excludes_october_first():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 1, 0, 0),
-        price_ok=True,
+        price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=False,
     )
@@ -2679,7 +2679,7 @@ def test_required_feeds_window_boundary_excludes_october_first():
 def test_required_feeds_propagates_unhealthy_flags():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
-        price_ok=False,
+        price_feed_healthy=False,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
@@ -3171,3 +3171,88 @@ def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
     assert firing.last_fresh_bucket_source_ts == seeded, (
         "Warn read must NOT update the field (only fresh reads update it)."
     )
+
+
+# ---- Audit telemetry derivation (spec §3.6, §8.5) ----
+
+def test_derive_price_feed_healthy_within_30_min_returns_true():
+    """Anti-regression test for the named-split in spec §3.6:
+    price_feed_healthy must use the 30-min wall-clock threshold on
+    last_fresh_bucket_source_ts.
+
+    Pass-1-of-spec-review had a bug where an implementer set
+    price_ok = sample.freshness == 'fresh', which broke arm-mode
+    classification because ~74% of normal cycles would have classified
+    as B-fallback. This test pins the correct broad-health semantic
+    by asserting on the production helper used at the audit-write site."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=5),
+    )
+    assert derive_price_feed_healthy(firing, now) is True, (
+        "Last fresh bucket 5 min ago is well within the 30-min broad-health "
+        "window. If False, the 7-min per-tick threshold leaked into this helper."
+    )
+
+
+def test_derive_price_feed_healthy_past_30_min_returns_false():
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=31),
+    )
+    assert derive_price_feed_healthy(firing, now) is False
+
+
+def test_derive_price_feed_healthy_at_exactly_30_min_returns_true():
+    """Boundary: `<=` is inclusive, so exactly 30 min counts as healthy."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=30),
+    )
+    assert derive_price_feed_healthy(firing, now) is True
+
+
+def test_derive_price_feed_healthy_returns_false_when_field_is_none():
+    """Cold-start case: no fresh bucket ever observed -> not healthy."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=None,
+    )
+    assert derive_price_feed_healthy(firing, now) is False
+
+
+def test_derive_price_feed_healthy_ignores_per_tick_freshness():
+    """The regression-prevention test. price_feed_healthy must NOT depend
+    on the current tick's sample.freshness. Even if sample is non-fresh
+    or None, as long as last_fresh_bucket_source_ts is within 30 min,
+    the feed is broadly healthy. This is what prevented the pass-1 bug
+    where arm-mode classification became overly sensitive to per-tick
+    freshness jitter."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="elevated"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+    )
+    # The current tick's sample is irrelevant to this derivation.
+    # If a future implementer adds a `sample` parameter and uses
+    # sample.freshness, this test catches it.
+    assert derive_price_feed_healthy(firing, now) is True
