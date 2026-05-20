@@ -2547,7 +2547,11 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     # on `SCHEDULER_DECISION_TRACE_VERBOSE`); transitions and releases at
     # `info`. See `docs/plans/archive/decision-trace-plan.md` Phase 1.
     new_tier = price_tier_name
-    if current_price_cents is None and stale_release_fired:
+    if downgrade_gate_held:
+        po_outcome = "held"
+        po_reason = PriceOverlayCode.HELD_DOWNGRADE_BUCKET_AGE
+        po_level = "info"
+    elif current_price_cents is None and stale_release_fired:
         po_outcome = "released"
         po_reason = PriceOverlayCode.STALE_FEED_RELEASED
         po_level = "info"
@@ -2580,13 +2584,19 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_reason = PriceOverlayCode.RELEASED_TO_NORMAL
         po_level = "info"
 
+    bucket_age_sec = (
+        (now_utc - sample.source_ts).total_seconds()
+        if sample is not None
+        else None
+    )
     _trace(
         "decision_trace.price_overlay_eval",
         level=po_level,
         tick_id=tick_id,
         now_ct=now_local,
         price_cents=current_price_cents,
-        price_is_stale=(current_price_cents is None),
+        price_feed_unavailable=(current_price_cents is None),
+        bucket_age_sec=bucket_age_sec,
         prev_tier=prev_tier,
         new_tier=new_tier,
         outcome=po_outcome,
