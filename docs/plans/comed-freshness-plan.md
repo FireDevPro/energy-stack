@@ -122,19 +122,9 @@ async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
         if event_name == "decision_trace.price_overlay_eval":
             captured_traces.append(fields)
 
-    captured_audit_rows: list[dict] = []
-
-    def _capture_audit_write(write_api, bucket, when_ct, feeds):
-        for feed_name, healthy in feeds.items():
-            captured_audit_rows.append(
-                {"measurement": "hvac.input_feed_health",
-                 "feed": feed_name, "healthy": bool(healthy)}
-            )
-
     monkeypatch.setattr("app.fetch_latest_comed",
                         lambda q, b, *, now_utc: sample)
     monkeypatch.setattr("app._trace", _capture_trace)
-    monkeypatch.setattr("app.write_input_feed_health", _capture_audit_write)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
     firing = FiringState(
@@ -171,17 +161,11 @@ async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     )
     assert trace.get("price_feed_unavailable") is False
 
-    # Audit row reflects broad health (NOT per-tick actionability).
-    price_health_rows = [
-        r for r in captured_audit_rows
-        if r["measurement"] == "hvac.input_feed_health" and r["feed"] == "price"
-    ]
-    assert price_health_rows, "Expected hvac.input_feed_health row for feed='price'"
-    assert price_health_rows[-1]["healthy"] is True, (
-        "Broad-health uses 30-min threshold; 8-min bucket is within. "
-        "If this asserts False, an implementer collapsed per-tick freshness "
-        "into the broad-health derivation (see spec §3.6)."
-    )
+    # NOTE: hvac.input_feed_health audit-row assertion is OUT OF SCOPE for
+    # the north-star test. That audit write happens in run_schedule_check
+    # (app.py:2856), one layer above _evaluate_layer_inputs. The audit
+    # derivation gets its own dedicated test in Task 11 against a real
+    # production helper. Keep this acceptance test focused on the gate.
 ```
 
 - [ ] **Step 2: Confirm the test discovers and runs as xfail**
@@ -440,6 +424,13 @@ THRESHOLDS: dict[str, Thresholds] = {
     "decision_trace.precool_decision":   Thresholds(_hr(26), _hr(40), _hr(72)),
     "hvac.arm_mode":                     Thresholds(_min(6), _min(10), _min(15)),
     "hvac.thermostat":                   Thresholds(_min(12), _min(20), _min(30)),
+    # 7-min fresh = controller's downgrade-recency cutoff. Cockpit mirrors
+    # so operator sees exactly the same actionability the controller does.
+    # Bucket-age sawtooth typically spans 6-11 min between publishes, so
+    # the cockpit's 'fresh' indicator naturally cycles green→warn→green
+    # every 5-min publish cycle. Warn does NOT indicate a feed problem —
+    # it indicates the controller would refuse a downgrade decision if
+    # asked this tick. See spec §3.1 + §6.
     "comed.prices":                      Thresholds(_min(7), _min(16), _min(30)),
     "nws.forecast":                      Thresholds(_min(35), _min(90), _hr(12)),
     "pjm.load_forecast":                 Thresholds(_hr(14), _hr(28), _hr(50)),
@@ -463,7 +454,7 @@ def classify(source: str, age_ms: int) -> Freshness:
     return "missing"
 ```
 
-(The threshold dict values are now identical to the scheduler's, but the in-file comment block from the scheduler about cockpit-mirroring is removed here; the docstring at the top handles that context. This way the two files differ ONLY in their header docstring.)
+**Body is byte-identical to the scheduler's `freshness.py` (Task 2), including the ComEd comment block.** The ONLY difference between the two files is the leading docstring. This is what the CI drift-check workflow (Task 4) requires; including the comment in only one copy would cause the drift check to fail.
 
 - [ ] **Step 2: Update frontend `freshness.ts` for hand-pair consistency**
 
@@ -653,29 +644,26 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: `_fresh_sample` test helper in conftest
+### Task 5: `_fresh_sample` test helper in `test_hvac_scheduler.py`
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/conftest.py`
+- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (add helper near the top of the file, after imports)
 
 Helper that builds default-fresh `PriceSample` for tests not specifically exercising the gate. Per spec §8.7: `now_utc` is REQUIRED, no wall-clock fallback.
 
-- [ ] **Step 1: Confirm `PriceSample` import will resolve in the next task**
+**Important:** the helper lives IN the test module, not in `conftest.py`. Plain non-fixture functions in conftest are NOT auto-imported into test-module globals — only `@pytest.fixture`-decorated functions are. Putting `_fresh_sample` directly in `test_hvac_scheduler.py` makes it visible to every test in that file via module-level name resolution.
 
-Note: `PriceSample` doesn't exist yet — it's added in Task 6. We add the helper now so Task 6's tests can use it. The helper body will reference `PriceSample` once Task 6 ships; for the moment, the import will fail at test-time. That's fine because Task 5 has no tests of its own — we proceed and Task 6 picks it up.
+- [ ] **Step 1: Add `_fresh_sample` to `test_hvac_scheduler.py`**
 
-- [ ] **Step 2: Edit `deploy/energy-stack/hvac-scheduler/conftest.py`**
-
-Read the current `conftest.py` first to see what's there. Append at the bottom:
+Read the top of `test_hvac_scheduler.py` to find a good location — just after the imports, before the first test function. Add:
 
 ```python
-# ---- Test helpers for the ComEd freshness PR (spec §8.7) ----
+# ---- Test helper for the ComEd freshness PR (spec §8.7) ----
+# Lives in this module (not conftest) because plain helper functions in
+# conftest are not auto-imported into test-module globals — only
+# @pytest.fixture functions are. This is module-local on purpose.
 
 from datetime import datetime, timedelta, timezone
-
-# PriceSample import will succeed after Task 6 lands. If running tests
-# between Task 5 and Task 6, expect ImportError — that's expected and
-# resolved by Task 6.
 
 
 def _fresh_sample(cents: float, *, now_utc: datetime,
@@ -684,8 +672,11 @@ def _fresh_sample(cents: float, *, now_utc: datetime,
     the freshness gate. `now_utc` is REQUIRED (no fallback to wall-clock
     — tests must drive time deterministically; see spec §8.7).
     `age_min` defaults to 1 min (well under the 7-min fresh threshold).
+
+    PriceSample import is deferred until call time so this helper can
+    land in the branch before Task 6 adds the dataclass.
     """
-    from app import PriceSample  # local import: lets Task 5 land before Task 6
+    from app import PriceSample  # local import: deferred until first call
     return PriceSample(
         cents_per_kwh=cents,
         source_ts=now_utc - timedelta(minutes=age_min),
@@ -693,15 +684,20 @@ def _fresh_sample(cents: float, *, now_utc: datetime,
     )
 ```
 
-- [ ] **Step 3: Commit**
+(If the `datetime` imports are already at the top of the file from Task 1, deduplicate.)
+
+- [ ] **Step 2: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/conftest.py
-git commit -m "test(comed-freshness): add _fresh_sample helper to conftest
+git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git commit -m "test(comed-freshness): add _fresh_sample helper to test module
 
 Default-fresh PriceSample builder for tests not specifically exercising
 the recency gate. now_utc is required (no wall-clock fallback) per spec
-§8.7. PriceSample dataclass added in next task.
+§8.7. Helper lives in test_hvac_scheduler.py (not conftest) because
+plain non-fixture functions in conftest do not auto-import into test
+module globals. PriceSample dataclass added in next task; import is
+deferred until first call.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -1373,97 +1369,142 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 Per spec §3.6: rename local variable AND function parameter; derive from `last_fresh_bucket_source_ts` vs 30-min wall clock (broad health), NOT from `sample.freshness == "fresh"`.
 
-- [ ] **Step 1: Write the failing test**
+**Architectural change:** instead of inlining the derivation at the audit-write site AND duplicating it in the test, extract a single production helper. Test asserts the helper's behavior; production code uses the helper. One source of truth — the test catches the regression if the helper ever changes incorrectly.
+
+- [ ] **Step 1: Extract the production helper `derive_price_feed_healthy`**
+
+In `deploy/energy-stack/hvac-scheduler/app.py`, find a good location near the existing `PRICE_FEED_STALE_THRESHOLD` constant (around line 2330). Add:
+
+```python
+def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
+    """Broad feed-health verdict per spec §3.6.
+
+    Returns True iff the controller has observed a fresh ComEd bucket
+    within the last PRICE_FEED_STALE_THRESHOLD (30 min wall-clock).
+
+    Used by:
+      * The hvac.input_feed_health audit row (run_schedule_check).
+      * required_feeds_for_arm_mode for B-active classification.
+
+    This is DISTINCT from per-tick downgrade actionability
+    (sample.freshness == "fresh", 7-min threshold). The named-split in
+    spec §3.6 prevents implementation-time conflation: an implementer
+    cannot accidentally write
+        return sample.freshness == "fresh"
+    because the function reads firing state, not the per-tick sample.
+
+    The safety-release timer (firing.nonfresh_after_hold_started_at_utc,
+    spec §3.5) is yet a third concept — uses controller-observation wall
+    clock, not data-source. All three are independent.
+    """
+    last_fresh = firing.last_fresh_bucket_source_ts
+    if last_fresh is None:
+        return False
+    return (now_utc - last_fresh) <= PRICE_FEED_STALE_THRESHOLD
+```
+
+- [ ] **Step 2: Write the failing test against the helper**
 
 Append to `test_hvac_scheduler.py`:
 
 ```python
 # ---- Audit telemetry derivation (spec §3.6, §8.5) ----
 
-def test_price_feed_healthy_uses_broad_health_threshold_not_per_tick_freshness(monkeypatch):
+def test_derive_price_feed_healthy_within_30_min_returns_true():
     """Anti-regression test for the named-split in spec §3.6:
     price_feed_healthy must use the 30-min wall-clock threshold on
-    last_fresh_bucket_source_ts — NOT collapse into sample.freshness == 'fresh'.
+    last_fresh_bucket_source_ts.
 
     Pass-1-of-spec-review had a bug where an implementer set
-    price_ok = sample.freshness == 'fresh', breaking arm-mode classification
-    because ~74% of normal cycles would have classified as B-fallback.
-    This test pins the correct broad-health semantic."""
-    from app import FiringState, PriceSample, _evaluate_layer_inputs
+    price_ok = sample.freshness == 'fresh', which broke arm-mode
+    classification because ~74% of normal cycles would have classified
+    as B-fallback. This test pins the correct broad-health semantic
+    by asserting on the production helper used at the audit-write site."""
+    from app import FiringState, derive_price_feed_healthy
     from price_overlay import PriceOverlayState
-    from unittest.mock import MagicMock
 
     now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
-    # Bucket is age 10 min → warn-aged (not fresh).
-    sample = PriceSample(
-        cents_per_kwh=5.0,
-        source_ts=now - timedelta(minutes=10),
-        freshness="warn",
-    )
-    captured: list[dict] = []
-    def _capture(write_api, bucket, when_ct, feeds):
-        for name, healthy in feeds.items():
-            captured.append({"feed": name, "healthy": bool(healthy)})
-
-    monkeypatch.setattr("app.fetch_latest_comed",
-                        lambda q, b, *, now_utc: sample)
-    monkeypatch.setattr("app.write_input_feed_health", _capture)
-    monkeypatch.setattr("app._trace", lambda *a, **k: None)
-    monkeypatch.setattr("app.write_5cp_state", lambda *a, **k: None)
-    monkeypatch.setattr("app.evaluate_for_scope",
-                        lambda *a, **k: MagicMock(
-                            is_active=False, log_fields={"data_status": "none"},
-                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
-
-    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
-    # Last fresh bucket was 5 min ago — within 30-min broad-health window.
     firing = FiringState(
         price_overlay_state=PriceOverlayState(current_tier="normal"),
         last_fresh_bucket_source_ts=now - timedelta(minutes=5),
     )
-    # NOTE: this test exercises the full _evaluate_layer_inputs path via
-    # the audit-write callback inside run_schedule_check. If the audit write
-    # lives directly in _evaluate_layer_inputs (current code shape), this
-    # test reads the captured rows after the call. Adjust path if needed
-    # but the assertion holds either way.
-    # ... (test framework setup as needed to invoke write_input_feed_health
-    # under the new derivation; if `_evaluate_layer_inputs` doesn't write
-    # the audit directly, then the implementation in Task 11 must do so
-    # explicitly per spec §3.6.)
-
-    # For this test, directly invoke the derivation: per Task 11 Step 3
-    # below, the new derivation is computed at the audit-write site
-    # (run_schedule_check around line 2860).
-    from app import PRICE_FEED_STALE_THRESHOLD
-    price_feed_healthy = (
-        firing.last_fresh_bucket_source_ts is not None
-        and (now - firing.last_fresh_bucket_source_ts) <= PRICE_FEED_STALE_THRESHOLD
-    )
-    assert price_feed_healthy is True, (
-        f"With last_fresh_bucket_source_ts 5 min ago, price_feed_healthy "
-        f"must be True (within 30-min broad-health window). "
-        f"If False, the 7-min per-tick threshold leaked into the broad-health derivation."
+    assert derive_price_feed_healthy(firing, now) is True, (
+        "Last fresh bucket 5 min ago is well within the 30-min broad-health "
+        "window. If False, the 7-min per-tick threshold leaked into this helper."
     )
 
-    # And when last_fresh is 31 min ago, must be False.
-    firing.last_fresh_bucket_source_ts = now - timedelta(minutes=31)
-    price_feed_healthy = (
-        firing.last_fresh_bucket_source_ts is not None
-        and (now - firing.last_fresh_bucket_source_ts) <= PRICE_FEED_STALE_THRESHOLD
+
+def test_derive_price_feed_healthy_past_30_min_returns_false():
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=31),
     )
-    assert price_feed_healthy is False
+    assert derive_price_feed_healthy(firing, now) is False
+
+
+def test_derive_price_feed_healthy_at_exactly_30_min_returns_true():
+    """Boundary: `<=` is inclusive, so exactly 30 min counts as healthy."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=30),
+    )
+    assert derive_price_feed_healthy(firing, now) is True
+
+
+def test_derive_price_feed_healthy_returns_false_when_field_is_none():
+    """Cold-start case: no fresh bucket ever observed → not healthy."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=None,
+    )
+    assert derive_price_feed_healthy(firing, now) is False
+
+
+def test_derive_price_feed_healthy_ignores_per_tick_freshness():
+    """The regression-prevention test. price_feed_healthy must NOT depend
+    on the current tick's sample.freshness. Even if sample is non-fresh
+    or None, as long as last_fresh_bucket_source_ts is within 30 min,
+    the feed is broadly healthy. This is what prevented the pass-1 bug
+    where arm-mode classification became overly sensitive to per-tick
+    freshness jitter."""
+    from app import FiringState, derive_price_feed_healthy
+    from price_overlay import PriceOverlayState
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="elevated"),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+    )
+    # The current tick's sample is irrelevant to this derivation.
+    # If a future implementer adds a `sample` parameter and uses
+    # sample.freshness, this test catches it.
+    assert derive_price_feed_healthy(firing, now) is True
 ```
 
-- [ ] **Step 2: Run test to verify it currently fails or doesn't apply**
+- [ ] **Step 3: Run tests to verify they fail**
 
 ```bash
 cd deploy/energy-stack/hvac-scheduler/
-python -m pytest test_hvac_scheduler.py -k "price_feed_healthy_uses_broad_health" -v
+python -m pytest test_hvac_scheduler.py -k "derive_price_feed_healthy" -v
 ```
 
-Expected: PASS already if the derivation logic itself is just inlined — the test asserts a CALCULATION, not a code path. But the production code path in `_evaluate_layer_inputs` is still using the OLD derivation. Move to Step 3.
+Expected: 5 tests FAIL with `ImportError: cannot import name 'derive_price_feed_healthy' from 'app'`.
 
-- [ ] **Step 3: Update `required_feeds_for_arm_mode` parameter name**
+After Step 1's edit, run again — expected: 5 tests PASS.
+
+- [ ] **Step 4: Update `required_feeds_for_arm_mode` parameter name**
 
 In `app.py` around line 1781, find:
 
@@ -1487,7 +1528,7 @@ Inside the function body, update the dict key build:
     feeds = {"price": price_feed_healthy, "weather": weather_ok}
 ```
 
-- [ ] **Step 4: Update the audit-derivation site in `run_schedule_check`**
+- [ ] **Step 5: Update the audit-derivation site in `run_schedule_check` to use the helper**
 
 In `app.py` around line 2856-2887, find:
 
@@ -1499,19 +1540,12 @@ In `app.py` around line 2856-2887, find:
         )
 ```
 
-(After Task 9's mass-rename, this already reads `firing.last_fresh_bucket_source_ts`.) Update the local variable name and the dict-key reference:
+(After Task 9's mass-rename, this already reads `firing.last_fresh_bucket_source_ts`.) Replace the entire derivation with a call to the helper from Step 1:
 
 ```python
-        # Per spec §3.6: price_feed_healthy is broad feed health
-        # (controller-observation of fresh data within 30-min wall-clock).
-        # This is DISTINCT from per-tick downgrade actionability
-        # (sample.freshness == "fresh", 7-min). Different question, different
-        # clock; do not conflate.
-        price_feed_healthy = (
-            firing.last_fresh_bucket_source_ts is not None
-            and (now_utc_for_audit - firing.last_fresh_bucket_source_ts)
-            <= PRICE_FEED_STALE_THRESHOLD
-        )
+        # Single source of truth — same helper the tests in Step 2 assert
+        # against. See spec §3.6 named-split rationale.
+        price_feed_healthy = derive_price_feed_healthy(firing, now_utc_for_audit)
 ```
 
 Find:
@@ -1556,26 +1590,28 @@ Replace with:
         )
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 6: Run tests**
 
 ```bash
 cd deploy/energy-stack/hvac-scheduler/
 python -m pytest test_hvac_scheduler.py -v 2>&1 | tail -30
 ```
 
-Expected: existing tests that previously passed continue passing. The new `price_feed_healthy` test passes.
+Expected: existing tests that previously passed continue passing. The 5 new `derive_price_feed_healthy` tests pass.
 
 If any test fails because it was passing `price_ok=...` kwarg to `required_feeds_for_arm_mode`, update those test sites — same rename.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
-git commit -m "refactor(comed-freshness): rename price_ok -> price_feed_healthy
+git commit -m "refactor(comed-freshness): extract derive_price_feed_healthy helper + rename
 
-Per spec §3.6 named-split: price_feed_healthy is broad feed health
-(30-min wall-clock on last_fresh_bucket_source_ts), distinct from
-per-tick downgrade actionability (sample.freshness == 'fresh', 7-min).
+Per spec §3.6 named-split: extracted production helper
+derive_price_feed_healthy(firing, now_utc) used by both the audit-write
+site and the tests. Single source of truth — test catches the regression
+if the helper ever changes incorrectly. price_ok local var and
+required_feeds_for_arm_mode parameter renamed to price_feed_healthy.
 The rename prevents the implementation-time conflation that caused
 the pass-1-of-spec-review regression.
 
@@ -1616,7 +1652,12 @@ def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
                        last_fresh_bucket_source_ts, now_utc):
     """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions
     so the gate-specific behavior is the only variable. Returns
-    (firing_after, captured_traces)."""
+    (firing_after, captured_traces).
+
+    NOTE: Task 19 extends this helper with `nonfresh_after_hold_started_at_utc`
+    after the safety-release timer field is added in Task 18. For Phase-1
+    tests, the helper builds firing with no timer field.
+    """
     from app import FiringState, _evaluate_layer_inputs
     from price_overlay import PriceOverlayState
     from unittest.mock import MagicMock
@@ -1822,9 +1863,21 @@ else:
     # ... downstream tier output computation
 ```
 
-Restructure to integrate the gate. Replace the `else` branch (everything from `firing.last_fresh_bucket_source_ts = ...` down to the trace emission for the price overlay) with:
+Restructure to integrate the gate. **First, hoist `downgrade_gate_held = False` ABOVE the `if current_price_cents is None` branch** — both branches need it defined before the trace classifier reads it (Task 13). Then replace the `else` branch (everything from `firing.last_fresh_bucket_source_ts = ...` down to the trace emission for the price overlay):
 
 ```python
+sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
+current_price_cents = sample.cents_per_kwh if sample is not None else None
+prev_tier = firing.price_overlay_state.current_tier
+stale_release_fired = False
+# Initialize trace-field defaults BEFORE both branches so the classifier
+# in Task 13 can read downgrade_gate_held even on the None code path.
+# Without this, the no-data tick path raises NameError in Task 13's
+# classifier (spec §3.5 P2 — explicit initialization).
+downgrade_gate_held = False
+
+if current_price_cents is None:
+    # ... existing carry-forward path (unchanged from current behavior)
 else:
     # Update last-fresh field on fresh reads only (spec §3.6).
     if sample.freshness == "fresh":
@@ -1838,9 +1891,6 @@ else:
     )
     proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
     is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
-
-    # Initialize trace-field defaults BEFORE the gate branch (spec §3.5 P2).
-    downgrade_gate_held = False
 
     if is_downgrade and sample.freshness != "fresh":
         # RECENCY GATE: refuse the downgrade. Do not mutate state machine.
@@ -2331,7 +2381,53 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 This is the load-bearing piece of Phase 2.
 
-- [ ] **Step 1: Write the timer tests**
+- [ ] **Step 1: Extend `_run_evaluate_with` helper to support timer-seeded tests**
+
+The helper added in Task 12 builds `FiringState` without the `nonfresh_after_hold_started_at_utc` field. Now that Task 18 has added the field, extend the helper so timer-related tests can SEED the timer to non-None values before the evaluation. Without this, "timer clears on X" tests pass trivially.
+
+Find the helper in `test_hvac_scheduler.py` (added in Task 12) and update its signature + body:
+
+```python
+def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
+                       last_fresh_bucket_source_ts, now_utc,
+                       nonfresh_after_hold_started_at_utc=None):
+    """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions.
+
+    `nonfresh_after_hold_started_at_utc` (added in Task 19) lets tests
+    SEED the safety-release timer before the evaluation. Default None
+    preserves Task 12 gate-test behavior."""
+    from app import FiringState, _evaluate_layer_inputs
+    from price_overlay import PriceOverlayState
+    from unittest.mock import MagicMock
+
+    captured_traces: list[dict] = []
+    def _capture_trace(event_name, **fields):
+        captured_traces.append({"_event": event_name, **fields})
+
+    monkeypatch.setattr("app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: sample)
+    monkeypatch.setattr("app._trace", _capture_trace)
+    monkeypatch.setattr("app.write_input_feed_health", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_5cp_state", lambda *a, **k: None)
+    monkeypatch.setattr("app.evaluate_for_scope",
+                        lambda *a, **k: MagicMock(
+                            is_active=False, log_fields={"data_status": "none"},
+                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
+
+    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier=current_tier,
+            triggered_at_utc=triggered_at_utc,
+        ),
+        last_fresh_bucket_source_ts=last_fresh_bucket_source_ts,
+        nonfresh_after_hold_started_at_utc=nonfresh_after_hold_started_at_utc,
+    )
+    _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing, now_local=now_utc)
+    return firing, captured_traces
+```
+
+- [ ] **Step 2: Write the timer tests**
 
 Append to `test_hvac_scheduler.py`:
 
@@ -2412,12 +2508,14 @@ def test_timer_sets_on_first_post_hold_nonfresh_with_none_sample(monkeypatch):
     assert firing.nonfresh_after_hold_started_at_utc == now
 
 
-def test_timer_clears_on_fresh_sample(monkeypatch):
-    """Fresh sample arrives → timer clears regardless of state machine outcome."""
+def test_timer_clears_on_fresh_sample_when_seeded(monkeypatch):
+    """SEED timer to non-None first, then verify fresh sample clears it.
+    Without seeding, this test would pass trivially (timer starts None).
+    Per spec §3.5 reset rule #1."""
     from app import PriceSample
     now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
     sample = PriceSample(
-        cents_per_kwh=15.0,  # would-hold-anyway
+        cents_per_kwh=15.0,  # would-hold-anyway; fresh-clear is independent
         source_ts=now - timedelta(minutes=2),
         freshness="fresh",
     )
@@ -2427,12 +2525,130 @@ def test_timer_clears_on_fresh_sample(monkeypatch):
         triggered_at_utc=now - timedelta(minutes=31),
         last_fresh_bucket_source_ts=now - timedelta(minutes=2),
         now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
     )
-    # Set the timer artificially to simulate prior non-fresh observation.
-    # _run_evaluate_with starts with timer=None per the helper's default.
-    # The helper rebuilds firing from scratch, so a separate end-to-end test
-    # is needed to verify "clear" — see test_safety_release_recovers_naturally.
+    assert firing.nonfresh_after_hold_started_at_utc is None, (
+        "Fresh sample must clear the timer per spec §3.5 reset rule #1."
+    )
+
+
+def test_timer_does_NOT_clear_when_stale_would_hold(monkeypatch):
+    """ANTI-REGRESSION (spec §3.5 + operator clarification):
+    earlier pass-3 tick-counter draft reset on 'stale-would-hold' —
+    the operator clarified that non-fresh is non-fresh regardless of
+    what the stale price would propose. The timer must NOT reset.
+
+    Scenario: timer was set 15 min ago. Current sample is stale but
+    its price (18¢) is above the elevated release threshold (8¢) so
+    the state machine would propose HOLD. Timer must STAY set."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    sample = PriceSample(
+        cents_per_kwh=18.0,  # ≥ elevated release (8¢) → state machine HOLDs
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer, (
+        f"Timer must STAY set when stale sample would-hold. "
+        f"Expected {seeded_timer}, got {firing.nonfresh_after_hold_started_at_utc}. "
+        f"If this is None, an implementer regressed to the pass-3 tick-counter "
+        f"reset behavior — spec §3.5 forbids that."
+    )
+
+
+def test_timer_does_NOT_clear_when_stale_would_downgrade(monkeypatch):
+    """ANTI-REGRESSION: timer must STAY set when sample is non-fresh and
+    state machine would propose DOWNGRADE (the recency-gate scenario).
+    The gate handles the per-tick refusal; the timer accumulates wall-clock."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    sample = PriceSample(
+        cents_per_kwh=2.5,  # below release → state machine proposes DOWNGRADE
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer
+    # Gate also refuses the downgrade — tier remains elevated.
+    assert firing.price_overlay_state.current_tier == "elevated"
+
+
+def test_timer_does_NOT_clear_when_sample_remains_none(monkeypatch):
+    """Anti-regression: timer must STAY set when sample stays None.
+    The no-data case continues to accumulate."""
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample=None,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=15),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer
+
+
+def test_timer_clears_on_return_to_normal(monkeypatch):
+    """Reset rule #2: any tick where prev_tier == NORMAL clears the timer."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    # Sample doesn't matter — at normal tier the timer always clears.
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="normal",
+        triggered_at_utc=None,
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
+    )
     assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+def test_timer_clears_when_min_hold_restarts(monkeypatch):
+    """Reset rule #3: min-hold not elapsed clears the timer. This covers
+    the new-upgrade case where a tier upgrade resets triggered_at_utc;
+    next tick observes min-hold-not-elapsed → timer cleared."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=5),  # min-hold NOT elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None, (
+        "Timer must clear when min-hold is not elapsed (covers tier upgrade)."
+    )
 
 
 def test_safety_release_at_29_min_59_sec_still_held(monkeypatch):
@@ -2596,7 +2812,7 @@ def test_safety_release_does_not_use_data_source_clock(monkeypatch):
     )
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 3: Run tests to verify they fail**
 
 ```bash
 cd deploy/energy-stack/hvac-scheduler/
@@ -2605,7 +2821,7 @@ python -m pytest test_hvac_scheduler.py -k "timer_ or safety_release" -v
 
 Expected: most FAIL. The timer hasn't been implemented in `_evaluate_layer_inputs` yet.
 
-- [ ] **Step 3: Implement the timer in `_evaluate_layer_inputs`**
+- [ ] **Step 4: Implement the timer in `_evaluate_layer_inputs`**
 
 In `app.py`, find the section in `_evaluate_layer_inputs` that handles the price overlay (still around lines 2382-2510 after Task 12-13).
 
@@ -2738,16 +2954,16 @@ Replace with:
 
 Make sure the timer block runs BEFORE the trace classifier block — the classifier reads `safety_release_fired`, `release_reason`, and `downgrade_gate_held` as its inputs.
 
-- [ ] **Step 4: Run all timer + release tests**
+- [ ] **Step 5: Run all timer + release tests**
 
 ```bash
 cd deploy/energy-stack/hvac-scheduler/
 python -m pytest test_hvac_scheduler.py -k "timer_ or safety_release" -v
 ```
 
-Expected: all timer tests PASS, including `test_safety_release_does_not_use_data_source_clock`.
+Expected: all timer tests PASS, including `test_safety_release_does_not_use_data_source_clock`, `test_timer_does_NOT_clear_when_stale_would_hold`, and the four other "does NOT clear" anti-regression tests.
 
-- [ ] **Step 5: Run the full scheduler test suite**
+- [ ] **Step 6: Run the full scheduler test suite**
 
 ```bash
 cd deploy/energy-stack/hvac-scheduler/
@@ -2756,7 +2972,7 @@ python -m pytest . -v 2>&1 | tail -30
 
 Expected: all tests PASS. If a previously-passing test fails, investigate — most likely some test still references the old `stale_release_fired` variable or `price_feed_last_ok_at_utc` field name.
 
-- [ ] **Step 6: Commit (closes Phase 2)**
+- [ ] **Step 7: Commit (closes Phase 2)**
 
 ```bash
 git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
