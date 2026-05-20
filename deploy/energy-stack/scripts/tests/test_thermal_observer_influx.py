@@ -11,6 +11,25 @@ from thermal_observer_influx import (
 )
 
 
+def split_line_protocol(line: str) -> tuple[str, str, str]:
+    separators: list[int] = []
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == " ":
+            separators.append(index)
+            if len(separators) == 2:
+                break
+
+    first, second = separators
+    return line[:first], line[first + 1 : second], line[second + 1 :]
+
+
 def make_result(accepted: bool = True) -> ThermalFitResult:
     return ThermalFitResult(
         tau_hours=9.5,
@@ -27,7 +46,7 @@ def make_result(accepted: bool = True) -> ThermalFitResult:
         persistence_rmse_f_per_sample=0.5,
         skill_score=0.56,
         accepted=accepted,
-        rejection_reasons=(),
+        rejection_reasons=() if accepted else ("tau_out_of_bounds",),
         fit_window_start="2026-07-01T00:00:00+00:00",
         fit_window_end="2026-07-15T00:00:00+00:00",
         sample_minutes=10,
@@ -67,6 +86,22 @@ def test_build_line_protocol_emits_thermal_observer_point():
     assert "stage2_cooling_f_per_hr=3.1" in line
     assert "filter_gap=3i" in line
     assert line.endswith(" 1784118600000000000")
+
+
+def test_build_line_protocol_keeps_accepted_only_as_tag_for_rejections():
+    generated_at = datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)
+
+    line = build_line_protocol(make_result(accepted=False), "back yard,unit=west", generated_at)
+    measurement_and_tags, fields, _timestamp = split_line_protocol(line)
+    _measurement, tags = measurement_and_tags.split(",", 1)
+
+    assert "outdoor_measurement=back\\ yard\\,unit\\=west" in tags
+    assert "accepted=false" in tags
+    assert "accepted=" not in fields
+    assert line.count("accepted=") == 1
+    assert 'rejection_reasons="[\\"tau_out_of_bounds\\"]"' in fields
+    assert 'fit_window_start="2026-07-01T00:00:00+00:00"' in fields
+    assert 'fit_window_end="2026-07-15T00:00:00+00:00"' in fields
 
 
 def test_json_artifact_payload_is_stable_and_explicit():

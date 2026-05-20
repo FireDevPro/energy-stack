@@ -129,6 +129,8 @@ def _result_fields(result: ThermalFitResult) -> dict[str, Any]:
     result_dict = result.to_json_dict()
     fields: dict[str, Any] = {}
     for key, value in result_dict.items():
+        if key == "accepted":
+            continue
         if key == "filter_counts":
             for filter_key in sorted(value):
                 fields[f"filter_{filter_key}"] = value[filter_key]
