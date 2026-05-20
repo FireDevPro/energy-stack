@@ -1,6 +1,6 @@
 # Thermal Model — Step 1 Design (Affine Fit)
 
-**Status**: Design proposed (2026-05-05), implementation gated on Ecowitt deployment + ~30 days of paired observation history
+**Status**: Read-only observer implemented (2026-05-20); scheduler integration still gated on stable/physically plausible fits.
 **Owner**: Chris dePaola
 **Depends on**: existing `energy-stack` (InfluxDB `hvac.thermostat`, `hvac.comfortnet`, `nws.forecast`, `refoss.channel`) plus `ecowitt.weather` once that station is online
 **Methodological anchor**: Bacher & Madsen 2011, *Identifying suitable models for the heat dynamics of buildings*, Energy and Buildings 43(7), [doi:10.1016/j.enbuild.2011.02.005](https://doi.org/10.1016/j.enbuild.2011.02.005)
