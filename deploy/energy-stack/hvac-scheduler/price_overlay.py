@@ -114,8 +114,8 @@ def _tier_by_name(name: str) -> Optional[PriceTier]:
     return None
 
 
-def _hold_elapsed(state: PriceOverlayState, now_utc: datetime,
-                  minimum_hold_minutes: int) -> bool:
+def hold_elapsed(state: PriceOverlayState, now_utc: datetime,
+                 minimum_hold_minutes: int) -> bool:
     """True when the minimum-hold window has expired since the last
     transition into the current tier. ``triggered_at_utc=None`` (cold start
     in normal) is treated as already elapsed since there's nothing to hold."""
@@ -168,7 +168,7 @@ def evaluate_price_overlay(
 
     # Step 2: upgrade path. If target tier is strictly higher than current,
     # transition immediately.
-    if target_tier is not None and _tier_priority(target_tier.name) > _tier_priority(current):
+    if target_tier is not None and tier_priority(target_tier.name) > tier_priority(current):
         new_state = PriceOverlayState(
             current_tier=target_tier.name,
             triggered_at_utc=now_utc,
@@ -184,7 +184,7 @@ def evaluate_price_overlay(
         return target_tier, state
 
     # In an active tier: check release.
-    if not _hold_elapsed(state, now_utc, minimum_hold_minutes):
+    if not hold_elapsed(state, now_utc, minimum_hold_minutes):
         # Hold still active; stay in current tier regardless of price
         # (so a brief dip below release doesn't drop us early).
         return current_tier_obj, state
@@ -195,7 +195,7 @@ def evaluate_price_overlay(
 
     # Hold elapsed and price below release: downgrade. The new tier is
     # whichever lower tier the price still fits, or normal.
-    if target_tier is not None and _tier_priority(target_tier.name) < _tier_priority(current):
+    if target_tier is not None and tier_priority(target_tier.name) < tier_priority(current):
         new_state = PriceOverlayState(
             current_tier=target_tier.name,
             triggered_at_utc=now_utc,
@@ -210,7 +210,7 @@ def evaluate_price_overlay(
     return None, new_state
 
 
-def _tier_priority(name: str) -> int:
+def tier_priority(name: str) -> int:
     """Higher number = higher priority. Used for upgrade comparisons.
     Falls back to NORMAL_TIER_PRIORITY for unknown names so a future
     state-corruption bug can't cause silent priority inversion."""
