@@ -3685,3 +3685,78 @@ def test_safety_release_does_not_use_data_source_clock(monkeypatch):
         "or last_fresh_bucket_source_ts as the safety-release clock instead of "
         "the controller-observation timer. See spec §3.5 guard."
     )
+
+
+def test_timer_clears_when_protective_upgrade_fires_post_min_hold(monkeypatch):
+    """ANTI-REGRESSION (Codex Checkpoint-3 finding): when stale data
+    shows a price crossing a higher tier's trigger, the state machine
+    upgrades. The safety-release timer accumulated under the previous
+    tier MUST be cleared so the new tier gets its own observation
+    window.
+
+    Without this clear, under a delayed-next-tick after the upgrade,
+    the next tick observes the new tier's min-hold as elapsed AND the
+    old timer as still set → fires release against pre-upgrade
+    accumulated non-fresh time → just-upgraded scarcity tier releases
+    prematurely (the failure mode Codex described).
+
+    Scenario: elevated tier post-min-hold (triggered_at_utc 45 min ago).
+    Timer was set 10 min ago (10 min of post-hold non-fresh accumulated).
+    New bucket arrives at age 8 min (warn) showing 22¢ — state machine
+    proposes UPGRADE to scarcity.
+
+    Post-fix expectations:
+    - Tier upgrades to scarcity (state machine proposal applied)
+    - Timer cleared to None (so new tier's observation window starts fresh)
+    """
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=10)
+    sample = PriceSample(
+        cents_per_kwh=22.0,  # ≥ 20¢ scarcity trigger
+        source_ts=now - timedelta(minutes=8),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),  # post-min-hold
+        last_fresh_bucket_source_ts=now - timedelta(minutes=8),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.price_overlay_state.current_tier == "scarcity", (
+        f"Upgrade should fire (price 22¢ ≥ 20¢ scarcity trigger). "
+        f"Got tier={firing.price_overlay_state.current_tier!r}."
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None, (
+        f"Timer must be cleared on protective upgrade so the new tier "
+        f"gets its own observation window. Got "
+        f"{firing.nonfresh_after_hold_started_at_utc}. If non-None, the "
+        f"upgrade carried over the previous tier's non-fresh time — "
+        f"would cause premature release on delayed next tick (Codex finding)."
+    )
+
+
+def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
+    """Companion test: upgrade fires DURING previous tier's min-hold.
+    Timer was None per the min-hold-not-elapsed reset rule. Clear is
+    a no-op. Confirms the unconditional clear doesn't break anything
+    in the during-min-hold case."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=22.0,  # ≥ scarcity trigger
+        source_ts=now - timedelta(minutes=2),  # fresh
+        freshness="fresh",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=15),  # IN min-hold (15 < 30)
+        last_fresh_bucket_source_ts=now - timedelta(minutes=2),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=None,  # was None during min-hold
+    )
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc is None

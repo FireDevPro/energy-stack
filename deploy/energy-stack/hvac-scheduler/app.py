@@ -2540,6 +2540,16 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
             price_tier_name = prev_tier
         else:
+            # Detect protective upgrade and clear the safety-release timer so
+            # the new tier gets its own observation window. Without this clear,
+            # a delayed-next-tick after a non-fresh upgrade could fire release
+            # against the old tier's accumulated non-fresh time. See Codex
+            # Checkpoint-3 finding. Unconditional clear: no-op during the
+            # previous tier's min-hold (timer was already None per the reset
+            # rules above), necessary post-min-hold.
+            is_upgrade = tier_priority(proposed_name) > tier_priority(prev_tier)
+            if is_upgrade:
+                firing.nonfresh_after_hold_started_at_utc = None
             # Apply state machine proposal.
             firing.price_overlay_state = proposed_state
             active_tier = proposed_tier
