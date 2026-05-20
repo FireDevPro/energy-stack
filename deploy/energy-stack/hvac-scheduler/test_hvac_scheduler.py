@@ -2922,3 +2922,90 @@ async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
     assert applied is False
     assert error is None
     climate.set_cool_setpoint_f.assert_not_awaited()
+
+
+# ---- Outside-in acceptance test (north star per AGENTS.md outside-in TDD) ----
+# Replays the 2026-05-19 19:18Z bug from STALE_DATA_HANDOFF.md. Initially
+# xfail(strict=True) until the recency gate lands; marker comes off in the
+# same commit that finishes the implementation.
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Pending recency gate implementation (Phase 1 tracer bullet)",
+)
+@pytest.mark.asyncio
+async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
+    """At 19:18Z on 2026-05-19, scheduler was in elevated tier with min-hold
+    elapsed. Latest bucket was [19:05Z, 19:10Z] (price 2.5¢, age 8 min).
+    Pre-fix: scheduler downgraded based on the stale 2.5¢. Two minutes later
+    ComEd shed a 30.1¢ price.
+
+    Post-fix expected behavior:
+    - Tier remains 'elevated' (gate refuses the downgrade)
+    - decision_trace.price_overlay_eval has reason_code
+      PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE, bucket_age_sec ~480,
+      price_feed_unavailable=false
+    """
+    from app import (
+        PriceSample, FiringState, _evaluate_layer_inputs, app as _app,  # noqa
+    )
+    from price_overlay import PriceOverlayState
+
+    now_utc = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    source_ts = datetime(2026, 5, 19, 19, 10, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=source_ts,
+        freshness="warn",  # 8 min > 7-min fresh threshold
+    )
+
+    captured_traces: list[dict] = []
+
+    def _capture_trace(event_name, **fields):
+        if event_name == "decision_trace.price_overlay_eval":
+            captured_traces.append(fields)
+
+    monkeypatch.setattr("app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: sample)
+    monkeypatch.setattr("app._trace", _capture_trace)
+
+    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="elevated",
+            triggered_at_utc=now_utc - timedelta(minutes=30, seconds=1),
+        ),
+        last_fresh_bucket_source_ts=source_ts,
+    )
+
+    _evaluate_layer_inputs(
+        query_api=MagicMock(),
+        write_api=MagicMock(),
+        cfg=cfg,
+        firing=firing,
+        now_local=now_utc,  # treat now_utc as the local clock for this test
+    )
+
+    # Tier preserved.
+    assert firing.price_overlay_state.current_tier == "elevated", (
+        f"Tier should remain 'elevated', got {firing.price_overlay_state.current_tier!r}"
+    )
+
+    # Trace classifier output.
+    price_overlay_traces = [t for t in captured_traces]
+    assert price_overlay_traces, "Expected a decision_trace.price_overlay_eval emission"
+    trace = price_overlay_traces[-1]
+    assert trace.get("outcome") == "held", f"Got outcome={trace.get('outcome')!r}"
+    assert trace.get("reason_code") == "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE", (
+        f"Got reason_code={trace.get('reason_code')!r}"
+    )
+    assert 470 <= trace.get("bucket_age_sec", -1) <= 490, (
+        f"Expected bucket_age_sec ~480, got {trace.get('bucket_age_sec')!r}"
+    )
+    assert trace.get("price_feed_unavailable") is False
+
+    # NOTE: hvac.input_feed_health audit-row assertion is OUT OF SCOPE for
+    # the north-star test. That audit write happens in run_schedule_check
+    # (app.py:2856), one layer above _evaluate_layer_inputs. The audit
+    # derivation gets its own dedicated test in Task 11 against a real
+    # production helper. Keep this acceptance test focused on the gate.
