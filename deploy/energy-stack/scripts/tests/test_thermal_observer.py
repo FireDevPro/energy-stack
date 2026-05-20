@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pytest
 
+import thermal_observer
 from thermal_observer import (
     FitConfig,
     ThermalSample,
@@ -100,3 +102,39 @@ def test_fit_rejects_implausible_tau():
 
     assert result.accepted is False
     assert "tau_out_of_bounds" in result.rejection_reasons
+
+
+def test_fit_drops_non_finite_intervals_before_min_sample_check():
+    cfg = FitConfig(sample_minutes=10, min_samples=4)
+    samples = [
+        make_sample(0, 74.0, 84.0),
+        make_sample(1, 74.1, 84.0),
+        make_sample(2, 74.2, np.inf),
+        make_sample(3, 74.3, 84.0),
+        make_sample(4, 74.4, 84.0),
+    ]
+
+    result = fit_thermal_response(samples, cfg)
+
+    assert result.accepted is False
+    assert "not_enough_samples" in result.rejection_reasons
+    assert result.filter_counts["non_finite"] == 1
+    assert result.filter_counts["valid"] == 3
+    assert result.total_interval_count == 3
+
+
+def test_fit_rejects_linear_algebra_failure(monkeypatch: pytest.MonkeyPatch):
+    cfg = FitConfig(sample_minutes=10, min_samples=4)
+    samples = [make_sample(i, 74.0 + (0.1 * i), 84.0) for i in range(8)]
+
+    def fail_lstsq(*args: object, **kwargs: object) -> None:
+        raise np.linalg.LinAlgError("synthetic fit failure")
+
+    monkeypatch.setattr(thermal_observer.np.linalg, "lstsq", fail_lstsq)
+
+    result = fit_thermal_response(samples, cfg)
+
+    assert result.accepted is False
+    assert result.rejection_reasons == ("linear_fit_failed",)
+    assert result.filter_counts["non_finite"] == 0
+    assert result.filter_counts["valid"] == 7

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from math import sqrt
+from math import isfinite, sqrt
 from typing import Any
 
 import numpy as np
@@ -87,6 +87,7 @@ def build_intervals(samples: list[ThermalSample], cfg: FitConfig) -> tuple[list[
         "stage_transition": 0,
         "setpoint_change": 0,
         "heating_active": 0,
+        "non_finite": 0,
         "valid": 0,
     }
     intervals: list[ThermalInterval] = []
@@ -130,6 +131,7 @@ def build_intervals(samples: list[ThermalSample], cfg: FitConfig) -> tuple[list[
 
 def fit_thermal_response(samples: list[ThermalSample], cfg: FitConfig) -> ThermalFitResult:
     intervals, counts = build_intervals(samples, cfg)
+    intervals = _finite_intervals(intervals, counts)
     if len(intervals) < cfg.min_samples:
         return _rejected(intervals, counts, cfg, ("not_enough_samples",))
 
@@ -139,7 +141,10 @@ def fit_thermal_response(samples: list[ThermalSample], cfg: FitConfig) -> Therma
 
     x_train = _design_matrix(train)
     y_train = np.array([interval.indoor_delta_f_per_hr for interval in train], dtype=float)
-    coef, *_ = np.linalg.lstsq(x_train, y_train, rcond=None)
+    try:
+        coef, *_ = np.linalg.lstsq(x_train, y_train, rcond=None)
+    except np.linalg.LinAlgError:
+        return _rejected(intervals, counts, cfg, ("linear_fit_failed",))
 
     env_coef, stage1_coef, stage2_delta_coef, solar_coef, intercept = [float(value) for value in coef]
     tau_hours = None if env_coef <= 0 else 1.0 / env_coef
@@ -197,6 +202,31 @@ def _design_matrix(intervals: list[ThermalInterval]) -> np.ndarray:
             for interval in intervals
         ],
         dtype=float,
+    )
+
+
+def _finite_intervals(
+    intervals: list[ThermalInterval],
+    counts: dict[str, int],
+) -> list[ThermalInterval]:
+    finite_intervals = [interval for interval in intervals if _is_finite_interval(interval)]
+    counts["non_finite"] = len(intervals) - len(finite_intervals)
+    counts["valid"] = len(finite_intervals)
+    return finite_intervals
+
+
+def _is_finite_interval(interval: ThermalInterval) -> bool:
+    return all(
+        isfinite(value)
+        for value in (
+            interval.indoor_temp_f,
+            interval.outdoor_temp_f,
+            interval.solar_radiation_w_m2,
+            interval.indoor_delta_f,
+            interval.hours,
+            interval.indoor_delta_f_per_hr,
+            interval.envelope_delta_f,
+        )
     )
 
 
