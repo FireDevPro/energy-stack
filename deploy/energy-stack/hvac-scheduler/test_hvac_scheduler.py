@@ -609,7 +609,8 @@ def test_fetch_today_decision_recomputes_when_stored_missing(monkeypatch):
         return today_forecast if period == "today" else {"high_f": 80.0}
 
     monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.5)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.5, now_utc=now_utc))
     write_api = MagicMock()
 
     result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
@@ -651,7 +652,8 @@ def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypa
         return None
 
     monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: None)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: None)
     write_api = MagicMock()
 
     fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
@@ -686,7 +688,8 @@ def test_revisit_no_change_does_not_overwrite(monkeypatch):
                         lambda q, b, p: {"high_f": 80.0,
                                           "max_dewpoint_f": 60.0,
                                           "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     write_api = MagicMock()
 
     run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
@@ -711,7 +714,8 @@ def test_revisit_escalates_normal_to_hot_when_forecast_busts_up(monkeypatch):
                             else {"high_f": 80.0, "max_dewpoint_f": 60.0,
                                   "is_heat_advisory": 0}
                         ))
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     write_api = MagicMock()
 
     run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
@@ -733,7 +737,8 @@ def test_revisit_de_escalates_hot_to_normal_when_forecast_cools(monkeypatch):
                         lambda q, b, p: {"high_f": 80.0,
                                           "max_dewpoint_f": 60.0,
                                           "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     write_api = MagicMock()
 
     run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
@@ -775,7 +780,8 @@ def test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot(monkeypatch):
         return None
 
     monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     write_api = MagicMock()
 
     run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
@@ -808,7 +814,8 @@ def test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk(monkeypatch):
         return None
 
     monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     # Override the autouse fixture: today's PJM peak forecast 145000 MW,
     # season-to-date 5th 130000 MW -- ratio 1.115 > 1.05, so §7 fires.
     monkeypatch.setattr(
@@ -838,7 +845,8 @@ def test_revisit_does_not_escalate_when_pjm_inputs_unavailable(monkeypatch):
                         if p == "today" else
                         {"high_f": 80.0, "max_dewpoint_f": 60.0,
                          "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     # PJM forecast unavailable; helper returns (None, season_5th).
     monkeypatch.setattr(
         app, "_fetch_pjm_inputs_for_target_date",
@@ -862,7 +870,8 @@ def test_revisit_handles_no_stored_decision_yet(monkeypatch):
                         lambda q, b, p: {"high_f": 90.0,
                                           "max_dewpoint_f": 65.0,
                                           "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 4.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
     write_api = MagicMock()
 
     run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
@@ -1195,7 +1204,9 @@ def _stub_layer_eval_io(monkeypatch, *,
     explicitly when driving RTO triggers in tests.
     """
     monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b: price_cents)
+                        lambda q, b, *, now_utc: (
+                            None if price_cents is None
+                            else _fresh_sample(price_cents, now_utc=now_utc)))
 
     from pjm_5cp import ZoneLoadSnapshot
     import pjm_5cp
@@ -1271,7 +1282,8 @@ def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
 
     # Price drops below 8c release; overlay state machine sees prices but
     # the 30-min hold keeps us in elevated.
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 7.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(7.0, now_utc=now_utc))
     inputs2 = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
                                        now_local + timedelta(minutes=10))
     assert inputs2.price_tier_name == "elevated"  # hold still active
@@ -1475,7 +1487,8 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
     assert transition_count == 0  # normal-stays-normal: no transition
 
     # Crossing 10c triggers elevated -> one transition row written.
-    monkeypatch.setattr(app, "fetch_latest_comed", lambda q, b: 12.0)
+    monkeypatch.setattr(app, "fetch_latest_comed",
+                        lambda q, b, *, now_utc: _fresh_sample(12.0, now_utc=now_utc))
     _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
                             now_local + timedelta(minutes=1))
     transition_count = sum(
