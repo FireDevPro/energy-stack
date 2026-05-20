@@ -34,6 +34,11 @@ limits_config:
   reject_old_samples_max_age: 168h
   ingestion_rate_mb: 8
   ingestion_burst_size_mb: 16
+  # 20000 = 4x headroom over observed 7d decision_trace volume (~14.5k,
+  # single-day peak ~4.3k). Loki default is 5000, which silently truncated
+  # the 7d count and threatens d-2 by mid-summer. Loki memory at bump
+  # time: 142 MiB / 15.6 GiB.
+  max_entries_limit_per_query: 20000
 
 compactor:
   working_directory: /loki/compactor
