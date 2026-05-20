@@ -28,7 +28,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 - Recency gate inside `_evaluate_layer_inputs` (the per-tick caller) that refuses **downgrade** decisions when `sample.freshness != "fresh"`. Holds and upgrades unaffected. The `evaluate_price_overlay` state machine stays freshness-agnostic (pure function of price + state + time-of-day).
 - Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Update only on `freshness == "fresh"` reads. Use `sample.source_ts` (the bucket's `_time`), not `now_utc`.
 - Unified safety release: when fresh data has been absent for 30 minutes — regardless of whether the sample is `None` or persistently warn/stale — release tier back to normal with a loud log. Single rule, two reason codes distinguishing no-data vs persistent-stale forensics.
-- Audit telemetry fix: `hvac.input_feed_health.price_ok` derived directly from `sample.freshness == "fresh"`, not from a stored timestamp. Now equivalent to "controller would consider this data actionable" — mirrors cockpit display exactly.
+- Audit telemetry fix: the `hvac.input_feed_health` row for `feed=price` derives from a new local `price_feed_healthy` variable (renamed from `price_ok` for semantic clarity — see §3.6). `price_feed_healthy` checks whether fresh data has arrived within the 30-min safety window, NOT whether this tick's bucket is actionable for a downgrade. The two questions have separate names to prevent implementation-time conflation; both derive from the same source-of-truth field (`firing.last_fresh_bucket_source_ts`).
 - New decision-trace fields and reason codes: `bucket_age_sec` on every `decision_trace.price_overlay_eval` emission; existing misnamed `price_is_stale` field renamed to `price_feed_unavailable`; `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_NO_DATA`, `RELEASED_PERSISTENT_STALE` on `PriceOverlayCode` (the existing `STALE_FEED_RELEASED` renames to `RELEASED_NO_DATA` for naming consistency).
 - All 4 production callers of `fetch_latest_comed` updated to the new signature. Three of the four are day-type audit-log paths that simply unwrap `sample.cents_per_kwh if sample else None` for `write_decision`; the fourth (per-tick caller) applies the recency gate.
 - `fetch_latest_comed` catches malformed Influx rows (missing `_time`), logs an `error`-level event, and returns `None` to preserve safety-supervisor continuity. Does NOT raise — see §7 for rationale.
@@ -43,7 +43,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 - 5CP detector freshness (separate data path, separate concerns; not in the 19:18Z bug class).
 - Telegram-notifier's parallel `check_pjm_feed_freshness` (`telegram-notifier/app.py:554-661`) — different vocabulary, different mechanism, future-unification spec.
 - Frontend `freshness.ts` codegen / automated syncing — handoff explicitly punts this to a Phase-N future. The TS file gets the same threshold update by hand.
-- Historical audit-row migration. Pre-fix `hvac.input_feed_health.price_ok=True` rows are not rewritten; the semantic shift is forward-only and visible at the deploy timestamp. (Pre-OSF, no amendment process needed.)
+- Historical audit-row migration. Pre-fix `hvac.input_feed_health` rows (with stale-data being recorded as healthy=True) are not rewritten; the semantic shift is forward-only and visible at the deploy timestamp. (Pre-OSF, no amendment process needed.)
 - Cockpit-side display of `bucket_age_sec`. The new field is emitted to Loki; operator-facing validation uses LogQL. Adding a cockpit panel for it is a follow-up cockpit PR if desired after field testing.
 
 ## 3. Architecture
@@ -206,17 +206,48 @@ else:  # sample is not None
 
 **Worst-case persistence bound:** 60 minutes from any tier trigger to forced safety release. Walked through in §5 below. Reasonable upper bound; aligns the per-tick check pattern's predictable time-to-release with operator expectations.
 
-### 3.6 Audit telemetry (corrected)
+### 3.6 Audit telemetry (corrected) — two named questions, one source of truth
 
-`hvac.input_feed_health.price_ok` at `app.py:2856-2887` post-fix:
+The scheduler maintains TWO distinct derivations of "is the price feed in good enough shape" from the same underlying state (`firing.last_fresh_bucket_source_ts`). They answer different questions and are NOT interchangeable. To prevent the conflation that caused the pre-fix bug — and to prevent that conflation re-emerging during implementation — the two derivations have separate names:
+
+| Concept | Variable / expression | Threshold | Where used |
+|---------|----------------------|-----------|------------|
+| **Per-tick downgrade actionability** | `sample.freshness == "fresh"` | 7 min (`THRESHOLDS["comed.prices"].fresh_max_ms`) | Recency gate inside `_evaluate_layer_inputs`; cockpit per-tick freshness indicator |
+| **Broad feed health** | `price_feed_healthy` (renamed from `price_ok`) | 30 min (`PRICE_FEED_STALE_THRESHOLD`) | `hvac.input_feed_health` audit row (tag `feed=price`, field `healthy`); `required_feeds_for_arm_mode` B-active classification |
+
+The per-tick question — "is this specific tick's bucket new enough to safely base a downgrade decision on?" — is answered directly by the freshness label that `fetch_latest_comed` already computed. The recency gate uses it inline.
+
+The broad-health question — "has the feed produced fresh data within the controller's safety window, such that the protocol is still able to run?" — is answered by:
 
 ```python
-price_ok = (sample is not None and sample.freshness == "fresh")
+# In run_schedule_check, replacing the old derivation at lines 2859-2863:
+price_feed_healthy = (
+    firing.last_fresh_bucket_source_ts is not None
+    and (now_utc_for_audit - firing.last_fresh_bucket_source_ts) <= PRICE_FEED_STALE_THRESHOLD
+)
+
+all_feeds = {
+    "price": price_feed_healthy,
+    "weather": weather_ok,
+    "pjm_capacity_risk": pjm_ok,
+}
+write_input_feed_health(write_api, cfg.influx_bucket, now_local, all_feeds)
+
+required_feeds = required_feeds_for_arm_mode(
+    when_ct=now_local,
+    price_feed_healthy=price_feed_healthy,   # parameter renamed to match
+    weather_ok=weather_ok,
+    pjm_capacity_risk_ok=pjm_ok,
+)
 ```
 
-Derived directly from the current sample's freshness label, not from any stored timestamp. The audit row now matches what the controller actually observed AND what the operator sees on the cockpit (single source of truth — rule #6). With the unified 7-min fresh threshold, `price_ok=True` ↔ "controller would consider this data actionable for a downgrade decision" ↔ cockpit shows green for `comed.prices`. Three signals, one definition.
+The `required_feeds_for_arm_mode` parameter at `app.py:1781-1799` renames its `price_ok` parameter to `price_feed_healthy` in the same PR for consistency. Internal dict keys (`"price"`) and the Influx tag value (`"price"`) and the Influx field name (`"healthy"`) are unchanged — those are schema, not local variables.
 
-Pre-fix → post-fix: this is a tightening (was True for any feed reachable within 30 min; now True only when sample is fresh per the 7-min boundary). The pre-fix behavior was the bug — `price_ok=True` was being recorded for stale-but-present feeds, hiding the freshness-blindness from audit reviewers. The shift is forward-only; historical audit rows are not rewritten. Pre-OSF, no amendment process needed.
+**Why this naming matters:** under the old name `price_ok`, an implementer could naturally write `price_ok = sample.freshness == "fresh"` and think they were doing the right thing. The new name `price_feed_healthy` communicates "this is the BROAD feed-health verdict, not the per-tick actionability." A future implementer reading the spec or the code can no longer accidentally conflate them.
+
+Pre-fix → post-fix: the pre-fix `price_ok` was True whenever the feed had been reachable within 30 min based on `now_utc` (set on EVERY non-None read, including stale reads). Post-fix `price_feed_healthy` is True whenever the feed has produced FRESH data within 30 min based on the bucket's own `source_ts`. Same threshold, corrected semantics. The shift is forward-only; historical audit rows are not rewritten. Pre-OSF, no amendment process needed.
+
+**B-active classification stays operationally stable.** With the 30-min health threshold preserved (not tightened to 7), normal-operation ticks with healthy ComEd publishing continue to classify as B-active. The 7-min per-tick boundary only governs the downgrade-gate decision, not the arm-mode classification.
 
 ### 3.7 Decision-trace integration
 
@@ -232,6 +263,26 @@ Pre-fix → post-fix: this is a tightening (was True for any feed reachable with
 - Gate-refused downgrade → `outcome="held"`, `reason_code="PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"`, `level="info"`.
 - Safety release on no-data → `outcome="released"`, `reason_code="PRICE_OVERLAY_RELEASED_NO_DATA"`, `level="warn"`.
 - Safety release on persistent-stale → `outcome="released"`, `reason_code="PRICE_OVERLAY_RELEASED_PERSISTENT_STALE"`, `level="warn"`.
+
+**Explicit `downgrade_gate_held` flag threaded from gate to classifier.** When the recency gate fires (`is_downgrade and sample.freshness != "fresh"`), `prev_tier == new_tier` because the state machine's proposed downgrade was suppressed. The existing classifier at lines 2462-2486 routes equal-tier outcomes to `HELD_IN_TIER` by default. Without an explicit signal, gate-refused downgrades would be MIS-classified as routine in-tier holds.
+
+The implementation threads a boolean from `_evaluate_layer_inputs` to the trace emission:
+
+```python
+# Inside _evaluate_layer_inputs, after the gate decision:
+downgrade_gate_held = is_downgrade and (sample is not None and sample.freshness != "fresh")
+
+# In the classifier block (replacing the lines 2462-2486 chain), checked
+# BEFORE the generic prev_tier == new_tier branch:
+if downgrade_gate_held:
+    po_outcome = "held"
+    po_reason = PriceOverlayCode.HELD_DOWNGRADE_BUCKET_AGE
+    po_level = "info"
+elif prev_tier == new_tier:
+    # ... existing HELD_IN_TIER / NORMAL_BELOW_TRIGGER branches
+```
+
+The flag is local to the tick (not persisted on FiringState — the next tick re-derives it). Tests that exercise the gate must assert `reason_code == "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"` specifically, not just `outcome == "held"`, to catch the case where the flag isn't threaded correctly and the trace falls into `HELD_IN_TIER`.
 
 **Existing enum rename for naming consistency:** `STALE_FEED_RELEASED` → `RELEASED_NO_DATA`. The original name described the trigger condition (feed went stale) but the new semantic is more precise (no data is the specific cause; persistent-stale-with-data is a separate cause). Mechanical rename; existing tests that reference the old value update in the same PR.
 
@@ -252,12 +303,13 @@ Cockpit operators will observe the new `bucket_age_sec` field on `decision_trace
 | `deploy/energy-stack/hvac-scheduler/freshness.py` | Canonical shared module (Freshness literal, Thresholds, THRESHOLDS dict, classify). | ~65 |
 | `.github/workflows/check-freshness-drift.yml` | PR-triggered workflow that diffs the two Python copies; fails the PR on drift. | ~20 |
 
-### Modified production files (4)
+### Modified production files (5)
 
 | File | Changes |
 |------|---------|
-| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState` field. Update `_evaluate_layer_inputs` (sample branching, unified safety release, **caller-side recency gate around `evaluate_price_overlay`**, audit derivation). Update 3 audit-log callers. Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches). Add `_tier_priority` import from `price_overlay` for the downgrade-detection check. |
-| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` (drop the leading underscore so it's a public helper the caller uses). No new module constant. |
+| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Update `_evaluate_layer_inputs` (sample branching, unified safety release, **caller-side recency gate around `evaluate_price_overlay`**, `downgrade_gate_held` flag threaded to trace classifier). Update 3 audit-log callers (mechanical unwrap). Update `run_schedule_check` audit derivation: `price_ok` → `price_feed_healthy` local variable, derives from `last_fresh_bucket_source_ts` vs `PRICE_FEED_STALE_THRESHOLD`. Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches with `downgrade_gate_held` short-circuit). Rename `required_feeds_for_arm_mode` parameter `price_ok` → `price_feed_healthy`. Import `tier_priority` from `price_overlay` for the downgrade-detection check. |
+| `deploy/energy-stack/hvac-scheduler/Dockerfile` | Add `freshness.py` to the `COPY` line at `Dockerfile:10`. Without this, the container build succeeds but runtime fails on import. |
+| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` (drop the leading underscore so the caller can use it for the downgrade-detection check). No new module constant. |
 | `deploy/energy-stack/hvac-scheduler/decision_codes.py` | Rename existing `STALE_FEED_RELEASED` → `RELEASED_NO_DATA` for consistency. Append two new enum values: `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_PERSISTENT_STALE`. |
 | `tools/cockpit/backend/freshness.py` | Update `"comed.prices"` threshold to 7/16/30 min (was 11/16/30). Rewrite the header comment at lines 40-47 to explain the new semantics (7-min = controller's actionability boundary). Header docstring also updated to point to canonical scheduler copy. Content otherwise byte-identical. |
 | `tools/cockpit/frontend/src/freshness.ts` | Same 7/16/30 threshold update (still hand-paired). Comment block updated similarly. |
@@ -266,13 +318,13 @@ Cockpit operators will observe the new `bucket_age_sec` field on `decision_trace
 
 | File | Changes |
 |------|---------|
-| `deploy/energy-stack/hvac-scheduler/test_price_overlay.py` | Add unit tests for the recency gate: refuses-downgrade-when-old, allows-when-fresh, doesn't-affect-upgrades, doesn't-affect-holds, boundary cases (exact cutoff, cutoff+1s). |
-| `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` | Outside-in acceptance test (19:18Z replay), initially `xfail(strict=True)`. New unit tests for `fetch_latest_comed` shape (PriceSample construction, None on empty, raises on missing _time, warn/stale classification). FiringState rename + tightened semantics. Audit telemetry derivation test. ~14 mock migrations to use `_fresh_sample()` helper. |
-| `deploy/energy-stack/hvac-scheduler/conftest.py` | Add `_fresh_sample(cents, *, age_min=1, now_utc=None)` test helper. |
+| `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` | Outside-in acceptance test (19:18Z replay), initially `xfail(strict=True)`. **Recency-gate unit tests live here** (caller-side gate, not in `test_price_overlay.py`): refuses-downgrade-when-warn, refuses-when-stale, allows-when-fresh, doesn't-affect-upgrades, doesn't-affect-holds, boundary cases at exact-cutoff and cutoff+1s, future-dated-bucket edge case. New unit tests for `fetch_latest_comed` shape (PriceSample construction, None on empty, **returns None and logs error when `_time` missing**, warn/stale classification). FiringState rename + tightened semantics tests. Audit-derivation test asserting `price_feed_healthy` uses the 30-min threshold not the 7-min one. Trace-classifier test asserting `downgrade_gate_held=True` routes to `HELD_DOWNGRADE_BUCKET_AGE`, not generic `HELD_IN_TIER`. ~14 mock migrations to use `_fresh_sample()` helper. |
+| `deploy/energy-stack/hvac-scheduler/test_price_overlay.py` | No new gate tests (gate is caller-side, tests live in `test_hvac_scheduler.py`). Only update: tier-priority helper rename (`_tier_priority` → `tier_priority`) if any test references it directly. |
+| `deploy/energy-stack/hvac-scheduler/conftest.py` | Add `_fresh_sample(cents, *, now_utc: datetime, age_min: float = 1.0)` test helper. `now_utc` is REQUIRED (no default) to prevent flaky wall-clock fallbacks in tests that forget the kwarg. |
 
 ### Total diff estimate
 
-~400-500 lines across 9 files. Approximately 50-60% test changes, 30% production code, 10% new infrastructure.
+~420-530 lines across 10 files. Approximately 50-60% test changes, 30% production code, 10% new infrastructure.
 
 ## 5. Data flow and safety bounds
 
@@ -295,7 +347,7 @@ Optional[PriceSample(cents_per_kwh, source_ts, freshness)]
     │      │      └── recency gate refuses: hold prev_tier, do NOT mutate state
     │      ├── else: apply proposed_state (upgrade / hold / fresh-data downgrade)
     │      ├── decision_trace.price_overlay_eval (+ bucket_age_sec, + reason_code)
-    │      └── hvac.input_feed_health (price_ok from sample.freshness)
+    │      └── hvac.input_feed_health (healthy derived from last_fresh_bucket_source_ts vs 30-min — broad health, NOT per-tick actionability)
     │
     └── 3 audit-log callers (unwrap to float, pass to write_decision)
 ```
@@ -400,7 +452,7 @@ Replacement: log an `error`-level structured event with whatever record metadata
 ### Acceptable silent-by-design behaviors
 
 - **Negative bucket age** (clock skew or test injection): treated as fresh (negative ≤ fresh_max_ms). Gate permits downgrade. Acceptable — future-dated buckets are a non-fault edge case; the test suite explicitly covers this.
-- **Pre-fix audit rows** (`hvac.input_feed_health.price_ok` recorded under old semantics): not migrated. Operators reviewing data spanning the deploy see the semantic shift at the deploy timestamp. Documented; the pre-fix values were the bug. Pre-OSF, no amendment process needed.
+- **Pre-fix audit rows** (`hvac.input_feed_health` with stale-data-recorded-as-healthy under old `price_ok` semantics): not migrated. Operators reviewing data spanning the deploy see the semantic shift at the deploy timestamp. Documented; the pre-fix values were the bug. Pre-OSF, no amendment process needed.
 
 ## 8. Testing
 
@@ -415,7 +467,7 @@ Replacement: log an `error`-level structured event with whatever record metadata
 Assertions:
 - Tier unchanged (`current_tier == "elevated"`).
 - `decision_trace.price_overlay_eval` has `outcome="held"`, `reason_code="PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"`, `bucket_age_sec ≈ 480`, `price_feed_unavailable=false`.
-- `hvac.input_feed_health.price_ok == False` (post-fix; the unified 7-min threshold classifies 8-min bucket as not-actionable).
+- `hvac.input_feed_health` row for `feed=price` has `healthy=True` (broad-health verdict uses the 30-min threshold; the 8-min bucket is well inside that window — feed is broadly healthy, just not actionable for a downgrade RIGHT NOW). This is the critical distinction that the named-split in §3.6 enforces.
 
 Initial marker: `pytest.mark.xfail(strict=True)`. Marker removed in the same commit that lands the implementation. Per AGENTS.md outside-in TDD rule.
 
@@ -450,9 +502,11 @@ Initial marker: `pytest.mark.xfail(strict=True)`. Marker removed in the same com
 
 ### 8.5 Audit telemetry test
 
-- `test_input_feed_health_price_ok_reflects_sample_freshness`:
-  - Sample fresh → `price_ok=True`.
-  - Sample warn / stale / None → `price_ok=False`.
+- `test_input_feed_health_uses_broad_health_threshold_not_per_tick_freshness`:
+  - This test guards specifically against the regression class where an implementer conflates the two derivations. Asserts that during normal operation (last fresh bucket within last 30 min, but current sample is warn-aged at 10 min), `price_feed_healthy=True` is written to the audit row. The 7-min downgrade-actionability boundary must NOT bleed into this check.
+  - `firing.last_fresh_bucket_source_ts = now - 5min`, current sample warn-aged → `price_feed_healthy=True`.
+  - `firing.last_fresh_bucket_source_ts = now - 31min`, sample is None → `price_feed_healthy=False`.
+  - `firing.last_fresh_bucket_source_ts = None` (cold start) → `price_feed_healthy=False`.
 
 ### 8.6 Unified safety release test
 
@@ -520,7 +574,8 @@ Operational validation result is appended to this spec under §10 (Status & hist
 | Date       | Status | Change |
 |------------|--------|--------|
 | 2026-05-19 | draft  | Initial spec authored via brainstorming session. Decisions Q1-Q7 + safety-release extension locked. Outside-in acceptance test scoped, not yet implemented. |
-| 2026-05-19 | draft  | Review-iteration pass. Code-reviewer subagent surfaced 14 findings (3 critical, 5 important, 6 minor). Operator confirmation collapsed C2 (two senses of stale) by unifying cockpit and scheduler thresholds — `"comed.prices"` fresh threshold tightened from 11 min to 7 min for both consumers. C1 closed by committing `STALE_DATA_HANDOFF.md` to repo root. C3 closed by confirming no OSF lock yet — normal forward-only semantic shift. I1 closed by moving the recency gate from `evaluate_price_overlay` to the caller-side in `_evaluate_layer_inputs`, keeping the state machine freshness-agnostic. I4 closed by changing missing-`_time` from raise to log+None for supervisor-continuity. M2 closed by renaming `price_is_stale` → `price_feed_unavailable`. Minor cleanups (M1, M3-M6) applied. |
+| 2026-05-19 | draft  | First review-iteration pass. Code-reviewer subagent surfaced 14 findings (3 critical, 5 important, 6 minor). Operator confirmation collapsed C2 (two senses of stale) by unifying cockpit and scheduler thresholds — `"comed.prices"` fresh threshold tightened from 11 min to 7 min for both consumers. C1 closed by committing `STALE_DATA_HANDOFF.md` to repo root. C3 closed by confirming no OSF lock yet — normal forward-only semantic shift. I1 closed by moving the recency gate from `evaluate_price_overlay` to the caller-side in `_evaluate_layer_inputs`, keeping the state machine freshness-agnostic. I4 closed by changing missing-`_time` from raise to log+None for supervisor-continuity. M2 closed by renaming `price_is_stale` → `price_feed_unavailable`. Minor cleanups (M1, M3-M6) applied. |
+| 2026-05-19 | draft  | Second review-iteration pass via external reviewer. Caught a regression I introduced in pass 1: making the audit-telemetry derivation use the 7-min `sample.freshness == "fresh"` would have broken `required_feeds_for_arm_mode`, mis-classifying ~74% of normal-operation ticks as B-fallback. Fix: rename the local variable `price_ok` → `price_feed_healthy` at the audit derivation site (and the `required_feeds_for_arm_mode` parameter); derive it from `last_fresh_bucket_source_ts` vs the 30-min `PRICE_FEED_STALE_THRESHOLD` (broad health), keeping `sample.freshness == "fresh"` for the per-tick downgrade gate only (per-tick actionability). Named the split explicitly in §3.6 so the same conflation cannot recur during implementation. Also closed: Dockerfile COPY line (would have broken container deploy), explicit `downgrade_gate_held` flag threaded to trace classifier (would have mis-routed gate refusals to `HELD_IN_TIER`), §4 components-table cleanups (gate tests in `test_hvac_scheduler.py` not `test_price_overlay.py`; `_fresh_sample` requires `now_utc`). |
 
 Spec moves to `approved` after operator review of this revision. Then to `implementing` once the writing-plans skill produces the implementation plan and code work begins. Then to `shipped` once PR 1 merges + operational validation completes.
 
