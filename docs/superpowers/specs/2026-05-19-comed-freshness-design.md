@@ -1,7 +1,7 @@
 ---
 date: 2026-05-19
 owner: chris
-status: draft
+status: shipped
 role-label: chris
 ---
 
@@ -696,6 +696,48 @@ Per AGENTS.md Multi-Phase Feature Workflow §4 ("required real-shape replay or o
 
 Operational validation result is appended to this spec under §10 (Status & history) once observed.
 
+### 9.1 Operator runbook (post-deploy verification queries)
+
+**Loki / LogQL queries:**
+
+1. Confirm `bucket_age_sec` field is being emitted:
+   ```logql
+   {container="hvac-scheduler"} |~ "decision_trace.price_overlay_eval" | json | line_format "{{.bucket_age_sec}} {{.reason_code}}" | bucket_age_sec != ""
+   ```
+   Expected: every emission has a numeric `bucket_age_sec` value.
+
+2. Detect any HELD_DOWNGRADE_BUCKET_AGE events (operator visibility):
+   ```logql
+   {container="hvac-scheduler"} |~ "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+   ```
+   Expected: 0 events in normal cycles; events appear specifically when the controller would have downgraded on stale data — that's the gate working.
+
+3. Detect any safety releases:
+   ```logql
+   {container="hvac-scheduler"} |~ "(PRICE_OVERLAY_RELEASED_NO_DATA|PRICE_OVERLAY_RELEASED_PERSISTENT_STALE)"
+   ```
+   Expected: 0 events under normal operation; a release should ONLY fire if ComEd was actually down for 30+ minutes post-min-hold (or the controller observed 30+ wall-clock min of post-hold non-fresh data).
+
+**Influx / Flux queries:**
+
+4. Verify `hvac.input_feed_health` shows broad health (NOT per-tick freshness):
+   ```flux
+   from(bucket: "energy")
+     |> range(start: -1h)
+     |> filter(fn: (r) => r._measurement == "hvac.input_feed_health"
+                       and r.feed == "price"
+                       and r._field == "healthy")
+   ```
+   Expected: most rows show `healthy=true` even when the per-tick freshness indicator is yellow (warn). This is the named-split working correctly.
+
+**Acceptance criteria for declaring operational validation passed:**
+
+- 24 hours of operation post-deploy with at least 1 ComEd publish cycle observed (typically dozens).
+- Query 1 confirms `bucket_age_sec` is populating.
+- Query 4 confirms `price_feed_healthy` stays True during normal cycles.
+- No spurious safety releases (Query 3).
+- If a real ComEd spike + downgrade cycle occurs: downgrade decisions ONLY occur on fresh data; Query 2 fires only when appropriate.
+
 ## 10. Status & history
 
 | Date       | Status | Change |
@@ -706,6 +748,7 @@ Operational validation result is appended to this spec under §10 (Status & hist
 | 2026-05-19 | draft  | Third review-iteration pass. Operator clarified that the safety release should be tick-counter based (counting opportunities post-min-hold), not wall-clock based on `last_fresh_bucket_source_ts` — the wall-clock approach I had would have started the release timer at the last fresh bucket's `_time`, which counts bucket aging during the min-hold window against the controller. Operator's framing: "for that first 60 seconds after a mandatory 30 min tier increase hold, the clock isn't based off the last good comed poll. It could be 15 min old at that first tick but we still check each min to see if it's fresh, for 30 min." With a further refinement: increment the counter only when the gate is ACTIVELY BLOCKING a relaxation (would-be downgrade refused due to staleness) OR when sample is None — NOT when stale data would-hold-anyway. Renamed the semantic to "consecutive missed relaxation/verification opportunities." Spec changes: §3.5 rewritten as tick-counter with full condition table + worked example + reset rules; new `FiringState.ticks_without_fresh_after_hold_elapsed` field + `PRICE_FEED_STALE_TICK_THRESHOLD = 30` constant; §3.4 gate held-branch uses `offset_and_override_for_tier` (Codex P2.5); §3.6 expanded to a three-concepts table (per-tick actionability / broad feed health / safety release trigger) so all three are explicitly distinguished; §5.2 worked example replaces the wrong "typical case ~31 min" walkthrough; §8.6 expanded with counter-state tests (5 increment/reset condition tests + 4 boundary/release tests) including assertions for both release reason codes (`RELEASED_NO_DATA`, `RELEASED_PERSISTENT_STALE`). |
 | 2026-05-19 | draft  | Fourth review-iteration pass. External reviewer flagged that the third-pass tick-counter model was still wrong in two ways: (1) it could reset on "stale-would-hold," which the operator's intent rules out (any non-fresh post-hold sample should advance the timer; the stale price value doesn't change feed-staleness), and (2) it conflated "scheduler tick count" with "feed-staleness duration." Operator articulated the load-bearing distinction: **two wall clocks exist, and only one is the release timer.** The data-source clock (`now - sample.source_ts`) classifies sample freshness; the controller-observation clock (`now - firing.nonfresh_after_hold_started_at_utc`) drives the safety release. Spec changes: §3.5 fully rewritten as a controller-observation wall-clock timer (`nonfresh_after_hold_started_at_utc`) that sets on the first post-hold non-fresh observation, clears on any fresh sample / return to normal / min-hold-restart, and fires release at 30 wall-clock minutes regardless of state machine proposal. Tick counter, tick threshold, and "missed opportunities" semantic all REMOVED. New verbatim guard added: "Do not use `sample.source_ts` or `last_fresh_bucket_source_ts` as the safety-release clock." §3.6 three-concepts table updated to label each concept's clock-of-origin. §4 components-table: `ticks_without_fresh_after_hold_elapsed: int = 0` replaced with `nonfresh_after_hold_started_at_utc: Optional[datetime] = None`; new `PRICE_FEED_STALE_TICK_THRESHOLD = 30` constant REMOVED (reuses existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)`); `_hold_elapsed` exposed as public `hold_elapsed` for scheduler-side call. §5.2 walkthroughs rewritten — new worked example showing timer start at min-hold expiry, anti-regression scenario showing timer does NOT use bucket source_ts, resilience example showing timer fires correctly after delayed scheduler execution. §8.6 tests rewritten as wall-clock tests with `test_safety_release_does_not_use_data_source_clock` as the explicit anti-regression test for the two-wall-clocks distinction. §2 scope language and §3.1 threshold-note language corrected to distinguish freshness classification (data-source clock) from safety release (controller-observation clock). |
 | 2026-05-19 | draft  | Fifth review-iteration pass. External reviewer confirmed the controller-observation wall-clock model is now correct (no more big-conceptual-fix needed). Four small spec-text cleanups applied: (P2) §3.5 pseudocode now initializes `safety_release_fired = False`, `release_reason = None`, `downgrade_gate_held = False` as defaults BEFORE the release/gate branches so the trace classifier never reads undefined or stale-from-prior-tick values; (P2) §3.5 safety-release branch now explicitly assigns `price_tier_name = NORMAL_TIER_NAME`, `price_offset_f = 0`, `price_override_f = None`, `active_tier = None` instead of saying "outputs set to normal" — prevents implementation from accidentally preserving the released tier's offset/override; (P3) §3.4 inline-comment changed from "safety-release counter logic" to "controller-observation safety-release timer logic"; (P3) §7 malformed-row paragraph sharpened from "safety release takes over after 30 min if the condition persists" to the precise "after min-hold has elapsed AND the controller has observed 30 wall-clock minutes of continuous non-fresh ComEd (per §3.5)." No design changes; the conceptual model from pass 4 stands. |
+| 2026-05-19 | shipped (pending operational validation) | Implementation complete per docs/plans/comed-freshness-plan.md. All Phase 1 (T1-T16) and Phase 2 (T17-T19, plus T19.5 hot-fix from Codex Checkpoint-3 finding) tasks committed on branch `fix/comed-freshness`. Phase 1 acceptance test passes against real implementation. Phase 2 acceptance conditions verified by grep: no use of `last_fresh_bucket_source_ts` as safety-release clock; only `nonfresh_after_hold_started_at_utc` (controller-observation wall clock) drives release. 337 scheduler tests passing. Operational validation per §9.1 begins at deploy timestamp. |
 
 Spec moves to `approved` after operator review of this revision. Then to `implementing` once the writing-plans skill produces the implementation plan and code work begins. Then to `shipped` once PR 1 merges + operational validation completes.
 
