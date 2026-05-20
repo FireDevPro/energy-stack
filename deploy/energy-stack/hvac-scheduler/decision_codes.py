@@ -29,6 +29,10 @@ class PriceOverlayCode(str, Enum):
     NORMAL_BELOW_TRIGGER = "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER"
     HELD_IN_TIER = "PRICE_OVERLAY_HELD_IN_TIER"
 
+    # NEW (spec §3.7): recency gate refused a would-be downgrade because
+    # the latest bucket is older than the 7-min fresh threshold.
+    HELD_DOWNGRADE_BUCKET_AGE = "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+
     # Tier changed this tick.
     UPGRADED_TO_ELEVATED = "PRICE_OVERLAY_UPGRADED_TO_ELEVATED"
     UPGRADED_TO_SCARCITY = "PRICE_OVERLAY_UPGRADED_TO_SCARCITY"

@@ -110,6 +110,7 @@ from price_overlay import (
     PriceOverlayState,
     evaluate_price_overlay,
     offset_and_override_for_tier,
+    tier_priority,
 )
 from safety_supervisor import validate_setpoints
 from decision_codes import (
@@ -2449,12 +2450,19 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         tick_id = uuid.uuid4().hex
 
     # ---- Price overlay (§2) ----
-    current_price_cents = fetch_latest_comed(query_api, cfg.influx_bucket)
+    # Read the latest ComEd bucket with now_utc for freshness classification.
+    sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
+    current_price_cents = sample.cents_per_kwh if sample is not None else None
     prev_tier = firing.price_overlay_state.current_tier
     # Tracks the §2 stale-release branch (line below) so the trace
     # emission at the end of the block can pick the correct reason code
     # without re-deriving the stale condition.
     stale_release_fired = False
+    # Initialize trace-field defaults BEFORE both branches so the classifier
+    # in Task 13 can read downgrade_gate_held even on the None code path.
+    # Without this, the no-data tick path raises NameError in Task 13's
+    # classifier (spec §3.5 P2 — explicit initialization).
+    downgrade_gate_held = False
     if current_price_cents is None:
         # Price feed unavailable: preserve the active tier's effective
         # setpoint contributions UNTIL the feed has been stale for too
@@ -2497,30 +2505,39 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
             price_tier_name = prev_tier
     else:
-        # Per spec §3.6: record the bucket's _time (sample.source_ts)
-        # only on fresh reads. NOT now_utc — that's the controller-
-        # observation clock used elsewhere by the safety supervisor.
-        # Pre-T9 this updated unconditionally on every non-None read
-        # using now_utc; the corrected semantic gates on
-        # sample.freshness == "fresh" and uses the data-source ts.
-        # Note: `current_price_cents` is a PriceSample post-T7; the
-        # wider if/else block still treats it as a float for the tier
-        # decision — Tasks 11-13 restructure that. T9 only fixes the
-        # field-update semantic.
-        sample = current_price_cents
-        if sample is not None and sample.freshness == "fresh":
+        # Update last-fresh field on fresh reads only (spec §3.6).
+        if sample.freshness == "fresh":
             firing.last_fresh_bucket_source_ts = sample.source_ts
-        active_tier, firing.price_overlay_state = evaluate_price_overlay(
+
+        # State machine proposes a tier transition based on the price value.
+        # The state machine is freshness-agnostic (pure function of price +
+        # state + time-of-day).
+        proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
-        if active_tier is None:
-            price_offset_f = 0
-            price_override_f = None
-            price_tier_name = NORMAL_TIER_NAME
+        proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
+        is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
+
+        if is_downgrade and sample.freshness != "fresh":
+            # RECENCY GATE: refuse the downgrade. Do not mutate state machine.
+            # Hold prev_tier. Trace classifier (below, Task 13) records this
+            # as HELD_DOWNGRADE_BUCKET_AGE. Spec §3.4.
+            downgrade_gate_held = True
+            active_tier = None
+            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+            price_tier_name = prev_tier
         else:
-            price_offset_f = active_tier.cool_setpoint_offset_f
-            price_override_f = active_tier.cool_setpoint_override_f
-            price_tier_name = active_tier.name
+            # Apply state machine proposal (upgrade, hold, or fresh-data downgrade).
+            firing.price_overlay_state = proposed_state
+            active_tier = proposed_tier
+            if active_tier is None:
+                price_offset_f = 0
+                price_override_f = None
+                price_tier_name = NORMAL_TIER_NAME
+            else:
+                price_offset_f = active_tier.cool_setpoint_offset_f
+                price_override_f = active_tier.cool_setpoint_override_f
+                price_tier_name = active_tier.name
 
     # ---- Phase 1 decision-trace: price overlay per-eval ---------------
     # One trace line per `_evaluate_layer_inputs` call. Classifies the

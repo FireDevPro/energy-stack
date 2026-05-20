@@ -3256,3 +3256,184 @@ def test_derive_price_feed_healthy_ignores_per_tick_freshness():
     # If a future implementer adds a `sample` parameter and uses
     # sample.freshness, this test catches it.
     assert derive_price_feed_healthy(firing, now) is True
+
+
+# ---- Recency gate tests (spec §3.4, §8.2) ----
+
+def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
+                       last_fresh_bucket_source_ts, now_utc):
+    """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions
+    so the gate-specific behavior is the only variable. Returns
+    (firing_after, captured_traces)."""
+    from app import FiringState, _evaluate_layer_inputs
+    from price_overlay import PriceOverlayState
+    from unittest.mock import MagicMock
+
+    captured_traces: list[dict] = []
+    def _capture_trace(event_name, **fields):
+        captured_traces.append({"_event": event_name, **fields})
+
+    monkeypatch.setattr("app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: sample)
+    monkeypatch.setattr("app._trace", _capture_trace)
+    monkeypatch.setattr("app.write_input_feed_health", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_5cp_state", lambda *a, **k: None)
+    monkeypatch.setattr("app.evaluate_for_scope",
+                        lambda *a, **k: MagicMock(
+                            is_active=False, log_fields={"data_status": "none"},
+                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
+
+    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier=current_tier,
+            triggered_at_utc=triggered_at_utc,
+        ),
+        last_fresh_bucket_source_ts=last_fresh_bucket_source_ts,
+    )
+    _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing, now_local=now_utc)
+    return firing, captured_traces
+
+
+def test_gate_refuses_downgrade_when_sample_is_warn(monkeypatch):
+    """Gate refuses downgrades when sample.freshness != 'fresh'. The
+    19:18Z bug class: bucket age 8 min, price 2.5¢ (below 8¢ release),
+    min-hold elapsed → pre-fix would downgrade; post-fix must hold."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=now - timedelta(minutes=8),
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=8),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "elevated"
+    po_traces = [t for t in traces if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+
+
+def test_gate_allows_downgrade_when_sample_is_fresh(monkeypatch):
+    """With fresh data, the gate doesn't refuse; state machine fires the downgrade."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=now - timedelta(minutes=2),  # fresh
+        freshness="fresh",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=2),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "normal"  # downgraded to normal
+
+
+def test_gate_does_not_affect_upgrade(monkeypatch):
+    """Upgrades fire regardless of staleness — adding protection is safe."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=22.0,  # >= 20¢ scarcity trigger
+        source_ts=now - timedelta(minutes=10),  # warn
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "scarcity"
+
+
+def test_gate_does_not_affect_hold_within_tier(monkeypatch):
+    """If price is still above release, the state machine proposes hold,
+    not downgrade. The gate has nothing to refuse."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=15.0,  # >= 8¢ elevated release threshold
+        source_ts=now - timedelta(minutes=10),  # warn
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "elevated"
+    po_traces = [t for t in traces if t.get("_event") == "decision_trace.price_overlay_eval"]
+    # Not gate-held; state machine naturally held.
+    assert po_traces[-1]["reason_code"] != "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+
+
+def test_gate_boundary_at_exact_seven_min(monkeypatch):
+    """Age == 7 min exactly → classifies as fresh (boundary inclusive)
+    → gate does NOT refuse → downgrade fires."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=now - timedelta(minutes=7),  # exactly at fresh boundary
+        freshness="fresh",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=7),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "normal"  # downgraded
+
+
+def test_gate_boundary_at_seven_min_plus_one_second(monkeypatch):
+    """Age 7 min + 1 sec → warn → gate refuses."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=now - timedelta(minutes=7, seconds=1),
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=7, seconds=1),
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "elevated"
+
+
+def test_gate_treats_future_dated_bucket_as_fresh_and_allows_downgrade(monkeypatch):
+    """Per spec §7: clock-skew / negative-age treated as fresh.
+    Anti-regression for a hypothetical sign-flip bug."""
+    from app import PriceSample
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,
+        source_ts=now + timedelta(minutes=5),  # future-dated
+        freshness="fresh",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=30, seconds=1),
+        last_fresh_bucket_source_ts=now,
+        now_utc=now,
+    )
+    assert firing.price_overlay_state.current_tier == "normal"  # downgraded
