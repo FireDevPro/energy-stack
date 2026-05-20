@@ -60,6 +60,32 @@ def test_build_intervals_drops_stage_transition_and_setpoint_change():
     assert intervals[1].stage1_active == 1
 
 
+def test_build_intervals_drops_non_finite_hvac_control_samples():
+    samples = [
+        make_sample(0, 74.0, 84.0, cool_pct=0.0),
+        make_sample(1, 74.1, 84.0, cool_pct=np.nan),
+        ThermalSample(
+            ts=datetime(2026, 7, 15, 0, 20, tzinfo=timezone.utc),
+            indoor_temp_f=74.2,
+            outdoor_temp_f=84.0,
+            solar_radiation_w_m2=0.0,
+            cool_actual_pct=0.0,
+            heat_actual_pct=np.inf,
+            cool_setpoint_f=75.0,
+            setpoint_changed=False,
+        ),
+        make_sample(3, 74.3, 84.0, cool_pct=0.0),
+    ]
+
+    intervals, counts = build_intervals(samples, FitConfig(sample_minutes=10))
+
+    assert intervals == []
+    assert counts["non_finite"] == 3
+    assert counts["valid"] == 0
+    assert counts["stage_transition"] == 0
+    assert counts["heating_active"] == 0
+
+
 def test_fit_thermal_response_recovers_synthetic_tau_and_cooling_rates():
     # Synthetic model:
     # dT/dt = (1/10h) * (Tout - Tin) - 1.8*stage1 - 1.2*stage2_delta + 0.001*solar

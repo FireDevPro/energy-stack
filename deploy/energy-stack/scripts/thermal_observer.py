@@ -102,6 +102,9 @@ def build_intervals(samples: list[ThermalSample], cfg: FitConfig) -> tuple[list[
         if cur.setpoint_changed:
             counts["setpoint_change"] += 1
             continue
+        if not _has_finite_hvac_controls(prev) or not _has_finite_hvac_controls(cur):
+            counts["non_finite"] += 1
+            continue
         if _stage_bucket(prev, cfg) != _stage_bucket(cur, cfg):
             counts["stage_transition"] += 1
             continue
@@ -210,9 +213,13 @@ def _finite_intervals(
     counts: dict[str, int],
 ) -> list[ThermalInterval]:
     finite_intervals = [interval for interval in intervals if _is_finite_interval(interval)]
-    counts["non_finite"] = len(intervals) - len(finite_intervals)
+    counts["non_finite"] += len(intervals) - len(finite_intervals)
     counts["valid"] = len(finite_intervals)
     return finite_intervals
+
+
+def _has_finite_hvac_controls(sample: ThermalSample) -> bool:
+    return isfinite(sample.cool_actual_pct) and isfinite(sample.heat_actual_pct)
 
 
 def _is_finite_interval(interval: ThermalInterval) -> bool:
