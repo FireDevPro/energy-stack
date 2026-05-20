@@ -1,11 +1,17 @@
-"""Staleness thresholds per source cadence.
+"""Staleness classification per source cadence (cockpit hand-paired copy).
 
-Python mirror of tools/cockpit/frontend/src/freshness.ts. The two are
-hand-paired; a Phase 4+ codegen step could derive one from the other,
-but for now keep the values in sync manually.
+CANONICAL SOURCE: deploy/energy-stack/hvac-scheduler/freshness.py.
+This file is byte-identical to the canonical except for this header
+docstring. Drift is enforced by the CI workflow at
+.github/workflows/check-freshness-drift.yml — any edit must land in
+BOTH files in the same PR or CI will fail.
 
-hvac.actions is event-driven and NOT a staleness signal — Action node
-uses NOT-FIRED-THIS-TICK / last-fire / APPLIED / SHADOW semantics.
+Per spec §3.1: `comed.prices` fresh threshold of 7 min is the
+controller's downgrade-recency cutoff. Cockpit mirrors so the operator
+sees exactly the same actionability the controller does.
+
+`hvac.actions` is event-driven and NOT a staleness signal — Action
+node uses NOT-FIRED-THIS-TICK / last-fire / APPLIED / SHADOW semantics.
 """
 from __future__ import annotations
 
@@ -37,14 +43,14 @@ THRESHOLDS: dict[str, Thresholds] = {
     "decision_trace.precool_decision":   Thresholds(_hr(26), _hr(40), _hr(72)),
     "hvac.arm_mode":                     Thresholds(_min(6), _min(10), _min(15)),
     "hvac.thermostat":                   Thresholds(_min(12), _min(20), _min(30)),
-    # ComEd writes new 5min rows with `_time` = END of the 5-min price
-    # interval (e.g. _time=18:15 represents 18:10-18:15). ComEd's
-    # upstream publication carries a multi-minute delay past interval
-    # close, so a freshly-written row's age vs wall clock is typically
-    # ~6 min (observed 2026-05-17), climbing to ~11 min just before the
-    # next publish lands. Fresh ≤ 11 min covers one healthy cycle;
-    # warn = one missed publish; stale = multi-cycle outage.
-    "comed.prices":                      Thresholds(_min(11), _min(16), _min(30)),
+    # 7-min fresh = controller's downgrade-recency cutoff. Cockpit mirrors
+    # so operator sees exactly the same actionability the controller does.
+    # Bucket-age sawtooth typically spans 6-11 min between publishes, so
+    # the cockpit's 'fresh' indicator naturally cycles green→warn→green
+    # every 5-min publish cycle. Warn does NOT indicate a feed problem —
+    # it indicates the controller would refuse a downgrade decision if
+    # asked this tick. See spec §3.1 + §6.
+    "comed.prices":                      Thresholds(_min(7), _min(16), _min(30)),
     "nws.forecast":                      Thresholds(_min(35), _min(90), _hr(12)),
     "pjm.load_forecast":                 Thresholds(_hr(14), _hr(28), _hr(50)),
     "pjm.rt_hrl_lmps":                   Thresholds(_min(75), _hr(3), _hr(12)),
