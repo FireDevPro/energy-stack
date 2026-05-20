@@ -1870,7 +1870,7 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
             current_tier="scarcity",
             triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
-        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=2),
+        last_fresh_bucket_source_ts=now_utc - timedelta(minutes=2),
     )
     write_api = MagicMock()
 
@@ -1896,7 +1896,7 @@ def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
             current_tier="elevated",
             triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
-        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=2),
+        last_fresh_bucket_source_ts=now_utc - timedelta(minutes=2),
     )
     write_api = MagicMock()
 
@@ -2212,7 +2212,7 @@ def test_price_tier_released_after_feed_stale_threshold(monkeypatch):
             current_tier="scarcity",
             triggered_at_utc=now_utc - timedelta(minutes=60),
         ),
-        price_feed_last_ok_at_utc=now_utc - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now_utc - timedelta(minutes=45),
     )
     write_api = MagicMock()
 
@@ -2227,31 +2227,9 @@ def test_price_tier_released_after_feed_stale_threshold(monkeypatch):
     assert firing.price_overlay_state.triggered_at_utc is None
 
 
-def test_price_feed_last_ok_at_utc_updates_on_healthy_tick(monkeypatch):
-    """Every tick where ``fetch_latest_comed`` returns a real price
-    must update ``firing.price_feed_last_ok_at_utc``. This is the
-    timestamp the stale-tier-release path checks against; without
-    fresh updates a long-running stable feed would still be
-    considered stale on the first None it sees."""
-    _stub_layer_eval_io(monkeypatch, price_cents=5.0)   # healthy feed
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-    now_utc = now_local.astimezone(timezone.utc)
-
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-
-    # Timestamp recorded within the last few seconds (allow tolerance
-    # for the layer-eval inner steps).
-    assert firing.price_feed_last_ok_at_utc is not None
-    assert (now_utc - firing.price_feed_last_ok_at_utc) < timedelta(seconds=5)
-
-
 def test_price_tier_release_falls_back_to_triggered_at_utc_when_last_ok_none(monkeypatch):
     """Cold-start / state-restore case: when
-    ``price_feed_last_ok_at_utc`` is None but the prev_tier is
+    ``last_fresh_bucket_source_ts`` is None but the prev_tier is
     non-NORMAL, the tier must have been triggered by a real price
     reading at some point. ``triggered_at_utc`` becomes the floor
     for the staleness check so we don't erroneously release on
@@ -2266,7 +2244,7 @@ def test_price_tier_release_falls_back_to_triggered_at_utc_when_last_ok_none(mon
             current_tier="scarcity",
             triggered_at_utc=now_utc - timedelta(minutes=5),   # recent
         ),
-        price_feed_last_ok_at_utc=None,   # never recorded
+        last_fresh_bucket_source_ts=None,   # never recorded
     )
     write_api = MagicMock()
 
@@ -3119,3 +3097,77 @@ def test_fetch_latest_comed_classifies_stale_age():
     result = fetch_latest_comed(api, "energy", now_utc=now)
     assert result is not None
     assert result.freshness == "stale"
+
+
+# ---- FiringState last_fresh_bucket_source_ts semantic (spec §3.6, §8.4) ----
+
+def test_last_fresh_bucket_source_ts_updates_on_fresh_read(monkeypatch):
+    """Per spec §3.3 + §3.5: field is set to sample.source_ts (NOT now_utc)
+    when sample.freshness == 'fresh'. Captures the corrected semantic."""
+    from app import FiringState, PriceSample, _evaluate_layer_inputs
+    from price_overlay import PriceOverlayState
+    from unittest.mock import MagicMock
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    source_ts = now - timedelta(minutes=3)  # fresh
+    sample = PriceSample(
+        cents_per_kwh=5.0, source_ts=source_ts, freshness="fresh",
+    )
+    monkeypatch.setattr("app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: sample)
+    monkeypatch.setattr("app._trace", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_input_feed_health", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_5cp_state", lambda *a, **k: None)
+    monkeypatch.setattr("app.evaluate_for_scope",
+                        lambda *a, **k: MagicMock(
+                            is_active=False, log_fields={"data_status": "none"},
+                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
+
+    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+    )
+    _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing, now_local=now)
+
+    assert firing.last_fresh_bucket_source_ts == source_ts, (
+        f"Field must be set to sample.source_ts ({source_ts}), "
+        f"got {firing.last_fresh_bucket_source_ts}. "
+        f"DO NOT use now_utc — see spec §3.5 'data-source vs controller-observation' guard."
+    )
+
+
+def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
+    """Per spec §3.6: only fresh reads update the field. Warn/stale/None reads
+    leave it alone — this is the corrected semantic from the pre-fix bug
+    (where the field updated on every non-None read)."""
+    from app import FiringState, PriceSample, _evaluate_layer_inputs
+    from price_overlay import PriceOverlayState
+    from unittest.mock import MagicMock
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),  # warn
+        freshness="warn",
+    )
+    monkeypatch.setattr("app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: sample)
+    monkeypatch.setattr("app._trace", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_input_feed_health", lambda *a, **k: None)
+    monkeypatch.setattr("app.write_5cp_state", lambda *a, **k: None)
+    monkeypatch.setattr("app.evaluate_for_scope",
+                        lambda *a, **k: MagicMock(
+                            is_active=False, log_fields={"data_status": "none"},
+                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
+
+    cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    seeded = now - timedelta(hours=1)
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(current_tier="normal"),
+        last_fresh_bucket_source_ts=seeded,
+    )
+    _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing, now_local=now)
+
+    assert firing.last_fresh_bucket_source_ts == seeded, (
+        "Warn read must NOT update the field (only fresh reads update it)."
+    )

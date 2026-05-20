@@ -1402,13 +1402,14 @@ class FiringState:
     # experiment start (boundary, log).
     last_observed_arm: str | None = None
     arm_observed: bool = False
-    # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
-    # where ``fetch_latest_comed`` returned a real price. Used to release
-    # a carried-forward price-overlay tier when the feed has been
-    # unavailable for longer than ``PRICE_FEED_STALE_THRESHOLD``. Without
-    # this, a scarcity tier active when the feed dropped would hold the
-    # 85F effective setpoint indefinitely.
-    price_feed_last_ok_at_utc: datetime | None = None
+    # Per spec §3.6: timestamp of the bucket's _time on the most recent
+    # tick where fetch_latest_comed returned a sample with
+    # freshness == "fresh". The audit telemetry's broad-feed-health
+    # derivation (price_feed_healthy, §3.6) uses this. The safety-release
+    # timer uses a SEPARATE controller-observation field
+    # (nonfresh_after_hold_started_at_utc, §3.5) added in Phase 2;
+    # do not conflate the two clocks.
+    last_fresh_bucket_source_ts: datetime | None = None
 
 
 def fetch_day_ahead_prices_for_date(
@@ -2433,7 +2434,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         # prev_tier had to have been triggered by a real price reading,
         # so its triggered_at_utc is a reasonable floor for
         # last_ok_at_utc if the explicit timestamp is missing.
-        last_ok = firing.price_feed_last_ok_at_utc
+        last_ok = firing.last_fresh_bucket_source_ts
         if last_ok is None:
             last_ok = firing.price_overlay_state.triggered_at_utc
         stale = (
@@ -2462,9 +2463,19 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
             price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
             price_tier_name = prev_tier
     else:
-        # Feed is healthy this tick; record the timestamp for the
-        # stale-detection path above.
-        firing.price_feed_last_ok_at_utc = now_utc
+        # Per spec §3.6: record the bucket's _time (sample.source_ts)
+        # only on fresh reads. NOT now_utc — that's the controller-
+        # observation clock used elsewhere by the safety supervisor.
+        # Pre-T9 this updated unconditionally on every non-None read
+        # using now_utc; the corrected semantic gates on
+        # sample.freshness == "fresh" and uses the data-source ts.
+        # Note: `current_price_cents` is a PriceSample post-T7; the
+        # wider if/else block still treats it as a float for the tier
+        # decision — Tasks 11-13 restructure that. T9 only fixes the
+        # field-update semantic.
+        sample = current_price_cents
+        if sample is not None and sample.freshness == "fresh":
+            firing.last_fresh_bucket_source_ts = sample.source_ts
         active_tier, firing.price_overlay_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
@@ -2891,8 +2902,8 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
             or now_utc_for_audit - firing.last_arm_mode_audit_at_utc
             >= _ARM_MODE_AUDIT_INTERVAL):
         price_ok = (
-            firing.price_feed_last_ok_at_utc is not None
-            and (now_utc_for_audit - firing.price_feed_last_ok_at_utc)
+            firing.last_fresh_bucket_source_ts is not None
+            and (now_utc_for_audit - firing.last_fresh_bucket_source_ts)
             <= PRICE_FEED_STALE_THRESHOLD
         )
         weather_ok = today_forecast is not None
