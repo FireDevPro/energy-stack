@@ -27,7 +27,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 - `PriceSample(cents_per_kwh, source_ts, freshness)` frozen dataclass returned by `fetch_latest_comed`; scheduler-local, cockpit unchanged.
 - Recency gate inside `_evaluate_layer_inputs` (the per-tick caller) that refuses **downgrade** decisions when `sample.freshness != "fresh"`. Holds and upgrades unaffected. The `evaluate_price_overlay` state machine stays freshness-agnostic (pure function of price + state + time-of-day).
 - Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Update only on `freshness == "fresh"` reads. Use `sample.source_ts` (the bucket's `_time`), not `now_utc`.
-- Unified safety release: when fresh data has been absent for 30 minutes — regardless of whether the sample is `None` or persistently warn/stale — release tier back to normal with a loud log. Single rule, two reason codes distinguishing no-data vs persistent-stale forensics.
+- Unified safety release (controller-observation wall-clock timer): when the controller has observed 30 consecutive wall-clock minutes of non-fresh ComEd data AFTER min-hold has elapsed for the current tier, release tier back to normal with a loud log. The release clock is controller-observation time (`now_utc - firing.nonfresh_after_hold_started_at_utc`), NOT the bucket's `source_ts`. Single rule, two reason codes distinguishing no-data vs persistent-stale forensics. See §3.5 for the full timer semantics.
 - Audit telemetry fix: the `hvac.input_feed_health` row for `feed=price` derives from a new local `price_feed_healthy` variable (renamed from `price_ok` for semantic clarity — see §3.6). `price_feed_healthy` checks whether fresh data has arrived within the 30-min safety window, NOT whether this tick's bucket is actionable for a downgrade. The two questions have separate names to prevent implementation-time conflation; both derive from the same source-of-truth field (`firing.last_fresh_bucket_source_ts`).
 - New decision-trace fields and reason codes: `bucket_age_sec` on every `decision_trace.price_overlay_eval` emission; existing misnamed `price_is_stale` field renamed to `price_feed_unavailable`; `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_NO_DATA`, `RELEASED_PERSISTENT_STALE` on `PriceOverlayCode` (the existing `STALE_FEED_RELEASED` renames to `RELEASED_NO_DATA` for naming consistency).
 - All 4 production callers of `fetch_latest_comed` updated to the new signature. Three of the four are day-type audit-log paths that simply unwrap `sample.cents_per_kwh if sample else None` for `write_decision`; the fourth (per-tick caller) applies the recency gate.
@@ -63,7 +63,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 **Why 7/16/30 for `"comed.prices"`:**
 - `fresh_max_ms = _min(7)` — the controller's downgrade-recency cutoff (full calibration justification in §6). Cockpit mirrors this so the operator sees the same actionability the controller does.
 - `warn_max_ms = _min(16)` — unchanged from pre-fix. Roughly "one missed publish cycle" past the fresh boundary.
-- `stale_max_ms = _min(30)` — matches `PRICE_FEED_STALE_THRESHOLD`. Bucket age past this triggers the unified safety release.
+- `stale_max_ms = _min(30)` — the boundary above which `classify()` returns `"missing"` rather than `"stale"`. Numerically matches `PRICE_FEED_STALE_THRESHOLD`, but this is a freshness-CLASSIFICATION threshold (bucket-age-based, data-source clock), NOT the safety-release trigger. The safety release runs on a separate **controller-observation wall clock** that starts at first post-hold non-fresh observation (see §3.5). The two threshold-uses share a value (30 min) but answer different questions on different clocks.
 
 **Operator-visible UI impact:** the cockpit's freshness indicator will cycle green→yellow→green every ~5-min publish cycle (median bucket-age sawtooth peaks at 8.7 min, beyond the 7-min fresh boundary). This is BY DESIGN — yellow signals "the controller would refuse a downgrade decision RIGHT NOW," which is the correct operator signal. Yellow does NOT indicate feed sickness; bucket-age past 16 min (warn → stale) is when feed health concerns start. The header comment in `tools/cockpit/backend/freshness.py:40-47` is rewritten to explain the new semantics.
 
@@ -151,145 +151,136 @@ The held branch uses the public `offset_and_override_for_tier` helper at `price_
 
 **No new constants in `price_overlay.py`.** The downgrade-safety threshold is `THRESHOLDS["comed.prices"].fresh_max_ms` from the shared module — same value the cockpit uses for its UI.
 
-### 3.5 Unified safety release (tick-counter model)
+### 3.5 Unified safety release (controller-observation wall-clock timer)
 
-Replaces the existing None-only wall-clock release path at `app.py:2402-2425` with a tick-counter that measures **consecutive missed relaxation/verification opportunities** after the price-overlay minimum hold has elapsed for the current tier.
+Replaces the existing None-only release path at `app.py:2402-2425` with a wall-clock timer measured in **controller-observation time** — not in data-source bucket time. The timer starts when the controller first observes non-fresh ComEd data AFTER min-hold has elapsed, and fires the safety release if 30 wall-clock minutes pass without the controller observing fresh data again.
+
+**Two wall clocks, only one is the release timer:**
+
+The spec carefully distinguishes:
+
+1. **Bucket / source wall clock** — `now_utc - sample.source_ts`. Used ONLY to classify the latest ComEd sample as `fresh / warn / stale` for the per-tick freshness label (§3.1). The bucket's `_time` is the data-source timestamp.
+2. **Controller / post-hold wall clock** — `now_utc - firing.nonfresh_after_hold_started_at_utc`. Used ONLY for the safety release. This is controller-observation time and starts only after min-hold has elapsed.
+
+> **Do not use `sample.source_ts` or `last_fresh_bucket_source_ts` as the safety-release clock. Those timestamps belong to the data source. The release clock is controller-observation time and starts only after min-hold has elapsed.**
+
+This is the rule that has caused this spec the most drift across review iterations. The bucket's `_time` informs the per-tick freshness label (correctly). It does NOT inform the safety-release timer (the data-source clock would count bucket aging that happened during the mandatory hold window against the controller).
 
 **Invariant:**
 
-> The safety-release counter begins incrementing only when (a) the price-overlay minimum hold has elapsed for the current tier AND (b) the controller is being prevented from relaxing — either because the recency gate refuses a proposed downgrade (stale-but-present data) or because there is no sample at all to verify the tier with (no data). Each consecutive missed opportunity adds one tick. The counter resets the moment a missed opportunity does NOT occur. Safety release fires after 30 consecutive missed opportunities.
+> The safety-release timer (`firing.nonfresh_after_hold_started_at_utc`) is set on the first tick where (a) min-hold has elapsed for the current non-normal tier AND (b) the current ComEd sample is non-fresh (either `None` or `freshness != "fresh"`). It stays set across subsequent non-fresh post-hold ticks. Any fresh sample clears it. Any return to normal tier clears it. Any min-hold-not-elapsed state clears it (defensively — should be unreachable in practice since min-hold restarts on upgrade). Safety release fires when `now_utc - firing.nonfresh_after_hold_started_at_utc >= PRICE_FEED_STALE_THRESHOLD` (30 min).
 
-**Why "missed relaxation/verification" and not "missed downgrade":** when `sample is None`, we cannot prove the state machine would have proposed a downgrade — we just can't verify the tier is still warranted. Both cases (stale-with-would-downgrade AND no-data-at-all) count as opportunities lost because the controller is preserving tier without confirmation. "Missed relaxation/verification opportunity" captures both.
-
-**Counter update — full condition table (one row applies per tick):**
-
-| Condition | Counter behavior | Reasoning |
-|-----------|------------------|-----------|
-| `prev_tier == NORMAL_TIER_NAME` | Reset to 0 | At normal, counter is irrelevant. |
-| `not min_hold_elapsed` | Reset to 0 | Counter does NOT count anything during min-hold. By design — we don't care about freshness while min-hold itself is blocking any downgrade. This is the user's "we don't count the 15-min-old bucket at min-hold expiry against us" semantic. |
-| `sample is None` | Increment | No data — cannot verify tier is still warranted. The ComEd-hard-down failure mode. |
-| `sample.freshness == "fresh"` | Reset to 0 | Fresh data observed this tick, regardless of state machine outcome. Feed is alive; counter restarts. |
-| `sample stale AND state machine would propose downgrade` | Increment | The recency gate is actively blocking a relaxation the controller would otherwise have made. Literal missed opportunity. |
-| `sample stale AND state machine would propose hold` (price still above release threshold) | Reset to 0 | Fresh data would ALSO produce hold this tick. Nothing was missed — the controller is doing the right thing for the wrong reason, but the outcome is identical. |
-| `sample stale AND state machine would propose upgrade` (price spike crossed a higher trigger) | Reset to 0 | Upgrades fire regardless of staleness (no gate refuses upgrades). Tier just changed; new min-hold window starts; counter is moot. |
-
-**Implementation: tick-counter and gate live next to each other in `_evaluate_layer_inputs`.** The state machine's PROPOSAL (before the gate runs) is needed for the counter's `is_would_downgrade` check, so we compute the proposal first, then apply the counter logic, then apply the gate.
+**Timer update rule — per tick (in priority order):**
 
 ```python
-# Inside _evaluate_layer_inputs, replacing the existing wall-clock release path.
+# Inside _evaluate_layer_inputs.
 prev_tier = firing.price_overlay_state.current_tier
-min_hold_elapsed = _hold_elapsed(
+min_hold_elapsed = hold_elapsed(
     firing.price_overlay_state, now_utc, DEFAULT_MINIMUM_HOLD_MINUTES,
 )
 
-# Update last-fresh field (used by audit telemetry, §3.6 — independent of the counter).
+# Update last-fresh field (used by audit telemetry, §3.6 — independent of this timer).
 if sample is not None and sample.freshness == "fresh":
     firing.last_fresh_bucket_source_ts = sample.source_ts
 
-# Compute the state machine's PROPOSAL (pre-gate) if we have a sample.
-if sample is not None:
-    proposed_tier, proposed_state = evaluate_price_overlay(
-        sample.cents_per_kwh, firing.price_overlay_state, now_utc,
-    )
-    proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
-    is_would_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
-else:
-    proposed_tier = None
-    proposed_state = firing.price_overlay_state
-    is_would_downgrade = False
+# Safety-release timer update — wall-clock controller-observation time.
+sample_is_fresh = sample is not None and sample.freshness == "fresh"
 
-# Counter update — three reset conditions, two increment conditions.
 if prev_tier == NORMAL_TIER_NAME or not min_hold_elapsed:
-    firing.ticks_without_fresh_after_hold_elapsed = 0
-elif sample is None:
-    firing.ticks_without_fresh_after_hold_elapsed += 1
-elif sample.freshness == "fresh":
-    firing.ticks_without_fresh_after_hold_elapsed = 0
-elif is_would_downgrade:
-    firing.ticks_without_fresh_after_hold_elapsed += 1
-else:
-    # Stale sample but state machine would propose hold OR upgrade.
-    # Fresh data would not have produced a different outcome. Nothing missed.
-    firing.ticks_without_fresh_after_hold_elapsed = 0
+    # No release possible — clear the timer.
+    firing.nonfresh_after_hold_started_at_utc = None
+elif sample_is_fresh:
+    # Fresh observation — clear the timer.
+    firing.nonfresh_after_hold_started_at_utc = None
+elif firing.nonfresh_after_hold_started_at_utc is None:
+    # First post-hold non-fresh observation — start the timer NOW
+    # (controller-observation time, not bucket time).
+    firing.nonfresh_after_hold_started_at_utc = now_utc
+# else: timer was already set on a prior tick; leave it alone.
 
 # Safety release check.
-if (firing.ticks_without_fresh_after_hold_elapsed >= PRICE_FEED_STALE_TICK_THRESHOLD
+if (firing.nonfresh_after_hold_started_at_utc is not None
+        and now_utc - firing.nonfresh_after_hold_started_at_utc >= PRICE_FEED_STALE_THRESHOLD
         and prev_tier != NORMAL_TIER_NAME):
-    # Two reason codes preserve the forensic split — what kind of failure
-    # accumulated the 30 missed opportunities?
+    # Two reason codes preserve the forensic split.
     release_reason = (
         PriceOverlayCode.RELEASED_NO_DATA if sample is None
         else PriceOverlayCode.RELEASED_PERSISTENT_STALE
     )
     log("warn", "price_feed_stale_tier_released",
         reason=release_reason.value,
-        ticks_accumulated=firing.ticks_without_fresh_after_hold_elapsed)
+        timer_started_at=firing.nonfresh_after_hold_started_at_utc.isoformat(),
+        wall_clock_elapsed_sec=(now_utc - firing.nonfresh_after_hold_started_at_utc).total_seconds())
     firing.price_overlay_state = PriceOverlayState(
         current_tier=NORMAL_TIER_NAME,
         triggered_at_utc=None,
     )
-    firing.ticks_without_fresh_after_hold_elapsed = 0  # reset after release
+    firing.nonfresh_after_hold_started_at_utc = None  # clear after release
     # ... outputs set to normal
     safety_release_fired = True
 
 elif sample is not None:
-    # Apply the gate to the state machine's proposal.
-    if is_would_downgrade and sample.freshness != "fresh":
-        # Recency gate refuses downgrade. Do not mutate state; hold prev_tier.
+    # Apply the per-tick freshness gate (separate mechanism from the safety release).
+    proposed_tier, proposed_state = evaluate_price_overlay(
+        sample.cents_per_kwh, firing.price_overlay_state, now_utc,
+    )
+    proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
+    is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
+
+    if is_downgrade and not sample_is_fresh:
+        # Recency gate refuses downgrade. Hold prev_tier.
         downgrade_gate_held = True
         price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
         price_tier_name = prev_tier
     else:
-        # Apply state machine proposal (upgrade / hold / fresh-data downgrade).
+        # Apply state machine proposal.
         downgrade_gate_held = False
         firing.price_overlay_state = proposed_state
         active_tier = proposed_tier
         # ... use proposed tier's outputs
 
 else:
-    # sample is None, counter not yet at threshold: carry-forward (preserve tier).
+    # sample is None, timer not yet at 30-min threshold: carry-forward.
     price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
     price_tier_name = prev_tier
 ```
 
-**Module constant** in `app.py` near the existing `PRICE_FEED_STALE_THRESHOLD` block:
+**No new threshold constant.** Reuses the existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)` at `app.py:2330` — same 30-min wall-clock duration the pre-fix release used, just measured from a CORRECTED start point (controller-observation of first post-hold non-fresh, not bucket source_ts).
 
-```python
-# Safety-release tick threshold. Counter at 30 ≈ 30 min of consecutive
-# missed relaxation/verification opportunities at the 1-min tick cadence
-# documented in app.py:9. See §3.5 of the design spec for the full
-# condition table; do not collapse this into a wall-clock comparison.
-PRICE_FEED_STALE_TICK_THRESHOLD = 30
-```
+**Stale-with-any-state-machine-outcome does NOT reset the timer.** Earlier draft (third-pass review) had a tick-counter that reset on "stale but state machine would propose hold." That was wrong per operator clarification: if data is non-fresh, it is non-fresh, regardless of what the stale price value would propose. The state machine's proposal informs the per-tick GATE decision (downgrade vs. hold), but not the safety timer. If the feed has gone 30 wall-clock minutes without producing fresh data after min-hold expiry, that IS the feed-broken signal we're protecting against — the stale bucket's price value doesn't change that.
 
-**Worst-case persistence bound:** ~60 wall-clock minutes from any tier trigger to forced safety release, assuming ticks fire on schedule. Under degraded tick cadence (Control4 lag, slow Influx queries), the wall-clock duration can be longer — the counter still requires 30 actual scheduler-tick executions of missed opportunities, regardless of how long they take. This is the safer property: a hung scheduler doesn't accidentally fire a release.
+**Why now_utc, not min-hold-expiry-time, as the timer start:** if data is fresh at min-hold expiry, the timer doesn't start (no problem yet). If data becomes non-fresh later, the timer starts AT THAT MOMENT — not at min-hold expiry. This gives the operator a clean property: "if you're staring at a non-fresh-data situation post-hold, the safety release is exactly 30 wall-clock minutes from when you first noticed."
 
-**Reset rules summary** (explicitly enumerated per the user's request; all four are encoded in the condition table above):
+**Worst-case persistence bound:** ~60 wall-clock minutes from tier trigger to forced safety release in the worst case (data fresh at min-hold expiry, goes non-fresh immediately after at T=30, safety release fires at T=60). If data goes non-fresh later than min-hold expiry, the wall-clock to release is longer (still 30 min from first post-hold non-fresh observation). If data is non-fresh DURING min-hold but becomes fresh again post-hold, the timer never starts and no release fires.
 
-1. **Fresh ComEd sample arrives** → counter = 0 (feed is alive).
-2. **Tier returns to normal** (any path: natural downgrade, safety release, hypothetical future paths) → counter = 0 (next iteration enters the `prev_tier == NORMAL_TIER_NAME` branch).
-3. **New protective tier upgrade fires** → counter = 0 (the tick that fires the upgrade enters the `sample.freshness == "fresh"` reset branch; the NEXT tick enters the `not min_hold_elapsed` reset branch — both reset paths cover it).
-4. **Stale sample but state machine would-hold-or-upgrade** → counter = 0 (no relaxation opportunity exists this tick).
+**Reset rules (explicitly enumerated per operator's request; all encoded in the timer update rule above):**
 
-Implementation note: the counter is stored on `FiringState` as `ticks_without_fresh_after_hold_elapsed: int = 0`. In-memory state; not persisted across scheduler restarts. On restart, the counter starts fresh from 0 and re-accumulates from the next tick — which is the correct conservative behavior (don't release on a freshly-restarted scheduler that hasn't yet observed enough ticks to be confident the feed is broken).
+1. **Fresh ComEd sample arrives** (regardless of when, regardless of state machine outcome) → timer cleared to `None`.
+2. **Tier returns to normal** (any path: natural downgrade, safety release, hypothetical future paths) → timer cleared via the `prev_tier == NORMAL_TIER_NAME` branch.
+3. **Min-hold not yet elapsed** (covers cold start, new upgrade, hypothetical other resets) → timer cleared via the `not min_hold_elapsed` branch.
+4. **No "stale-would-hold" reset** — explicitly removed per operator clarification. Any non-fresh post-hold sample either starts or continues the timer.
+
+**Implementation note on FiringState:** the timer is stored as `nonfresh_after_hold_started_at_utc: Optional[datetime] = None`. In-memory state; not persisted across scheduler restarts. On restart, the timer is `None`; the next tick re-evaluates the state from fresh observations. This is the correct conservative behavior — a freshly-started scheduler shouldn't fire a release based on stale timer state from before the restart.
+
+**Resilience to delayed scheduler execution:** because the timer is wall-clock based (not tick-counter based), a scheduler that ticks irregularly still releases at the right wall-clock moment. If Control4 lag causes the scheduler to skip ticks between minute 50 and minute 65 in a sustained-non-fresh scenario, the first tick at T=65 still observes `now_utc - timer_start >= 30 min` and fires the release. The release fires when the controller next gets to evaluate, regardless of how long the gap was.
 
 ### 3.6 Audit telemetry (corrected) — three named concepts, one source of truth
 
 The scheduler maintains THREE distinct mechanisms that all reflect "how is the ComEd feed doing?" but answer different questions with different thresholds. They are NOT interchangeable. To prevent conflation during implementation, each has a separate name and lives in a separate code path:
 
-| Concept | Variable / expression | Threshold / mechanism | Where used |
-|---------|----------------------|------------------------|------------|
-| **Per-tick downgrade actionability** | `sample.freshness == "fresh"` | 7 min wall age of the latest bucket (`THRESHOLDS["comed.prices"].fresh_max_ms`) | Recency gate inside `_evaluate_layer_inputs`; cockpit per-tick freshness indicator |
-| **Broad feed health** | `price_feed_healthy` (renamed from `price_ok`) | 30 min wall-clock since last fresh bucket (`now - last_fresh_bucket_source_ts <= PRICE_FEED_STALE_THRESHOLD`) | `hvac.input_feed_health` audit row (tag `feed=price`, field `healthy`); `required_feeds_for_arm_mode` B-active classification |
-| **Safety release trigger** (§3.5) | `firing.ticks_without_fresh_after_hold_elapsed` | 30 consecutive missed relaxation/verification opportunities post-min-hold (tick counter) | Tier safety release inside `_evaluate_layer_inputs` |
+| Concept | Variable / expression | Clock used | Where used |
+|---------|----------------------|------------|------------|
+| **Per-tick downgrade actionability** | `sample.freshness == "fresh"` | Data-source wall clock: `now - sample.source_ts <= 7 min` | Recency gate inside `_evaluate_layer_inputs`; cockpit per-tick freshness indicator |
+| **Broad feed health** | `price_feed_healthy` (renamed from `price_ok`) | Data-source wall clock: `now - last_fresh_bucket_source_ts <= 30 min` | `hvac.input_feed_health` audit row (tag `feed=price`, field `healthy`); `required_feeds_for_arm_mode` B-active classification |
+| **Safety release trigger** (§3.5) | `firing.nonfresh_after_hold_started_at_utc` | **Controller-observation wall clock**: `now - nonfresh_after_hold_started_at_utc >= 30 min` (timer set on first post-hold non-fresh observation) | Tier safety release inside `_evaluate_layer_inputs` |
 
-All three derive from observation of the same underlying ComEd feed but capture different operational questions:
+All three reflect the same underlying ComEd feed but capture different operational questions on different clocks:
 
-- **Per-tick actionability** answers "right now, is THIS tick's data new enough to act on?" Direct comparison of bucket age to a wall-clock cutoff.
-- **Broad feed health** answers "has the feed been broadly healthy over the recent window?" Wall-clock comparison. Stays True during normal yellow-cycle ticks (where the per-tick actionability is False for ~74% of the cycle but the feed itself is publishing fine). Independent of safety release state.
-- **Safety release trigger** answers "have we accumulated 30 consecutive missed opportunities to relax tier post-min-hold?" Counter-based. Independent of the wall-clock-since-last-fresh — see §3.5 for the full condition table. The counter and the wall-clock can diverge: the counter only counts ACTIVE BLOCKING (gate refusing a would-be downgrade) plus no-data ticks; wall-clock counts any time-passage.
+- **Per-tick actionability** answers "right now, is THIS tick's data new enough to act on?" Direct comparison of the latest bucket's age against a 7-min wall-clock cutoff. Data-source clock.
+- **Broad feed health** answers "has the feed been broadly healthy over the recent window?" Compares the last-fresh bucket's `source_ts` against a 30-min wall-clock cutoff. Data-source clock. Stays True during normal yellow-cycle ticks (the per-tick actionability is False for ~74% of the cycle but the feed itself is publishing fine within the broader 30-min window). Independent of safety release state.
+- **Safety release trigger** answers "have we observed 30 wall-clock minutes of continuous non-fresh data after min-hold expired?" Controller-observation clock — starts when the controller first NOTICES the post-hold non-fresh state, not when the bucket's `source_ts` indicates staleness. See §3.5 for the timer's full update rule and the rationale for the two-wall-clocks distinction.
 
-**Why an implementer can't accidentally conflate them:** they have three different names, three different mechanisms, three different code paths. The named-split that prevented the pass-1 regression now extends to a third concept (the counter). An implementer writing `price_feed_healthy = sample.freshness == "fresh"` (the pass-1 bug) or `price_feed_healthy = firing.ticks_without_fresh_after_hold_elapsed == 0` (a plausible new bug) both fail an obvious smell-test because the names announce their semantics.
+**Why an implementer can't accidentally conflate them:** three different names, three different code paths, two different clocks. The data-source clock answers freshness questions ("is the data new enough?"); the controller-observation clock answers safety-release questions ("how long have we been stuck post-hold without fresh data?"). An implementer writing `nonfresh_after_hold_started_at_utc = last_fresh_bucket_source_ts` (collapsing the two clocks into one) would fail the spec's explicit guard rule: *Do not use `sample.source_ts` or `last_fresh_bucket_source_ts` as the safety-release clock.*
 
 The per-tick question — "is this specific tick's bucket new enough to safely base a downgrade decision on?" — is answered directly by the freshness label that `fetch_latest_comed` already computed. The recency gate uses it inline.
 
@@ -383,9 +374,9 @@ Cockpit operators will observe the new `bucket_age_sec` field on `decision_trace
 
 | File | Changes |
 |------|---------|
-| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Add `FiringState.ticks_without_fresh_after_hold_elapsed: int = 0` for the §3.5 safety-release counter. Add module constant `PRICE_FEED_STALE_TICK_THRESHOLD = 30` near the existing `PRICE_FEED_STALE_THRESHOLD` block. Update `_evaluate_layer_inputs` (sample branching, **tick-counter safety release per §3.5 — replaces old wall-clock release**, caller-side recency gate using `offset_and_override_for_tier` in the held branch, `downgrade_gate_held` flag threaded to trace classifier). Update 3 audit-log callers (mechanical unwrap). Update `run_schedule_check` audit derivation: `price_ok` → `price_feed_healthy` local variable, derives from `last_fresh_bucket_source_ts` vs `PRICE_FEED_STALE_THRESHOLD` (wall-clock, independent of the new counter). Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches with `downgrade_gate_held` short-circuit). Rename `required_feeds_for_arm_mode` parameter `price_ok` → `price_feed_healthy`. Import `tier_priority` from `price_overlay` for the downgrade-detection check. |
+| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Add `FiringState.nonfresh_after_hold_started_at_utc: Optional[datetime] = None` for the §3.5 safety-release timer (controller-observation wall clock). NO new threshold constant — the existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)` at `app.py:2330` is reused unchanged. Update `_evaluate_layer_inputs` (sample branching, **controller-observation wall-clock safety release timer per §3.5 — replaces old data-source-clock release**, caller-side recency gate using `offset_and_override_for_tier` in the held branch, `downgrade_gate_held` flag threaded to trace classifier). Update 3 audit-log callers (mechanical unwrap). Update `run_schedule_check` audit derivation: `price_ok` → `price_feed_healthy` local variable, derives from `last_fresh_bucket_source_ts` vs `PRICE_FEED_STALE_THRESHOLD` (data-source clock — broad-health question, independent of the safety timer). Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches with `downgrade_gate_held` short-circuit). Rename `required_feeds_for_arm_mode` parameter `price_ok` → `price_feed_healthy`. Import `tier_priority` and `hold_elapsed` from `price_overlay` for the downgrade-detection check and the min-hold-elapsed gate. |
 | `deploy/energy-stack/hvac-scheduler/Dockerfile` | Add `freshness.py` to the `COPY` line at `Dockerfile:10`. Without this, the container build succeeds but runtime fails on import. |
-| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` (drop the leading underscore so the caller can use it for the downgrade-detection check). No new module constant. |
+| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` AND `_hold_elapsed` as `hold_elapsed` (drop the leading underscores so the caller can use them for the downgrade-detection check and the min-hold-elapsed gate respectively). No new module constant. |
 | `deploy/energy-stack/hvac-scheduler/decision_codes.py` | Rename existing `STALE_FEED_RELEASED` → `RELEASED_NO_DATA` for consistency. Append two new enum values: `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_PERSISTENT_STALE`. |
 | `tools/cockpit/backend/freshness.py` | Update `"comed.prices"` threshold to 7/16/30 min (was 11/16/30). Rewrite the header comment at lines 40-47 to explain the new semantics (7-min = controller's actionability boundary). Header docstring also updated to point to canonical scheduler copy. Content otherwise byte-identical. |
 | `tools/cockpit/frontend/src/freshness.ts` | Same 7/16/30 threshold update (still hand-paired). Comment block updated similarly. |
@@ -428,59 +419,75 @@ Optional[PriceSample(cents_per_kwh, source_ts, freshness)]
     └── 3 audit-log callers (unwrap to float, pass to write_decision)
 ```
 
-### 5.2 Safety bound walkthroughs (tick-counter model)
+### 5.2 Safety bound walkthroughs (controller-observation wall-clock timer)
 
-The safety release is opportunity-based (per §3.5): the counter advances only when min-hold has elapsed AND a relaxation/verification opportunity is being missed. The walkthroughs below assume 1-min ticks firing on schedule (no Control4 lag).
+The safety release timer measures controller-observation wall-clock time after the first post-hold non-fresh observation (per §3.5). It is NOT based on the bucket's `_time` and does NOT count bucket aging that happened during min-hold against the controller.
 
-**Worked example — illustrates the user's "we don't count anything during min-hold" semantic and the missed-opportunity reset behavior:**
+**Worked example — feed fails mid-hold; release fires 30 min after first post-hold non-fresh observation:**
 
 ```
-T=0   min   Tier upgrades to elevated. counter = 0.
-T=0-29      Min-hold active. counter stays 0 (reset branch: not min_hold_elapsed).
+T=0   min   Tier upgrades to elevated. triggered_at_utc = T=0.
+            nonfresh_after_hold_started_at_utc = None.
 T=22  min   Last fresh ComEd bucket arrives. last_fresh_bucket_source_ts = T=22.
-T=30  min   Min-hold elapses. Latest bucket from T=22, 8 min old (warn).
-            State machine evaluates: price 18¢ ≥ release 8¢ → propose HOLD.
-            is_would_downgrade = False. counter STAYS at 0 (no missed opportunity).
-T=30-44     Stale data continues. Price stays 18¢. State machine proposes hold
-            every tick. counter stays at 0 — fresh data wouldn't produce a
-            different outcome.
-T=45  min   Stale data; bucket from T=22 now shows price dropped to 2¢ inside
-            the bucket (or a slightly newer warn-aged bucket shows 2¢). State
-            machine proposes DOWNGRADE. Gate refuses (sample not fresh).
-            is_would_downgrade = True. counter = 1.
-T=46-74     Same condition persists. counter increments each tick: 2, 3, ... 30.
-T=74  min   counter reaches 30. Safety release fires.
-            Reason code: RELEASED_PERSISTENT_STALE (sample non-None).
-            Tier returns to NORMAL. counter resets to 0.
+T=22+ min   ComEd API breaks. No new buckets arrive.
+T=23-29     Min-hold still active. Bucket from T=22 ages 1, 2, ... 7 min.
+            Per the timer rule: "not min_hold_elapsed" branch → timer stays None.
+            (We don't count bucket aging during min-hold against the controller.)
+T=30  min   Min-hold elapses. Latest bucket from T=22, age 8 min → freshness=warn.
+            Timer was None. Sample is not fresh AND min-hold elapsed AND non-normal tier.
+            Per the rule: "nonfresh_after_hold_started_at_utc is None → set to now_utc."
+            nonfresh_after_hold_started_at_utc = T=30. (Controller-observation time.)
+T=30-59     Non-fresh continues. Timer stays at T=30.
+            Per-tick recency gate refuses any proposed downgrade (sample not fresh).
+T=60  min   now - timer = 30 min. Safety release fires.
+            Reason code: RELEASED_PERSISTENT_STALE (sample is non-None warn/stale)
+                     or  RELEASED_NO_DATA (sample is None, bucket aged out of Influx).
+            Tier returns to NORMAL. Timer cleared to None.
 ```
 
-**Worst-case bound (no fresh data ever after T=0, min-hold elapses at T=30):**
+**Total persistence: 60 wall-clock minutes from upgrade trigger** — the operator's stated upper bound (30 min min-hold + 30 min timer). The timer's 30-min window starts at min-hold expiry exactly because that's when the controller first OBSERVED non-fresh data post-hold; the data-source clock (bucket aging during min-hold) is irrelevant.
+
+**Variant: data fresh at min-hold expiry, goes non-fresh later:**
 
 ```
-T=0   min   Tier upgrades to elevated. last_fresh=T=0 (the trigger itself).
-T=0-29      Min-hold active. counter = 0.
-T=30  min   Min-hold elapses. Sample either None (ComEd hard-down) or stale
-            with would-downgrade. counter starts incrementing.
-T=30-59     counter increments each tick.
-T=59  min   counter = 30. Safety release fires.
-            Reason code: RELEASED_NO_DATA (sample None) or
-            RELEASED_PERSISTENT_STALE (sample stale + would-downgrade).
+T=0   min   Upgrade. triggered_at_utc = T=0.
+T=0-29      Data flowing fresh.
+T=29  min   Last fresh ComEd bucket arrives. last_fresh_bucket_source_ts = T=29.
+T=30  min   Min-hold elapses. Bucket from T=29 is 1 min old, fresh.
+            Per the timer rule: sample is fresh → timer cleared (still None).
+T=30-36     Bucket ages 1, 2, ... 7 min. Sample stays fresh through T=36 (age 7 min).
+T=37  min   Bucket age 8 min → freshness=warn. First post-hold non-fresh observation.
+            Timer = T=37.
+T=37-66     Timer at T=37. Non-fresh continues.
+T=67  min   now - timer = 30 min. Safety release fires.
 ```
 
-**Worst-case total persistence: ~60 wall-clock minutes from tier trigger to forced release** under nominal 1-min tick cadence (30 min min-hold + 30 ticks of accumulated missed opportunities). Under degraded tick cadence (Control4 lag, slow Influx queries), the wall-clock duration is longer because the counter only advances on actual tick executions.
+**Total persistence: 67 wall-clock minutes** — longer than the 60-min worst case because the timer didn't start until non-fresh was first observed at T=37. The operator gets MORE grace period when fresh data was available at min-hold expiry — a strictly more conservative property than the data-source-clock approach.
 
-**The pre-fix-third-pass "typical case is ~31 min" walkthrough has been deleted.** Under tick-counter semantics, "feed dies at T=5" produces the SAME ~60 min total because the counter doesn't start until min-hold expires at T=30, then needs 30 more missed-opportunity ticks regardless of how stale the data was during the hold. There is no "typical case shorter than 60 min" under this model — the persistence bound is set by the counter accumulation post-min-hold, not by wall-clock-since-data-went-stale.
+**Resilience to delayed scheduler execution:**
+
+```
+T=30  min   Min-hold elapses. Sample non-fresh. Timer = T=30.
+T=30-50     Ticks fire normally. Timer still T=30.
+T=50  min   Control4 lag causes 15-min hang. Scheduler blocked from T=50 to T=65.
+T=65  min   Scheduler resumes. First tick at T=65.
+            now - timer = 35 min. Already past the 30-min threshold.
+            Safety release fires on this tick.
+```
+
+The wall-clock timer fires correctly even when ticks are delayed — the controller releases as soon as it gets to evaluate, regardless of how long the gap was.
 
 ### 5.3 Failure-mode coverage
 
-| Scenario | Counter mechanism | Time to release (nominal tick cadence) |
-|----------|-------------------|----------------------------------------|
-| ComEd API hard-down (sample = None for sustained period) | counter increments on every post-min-hold tick where sample is None | ~30 ticks after min-hold elapses (so ≥30 min if outage starts at/before min-hold expiry) |
-| Influx outage | Same as above (sample is None). | ~30 ticks after min-hold |
-| Poller container crash (no Docker restart) | Same as above. | ~30 ticks after min-hold |
-| ComEd publishes with sustained lag (always warn/stale) | counter increments only on ticks where stale sample + would-downgrade. | Variable — depends on price trajectory in the stale data. If price stays high, counter stays at 0 (no missed opportunities) and release never fires. If price drops in stale data, counter accumulates over 30 ticks. |
-| Brief publish jitter (one missed cycle, 10-15 min between fresh buckets) | counter resets when next fresh bucket arrives. | N/A — recovers naturally |
-| Stale data showing price still high (above release threshold) | counter resets each tick — no missed opportunity. | N/A — controller is correctly holding tier even with stale data |
+| Scenario | Timer behavior | Time to release |
+|----------|----------------|-----------------|
+| ComEd API hard-down at or before min-hold expiry | Timer starts at T=30 (min-hold expiry); fires at T=60. | 60 min from upgrade trigger; 30 min from min-hold expiry |
+| ComEd API fails AFTER min-hold expiry | Timer starts when sample first observed non-fresh post-hold; fires 30 min later. | 30 min from first post-hold non-fresh observation (typically T=API-fail + ~7 min while latest bucket ages out of fresh) |
+| Influx outage | Sample is None. Timer starts on first post-hold None observation. Fires 30 min later. | Same as ComEd hard-down |
+| Poller container crash (no Docker restart) | Same as Influx outage from the scheduler's perspective. | Same |
+| ComEd publishes with sustained lag (always warn/stale) | Timer starts on first post-hold non-fresh observation; fires 30 min later if no fresh data observed in between. | 30 min from first post-hold observation |
+| Brief publish jitter (one missed cycle, 10-15 min between fresh buckets) | Timer may set briefly, then clear when next fresh sample arrives. | N/A — recovers naturally |
+| Scheduler tick delays (Control4 lag, slow Influx queries) | Wall-clock-based: fires correctly on next tick after threshold crossed. | Possibly delayed by the lag duration, but still wall-clock-anchored |
 
 ## 6. Cutoff calibration
 
@@ -595,31 +602,33 @@ Initial marker: `pytest.mark.xfail(strict=True)`. Marker removed in the same com
   - `firing.last_fresh_bucket_source_ts = now - 31min`, sample is None → `price_feed_healthy=False`.
   - `firing.last_fresh_bucket_source_ts = None` (cold start) → `price_feed_healthy=False`.
 
-### 8.6 Safety release counter tests (tick-counter model per §3.5)
+### 8.6 Safety release timer tests (controller-observation wall-clock model per §3.5)
 
-These tests pin the counter's exact behavior so an implementer cannot accidentally build the simpler-but-wrong "any stale tick after hold expiry increments" version. Tests live in `test_hvac_scheduler.py`.
+These tests pin the timer's exact behavior — specifically that the clock is controller-observation time (not data-source `source_ts`), that any non-fresh post-hold sample starts the timer (regardless of what the stale price would propose), and that the release fires at the 30-min wall-clock mark. Tests live in `test_hvac_scheduler.py` and use `freezegun` (or equivalent time-control) to advance `now_utc` deterministically.
 
-**Counter increment conditions:**
+**Timer set / clear conditions:**
 
-- `test_counter_does_not_increment_during_min_hold`: tier is elevated, min-hold has NOT elapsed, sample is stale → counter stays at 0.
-- `test_counter_does_not_increment_at_normal_tier`: tier is normal → counter stays at 0 regardless of sample state.
-- `test_counter_does_not_increment_when_stale_but_state_machine_would_hold`: tier elevated, min-hold elapsed, sample stale, price still above release threshold (state machine would propose HOLD) → counter stays at 0 (no missed relaxation opportunity).
-- `test_counter_increments_when_stale_and_state_machine_would_downgrade`: tier elevated, min-hold elapsed, sample stale, price below release threshold → counter increments by 1.
-- `test_counter_increments_when_sample_is_none`: tier elevated, min-hold elapsed, sample is None → counter increments by 1 (no-data verification miss).
-
-**Counter reset conditions:**
-
-- `test_counter_resets_on_fresh_sample`: counter at any non-zero value, fresh sample arrives → counter = 0 (regardless of state machine outcome).
-- `test_counter_resets_on_tier_return_to_normal`: counter at non-zero, safety release fires or natural downgrade returns tier to normal → counter = 0.
-- `test_counter_resets_on_new_protective_upgrade`: counter at non-zero, sample shows price crossing higher tier's trigger, upgrade fires → counter = 0 (new min-hold window starts).
-- `test_counter_resets_on_stale_would_hold_after_accumulation`: counter at 15, sample stays stale but price spike returns price > release threshold → counter = 0 (interrupts the missed-opportunity streak).
+- `test_timer_does_not_set_during_min_hold`: tier elevated, min-hold has NOT elapsed, sample is stale → `nonfresh_after_hold_started_at_utc` stays `None`. (The data-source clock would have started here in the wrong implementation; the controller-observation clock correctly defers until min-hold expires.)
+- `test_timer_does_not_set_at_normal_tier`: tier is normal → timer stays `None` regardless of sample state.
+- `test_timer_sets_on_first_post_hold_nonfresh_with_stale_sample`: tier elevated, min-hold elapsed, sample non-fresh (warn or stale), timer was `None` → timer = `now_utc` exactly (NOT `sample.source_ts`).
+- `test_timer_sets_on_first_post_hold_nonfresh_with_none_sample`: tier elevated, min-hold elapsed, sample is None, timer was `None` → timer = `now_utc`. (No-data verification miss.)
+- `test_timer_clears_on_fresh_sample`: timer at any non-None value, fresh sample arrives → timer cleared to `None` regardless of state machine outcome.
+- `test_timer_clears_on_tier_return_to_normal`: timer at non-None, safety release fires or natural downgrade returns tier to normal → timer cleared.
+- `test_timer_clears_on_new_protective_upgrade`: timer at non-None, sample shows price crossing higher tier's trigger, upgrade fires → next tick min-hold restarts; timer cleared via the `not min_hold_elapsed` branch.
+- `test_timer_does_NOT_clear_on_stale_would_hold`: timer at non-None, sample stays stale but stale price value is above release threshold (state machine would propose HOLD) → timer stays non-None. **This is the critical anti-regression test** — earlier draft (third-pass) had this resetting; operator clarification says non-fresh is non-fresh regardless of what stale price would propose.
 
 **Boundary and release tests:**
 
-- `test_safety_release_at_29_ticks_still_held`: counter = 29, sample stale + would-downgrade → tier preserved, counter increments to 30 next tick.
-- `test_safety_release_at_30_ticks_fires_persistent_stale_reason`: counter reaches 30 with sample stale (non-None) → release fires; reason code = `RELEASED_PERSISTENT_STALE`; tier returns to normal; counter resets to 0; loud warn-level log emitted.
-- `test_safety_release_at_30_ticks_fires_no_data_reason`: counter reaches 30 with sample is None → release fires; reason code = `RELEASED_NO_DATA`; same release behavior otherwise.
-- `test_safety_release_does_not_fire_at_normal_tier`: counter at 30 (would not naturally happen but injected for test) AND tier is normal → release does NOT fire (the `prev_tier != NORMAL_TIER_NAME` guard).
+- `test_safety_release_at_29_min_59_sec_still_held`: timer set 29 min 59 sec ago, sample still non-fresh → tier preserved, no release.
+- `test_safety_release_at_30_min_exactly_fires`: timer set EXACTLY 30 min ago (`now_utc - timer == PRICE_FEED_STALE_THRESHOLD`) → release fires (uses `>=` comparison).
+- `test_safety_release_at_30_min_fires_persistent_stale_reason`: timer 30 min ago with sample non-fresh (non-None) → release fires; reason = `RELEASED_PERSISTENT_STALE`; tier returns to normal; timer cleared; loud warn-level log emitted.
+- `test_safety_release_at_30_min_fires_no_data_reason`: timer 30 min ago with sample is None → release fires; reason = `RELEASED_NO_DATA`.
+- `test_safety_release_does_not_fire_at_normal_tier`: timer set to 30+ min ago (artificially) AND tier is normal → release does NOT fire (`prev_tier != NORMAL_TIER_NAME` guard).
+
+**Resilience tests:**
+
+- `test_safety_release_fires_after_scheduler_tick_gap`: timer set at T=30; scheduler ticks at T=31, T=32, then no tick (simulated Control4 hang) until T=65. At T=65 first post-hang tick, `now_utc - timer = 35 min ≥ 30 min` → release fires immediately. This pins the wall-clock-vs-tick-count distinction; missed ticks do NOT prevent release.
+- `test_safety_release_does_not_use_data_source_clock`: scenario where `sample.source_ts` is 45 min in the past (very stale bucket) but the controller only just observed non-fresh post-hold (timer = `now_utc - 5 min`). Even though bucket is "45 min old in data-source clock," the timer (controller-observation clock) is only 5 min in → release does NOT fire. This is the explicit anti-regression test for the `Do not use sample.source_ts as the safety-release clock` guard.
 
 ### 8.7 Mock migration
 
@@ -684,6 +693,7 @@ Operational validation result is appended to this spec under §10 (Status & hist
 | 2026-05-19 | draft  | First review-iteration pass. Code-reviewer subagent surfaced 14 findings (3 critical, 5 important, 6 minor). Operator confirmation collapsed C2 (two senses of stale) by unifying cockpit and scheduler thresholds — `"comed.prices"` fresh threshold tightened from 11 min to 7 min for both consumers. C1 closed by committing `STALE_DATA_HANDOFF.md` to repo root. C3 closed by confirming no OSF lock yet — normal forward-only semantic shift. I1 closed by moving the recency gate from `evaluate_price_overlay` to the caller-side in `_evaluate_layer_inputs`, keeping the state machine freshness-agnostic. I4 closed by changing missing-`_time` from raise to log+None for supervisor-continuity. M2 closed by renaming `price_is_stale` → `price_feed_unavailable`. Minor cleanups (M1, M3-M6) applied. |
 | 2026-05-19 | draft  | Second review-iteration pass via external reviewer. Caught a regression I introduced in pass 1: making the audit-telemetry derivation use the 7-min `sample.freshness == "fresh"` would have broken `required_feeds_for_arm_mode`, mis-classifying ~74% of normal-operation ticks as B-fallback. Fix: rename the local variable `price_ok` → `price_feed_healthy` at the audit derivation site (and the `required_feeds_for_arm_mode` parameter); derive it from `last_fresh_bucket_source_ts` vs the 30-min `PRICE_FEED_STALE_THRESHOLD` (broad health), keeping `sample.freshness == "fresh"` for the per-tick downgrade gate only (per-tick actionability). Named the split explicitly in §3.6 so the same conflation cannot recur during implementation. Also closed: Dockerfile COPY line (would have broken container deploy), explicit `downgrade_gate_held` flag threaded to trace classifier (would have mis-routed gate refusals to `HELD_IN_TIER`), §4 components-table cleanups (gate tests in `test_hvac_scheduler.py` not `test_price_overlay.py`; `_fresh_sample` requires `now_utc`). |
 | 2026-05-19 | draft  | Third review-iteration pass. Operator clarified that the safety release should be tick-counter based (counting opportunities post-min-hold), not wall-clock based on `last_fresh_bucket_source_ts` — the wall-clock approach I had would have started the release timer at the last fresh bucket's `_time`, which counts bucket aging during the min-hold window against the controller. Operator's framing: "for that first 60 seconds after a mandatory 30 min tier increase hold, the clock isn't based off the last good comed poll. It could be 15 min old at that first tick but we still check each min to see if it's fresh, for 30 min." With a further refinement: increment the counter only when the gate is ACTIVELY BLOCKING a relaxation (would-be downgrade refused due to staleness) OR when sample is None — NOT when stale data would-hold-anyway. Renamed the semantic to "consecutive missed relaxation/verification opportunities." Spec changes: §3.5 rewritten as tick-counter with full condition table + worked example + reset rules; new `FiringState.ticks_without_fresh_after_hold_elapsed` field + `PRICE_FEED_STALE_TICK_THRESHOLD = 30` constant; §3.4 gate held-branch uses `offset_and_override_for_tier` (Codex P2.5); §3.6 expanded to a three-concepts table (per-tick actionability / broad feed health / safety release trigger) so all three are explicitly distinguished; §5.2 worked example replaces the wrong "typical case ~31 min" walkthrough; §8.6 expanded with counter-state tests (5 increment/reset condition tests + 4 boundary/release tests) including assertions for both release reason codes (`RELEASED_NO_DATA`, `RELEASED_PERSISTENT_STALE`). |
+| 2026-05-19 | draft  | Fourth review-iteration pass. External reviewer flagged that the third-pass tick-counter model was still wrong in two ways: (1) it could reset on "stale-would-hold," which the operator's intent rules out (any non-fresh post-hold sample should advance the timer; the stale price value doesn't change feed-staleness), and (2) it conflated "scheduler tick count" with "feed-staleness duration." Operator articulated the load-bearing distinction: **two wall clocks exist, and only one is the release timer.** The data-source clock (`now - sample.source_ts`) classifies sample freshness; the controller-observation clock (`now - firing.nonfresh_after_hold_started_at_utc`) drives the safety release. Spec changes: §3.5 fully rewritten as a controller-observation wall-clock timer (`nonfresh_after_hold_started_at_utc`) that sets on the first post-hold non-fresh observation, clears on any fresh sample / return to normal / min-hold-restart, and fires release at 30 wall-clock minutes regardless of state machine proposal. Tick counter, tick threshold, and "missed opportunities" semantic all REMOVED. New verbatim guard added: "Do not use `sample.source_ts` or `last_fresh_bucket_source_ts` as the safety-release clock." §3.6 three-concepts table updated to label each concept's clock-of-origin. §4 components-table: `ticks_without_fresh_after_hold_elapsed: int = 0` replaced with `nonfresh_after_hold_started_at_utc: Optional[datetime] = None`; new `PRICE_FEED_STALE_TICK_THRESHOLD = 30` constant REMOVED (reuses existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)`); `_hold_elapsed` exposed as public `hold_elapsed` for scheduler-side call. §5.2 walkthroughs rewritten — new worked example showing timer start at min-hold expiry, anti-regression scenario showing timer does NOT use bucket source_ts, resilience example showing timer fires correctly after delayed scheduler execution. §8.6 tests rewritten as wall-clock tests with `test_safety_release_does_not_use_data_source_clock` as the explicit anti-regression test for the two-wall-clocks distinction. §2 scope language and §3.1 threshold-note language corrected to distinguish freshness classification (data-source clock) from safety release (controller-observation clock). |
 
 Spec moves to `approved` after operator review of this revision. Then to `implementing` once the writing-plans skill produces the implementation plan and code work begins. Then to `shipped` once PR 1 merges + operational validation completes.
 
