@@ -3032,3 +3032,77 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     # (app.py:2856), one layer above _evaluate_layer_inputs. The audit
     # derivation gets its own dedicated test in Task 11 against a real
     # production helper. Keep this acceptance test focused on the gate.
+
+
+# ---- fetch_latest_comed new shape tests (spec §3.3, §8.3) ----
+
+import pytest
+
+
+def _mock_query_api_returning(records):
+    """Build a query_api mock whose .query() returns one table with the
+    given records (each a dict-like with `get_value()` and `get_time()` callables)."""
+    from unittest.mock import MagicMock
+    api = MagicMock()
+    table = MagicMock()
+    table.records = records
+    api.query = MagicMock(return_value=[table])
+    return api
+
+
+def _record(value, time):
+    """Minimal Influx record stub matching influxdb-client's interface."""
+    from unittest.mock import MagicMock
+    rec = MagicMock()
+    rec.get_value = MagicMock(return_value=value)
+    rec.get_time = MagicMock(return_value=time)
+    return rec
+
+
+def test_fetch_latest_comed_returns_PriceSample_when_row_exists():
+    from app import PriceSample, fetch_latest_comed
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    source_ts = now - timedelta(minutes=2)
+    api = _mock_query_api_returning([_record(5.25, source_ts)])
+    result = fetch_latest_comed(api, "energy", now_utc=now)
+    assert isinstance(result, PriceSample)
+    assert result.cents_per_kwh == 5.25
+    assert result.source_ts == source_ts
+    assert result.freshness == "fresh"
+
+
+def test_fetch_latest_comed_returns_None_when_no_row():
+    from app import fetch_latest_comed
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    api = _mock_query_api_returning([])
+    assert fetch_latest_comed(api, "energy", now_utc=now) is None
+
+
+def test_fetch_latest_comed_returns_None_and_logs_error_when_time_missing(caplog):
+    """Per spec §7: missing _time is malformed Influx state; log error,
+    return None (do NOT raise — supervisor-continuity invariant)."""
+    from app import fetch_latest_comed
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    api = _mock_query_api_returning([_record(5.25, None)])
+    result = fetch_latest_comed(api, "energy", now_utc=now)
+    assert result is None
+
+
+def test_fetch_latest_comed_classifies_warn_age():
+    from app import fetch_latest_comed
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    source_ts = now - timedelta(minutes=10)  # >7 fresh, <16 warn
+    api = _mock_query_api_returning([_record(8.0, source_ts)])
+    result = fetch_latest_comed(api, "energy", now_utc=now)
+    assert result is not None
+    assert result.freshness == "warn"
+
+
+def test_fetch_latest_comed_classifies_stale_age():
+    from app import fetch_latest_comed
+    now = datetime(2026, 5, 19, 19, 18, tzinfo=timezone.utc)
+    source_ts = now - timedelta(minutes=20)  # >16 warn, <30 stale
+    api = _mock_query_api_returning([_record(8.0, source_ts)])
+    result = fetch_latest_comed(api, "energy", now_utc=now)
+    assert result is not None
+    assert result.freshness == "stale"

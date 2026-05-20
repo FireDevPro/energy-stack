@@ -786,6 +786,21 @@ class Config:
 
 # ---- Influx queries --------------------------------------------------------
 
+from freshness import Freshness, classify, THRESHOLDS  # noqa: E402
+
+# PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
+# label. Per spec §3.3 — the per-tick freshness label uses the data-source
+# wall clock (now - sample.source_ts), the cockpit's `"comed.prices"` 7-min
+# threshold. Do NOT use sample.source_ts as the safety-release clock (spec §3.5).
+
+
+@dataclass(frozen=True)
+class PriceSample:
+    cents_per_kwh: float
+    source_ts: datetime  # The bucket's _time (interval-end of the 5-min window).
+    freshness: Freshness  # "fresh" | "warn" | "stale" (never "missing" — that's the None return).
+
+
 def fq_latest_forecast(bucket: str, for_period: str) -> str:
     return f'''
 from(bucket: "{bucket}")
@@ -818,12 +833,31 @@ def fetch_latest_forecast(query_api, bucket: str, for_period: str) -> dict | Non
     return rows[0]
 
 
-def fetch_latest_comed(query_api, bucket: str) -> float | None:
+def fetch_latest_comed(query_api, bucket: str, *, now_utc: datetime) -> "PriceSample | None":
+    """Read the latest comed.prices 5-min bucket, bundle value + _time + freshness.
+
+    Returns None when:
+      - No bucket exists in the 30-min Influx query window, OR
+      - The latest row has a null `_time` (malformed Influx state — log error,
+        do not raise; supervisor-continuity per spec §7).
+    """
     for table in query_api.query(fq_latest_comed_5min(bucket)):
         for record in table.records:
             v = record.get_value()
-            if v is not None:
-                return float(v)
+            if v is None:
+                continue
+            source_ts = record.get_time()
+            if source_ts is None:
+                log("error", "comed_row_missing_time",
+                    bucket=bucket, value=float(v))
+                return None
+            age_ms = int((now_utc - source_ts).total_seconds() * 1000)
+            label = classify("comed.prices", age_ms)
+            return PriceSample(
+                cents_per_kwh=float(v),
+                source_ts=source_ts,
+                freshness=label,
+            )
     return None
 
 
