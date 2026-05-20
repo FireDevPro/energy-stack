@@ -75,7 +75,7 @@ Establish enforced static type-checking on all production Python code paths in t
 - `scripts/` directory (utility code; one-shot tools; not part of the running experiment).
 - `tools/cockpit/frontend/` (TypeScript).
 - `tools/analysis/` and `tools/o2_capacity_reconstruction/` (analysis-only; could be added later as separate sub-projects).
-- `deploy/energy-stack/influx-init/` if Python (not yet verified; assume out of scope until inspected).
+- `deploy/energy-stack/influx-init/` — verified shell-only (`FROM influxdb:2.7` + shell scripts in `tasks/`; no Python). No action.
 - Renaming docker-compose SERVICE identifiers. Service names (e.g., `hvac-scheduler` in compose, in Influx tags, in Grafana queries, in Telegraf, in log labels) STAY hyphenated. Only filesystem PATHS are renamed. This preserves operator muscle memory and historical data continuity.
 
 ### 3.3 Why this scope
@@ -92,19 +92,28 @@ Three layers.
 
 ### 4.1 Layer 1: project-wide mypy config
 
-A new `pyproject.toml` at the repo root. Contains the `[tool.mypy]` section and per-module overrides.
+A new `pyproject.toml` at the repo root. Contains the `[tool.mypy]` section, per-module overrides, and the `[tool.importlinter]` adapter-boundary configuration.
 
 ```toml
 [tool.mypy]
-python_version = "3.11"
+# All service Dockerfiles use FROM python:3.13-slim. Mypy MUST match the
+# runtime Python version, not a guess. Locking 3.13 keeps version-gated
+# narrowing (Self, PEP 695 type aliases, etc.) consistent between local
+# dev, CI, and the deployed container.
+python_version = "3.13"
 strict = true
 warn_unreachable = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 plugins = ["pydantic.mypy"]
 
-# files list grows as services migrate into enforced set
-# PR 1 (infrastructure) enforces only the two freshness modules
+# files list grows as services migrate into enforced set.
+# PR 1 (infrastructure) enforces only the two freshness modules via
+# this explicit files list. As each service migrates in (PR 2 onwards),
+# the migration template removes that service's individual file entries
+# from this list — the per-service mypy invocation in run_typecheck.sh
+# then covers the whole renamed directory. Avoids double-invocation
+# (each file checked once, not twice).
 files = [
     "deploy/energy-stack/hvac-scheduler/freshness.py",
     "tools/cockpit/backend/freshness.py",
@@ -119,21 +128,48 @@ ignore_missing_imports = true
 module = "pyControl4.*"
 ignore_missing_imports = true
 
+# Test files: keep strict checks that catch real test bugs; relax
+# annotation-completeness checks that just produce bookkeeping noise
+# in mock-heavy fixtures. Specific error-code set tuned in PR 2 based
+# on what fires against the scheduler's test suite — not preemptively.
+[[tool.mypy.overrides]]
+module = ["*.test_*", "*.conftest"]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+# Other strict checks (disallow_any_generics, no_implicit_optional,
+# warn_redundant_casts, warn_return_any) remain ON for test code.
+
 # Add more overrides per-library as services are migrated in
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+# Adapter-boundary enforcement (see §5.5). Each typed adapter ships a
+# corresponding import-linter contract banning direct use of the
+# wrapped library outside the adapter module. First contract lands
+# in PR 2 with the influx_adapter.
+[tool.importlinter]
+root_packages = []
+# Populated per-service as adapters are added. Example after PR 2:
+#   root_packages = ["hvac_scheduler"]
+# with a contract block:
+#   [[tool.importlinter.contracts]]
+#   name = "Only influx_adapter may import influxdb_client"
+#   type = "forbidden"
+#   source_modules = ["hvac_scheduler"]
+#   forbidden_modules = ["influxdb_client"]
+#   ignore_imports = ["hvac_scheduler.influx_adapter -> influxdb_client"]
 ```
 
 `strict = true` enables the standard mypy strict mode (per the official mypy docs): `disallow_untyped_defs`, `disallow_incomplete_defs`, `check_untyped_defs`, `disallow_untyped_decorators`, `no_implicit_optional`, `warn_redundant_casts`, `warn_unused_ignores`, `warn_return_any`, `no_implicit_reexport`, `strict_equality`, plus a few more. We additionally enable `warn_unreachable` (catches dead-code branches) on top of strict.
 
-The `files` list is the explicit enforced set. Files NOT in this list are not type-checked. This makes the per-service rollout explicit: every addition to `files` is a deliberate PR decision.
+The `files` list is the explicit enforced set during PR 1. Files NOT in this list and not under an enforced-service directory are not type-checked. As each service migrates in, its file entries are removed from this list and the per-service mypy invocation in `run_typecheck.sh` covers the whole renamed directory.
 
 ### 4.2 Layer 2: per-service invocation script
 
-A new `deploy/energy-stack/run_typecheck.sh`. Mirrors `run_tests.sh` exactly in structure.
+A new `deploy/energy-stack/run_typecheck.sh`. Mirrors `run_tests.sh` in structure. Must be run under bash (Git Bash or WSL on Windows; native bash on Linux/macOS).
 
 ```bash
 #!/usr/bin/env bash
@@ -144,21 +180,39 @@ A new `deploy/energy-stack/run_typecheck.sh`. Mirrors `run_tests.sh` exactly in 
 # is renamed and added to the enforced set) without requiring all
 # services to migrate simultaneously.
 #
-# Exits non-zero if any enforced service fails.
+# Two target types are supported:
+#   - service_dirs: services under deploy/energy-stack/ (path is
+#     "$STACK_DIR/$svc")
+#   - repo_targets: paths relative to repo root (used for cockpit-backend
+#     and any other enforced module living outside deploy/energy-stack/)
 #
-# Usage:
+# Also runs import-linter to enforce adapter boundaries (see §5.5).
+# Exits non-zero if any enforced check fails.
+#
+# Usage (requires bash; use Git Bash or WSL on Windows):
 #   bash deploy/energy-stack/run_typecheck.sh
 
 set -euo pipefail
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$STACK_DIR/../.." && pwd)"
 
-# Services currently in the enforced set — mypy --strict must pass
-enforced=(
+# Services in deploy/energy-stack/ currently in the enforced set
+# (use underscore directory names, post-rename)
+service_dirs=(
     # populated as services migrate in via per-service PRs
 )
 
-# Services not yet migrated — listed here for visibility
+# Paths outside deploy/energy-stack/ in the enforced set
+# (relative to REPO_ROOT)
+repo_targets=(
+    # populated as non-stack modules are added; e.g.,
+    # tools/cockpit/backend  (after PR 3)
+)
+
+# Services not yet migrated — listed for visibility. The array is
+# documentation only; it is not iterated. Each entry should appear in
+# exactly one of: service_dirs (after rename + enforce), or
+# not_yet_enforced. Never both.
 not_yet_enforced=(
     hvac-scheduler
     comed-poller
@@ -175,20 +229,43 @@ not_yet_enforced=(
 
 failed=()
 
+# PR 1 transition state: enforce the two freshness modules via the
+# pyproject.toml files list. Each service-rollout PR removes its
+# freshness file entry from that list (the per-service invocation
+# below covers it).
+if [[ ${#service_dirs[@]} -eq 0 && ${#repo_targets[@]} -eq 0 ]]; then
+    echo "=== type-checking pyproject.toml files list (PR 1 bootstrap) ==="
+    if ! (cd "$REPO_ROOT" && python -m mypy); then
+        failed+=("pyproject-files")
+    fi
+fi
+
 # Per-service enforced checks (uses underscore-named dirs)
-for svc in "${enforced[@]}"; do
+for svc in "${service_dirs[@]}"; do
     echo
     echo "=== type-checking $svc ==="
-    if ! python -m mypy "$STACK_DIR/$svc"; then
+    if ! (cd "$REPO_ROOT" && python -m mypy "$STACK_DIR/$svc"); then
         failed+=("$svc")
     fi
 done
 
-# Project-wide config covers the freshness modules and cockpit-backend
-echo
-echo "=== type-checking pyproject.toml-scoped files ==="
-if ! (cd "$REPO_ROOT" && python -m mypy); then
-    failed+=("pyproject.toml-files")
+# Repo-relative targets (cockpit-backend etc.)
+for tgt in "${repo_targets[@]}"; do
+    echo
+    echo "=== type-checking $tgt ==="
+    if ! (cd "$REPO_ROOT" && python -m mypy "$tgt"); then
+        failed+=("$tgt")
+    fi
+done
+
+# Import-linter (adapter-boundary enforcement). Runs whenever any
+# enforced target exists, since contracts target enforced-service code.
+if [[ ${#service_dirs[@]} -gt 0 || ${#repo_targets[@]} -gt 0 ]]; then
+    echo
+    echo "=== checking import-linter contracts ==="
+    if ! (cd "$REPO_ROOT" && python -m importlinter); then
+        failed+=("import-linter")
+    fi
 fi
 
 echo
@@ -199,7 +276,9 @@ fi
 echo "OK"
 ```
 
-Per-service `mypy` invocation uses the directory path. Once a service is renamed and its `__init__.py` is added, mypy treats it as a proper package. Mypy reads `pyproject.toml` from the repo root automatically.
+**Lifecycle of the `files` list:** PR 1 enforces the two `freshness.py` modules via the `pyproject.toml` `files` list, because no service is yet in the enforced set. As each service migrates in via its per-service PR, that service's individual file entries are removed from `files` and added to `service_dirs` (or `repo_targets` for cockpit-backend). The per-service mypy invocation then covers the whole renamed directory. Each file gets checked exactly once.
+
+**Once `service_dirs` and `repo_targets` are both empty AND the `files` list contains entries** (PR 1 only), only the bootstrap path runs. Once any per-service target exists, the bootstrap path is skipped (preventing double-invocation).
 
 ### 4.3 Layer 3: CI workflow
 
@@ -221,7 +300,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"  # match service Dockerfiles (FROM python:3.13-slim)
       - name: Cache mypy
         uses: actions/cache@v4
         with:
@@ -229,31 +308,42 @@ jobs:
           key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Install dev dependencies
         run: pip install -r deploy/energy-stack/requirements-dev.txt
-      - name: Install service requirements (enforced services only)
+      - name: Install all service requirements
+        # Install every service's requirements.txt unconditionally so
+        # mypy can resolve typed library symbols regardless of which
+        # services are currently in the enforced set. Pip deduplicates
+        # shared deps (most services pin influxdb-client==1.48.0).
+        # Avoids the "add a service to enforced set, forget to add its
+        # requirements to CI" failure mode.
         run: |
-          # Add per-service requirements installs as services migrate in
-          pip install -r deploy/energy-stack/hvac-scheduler/requirements.txt
-          pip install -r tools/cockpit/backend/requirements.txt
+          for req in deploy/energy-stack/*/requirements.txt tools/cockpit/backend/requirements.txt; do
+            if [[ -f "$req" ]]; then
+              pip install -r "$req"
+            fi
+          done
       - name: Run type checks
         run: bash deploy/energy-stack/run_typecheck.sh
 ```
 
-`requirements-dev.txt` (existing or new) pins `mypy`, `pydantic`, any `types-*` stub packages. Service-specific requirements are installed because mypy needs to import them to resolve types from typed libraries.
+`requirements-dev.txt` (existing or new) pins `mypy>=1.10,<2.0`, `pydantic` (needed for the pydantic mypy plugin from PR 1, even before cockpit-backend migrates in), `import-linter`, and any `types-*` stub packages. Service-specific requirements are installed because mypy needs to import them to resolve types from typed libraries.
+
+**Required-check enforcement.** Adding the workflow file does NOT block merges by itself; that only happens once `Type Check` is declared a required status check in the GitHub repository's branch protection rules (or rulesets) for `main`. PR 1's acceptance criteria include configuring this: the operator adds `Type Check` to the required-checks list for `main` immediately after the workflow first runs green. Without that step the workflow runs advisorily and the entire point of the rollout is defeated.
 
 ### 4.4 File structure (end state)
 
 ```
-pyproject.toml                                      # NEW (PR 1)
+pyproject.toml                                      # NEW (PR 1): mypy + import-linter config
 deploy/energy-stack/
 ├── run_tests.sh                                    # gradually loses hyphens as services migrate
 ├── run_typecheck.sh                                # NEW (PR 1)
 ├── pytest.ini                                      # workaround docstring shrinks as services migrate
-├── requirements-dev.txt                            # may need mypy added
+├── requirements-dev.txt                            # NEW or UPDATED: mypy, pydantic, import-linter
 ├── hvac_scheduler/                                 # renamed in PR 2 from hvac-scheduler/
-│   ├── __init__.py                                 # NEW (PR 2)
-│   ├── app.py
+│   ├── __init__.py                                 # NEW (PR 2): empty; tooling marker only
+│   ├── app.py                                      # entrypoint unchanged: still `python app.py`
 │   ├── freshness.py                                # enforced after PR 1
 │   ├── influx_adapter.py                           # NEW (PR 2 — first typed adapter)
+│   ├── Dockerfile                                  # updated in PR 2: COPY line adds influx_adapter.py
 │   └── ...
 ├── comed_poller/                                   # renamed in its PR
 └── ...
@@ -262,13 +352,15 @@ tools/cockpit/backend/                              # no rename needed
 └── ...
 .github/workflows/
 ├── deploy.yml                                      # existing — unchanged
-├── check-freshness-drift.yml                       # existing — unchanged
+├── check-freshness-drift.yml                       # PATH FILTER UPDATED in PR 2 (hvac-scheduler → hvac_scheduler)
 └── typecheck.yml                                   # NEW (PR 1)
 docs/
 ├── type-debt-backlog.md                            # NEW (PR 1)
 └── plans/
     └── type-checker-plan.md                        # NEW — unified implementation plan
 ```
+
+Note: each service's `Dockerfile` may need its `COPY` line updated when new typed-adapter modules are added to that service (e.g., `influx_adapter.py` in PR 2). The migration template (§6.1) makes this explicit.
 
 ## §5. External library handling strategy
 
@@ -320,7 +412,9 @@ def project_record(record: object) -> TypedRecord:
 
 Code throughout the scheduler then imports `from influx_adapter import project_record, TypedRecord` rather than touching the untyped library directly. The adapter is the typed surface; the library is the untyped impl detail.
 
-A future tightening (tracked in the type-debt backlog, not part of this rollout) is to enforce "no direct `influxdb_client.*` import outside the adapter module" via a custom mypy rule or import-linter. For this rollout we treat the adapter as a convention.
+**The adapter boundary is enforced, not conventional.** See §5.5 for the enforcement mechanism.
+
+**Pre-PR-2 verification on influxdb-client stub status.** Before PR 2's adapter is designed in detail, PR 1 verifies whether `influxdb_client==1.48.0` ships its own type stubs (via `py.typed` marker). If it does, the `ignore_missing_imports = true` override has no effect on the library's typed surface and the adapter design rationale shifts from "the library is untyped" to "we want to own a narrower projection." The adapter pattern remains valid in both cases (it isolates our usage from upstream API drift) but the rationale and the override block change. PR 1's acceptance criteria document the finding in `type-debt-backlog.md`.
 
 ### 5.3 The type-debt backlog
 
@@ -337,9 +431,63 @@ Each entry includes: library name, problem surface, estimated effort, link to in
 Where available, use the `types-*` stub packages from PyPI (no adapter needed):
 - `types-requests` for `requests`
 - `types-pytz` if any service uses pytz
-- Add to `requirements-dev.txt` per service as needed
+- Run `mypy --install-types --non-interactive` during per-service migration to discover other available stub packages.
+- Add discovered stubs to `requirements-dev.txt`.
 
-`fastapi`, `httpx`, `pydantic`, `uvicorn`, `python-dotenv` — ship with their own types. No action needed.
+**Libraries that ship typed stubs natively (`py.typed` marker; no override or adapter needed):**
+- `fastapi`, `httpx`, `pydantic`, `uvicorn`, `python-dotenv` — used by cockpit-backend.
+- `aiohttp` (>= 3.8) — used by `nws-poller`, `pjm-dm2-poller`, `telegram-notifier`. The currently-pinned `aiohttp==3.13.4` ships full type stubs. Migrating these services means mypy WILL enforce aiohttp usage against actual types, surfacing genuine usage findings rather than silently treating it as `Any`. This is a feature, not a bug, but should be expected in those service PRs.
+- `influxdb_client` — needs verification (see §5.2). PR 1's acceptance includes documenting whether the installed version (`1.48.0`) ships `py.typed`. If it does, the `ignore_missing_imports` override block in `pyproject.toml` is removed and we use the upstream stubs directly. The adapter pattern in §5.2 is still valuable as a projection seam.
+
+### 5.5 Adapter boundary enforcement (import-linter)
+
+For libraries we wrap with typed adapters, "do not import the library directly outside the adapter module" is an enforced rule, not a convention. Enforced via `import-linter` (PyPI package, runs from the same `pyproject.toml`).
+
+Each adapter ships with a corresponding `[[tool.importlinter.contracts]]` block in `pyproject.toml`. Example for the influxdb-client adapter (lands in PR 2):
+
+```toml
+[tool.importlinter]
+root_packages = ["hvac_scheduler"]
+
+[[tool.importlinter.contracts]]
+name = "Only influx_adapter may import influxdb_client"
+type = "forbidden"
+source_modules = ["hvac_scheduler"]
+forbidden_modules = ["influxdb_client"]
+ignore_imports = [
+    "hvac_scheduler.influx_adapter -> influxdb_client",
+]
+```
+
+`run_typecheck.sh` invokes `python -m importlinter` after the mypy passes whenever any per-service target exists. A direct `from influxdb_client import ...` anywhere outside `influx_adapter.py` fails the check and blocks the PR. The rule applies even if mypy would have been happy with the import (since `ignore_missing_imports` makes the library invisible to mypy).
+
+As subsequent adapters are added (e.g., `pyControl4` adapter in a later service PR), each adapter PR adds its own contract block. `root_packages` grows with each new service in the enforced set.
+
+**Why enforce, not convention.** The whole project rationale is "enforcement, not hints." A convention is a hint by another name. A future contributor adding a direct `record.get_value()` call would silently undermine the adapter, recreating the exact bug-shape the adapter exists to prevent. Enforced boundaries close that loop.
+
+### 5.6 Test-file relaxation pattern
+
+Tests are in the enforced set, but with a targeted `[[tool.mypy.overrides]]` block on `test_*.py` and `conftest.py` files (shown in §4.1):
+
+```toml
+[[tool.mypy.overrides]]
+module = ["*.test_*", "*.conftest"]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+```
+
+**What stays strict in tests:**
+- `disallow_any_generics` — catches `List` instead of `List[Foo]` in test signatures
+- `no_implicit_optional` — catches `def foo(x: str = None)` patterns
+- `warn_redundant_casts` — catches dead `cast(...)` calls
+- `warn_return_any` — catches functions that accidentally return Any
+- `strict_equality` — catches comparisons of unrelated types
+
+**What's relaxed in tests:**
+- `disallow_untyped_defs` — test functions don't require return-type annotations (they're all `-> None` anyway)
+- `disallow_untyped_decorators` — mock/parametrize decorators often have less-than-perfect types
+
+The specific error-code set is tuned during PR 2 against the scheduler's actual test suite. If the relaxed set still produces high-volume bookkeeping noise, the tuning continues. If it produces too few findings to be useful, the strictness ratchets up. Decision driven by data, not guesses.
 
 ## §6. Per-service migration template
 
@@ -348,23 +496,28 @@ Every service-rollout PR (PR 2 onwards) follows this template verbatim. Document
 ### 6.1 Steps
 
 1. **Rename:** `git mv deploy/energy-stack/<service>/ deploy/energy-stack/<service_underscored>/`
-2. **Add package marker:** create empty `__init__.py` in the renamed directory.
+2. **Add package marker:** create empty `__init__.py` in the renamed directory. This is a TOOLING MARKER ONLY. The runtime entrypoint stays `python app.py` (or `python poller.py`); script-style imports like `from freshness import classify` continue to work because Python adds cwd to `sys.path`. The `__init__.py` enables mypy + pytest + IDE tooling to treat the dir as a package; it does NOT require converting imports to package-relative form or changing Dockerfile CMD.
 3. **Update docker-compose:** edit `deploy/energy-stack/docker-compose.yml`:
    - Change the service's `build.context:` path to the new underscore name.
    - **DO NOT** change the service name (the YAML key, e.g., `hvac-scheduler:` stays hyphenated).
-4. **Update `run_tests.sh`:** in the `services=(...)` array near the top of the script, change this service's entry from hyphen to underscore.
-5. **Update `run_typecheck.sh`:** remove service from `not_yet_enforced`; add to `enforced` (both with underscore name).
-6. **Update `pyproject.toml`:** add service paths to `files = [...]` list (or use directory pattern).
-7. **Update path references:** sed any markdown or shell scripts that reference `./<service>/` to use the underscore. Operational identifiers stay hyphenated.
-8. **Local type-check:** `bash deploy/energy-stack/run_typecheck.sh` — iterate until clean.
-9. **Triage each finding:**
-   - Real bug → fix in the same PR (treat as bug-fix value).
-   - Missing/incorrect annotation → fix the annotation.
-   - Untyped library call → add to `[[tool.mypy.overrides]]` in `pyproject.toml` and consider adapter wrapping if surface is high-value.
-10. **Tests pass:** `cd deploy/energy-stack/<service_underscored>/ && python -m pytest .` — verifies the rename didn't break test collection.
-11. **Dual-review** per AGENTS.md: superpowers:requesting-code-review + codex adversarial-review in parallel.
-12. **Open PR** with `--base main`. Per AGENTS.md, no stacking; wait for prior PR to merge before opening the next service PR.
-13. **Operator merges** in GitHub UI. The deploy.yml workflow handles the rest (since the rename touches `deploy/**`, it triggers redeploy of the renamed service).
+4. **Update Dockerfiles:** if the service's `Dockerfile` has explicit `COPY` lines listing source files (not just `COPY . .`), update them to include any new typed-adapter modules being added in this PR. Verify with a local `docker compose build <service-name>` if possible.
+5. **Update `run_tests.sh`:** in the `services=(...)` array near the top of the script, change this service's entry from hyphen to underscore.
+6. **Update `run_typecheck.sh`:** remove service from `not_yet_enforced`; add to `service_dirs` (underscore name). For cockpit-backend specifically, add `tools/cockpit/backend` to `repo_targets` instead.
+7. **Update `pyproject.toml`:**
+   - Remove the service's individual `freshness.py` entry from the `files = [...]` list (the per-service mypy invocation now covers the whole directory; no double-checking).
+   - If this PR adds an adapter, append the adapter's `[[tool.importlinter.contracts]]` block. Add the service's package name to `[tool.importlinter] root_packages`.
+8. **Update CI workflow path triggers:** any existing workflow that hardcodes the old hyphenated directory path (most notably `.github/workflows/check-freshness-drift.yml`) must be updated to the underscore path. Otherwise the existing safety gate silently stops triggering. PR 2 (scheduler) specifically must update `check-freshness-drift.yml`.
+9. **Update path references:** sed markdown and shell scripts that reference `./<service>/` (the filesystem path) to use the underscore. Operational identifiers — the docker-compose service name, Grafana JSON references, Influx tag values, Telegraf labels, log labels — STAY hyphenated. Tighten with explicit grep verification at end of step.
+10. **Local type-check:** `bash deploy/energy-stack/run_typecheck.sh` — iterate until clean.
+11. **Triage each finding:**
+    - Real bug → fix in the same PR (treat as bug-fix value).
+    - Missing/incorrect annotation → fix the annotation.
+    - Untyped library call → add to `[[tool.mypy.overrides]]` in `pyproject.toml` and consider adapter wrapping if surface is high-value.
+12. **Tests pass:** `cd deploy/energy-stack/<service_underscored>/ && python -m pytest .` — verifies the rename didn't break test collection.
+13. **Operational-identifier preservation grep:** `grep -rn "<service-hyphenated-name>" tools/cockpit deploy/energy-stack/grafana deploy/energy-stack/telegraf deploy/energy-stack/docker-compose.yml` — confirms the operational identifier still appears in the right places. If unexpected matches changed, restore.
+14. **Dual-review** per AGENTS.md: superpowers:requesting-code-review + codex adversarial-review in parallel.
+15. **Open PR** with `--base main`. Per AGENTS.md, no stacking; wait for prior PR to merge before opening the next service PR.
+16. **Operator merges** in GitHub UI. The deploy.yml workflow handles the rest (since the rename touches `deploy/**`, it triggers redeploy of the renamed service).
 
 ### 6.2 Expected outcome per service PR
 
@@ -388,43 +541,79 @@ This order can be revised based on what bugs surface in early PRs.
 **Note for cockpit-backend (PR 3):** the §6.1 template applies in spirit but several steps are skipped because `tools/cockpit/backend/` is already a valid Python path:
 - Step 1 (rename) — skip.
 - Step 2 (`__init__.py`) — already exists per earlier inspection.
-- Step 4 (`run_tests.sh`) — cockpit-backend isn't in `run_tests.sh`; its tests live under `tools/cockpit/backend/tests/` and run via the cockpit's own pytest invocation. Document this in the PR.
-- Step 7 (path references) — minimal; cockpit-backend's path was never hyphenated.
-- Other steps (compose update — cockpit-backend isn't in docker-compose either, since it runs locally; `pyproject.toml` files-list update; mypy iteration; bug fixes; dual-review) apply as written.
+- Step 3 (docker-compose) — cockpit-backend isn't in docker-compose (runs locally for operator monitoring); no compose change.
+- Step 4 (Dockerfile) — n/a.
+- Step 5 (`run_tests.sh`) — cockpit-backend isn't in `run_tests.sh`; its tests live under `tools/cockpit/backend/tests/` and run via the cockpit's own pytest invocation. Document in the PR.
+- Step 6: add `tools/cockpit/backend` to `repo_targets` (not `service_dirs`) in `run_typecheck.sh`. Remove `tools/cockpit/backend/freshness.py` from `pyproject.toml` `files` list.
+- Step 8 (CI workflow path) — `check-freshness-drift.yml` already handles cockpit-backend correctly (no rename); no change needed unless an adapter is added.
+- Step 9 (path references) — minimal; cockpit-backend's path was never hyphenated.
+- Other steps (pyproject.toml updates, mypy iteration, bug fixes, the deferred `price_is_stale` consumer fix, dual-review) apply as written.
 
 ## §7. Phased rollout
 
 ### Phase 1: Infrastructure + freshness modules (PR 1)
 
 **Deliverables:**
-- `pyproject.toml` at repo root with mypy config, pydantic plugin, overrides for `influxdb_client.*` and `pyControl4.*`.
-- `deploy/energy-stack/run_typecheck.sh` (empty enforced array; freshness modules enforced via pyproject.toml `files`).
-- `.github/workflows/typecheck.yml` (runs `run_typecheck.sh` on every push/PR).
-- `docs/type-debt-backlog.md` (seeded with influxdb_client and pyControl4 as known-priority).
-- `deploy/energy-stack/requirements-dev.txt` updated with `mypy>=1.10` and `pydantic` (if not already present).
+- `pyproject.toml` at repo root with mypy config (Python 3.13, strict, pydantic plugin, overrides for `influxdb_client.*` and `pyControl4.*`, test-file relaxation block), and an `[tool.importlinter]` skeleton ready for adapter contracts.
+- `deploy/energy-stack/run_typecheck.sh` (empty `service_dirs` and `repo_targets`; freshness modules enforced via pyproject.toml `files` list during this phase only).
+- `.github/workflows/typecheck.yml` (runs `run_typecheck.sh` on every push/PR; Python 3.13 to match service Dockerfiles).
+- `docs/type-debt-backlog.md` (seeded with influxdb_client and pyControl4 as known-priority adapter candidates).
+- `deploy/energy-stack/requirements-dev.txt` updated with `mypy>=1.10,<2.0`, `pydantic`, `import-linter`, and `types-requests`.
+- `STALE_DATA_HANDOFF.md`-class documentation: brief note in `AGENTS.md` (or referenced from there) describing the per-service migration template location.
 
 **Acceptance criteria:**
 - `bash deploy/energy-stack/run_typecheck.sh` passes locally and in CI on a clean branch.
 - Deliberately introducing a type error in `freshness.py` causes CI to fail. (Verified via a temporary commit + revert.)
 - The two `freshness.py` modules (scheduler + cockpit) type-check clean under `mypy --strict`.
+- **GitHub branch protection / ruleset update:** operator adds `Type Check` to the list of required status checks for `main`. Without this step the workflow runs advisorily and the rollout's enforcement claim is false. PR 1 status remains "shipped (pending required-check enable)" until verified.
+- **influxdb-client stub-status verification:** `python -c "import influxdb_client; print(influxdb_client.__file__)"` plus inspecting whether the package ships `py.typed`. Finding documented in `docs/type-debt-backlog.md` so PR 2's adapter design starts from facts, not assumption.
+- **`types-*` discovery:** run `mypy --install-types --non-interactive` against the installed deps; record any suggested stub packages in `requirements-dev.txt` and the backlog.
+- **Pydantic plugin loads:** mypy starts without error against the actual installed pydantic version (`pydantic>=2.5`).
 
-### Phase 2: Scheduler (PR 2)
+### Phase 2: Scheduler — split into two PRs by default
+
+The scheduler is the largest service and the highest-density type-hint surface (~350 annotated lines, ~3300 total scheduler lines, 300+ test functions, 500+ Mock references). Splitting Phase 2 into PR 2a (rename + infrastructure-only) and PR 2b (enforcement + adapter + type-fixes) is the DEFAULT plan. Combining them into a single PR is allowed only if PR 2a's actual diff is tiny AND the post-rename `mypy --strict` run on the scheduler surfaces under ~20 findings — both checked AFTER PR 2a's work is done, not predicted in advance.
+
+#### Phase 2a: Scheduler rename + infrastructure-only (PR 2)
 
 **Deliverables:**
 - Rename `deploy/energy-stack/hvac-scheduler/` → `hvac_scheduler/`.
-- Add `__init__.py` to renamed dir.
-- Update docker-compose, run_tests.sh, run_typecheck.sh, pyproject.toml.
+- Add `__init__.py` to renamed dir (tooling marker; entrypoint unchanged).
+- Update docker-compose `build.context:` for the scheduler service.
+- Update `run_tests.sh` services array (hyphen → underscore).
+- Update `.github/workflows/check-freshness-drift.yml` path filter.
+- Update path references in markdown/scripts that point to `./hvac-scheduler/`.
+- Operational-identifier preservation grep verified.
+- `run_typecheck.sh` still has empty `service_dirs` — scheduler NOT yet in enforced set.
+- `pyproject.toml` `files` list still includes `deploy/energy-stack/hvac_scheduler/freshness.py` (updated path).
+
+**Acceptance criteria:**
+- All scheduler tests still pass via `cd deploy/energy-stack/hvac_scheduler/ && python -m pytest .`
+- `bash deploy/energy-stack/run_tests.sh` succeeds.
+- `bash deploy/energy-stack/run_typecheck.sh` still passes (freshness.py path-updated entry still type-checks).
+- `docker compose up -d hvac-scheduler` succeeds locally (or verified by post-merge deploy.yml run on Pi-lab).
+- Operational identifier `hvac-scheduler` still appears in compose service-name field, Grafana JSON, Influx tag values, Telegraf labels.
+
+#### Phase 2b: Scheduler in enforced set + adapter + type-fixes (PR 3)
+
+**Deliverables:**
 - First typed adapter: `deploy/energy-stack/hvac_scheduler/influx_adapter.py` wrapping `influxdb_client` record API.
 - Refactor `fetch_latest_comed` and any other callers of `record.get_*()` to use the typed adapter.
+- Add `hvac_scheduler` to `service_dirs` in `run_typecheck.sh`.
+- Remove `deploy/energy-stack/hvac_scheduler/freshness.py` from `pyproject.toml` `files` list (per-service mypy invocation now covers it).
+- Add `[tool.importlinter]` contract banning direct `influxdb_client` imports outside `influx_adapter.py`.
+- Update `hvac_scheduler/Dockerfile` `COPY` lines to include `influx_adapter.py`.
 - Triage all `mypy --strict` findings on the scheduler.
 - Fix real bugs; annotate missing types; document any necessary ignores.
 
 **Acceptance criteria:**
 - `mypy --strict deploy/energy-stack/hvac_scheduler/` returns zero errors.
-- All 337+ scheduler tests pass (no regressions from the rename).
-- `docker compose up -d hvac-scheduler` succeeds with the renamed dir (verified locally if possible; otherwise verified by post-merge deploy).
-- Service identifier `hvac-scheduler` in compose, Grafana, Influx, logs is unchanged (operator-facing identifier preservation verified by grep).
-- Real bugs found are fixed in-PR with anti-regression tests where applicable.
+- `python -m importlinter` returns zero violations.
+- All scheduler tests pass.
+- The `query_api` parameter is typed across the 10+ scheduler functions where it currently lacks an annotation. (This is the most direct descendent of the 19:18Z bug class.)
+- Real bugs found are fixed in-PR with anti-regression tests where applicable. Each "real bug" entry in the PR description includes the file:line and a one-line description.
+
+**Subsequent service PRs renumber accordingly: PR 4 = cockpit-backend, PR 5 = comed-poller, etc.**
 
 ### Phase 3: Remaining services (PR 3-N)
 
@@ -478,20 +667,21 @@ A maintainer might rename both, breaking historical Influx tag continuity and Gr
 
 ### 8.6 Risk: test files in scope produce excessive ignore noise
 
-Mock-heavy tests may need many `# type: ignore[misc]` annotations under strict mode.
+Mock-heavy tests would need many `# type: ignore[misc]` annotations under full strict mode.
 
-**Mitigation:** include tests as scoped; accept some `# type: ignore` annotations on mocks. If a service's test directory generates more than ~10 ignore comments, that's a signal to revisit: either selectively relax test settings via `[[tool.mypy.overrides]]` for that module's `test_*.py`, or invest in better-typed test fixtures. Decision made per service, not globally.
+**Mitigation:** test-file relaxation pattern (§5.6) is enabled from PR 1. Tests keep strict checks that catch real test bugs (`disallow_any_generics`, `no_implicit_optional`, `warn_redundant_casts`, `warn_return_any`, `strict_equality`); annotation-completeness checks (`disallow_untyped_defs`, `disallow_untyped_decorators`) are relaxed. Specific error-code set tuned in PR 2b against the scheduler's actual test suite — not preemptively guessed.
 
 ### 8.7 Risk: scope creep during scheduler PR (the largest service)
 
-Scheduler PR includes rename + adapter + bug fixes + annotations. Could grow.
+Scheduler is the highest-density type-hint surface and the largest single service. Combined PR (rename + enforcement + adapter + bug fixes) is genuinely likely to balloon.
 
-**Mitigation:** if PR exceeds ~500 lines net diff or more than 1 day of focused work, split:
-- PR 2a: rename + infrastructure (smallest possible)
-- PR 2b: scheduler enforced + adapter + type-fixes
-- PR 2c: scheduler bug-fix follow-ups, if any are large enough to warrant separate review
+**Mitigation: the PR 2a / PR 2b split is the DEFAULT plan, not a contingency.** See §7 Phase 2. Combined PR is allowed only if PR 2a's diff is tiny AND post-rename mypy surfaces under ~20 findings; both checked after PR 2a's work, not predicted. Subagent-driven-development pattern from freshness PR is the model: small task-level commits within each PR; phase checkpoints with dual-review.
 
-Subagent-driven-development pattern from freshness PR is the model: small task-level commits within the PR; phase checkpoints with dual-review.
+If PR 2b itself balloons (say, >500 lines of net type-fix changes), a further split is acceptable:
+- PR 2b.1: adapter + boundary contract + refactor `fetch_latest_comed`
+- PR 2b.2: remaining type-fixes by file region
+
+The greenfield invariant holds: the scheduler is not in `service_dirs` until its full directory passes `mypy --strict` AND `import-linter` passes.
 
 ### 8.8 Risk: missing types-* PyPI packages
 
@@ -504,6 +694,7 @@ Some libraries we use may have stubs published as separate `types-*` packages th
 ### 9.1 Per-PR gate (each service PR)
 
 - `mypy --strict` returns 0 errors on the service.
+- `python -m importlinter` returns 0 violations.
 - Service tests pass.
 - Dual-review run; findings addressed or explicitly deferred with rationale.
 - Deploy.yml succeeds post-merge (verified by GitHub Actions run).
@@ -511,16 +702,17 @@ Some libraries we use may have stubs published as separate `types-*` packages th
 
 ### 9.2 Project-level gate (when "all services enforced")
 
-- `run_typecheck.sh` returns 0 with all 11 services + cockpit-backend in `enforced`.
+- `run_typecheck.sh` returns 0 with all 11 services + cockpit-backend in `service_dirs` or `repo_targets`.
 - `not_yet_enforced` array is empty.
-- CI gate active on `main` (any PR re-introducing a type error blocks merge).
+- `Type Check` is a required status check on `main` in GitHub branch protection.
 - `pytest.ini` workaround docstring removed.
 - Spec status updated to `shipped`.
 
 ### 9.3 Pre-OSF gate (minimum required before filing)
 
-- Scheduler is in the enforced set.
-- Cockpit-backend is in the enforced set (since the freshness PR left a known-broken consumer there).
+- Scheduler is in the enforced set (`mypy --strict` + `import-linter` both pass).
+- Cockpit-backend is in the enforced set (since the freshness PR left a known-broken `price_is_stale` consumer there).
+- `Type Check` is a required status check on `main`.
 - All findings from those two services are either fixed or documented as accepted (with rationale in the PR).
 
 Other services may complete post-OSF.
@@ -530,3 +722,4 @@ Other services may complete post-OSF.
 | Date | Status | Note |
 |---|---|---|
 | 2026-05-20 | draft | Initial spec. Captures decisions from brainstorming session 2026-05-20: scope (C — all scheduler-stack services + cockpit-backend, scripts/ deferred); tool (mypy --strict); rollout strategy (per-service greenfield, infrastructure-PR-first); hyphenated-dir resolution (rename per service while preserving operational identifier); external library strategy (option B — module-level ignore + targeted typed adapters tracked as backlog); pydantic plugin enabled; tests included with strict; PR 1 bootstrap with the two freshness modules. Open for first-pass dual-review (superpowers:requesting-code-review + codex adversarial-review). |
+| 2026-05-20 | draft (rev 2) | First-pass dual-review findings applied. Critical fixes: Python 3.13 (matches service Dockerfiles, not 3.11); `run_typecheck.sh` rewritten to handle cockpit-backend `repo_targets`, prevent dual-invocation of `files` list, and run import-linter; CI workflow installs ALL service requirements via loop (not hardcoded list); `.github/workflows/check-freshness-drift.yml` path-filter update added to migration template. Design decisions: package model is "hybrid" (rename + `__init__.py` for tooling; script entrypoints stay); adapter boundaries enforced via `import-linter` (not deferred to backlog); tests get targeted relaxation of annotation-completeness checks (specific codes tuned in PR 2b against scheduler suite). Phase 2 split into PR 2a (rename) + PR 2b (enforcement) as DEFAULT plan, not contingency. Pre-OSF gate now requires `Type Check` to be a GitHub-required status check, not just a workflow file. Influxdb-client stub-status verification + `mypy --install-types` discovery added to PR 1 acceptance. Aiohttp note added (ships typed stubs; surfaces in nws/pjm/telegram service PRs). Open for second-pass dual-review. |
