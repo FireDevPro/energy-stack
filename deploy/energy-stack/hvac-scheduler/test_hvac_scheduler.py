@@ -2933,8 +2933,7 @@ async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
     strict=True,
     reason="Pending recency gate implementation (Phase 1 tracer bullet)",
 )
-@pytest.mark.asyncio
-async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
+def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     """At 19:18Z on 2026-05-19, scheduler was in elevated tier with min-hold
     elapsed. Latest bucket was [19:05Z, 19:10Z] (price 2.5¢, age 8 min).
     Pre-fix: scheduler downgraded based on the stale 2.5¢. Two minutes later
@@ -2947,7 +2946,7 @@ async def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
       price_feed_unavailable=false
     """
     from app import (
-        PriceSample, FiringState, _evaluate_layer_inputs, app as _app,  # noqa
+        PriceSample, FiringState, _evaluate_layer_inputs,
     )
     from price_overlay import PriceOverlayState
 
