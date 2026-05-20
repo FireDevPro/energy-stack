@@ -109,6 +109,7 @@ from price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
     evaluate_price_overlay,
+    hold_elapsed,
     offset_and_override_for_tier,
     tier_priority,
 )
@@ -2467,80 +2468,79 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
     sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
     current_price_cents = sample.cents_per_kwh if sample is not None else None
     prev_tier = firing.price_overlay_state.current_tier
-    # Tracks the §2 stale-release branch (line below) so the trace
-    # emission at the end of the block can pick the correct reason code
-    # without re-deriving the stale condition.
-    stale_release_fired = False
-    # Initialize trace-field defaults BEFORE both branches so the classifier
-    # in Task 13 can read downgrade_gate_held even on the None code path.
-    # Without this, the no-data tick path raises NameError in Task 13's
-    # classifier (spec §3.5 P2 — explicit initialization).
-    downgrade_gate_held = False
-    if current_price_cents is None:
-        # Price feed unavailable: preserve the active tier's effective
-        # setpoint contributions UNTIL the feed has been stale for too
-        # long (PRICE_FEED_STALE_THRESHOLD, default 30 min). Pre-PR #60
-        # the offset/override were zeroed immediately, dropping the
-        # scarcity 85F shutoff silently. PR #60 preserved them but
-        # without a max-age -- a feed that stalls during scarcity
-        # could hold 85F indefinitely. P2.2 splits the difference: a
-        # brief gap carries the tier; a sustained gap releases.
-        # Fallback for the cold-start / state-restore case: a non-NORMAL
-        # prev_tier had to have been triggered by a real price reading,
-        # so its triggered_at_utc is a reasonable floor for
-        # last_ok_at_utc if the explicit timestamp is missing.
-        last_ok = firing.last_fresh_bucket_source_ts
-        if last_ok is None:
-            last_ok = firing.price_overlay_state.triggered_at_utc
-        stale = (
-            last_ok is None
-            or now_utc - last_ok > PRICE_FEED_STALE_THRESHOLD
-        )
-        if stale and prev_tier != NORMAL_TIER_NAME:
-            log("warn", "price_feed_stale_tier_released",
-                prev_tier=prev_tier,
-                last_ok_at_utc=last_ok.isoformat() if last_ok else None,
-                threshold_min=PRICE_FEED_STALE_THRESHOLD.total_seconds() / 60.0)
-            # Release the overlay state cleanly so a later feed
-            # recovery starts from NORMAL rather than re-entering the
-            # stale tier's hold window.
-            firing.price_overlay_state = PriceOverlayState(
-                current_tier=NORMAL_TIER_NAME,
-                triggered_at_utc=None,
-            )
-            active_tier = None
-            price_offset_f = 0
-            price_override_f = None
-            price_tier_name = NORMAL_TIER_NAME
-            stale_release_fired = True
-        else:
-            active_tier = None
-            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
-            price_tier_name = prev_tier
-    else:
-        # Update last-fresh field on fresh reads only (spec §3.6).
-        if sample.freshness == "fresh":
-            firing.last_fresh_bucket_source_ts = sample.source_ts
 
-        # State machine proposes a tier transition based on the price value.
-        # The state machine is freshness-agnostic (pure function of price +
-        # state + time-of-day).
+    # Update last-fresh field on fresh reads (independent of timer; used by
+    # audit telemetry's broad-feed-health derivation, §3.6).
+    if sample is not None and sample.freshness == "fresh":
+        firing.last_fresh_bucket_source_ts = sample.source_ts
+
+    # Safety-release TIMER update (spec §3.5, controller-observation wall-clock).
+    # IMPORTANT: this is the CONTROLLER-OBSERVATION clock. Do NOT use
+    # sample.source_ts or last_fresh_bucket_source_ts for this timer --
+    # those are data-source timestamps; spec §3.5 explicitly forbids it.
+    sample_is_fresh = sample is not None and sample.freshness == "fresh"
+    min_hold_is_elapsed = hold_elapsed(
+        firing.price_overlay_state, now_utc, DEFAULT_MINIMUM_HOLD_MINUTES,
+    )
+
+    if prev_tier == NORMAL_TIER_NAME or not min_hold_is_elapsed:
+        firing.nonfresh_after_hold_started_at_utc = None
+    elif sample_is_fresh:
+        firing.nonfresh_after_hold_started_at_utc = None
+    elif firing.nonfresh_after_hold_started_at_utc is None:
+        firing.nonfresh_after_hold_started_at_utc = now_utc
+    # else: timer was already set on a prior tick; leave it alone.
+
+    # Initialize trace-field defaults BEFORE the release/gate branches (spec §3.5 P2).
+    safety_release_fired = False
+    release_reason = None
+    downgrade_gate_held = False
+    active_tier = None
+    price_offset_f = 0
+    price_override_f = None
+    price_tier_name = prev_tier  # default; branches below override.
+
+    # Safety release check -- uses ONLY the controller-observation timer.
+    if (firing.nonfresh_after_hold_started_at_utc is not None
+            and (now_utc - firing.nonfresh_after_hold_started_at_utc)
+                >= PRICE_FEED_STALE_THRESHOLD
+            and prev_tier != NORMAL_TIER_NAME):
+        # Forensic split: which kind of failure accumulated to 30 wall-clock min?
+        release_reason = (
+            PriceOverlayCode.RELEASED_NO_DATA if sample is None
+            else PriceOverlayCode.RELEASED_PERSISTENT_STALE
+        )
+        log("warn", "price_feed_stale_tier_released",
+            reason=release_reason.value,
+            timer_started_at=firing.nonfresh_after_hold_started_at_utc.isoformat(),
+            wall_clock_elapsed_sec=(now_utc - firing.nonfresh_after_hold_started_at_utc).total_seconds())
+        firing.price_overlay_state = PriceOverlayState(
+            current_tier=NORMAL_TIER_NAME,
+            triggered_at_utc=None,
+        )
+        firing.nonfresh_after_hold_started_at_utc = None  # clear after release
+        safety_release_fired = True
+        # Explicit normal outputs -- do NOT inherit prev_tier's offset/override.
+        price_tier_name = NORMAL_TIER_NAME
+        price_offset_f = 0
+        price_override_f = None
+        active_tier = None
+
+    elif sample is not None:
+        # State machine + caller-side gate (T12 logic).
         proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
         proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
         is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
 
-        if is_downgrade and sample.freshness != "fresh":
-            # RECENCY GATE: refuse the downgrade. Do not mutate state machine.
-            # Hold prev_tier. Trace classifier (below, Task 13) records this
-            # as HELD_DOWNGRADE_BUCKET_AGE. Spec §3.4.
+        if is_downgrade and not sample_is_fresh:
+            # Recency gate refuses downgrade. Hold prev_tier.
             downgrade_gate_held = True
-            active_tier = None
             price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
             price_tier_name = prev_tier
         else:
-            # Apply state machine proposal (upgrade, hold, or fresh-data downgrade).
+            # Apply state machine proposal.
             firing.price_overlay_state = proposed_state
             active_tier = proposed_tier
             if active_tier is None:
@@ -2552,10 +2552,16 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
                 price_override_f = active_tier.cool_setpoint_override_f
                 price_tier_name = active_tier.name
 
+    else:
+        # sample is None, timer not yet at 30-min threshold: carry-forward.
+        # Preserve prev_tier's offset/override.
+        price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+        price_tier_name = prev_tier
+
     # ---- Phase 1 decision-trace: price overlay per-eval ---------------
     # One trace line per `_evaluate_layer_inputs` call. Classifies the
     # outcome from caller-observable state (prev_tier, new_tier,
-    # current_price, stale_release_fired) — never re-implements the
+    # current_price, safety_release_fired) — never re-implements the
     # internal state machine. Held outcomes go at `debug` level (gated
     # on `SCHEDULER_DECISION_TRACE_VERBOSE`); transitions and releases at
     # `info`. See `docs/plans/archive/decision-trace-plan.md` Phase 1.
@@ -2564,10 +2570,10 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_outcome = "held"
         po_reason = PriceOverlayCode.HELD_DOWNGRADE_BUCKET_AGE
         po_level = "info"
-    elif current_price_cents is None and stale_release_fired:
+    elif safety_release_fired:
         po_outcome = "released"
-        po_reason = PriceOverlayCode.RELEASED_NO_DATA
-        po_level = "info"
+        po_reason = release_reason  # RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE
+        po_level = "warn"  # warn level — real degraded state
     elif current_price_cents is None:
         po_outcome = "held"
         po_reason = PriceOverlayCode.FEED_UNAVAILABLE_TIER_PRESERVED

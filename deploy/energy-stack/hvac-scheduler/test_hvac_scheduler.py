@@ -2191,70 +2191,6 @@ async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch
     assert read_mock.await_count == 1
 
 
-# ---- P2.2 (reviewer-flagged 2026-05-11): price-feed stale tier release ----
-
-
-def test_price_tier_released_after_feed_stale_threshold(monkeypatch):
-    """P2.2: when ``fetch_latest_comed`` has been unavailable for
-    longer than ``PRICE_FEED_STALE_THRESHOLD`` (30 min), the
-    carried-forward tier MUST release to NORMAL. Pre-fix the tier
-    would carry forward indefinitely, so a scarcity-tier hold that
-    began an hour before a feed outage could keep the 85F shutoff
-    pinned for the rest of the day."""
-    _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-    now_utc = now_local.astimezone(timezone.utc)
-    # Feed was last OK 45 min ago -- well past the 30-min threshold.
-    firing = FiringState(
-        price_overlay_state=app.PriceOverlayState(
-            current_tier="scarcity",
-            triggered_at_utc=now_utc - timedelta(minutes=60),
-        ),
-        last_fresh_bucket_source_ts=now_utc - timedelta(minutes=45),
-    )
-    write_api = MagicMock()
-
-    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    # Tier released to NORMAL; setpoint contributions zeroed.
-    assert inputs.price_tier_name == "normal"
-    assert inputs.price_offset_f == 0
-    assert inputs.price_override_f is None
-    # Internal state reset so a later recovery starts from NORMAL,
-    # not re-entering the stale tier's hold window.
-    assert firing.price_overlay_state.current_tier == "normal"
-    assert firing.price_overlay_state.triggered_at_utc is None
-
-
-def test_price_tier_release_falls_back_to_triggered_at_utc_when_last_ok_none(monkeypatch):
-    """Cold-start / state-restore case: when
-    ``last_fresh_bucket_source_ts`` is None but the prev_tier is
-    non-NORMAL, the tier must have been triggered by a real price
-    reading at some point. ``triggered_at_utc`` becomes the floor
-    for the staleness check so we don't erroneously release on
-    container startup with a pre-existing non-NORMAL state."""
-    _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-    now_utc = now_local.astimezone(timezone.utc)
-    firing = FiringState(
-        price_overlay_state=app.PriceOverlayState(
-            current_tier="scarcity",
-            triggered_at_utc=now_utc - timedelta(minutes=5),   # recent
-        ),
-        last_fresh_bucket_source_ts=None,   # never recorded
-    )
-    write_api = MagicMock()
-
-    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    # Tier preserved: triggered_at_utc=5min ago, threshold=30min, so
-    # not stale. The fallback prevents erroneous release on cold start.
-    assert inputs.price_tier_name == "scarcity"
-    assert inputs.price_override_f == 85
-
-
 # ---- P2.3 (reviewer-flagged 2026-05-11): health marker gating -------------
 
 
@@ -3257,10 +3193,13 @@ def test_derive_price_feed_healthy_ignores_per_tick_freshness():
 # ---- Recency gate tests (spec §3.4, §8.2) ----
 
 def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
-                       last_fresh_bucket_source_ts, now_utc):
-    """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions
-    so the gate-specific behavior is the only variable. Returns
-    (firing_after, captured_traces)."""
+                       last_fresh_bucket_source_ts, now_utc,
+                       nonfresh_after_hold_started_at_utc=None):
+    """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions.
+
+    `nonfresh_after_hold_started_at_utc` (added in Task 19) lets tests
+    SEED the safety-release timer before the evaluation. Default None
+    preserves Task 12 gate-test behavior."""
     from app import FiringState, _evaluate_layer_inputs
     from price_overlay import PriceOverlayState
     from unittest.mock import MagicMock
@@ -3286,6 +3225,7 @@ def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
             triggered_at_utc=triggered_at_utc,
         ),
         last_fresh_bucket_source_ts=last_fresh_bucket_source_ts,
+        nonfresh_after_hold_started_at_utc=nonfresh_after_hold_started_at_utc,
     )
     _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing, now_local=now_utc)
     return firing, captured_traces
@@ -3433,3 +3373,315 @@ def test_gate_treats_future_dated_bucket_as_fresh_and_allows_downgrade(monkeypat
         now_utc=now,
     )
     assert firing.price_overlay_state.current_tier == "normal"  # downgraded
+
+
+# ---- Safety release timer tests (spec §3.5, §8.6) ----
+
+def test_timer_does_not_set_during_min_hold(monkeypatch):
+    """During min-hold, no release possible — timer stays None even on stale data."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=15),  # min-hold NOT elapsed (15 < 30)
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+def test_timer_does_not_set_at_normal_tier(monkeypatch):
+    """At normal tier, no release possible — timer stays None."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="normal",
+        triggered_at_utc=None,
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+def test_timer_sets_on_first_post_hold_nonfresh_with_stale_sample(monkeypatch):
+    """First post-hold non-fresh observation -> timer = now_utc (NOT source_ts)."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),  # warn
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == now, (
+        f"Timer must be set to now_utc ({now}), got "
+        f"{firing.nonfresh_after_hold_started_at_utc}. If this equals "
+        f"sample.source_ts, the implementation is using the data-source clock."
+    )
+
+
+def test_timer_sets_on_first_post_hold_nonfresh_with_none_sample(monkeypatch):
+    """First post-hold no-data observation -> timer = now_utc."""
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample=None,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=31),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=5),
+        now_utc=now,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == now
+
+
+def test_timer_clears_on_fresh_sample_when_seeded(monkeypatch):
+    """SEED timer to non-None first, then verify fresh sample clears it.
+    Without seeding, this test would pass trivially (timer starts None).
+    Per spec §3.5 reset rule #1."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=15.0,  # would-hold-anyway; fresh-clear is independent
+        source_ts=now - timedelta(minutes=2),
+        freshness="fresh",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=31),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=2),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None, (
+        "Fresh sample must clear the timer per spec §3.5 reset rule #1."
+    )
+
+
+def test_timer_does_NOT_clear_when_stale_would_hold(monkeypatch):
+    """ANTI-REGRESSION (spec §3.5 + operator clarification):
+    earlier pass-3 tick-counter draft reset on 'stale-would-hold' —
+    the operator clarified that non-fresh is non-fresh regardless of
+    what the stale price would propose. The timer must NOT reset.
+
+    Scenario: timer was set 15 min ago. Current sample is stale but
+    its price (18c) is above the elevated release threshold (8c) so
+    the state machine would propose HOLD. Timer must STAY set."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    sample = PriceSample(
+        cents_per_kwh=18.0,  # >= elevated release (8c) -> state machine HOLDs
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer, (
+        f"Timer must STAY set when stale sample would-hold. "
+        f"Expected {seeded_timer}, got {firing.nonfresh_after_hold_started_at_utc}. "
+        f"If this is None, an implementer regressed to the pass-3 tick-counter "
+        f"reset behavior — spec §3.5 forbids that."
+    )
+
+
+def test_timer_does_NOT_clear_when_stale_would_downgrade(monkeypatch):
+    """ANTI-REGRESSION: timer must STAY set when sample is non-fresh and
+    state machine would propose DOWNGRADE (the recency-gate scenario).
+    The gate handles the per-tick refusal; the timer accumulates wall-clock."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    sample = PriceSample(
+        cents_per_kwh=2.5,  # below release -> state machine proposes DOWNGRADE
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer
+    # Gate also refuses the downgrade — tier remains elevated.
+    assert firing.price_overlay_state.current_tier == "elevated"
+
+
+def test_timer_does_NOT_clear_when_sample_remains_none(monkeypatch):
+    """Anti-regression: timer must STAY set when sample stays None.
+    The no-data case continues to accumulate."""
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    seeded_timer = now - timedelta(minutes=15)
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample=None,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=15),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=seeded_timer,
+    )
+    assert firing.nonfresh_after_hold_started_at_utc == seeded_timer
+
+
+def test_timer_clears_on_return_to_normal(monkeypatch):
+    """Reset rule #2: any tick where prev_tier == NORMAL clears the timer."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="normal",
+        triggered_at_utc=None,
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+def test_timer_clears_when_min_hold_restarts(monkeypatch):
+    """Reset rule #3: min-hold not elapsed clears the timer."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=10),
+        freshness="warn",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=5),  # min-hold NOT elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=15),  # SEED
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None, (
+        "Timer must clear when min-hold is not elapsed (covers tier upgrade)."
+    )
+
+
+def test_safety_release_at_29_min_59_sec_still_held(monkeypatch):
+    """Timer set 29:59 ago, sample still non-fresh -> no release."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    timer_started = now - timedelta(minutes=29, seconds=59)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=15),
+        freshness="stale",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=45),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=15),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=timer_started,
+    )
+    assert firing.price_overlay_state.current_tier == "elevated"
+
+
+def test_safety_release_at_30_min_exactly_fires(monkeypatch):
+    """Timer set EXACTLY 30 min ago, sample stale -> release fires."""
+    from app import PriceSample, PRICE_FEED_STALE_THRESHOLD
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    timer_started = now - PRICE_FEED_STALE_THRESHOLD
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=15),
+        freshness="stale",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=60),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=35),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=timer_started,
+    )
+    assert firing.price_overlay_state.current_tier == "normal"
+    assert firing.nonfresh_after_hold_started_at_utc is None  # cleared after release
+    po_traces = [t for t in traces if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_RELEASED_PERSISTENT_STALE"
+
+
+def test_safety_release_at_30_min_fires_no_data_reason(monkeypatch):
+    """Timer set 30 min ago, sample is None -> release with RELEASED_NO_DATA."""
+    from app import PRICE_FEED_STALE_THRESHOLD
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    timer_started = now - PRICE_FEED_STALE_THRESHOLD - timedelta(seconds=1)
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample=None,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=70),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=40),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=timer_started,
+    )
+    assert firing.price_overlay_state.current_tier == "normal"
+    po_traces = [t for t in traces if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_RELEASED_NO_DATA"
+
+
+def test_safety_release_does_not_use_data_source_clock(monkeypatch):
+    """ANTI-REGRESSION TEST for the two-wall-clocks distinction (spec §3.5).
+    Scenario: bucket source_ts is 45 min old (very stale by data-source
+    clock) BUT the controller only just observed non-fresh post-hold 5 min
+    ago. The timer's controller-observation clock reads 5 min — NOT 45 min.
+    Release does NOT fire.
+
+    This test would catch a regression where an implementer wires the
+    safety release to `now_utc - firing.last_fresh_bucket_source_ts`."""
+    from app import PriceSample
+    now = datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=5.0,
+        source_ts=now - timedelta(minutes=45),  # very stale by data-source clock
+        freshness="stale",
+    )
+    firing, _ = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=60),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=45),
+        now_utc=now,
+        nonfresh_after_hold_started_at_utc=now - timedelta(minutes=5),  # only 5 min ago
+    )
+    # Release does NOT fire — controller-observation clock is 5 min, not 45 min.
+    assert firing.price_overlay_state.current_tier == "elevated", (
+        "Release fired prematurely. Implementation may be using sample.source_ts "
+        "or last_fresh_bucket_source_ts as the safety-release clock instead of "
+        "the controller-observation timer. See spec §3.5 guard."
+    )
