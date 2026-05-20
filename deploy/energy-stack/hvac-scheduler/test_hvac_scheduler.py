@@ -53,6 +53,30 @@ from app import (
 )
 
 
+# ---- Test helper for the ComEd freshness PR (spec §8.7) ----
+# Lives in this module (not conftest) because plain helper functions in
+# conftest are not auto-imported into test-module globals — only
+# @pytest.fixture functions are. This is module-local on purpose.
+
+
+def _fresh_sample(cents: float, *, now_utc: datetime,
+                  age_min: float = 1.0):
+    """Default-fresh PriceSample for tests not specifically exercising
+    the freshness gate. `now_utc` is REQUIRED (no fallback to wall-clock
+    — tests must drive time deterministically; see spec §8.7).
+    `age_min` defaults to 1 min (well under the 7-min fresh threshold).
+
+    PriceSample import is deferred until call time so this helper can
+    land in the branch before Task 6 adds the dataclass.
+    """
+    from app import PriceSample  # local import: deferred until first call
+    return PriceSample(
+        cents_per_kwh=cents,
+        source_ts=now_utc - timedelta(minutes=age_min),
+        freshness="fresh",
+    )
+
+
 # ---- Layer priority resolution (§4) ---------------------------------------
 
 
