@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from thermal_observer import ThermalFitResult
+from thermal_observer import ThermalFitResult, ThermalSample
 from thermal_observer_influx import (
     build_line_protocol,
     build_query,
     json_artifact_payload,
+    rows_to_samples,
     write_json_atomic,
 )
 
@@ -51,6 +52,61 @@ def make_result(accepted: bool = True) -> ThermalFitResult:
         fit_window_end="2026-07-15T00:00:00+00:00",
         sample_minutes=10,
     )
+
+
+def test_rows_to_samples_converts_query_rows_to_thermal_samples():
+    ts = datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)
+
+    samples = rows_to_samples(
+        [
+            {
+                "_time": ts,
+                "indoor_temp_f": 74.2,
+                "outdoor_temp_f": 91.5,
+                "solar_radiation_w_m2": 710.0,
+                "cool_actual_pct": 42.0,
+                "heat_actual_pct": 0.0,
+                "cool_setpoint_f": 73.0,
+            }
+        ]
+    )
+
+    assert samples == [
+        ThermalSample(
+            ts=ts,
+            indoor_temp_f=74.2,
+            outdoor_temp_f=91.5,
+            solar_radiation_w_m2=710.0,
+            cool_actual_pct=42.0,
+            heat_actual_pct=0.0,
+            cool_setpoint_f=73.0,
+            setpoint_changed=False,
+        )
+    ]
+
+
+def test_rows_to_samples_marks_later_sample_when_setpoint_changes_by_half_degree():
+    first_ts = datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)
+    second_ts = datetime(2026, 7, 15, 12, 40, tzinfo=timezone.utc)
+
+    samples = rows_to_samples(
+        [
+            {
+                "_time": first_ts,
+                "indoor_temp_f": 74.2,
+                "outdoor_temp_f": 91.5,
+                "cool_setpoint_f": 73.0,
+            },
+            {
+                "_time": second_ts,
+                "indoor_temp_f": 74.4,
+                "outdoor_temp_f": 91.7,
+                "cool_setpoint_f": 73.5,
+            },
+        ]
+    )
+
+    assert [sample.setpoint_changed for sample in samples] == [False, True]
 
 
 def test_build_query_uses_configured_weather_and_hvac_measurements():

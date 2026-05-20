@@ -8,11 +8,46 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from thermal_observer import ThermalFitResult
+from thermal_observer import ThermalFitResult, ThermalSample
 
 
 MODEL_VERSION = "thermal_observer.v1"
 MEASUREMENT = "hvac.thermal_observer"
+
+
+def rows_to_samples(rows: list[dict[str, Any]]) -> list[ThermalSample]:
+    samples: list[ThermalSample] = []
+    previous_cool_setpoint: float | None = None
+
+    for row in rows:
+        indoor_temp = row.get("indoor_temp_f")
+        outdoor_temp = row.get("outdoor_temp_f")
+        if indoor_temp is None or outdoor_temp is None:
+            continue
+
+        cool_setpoint = _optional_float(row.get("cool_setpoint_f"))
+        setpoint_changed = (
+            previous_cool_setpoint is not None
+            and cool_setpoint is not None
+            and abs(cool_setpoint - previous_cool_setpoint) >= 0.5
+        )
+        if cool_setpoint is not None:
+            previous_cool_setpoint = cool_setpoint
+
+        samples.append(
+            ThermalSample(
+                ts=row["_time"],
+                indoor_temp_f=float(indoor_temp),
+                outdoor_temp_f=float(outdoor_temp),
+                solar_radiation_w_m2=float(row.get("solar_radiation_w_m2") or 0.0),
+                cool_actual_pct=float(row.get("cool_actual_pct") or 0.0),
+                heat_actual_pct=float(row.get("heat_actual_pct") or 0.0),
+                cool_setpoint_f=cool_setpoint,
+                setpoint_changed=setpoint_changed,
+            )
+        )
+
+    return samples
 
 
 def build_query(
@@ -167,6 +202,10 @@ def _normalized_datetime(value: datetime) -> datetime:
 
 def _bool_tag(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _escape_measurement(value: str) -> str:
