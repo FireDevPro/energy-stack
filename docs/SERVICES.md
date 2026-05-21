@@ -488,13 +488,14 @@ HTTP receiver for the Ecowitt GW1200 gateway's "Customized Server" upload. The G
 
 | Family | Fields | Source |
 |---|---|---|
-| Canonical shaded outdoor | `outdoor_temp_f`, `outdoor_rh_pct`, `outdoor_dewpoint_f` | WN31 on `ECOWITT_SHADED_CHANNEL` (only emitted when env is set + channel is reporting; absent rows are intentional fail-loud) |
+| Canonical shaded outdoor (analysis source per spec §6) | `ch1_temp_f`, `ch1_rh_pct`, `ch1_dewpoint_f` | WN31 on channel 1 (shaded N/E wall) — emitted via the paired-channel path whenever `ECOWITT_SHADED_CHANNEL` is unset (production config). |
+| Conditional emit-alias (descriptive only, NOT consumed by analysis) | `outdoor_temp_f`, `outdoor_rh_pct`, `outdoor_dewpoint_f` | WN31 on `ECOWITT_SHADED_CHANNEL` when that env IS set. Routes the shaded-channel reading through a renamed alias instead of `ch{N}_*`. Not used in production — kept for operator-facing dashboards. |
 | WS90 sun-exposed comparator | `ws90_temp_f`, `ws90_rh_pct`, `ws90_dewpoint_f` | WS90 onboard |
 | WS90 wind / solar / rain / UV | `wind_mph`, `wind_gust_mph`, `wind_dir_deg`, `wind_gust_max_daily_mph`, `solar_wm2`, `uv_index`, `rain_rate_inhr`, `rain_event_in`, `rain_daily_in`, `rain_state` (0/1), `pressure_inhg` | WS90 + GW1200 relative baro |
 | GW1200 internal | `indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg` | GW1200 onboard |
-| Other paired WH31 channels | `ch{N}_temp_f`, `ch{N}_rh_pct`, `ch{N}_dewpoint_f` | Any WH31/WN31 paired channel `!= ECOWITT_SHADED_CHANNEL` |
+| Other paired WH31 channels | `ch{N}_temp_f`, `ch{N}_rh_pct`, `ch{N}_dewpoint_f` | Any WH31/WN31 paired channel `!= ECOWITT_SHADED_CHANNEL`. With `ECOWITT_SHADED_CHANNEL` unset (production), this path includes channel 1. |
 
-**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_outdoor_now` reads `ch1_*` for live outdoor display). Future bias-correction work pairs `outdoor_temp_f` against NWS forecast for affine intercept+slope fit.
+**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_outdoor_now` reads `ch1_*` for live outdoor display). Future bias-correction work pairs `ch1_temp_f` against NWS forecast for affine intercept+slope fit.
 
 **Healthcheck:** `/tmp/last_push_ok` marker.
 

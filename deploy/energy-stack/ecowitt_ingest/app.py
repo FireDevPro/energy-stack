@@ -30,10 +30,15 @@ Hardware in this deployment:
                       exposed comparator at ``tempf``/``humidity``).
     WN31              Multi-channel temp/RH sensor on the shaded N/E wall
                       under a UV shield. Dip switches 1-3 set channel 1-8
-                      at the sensor; ``ECOWITT_SHADED_CHANNEL`` env var
-                      tells the parser which channel is the canonical
-                      shaded reference. Source of ``outdoor_temp_f``,
-                      ``outdoor_rh_pct``, ``outdoor_dewpoint_f``.
+                      at the sensor. Production config leaves
+                      ``ECOWITT_SHADED_CHANNEL`` UNSET so the WN31 on
+                      channel 1 emits via the paired-channel path as
+                      ``ch1_temp_f`` / ``ch1_rh_pct`` / ``ch1_dewpoint_f``
+                      — the canonical analysis source per spec §6.
+                      Setting ``ECOWITT_SHADED_CHANNEL=1`` instead routes
+                      channel 1 through the ``outdoor_*`` alias path
+                      (kept for operator-facing dashboards; not the
+                      analysis source).
 
 Gateway-side config (WSView app → Weather Services → Customized):
     Protocol:  Ecowitt
@@ -45,13 +50,24 @@ Gateway-side config (WSView app → Weather Services → Customized):
 Schema written (single measurement ``ecowitt.weather``):
     tag    gateway          GW1200 PASSKEY (stable per-device id)
 
-    Canonical shaded outdoor (WN31 on ECOWITT_SHADED_CHANNEL):
-    field  outdoor_temp_f         shaded WN31
-    field  outdoor_rh_pct         shaded WN31
-    field  outdoor_dewpoint_f     computed from WN31 via Magnus
-                                  Not written if ECOWITT_SHADED_CHANNEL is
-                                  unset or the channel is silent -- fail loud
-                                  rather than silently substituting sun data.
+    Canonical shaded outdoor (per spec §6 — analysis source):
+    field  ch1_temp_f             WN31 on channel 1 (shaded)
+    field  ch1_rh_pct              WN31 on channel 1 (shaded)
+    field  ch1_dewpoint_f         computed from WN31 channel 1 via Magnus
+                                  Emitted via the paired-channel path
+                                  (see "Other paired WH31 channels" below)
+                                  whenever ECOWITT_SHADED_CHANNEL is unset.
+                                  Production keeps ECOWITT_SHADED_CHANNEL
+                                  UNSET so channel 1 takes this path.
+
+    Conditional emit-alias (NOT canonical, NOT consumed by analysis):
+    field  outdoor_temp_f         shaded WN31, only when ECOWITT_SHADED_CHANNEL
+    field  outdoor_rh_pct         set. Routes the shaded reading through a
+    field  outdoor_dewpoint_f     renamed alias path instead of ch{N}_*. Kept
+                                  for operator-facing dashboards. Not written
+                                  if ECOWITT_SHADED_CHANNEL is unset or the
+                                  channel is silent -- fail loud rather than
+                                  silently substituting sun data.
 
     Sun-exposed comparator (WS90 onboard temp/RH on tempf/humidity):
     field  ws90_temp_f            WS90 onboard
@@ -76,17 +92,25 @@ Schema written (single measurement ``ecowitt.weather``):
     field  indoor_rh_pct          GW1200 internal
     field  baro_abs_inhg          GW1200 absolute baro
 
-    Other paired WH31 channels (any channel != ECOWITT_SHADED_CHANNEL):
+    Paired WH31 channels (any channel != ECOWITT_SHADED_CHANNEL):
     field  ch{N}_temp_f           WH31/WN31 channel N (when paired)
     field  ch{N}_rh_pct           WH31/WN31 channel N (when paired)
     field  ch{N}_dewpoint_f       computed via Magnus (when paired)
+                                  Production keeps ECOWITT_SHADED_CHANNEL
+                                  unset, so channel 1 (WN31 shaded) emits
+                                  here as ch1_* — the canonical analysis
+                                  source per spec §6.
 
 Environment variables:
     ECOWITT_LISTEN_PORT     TCP port to bind (default 8088)
     ECOWITT_SHADED_CHANNEL  WH31 channel (1-8) hosting the shaded reference
-                            sensor. When set, outdoor_temp_f/rh_pct/dewpoint_f
-                            are sourced from that channel. When unset, those
-                            fields are not written -- forcing downstream
+                            sensor. When set, the named channel routes
+                            through the outdoor_temp_f/rh_pct/dewpoint_f
+                            alias path (descriptive only, not canonical).
+                            When unset (production config), the named
+                            channel routes through the standard ch{N}_*
+                            path — which is what makes ch1_* the canonical
+                            analysis source. Either path is "fail loud" --
                             consumers to surface the gap rather than silently
                             using the WS90 sun reading as canonical.
     INFLUXDB_URL            default http://influxdb:8086
