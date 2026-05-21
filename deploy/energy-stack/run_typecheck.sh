@@ -26,6 +26,7 @@ REPO_ROOT="$(cd "$STACK_DIR/../.." && pwd)"
 # (underscore package names, post-rename + __init__.py)
 service_dirs=(
     hvac_scheduler
+    comed_poller
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set

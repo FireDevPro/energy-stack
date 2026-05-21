@@ -104,7 +104,7 @@ Caller 4 is where the bug fires. Callers 1-3 have lower stakes (audit logging) b
 
 ## The Poller Layer Also Doesn't Check Freshness
 
-`deploy/energy-stack/comed-poller/poller.py:86-96, 108-115, 132-143`:
+`deploy/energy-stack/comed_poller/poller.py:86-96, 108-115, 132-143`:
 
 - Poller calls ComEd API every 60 seconds
 - Picks the entry with the largest `millisUTC` from the response
@@ -156,7 +156,7 @@ The cockpit caught the 2026-05-19 bug visually first (its freshness indicator sh
 
 ## The Project's "Fail Loud" Convention
 
-The project has a documented design principle of failing loud rather than silently producing wrong output. Quoting `deploy/energy-stack/comed-poller/poller.py:189-190`:
+The project has a documented design principle of failing loud rather than silently producing wrong output. Quoting `deploy/energy-stack/comed_poller/poller.py:189-190`:
 
 > *"Influx write errors are NOT caught — they bubble up and kill the process so Docker restarts it."*
 
@@ -183,7 +183,7 @@ The next agent should investigate the code at the file:line references above, un
   - `_evaluate_layer_inputs` at 2382-2487 (the critical-path caller block)
   - `write_input_feed_health` at 1849-1865 (the audit telemetry)
 - `deploy/energy-stack/hvac_scheduler/price_overlay.py` — the price-overlay state machine and tier definitions
-- `deploy/energy-stack/comed-poller/poller.py` — the data ingestion layer (also freshness-blind)
+- `deploy/energy-stack/comed_poller/poller.py` — the data ingestion layer (also freshness-blind)
 - `tools/cockpit/backend/freshness.py` — the cockpit's independent freshness module
 - `tools/cockpit/README.md` — explains why the cockpit runs locally rather than in the docker stack
 - `docs/plans/sced-rebaseline-spec-2026-05-13.md` — the binding spec (note: pre-OSF, not yet filed, draft thresholds still revisable)

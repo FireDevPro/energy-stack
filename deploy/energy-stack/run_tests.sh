@@ -20,7 +20,7 @@ set -euo pipefail
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 services=(
-    comed-poller
+    comed_poller
     eagle-poller
     ecowitt-ingest
     haven-ingest

@@ -122,7 +122,7 @@ python -m pytest .
 
 Currently covered (22 test files across 11 services + scripts/ suite as of 2026-05-18):
 
-- `comed-poller/test_comed_poller.py`
+- `comed_poller/test_comed_poller.py`
 - `eagle-poller/test_eagle_poller.py`
 - `ecowitt-ingest/test_ecowitt_ingest.py`
 - `haven-ingest/test_haven_ingest.py`

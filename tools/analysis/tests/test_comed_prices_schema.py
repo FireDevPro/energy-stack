@@ -3,7 +3,7 @@
 Real-data finding from the 2026-05-12 replay-validation run:
 ``tools/analysis/queries/comed.prices.flux`` filtered on
 ``_field == "price_cents"``, but the production poller
-(``deploy/energy-stack/comed-poller/poller.py``) writes
+(``deploy/energy-stack/comed_poller/poller.py``) writes
 ``price_cents_per_kwh`` with a ``period_type`` tag of either
 ``5min`` (raw RTP cadence) or ``hourly_avg`` (poller-computed
 hourly mean).

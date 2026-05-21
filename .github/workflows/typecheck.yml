@@ -42,7 +42,7 @@ jobs:
         # lists this.
         run: |
           for req in \
-            deploy/energy-stack/comed-poller/requirements.txt \
+            deploy/energy-stack/comed_poller/requirements.txt \
             deploy/energy-stack/eagle-poller/requirements.txt \
             deploy/energy-stack/ecowitt-ingest/requirements.txt \
             deploy/energy-stack/haven-ingest/requirements.txt \

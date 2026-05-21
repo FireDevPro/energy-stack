@@ -1,4 +1,4 @@
-// ComEd hourly RTP prices. The poller (deploy/energy-stack/comed-poller/
+// ComEd hourly RTP prices. The poller (deploy/energy-stack/comed_poller/
 // poller.py) writes two flavors of the same field per cycle:
 //   period_type=5min       — raw RTP price for each 5-min window
 //   period_type=hourly_avg — poller-computed hourly mean

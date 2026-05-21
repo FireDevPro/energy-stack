@@ -127,7 +127,7 @@ def build_comed_prices_df(
 ) -> pd.DataFrame:
     """ComEd RTP prices at 5-min cadence, production-shape.
 
-    Production poller (deploy/energy-stack/comed-poller/poller.py) writes
+    Production poller (deploy/energy-stack/comed_poller/poller.py) writes
     `_field=price_cents_per_kwh` with a `period_type=5min` tag. This
     fixture mirrors that schema so loader tests exercise the real path.
 
