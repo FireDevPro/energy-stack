@@ -200,7 +200,7 @@ def query_latest_action(client: QueryApi, *, bucket: str) -> dict[str, Any] | No
     fired or would have fired in shadow). Returns the full pivoted row
     with action_label, applied (int), dry_run (tag), supervisor_decision,
     effective_cool_f, schedule_cool_f, etc. Source: deploy/energy-stack/
-    hvac-scheduler/app.py write_action()."""
+    hvac_scheduler/app.py write_action()."""
     # hvac.actions has six tags (action_label, day_type, dry_run,
     # fivecp_active, price_overlay_tier, supervisor_decision). Default
     # Influx grouping by tags means `last()` returns one row per tag-
