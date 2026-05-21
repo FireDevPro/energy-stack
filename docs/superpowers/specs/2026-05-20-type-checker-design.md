@@ -1,7 +1,7 @@
 ---
 date: 2026-05-20
 owner: chris
-status: draft
+status: shipped
 role-label: chris
 ---
 

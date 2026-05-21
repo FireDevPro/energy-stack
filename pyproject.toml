@@ -21,16 +21,6 @@ plugins = ["pydantic.mypy"]
 # package on the mypy search path (e.g., hvac_scheduler.app).
 mypy_path = "deploy/energy-stack"
 
-# Bootstrap files list. Empty after PR 4: both freshness modules are
-# now covered by per-target invocations (hvac_scheduler via
-# service_dirs; tools/cockpit/backend via repo_targets in
-# deploy/energy-stack/run_typecheck.sh). The tomllib guard in
-# run_typecheck.sh reads the live `files` value and skips the
-# bootstrap mypy pass when the list is empty. A future Phase 4 / PR 15
-# cleanup PR can remove the `files = []` line entirely (the guard
-# treats missing key and empty list identically).
-files = []
-
 # Third-party library overrides. Libraries without py.typed get
 # `ignore_missing_imports = true` so mypy treats them as Any. Per-library
 # typed adapters (see import-linter contracts and spec §5.2-5.5) are
