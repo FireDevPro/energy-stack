@@ -31,8 +31,7 @@ service_dirs=(
 # Paths outside deploy/energy-stack/ in the enforced set
 # (relative to REPO_ROOT)
 repo_targets=(
-    # populated as non-stack modules are added; e.g.,
-    # tools/cockpit/backend  (added in PR 4 — cockpit enforcement)
+    tools/cockpit/backend
 )
 
 failed=()

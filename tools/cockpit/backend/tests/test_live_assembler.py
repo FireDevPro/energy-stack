@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 # Allow running as `pytest tools/cockpit/backend/tests/` from repo root.
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +28,7 @@ def _fresh_ts() -> str:
     return (_NOW - timedelta(seconds=30)).isoformat()
 
 
-def _thermostat() -> dict:
+def _thermostat() -> dict[str, Any]:
     return {
         "indoor_temp_f": 74.8,
         "indoor_humidity_pct": 51,
@@ -39,7 +40,7 @@ def _thermostat() -> dict:
     }
 
 
-def _arm_mode() -> dict:
+def _arm_mode() -> dict[str, Any]:
     return {
         "mode_actual": "B-active",
         "arm": "B",
@@ -48,7 +49,7 @@ def _arm_mode() -> dict:
     }
 
 
-def _price(cents: float = 8.4) -> dict:
+def _price(cents: float = 8.4) -> dict[str, Any]:
     return {"current_cents_per_kwh": cents, "source_ts": _fresh_ts()}
 
 
@@ -58,7 +59,7 @@ def _layer_resolution(
     prev: int = 78,
     fivecp_active: bool = False,
     fivecp_scopes: list[str] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "tick_id": "a1b2c3d4",
         "now_ct": _fresh_ts(),
@@ -73,12 +74,21 @@ def _layer_resolution(
     }
 
 
-def _price_overlay_eval(tier: str = "normal", price_cents: float = 8.4) -> dict:
+def _price_overlay_eval(tier: str = "normal", price_cents: float = 8.4) -> dict[str, Any]:
+    # `ts` is the trace's UTC emit time, set by the scheduler's `log()`
+    # helper on every decision_trace.* line. `bucket_age_sec` is the
+    # actual age of the ComEd price bucket the scheduler is evaluating
+    # against — the snapshot assembler classifies freshness from this
+    # (NOT from `ts`, which only proves the trace was emitted). Default
+    # 30s here so the fixture's freshness is "fresh" per comed.prices
+    # thresholds (≤ 7m).
     return {
+        "ts": _fresh_ts(),
         "tick_id": "a1b2c3d4",
         "now_ct": _fresh_ts(),
         "price_cents": price_cents,
-        "price_is_stale": False,
+        "price_feed_unavailable": False,
+        "bucket_age_sec": 30,
         "prev_tier": tier,
         "new_tier": tier,
         "outcome": "held",
@@ -89,7 +99,7 @@ def _price_overlay_eval(tier: str = "normal", price_cents: float = 8.4) -> dict:
 
 def _day_type(
     winning: str = "NORMAL", high: int = 84, apparent: int = 88, dewpoint: int = 64
-) -> dict:
+) -> dict[str, Any]:
     return {
         "tick_id": "x9y8z7w6",
         "now_ct": (_NOW - timedelta(hours=21)).isoformat(),
@@ -117,7 +127,7 @@ def _supervisor(
     decision: str = "approved",
     proposed_cool: int = 76,
     final_cool: int = 76,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "tick_id": "a1b2c3d4",
         "now_ct": _fresh_ts(),
@@ -133,7 +143,7 @@ def _supervisor(
     }
 
 
-def _feed_health_fresh() -> list[dict]:
+def _feed_health_fresh() -> list[dict[str, Any]]:
     return [
         {"name": "ComEd", "status": "fresh", "label": "30s ago"},
         {"name": "NWS", "status": "fresh", "label": "1m ago"},

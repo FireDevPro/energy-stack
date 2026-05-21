@@ -5,7 +5,9 @@ test failure in test_snapshot.py round-trip. A Phase 4+ codegen step
 could replace this with a single source of truth.
 """
 
-SUMMER_NORMAL = {
+from typing import Any
+
+SUMMER_NORMAL: dict[str, Any] = {
     "snapshot_ts": "2026-07-14T13:00:30-05:00",
     "latest_tick_id": "a1b2c3d4",
     "latest_tick_time": "2026-07-14T13:00:00-05:00",

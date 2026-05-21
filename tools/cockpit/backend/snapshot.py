@@ -19,15 +19,17 @@ Two assembly modes:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
-from tools.cockpit.backend.freshness import classify
+from tools.cockpit.backend.freshness import Freshness, classify
 
 
 def build_snapshot_canned() -> dict[str, Any]:
     """Return the canned summer_normal snapshot (deep-copied)."""
-    return _deep_copy(SUMMER_NORMAL)
+    # _deep_copy returns Any because it's recursive over arbitrary
+    # JSON-shaped structures; cast to narrow at this single entrypoint.
+    return cast(dict[str, Any], _deep_copy(SUMMER_NORMAL))
 
 
 # ---- Live assembly --------------------------------------------------
@@ -293,10 +295,27 @@ def _build_price_overlay_node(
     # without being the winning layer (e.g., when 5CP also fired warmer).
     winning = layer.get("winning_layer") == "price_overlay"
     new_tier = po.get("new_tier") or "normal"
+    # Freshness tracks the underlying ComEd price BUCKET age, NOT the
+    # trace's emit time. The scheduler logs decision_trace.price_overlay_eval
+    # every evaluation tick (~30s cadence) — so po["ts"] is always recent.
+    # po["bucket_age_sec"] is the actual age of the ComEd price bucket the
+    # scheduler is evaluating against, and po["price_feed_unavailable"]
+    # flags when no bucket was available at all (current_price_cents is None).
+    # Per spec §3.1, the comed.prices freshness vocabulary is the source
+    # of truth for price-data actionability.
+    bucket_age_sec = po.get("bucket_age_sec")
+    price_unavailable = bool(po.get("price_feed_unavailable"))
+    if bucket_age_sec is None or price_unavailable:
+        freshness: Freshness = "missing"
+        freshness_label = "no price data"
+    else:
+        bucket_age_ms = int(float(bucket_age_sec) * 1000)
+        freshness = classify("comed.prices", bucket_age_ms)
+        freshness_label = _label_age(bucket_age_ms)
     return {
         "role_state": "winning" if winning else "dimmed",
-        "freshness": "stale" if po.get("price_is_stale") else "fresh",
-        "freshness_label": "this tick",
+        "freshness": freshness,
+        "freshness_label": freshness_label,
         "title": "RTP Spike",
         "subtitle": str(new_tier),
         "details": {
