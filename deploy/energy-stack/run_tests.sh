@@ -30,7 +30,7 @@ services=(
     pjm_dm2_poller
     refoss_poller
     telegram-notifier
-    thermostat-poller
+    thermostat_poller
 )
 
 # scripts/tests/ is a proper package with __init__.py; safe to collect in one shot.
