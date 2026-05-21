@@ -1,5 +1,10 @@
 name: Deploy to Pi
 
+# Operational runbook (kill-switch, OAuth rotation, audit log location,
+# tailnet ACL, SOC log-streaming) lives in
+# `deploy/energy-stack/README.md` § Tailscale (deploy runner). Read
+# that first when debugging a deploy or rotating credentials.
+
 # Triggers a deployment when:
 #   - Anything in deploy/ changes on main, OR
 #   - The workflow file itself changes on main, OR
