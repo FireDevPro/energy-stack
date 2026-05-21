@@ -26,7 +26,7 @@ Locked thresholds per EXPERIMENT_DESIGN.md Appendix A.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 
 # ---- Thresholds (locked) --------------------------------------------------
@@ -94,7 +94,7 @@ def dtod_delivery_rates_24h() -> list[float]:
 
 
 def should_deepen_precool(
-    forecast_tomorrow: dict,
+    forecast_tomorrow: dict[str, Any],
     season_5th_mw: float,
 ) -> bool:
     """True when tomorrow's forecast warrants the HOT_STREAK_DAY1 deeper
@@ -183,12 +183,12 @@ def _find_consecutive_window_above(
 
 def should_add_price_aware_precool(
     day_ahead_prices: list[float],
-    forecast_tomorrow: dict,  # accepted but not currently consumed; reserved
-                              # for future depth-scaling against forecast high.
+    forecast_tomorrow: dict[str, Any],  # accepted but not currently consumed; reserved
+                                        # for future depth-scaling against forecast high.
     delivery_rates_cents: Optional[list[float]] = None,
     *,
     trace_reason: Optional[list[str]] = None,
-) -> Optional[dict]:
+) -> Optional[dict[str, int]]:
     """Identify a price-aware pre-cool window for tomorrow.
 
     Returns ``{"hour_ct": int, "depth_f": int}`` when both:
@@ -235,10 +235,10 @@ def should_add_price_aware_precool(
     def _reject(code: str) -> None:
         if trace_reason is not None:
             trace_reason.append(code)
-        return None
 
     if len(day_ahead_prices) < 24:
-        return _reject("PRECOOL_REJECTED_DA_LMP_INCOMPLETE")
+        _reject("PRECOOL_REJECTED_DA_LMP_INCOMPLETE")
+        return None
     if delivery_rates_cents is not None and len(delivery_rates_cents) != len(day_ahead_prices):
         raise ValueError(
             f"delivery_rates_cents length ({len(delivery_rates_cents)}) "
@@ -259,7 +259,8 @@ def should_add_price_aware_precool(
         rank_by=total_costs,
     )
     if cheap_window is None:
-        return _reject("PRECOOL_REJECTED_NO_CHEAP_WINDOW")
+        _reject("PRECOOL_REJECTED_NO_CHEAP_WINDOW")
+        return None
     cheap_start, _cheap_end = cheap_window
     earliest_spike_start = cheap_start + MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS
 
@@ -270,7 +271,8 @@ def should_add_price_aware_precool(
         start_hour=earliest_spike_start,
     )
     if spike_window is None:
-        return _reject("PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP")
+        _reject("PRECOOL_REJECTED_NO_SPIKE_WINDOW_AFTER_GAP")
+        return None
 
     spike_start, spike_end = spike_window
     spike_max = max(day_ahead_prices[spike_start:spike_end])

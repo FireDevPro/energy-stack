@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from influxdb_client import Point  # ADAPTER is the only legitimate import site
+from influxdb_client import Point  # type: ignore[attr-defined]  # influxdb_client lacks __all__/stubs for Point; ADAPTER is the only legitimate import site
 
 
 @dataclass(frozen=True)
@@ -112,11 +112,14 @@ def write_point(
     provided, the Point uses that timestamp, otherwise Influx assigns
     server-time at write.
     """
-    p = Point(measurement)
+    # influxdb_client.Point and its builder methods (tag/field/time) lack
+    # type stubs in the installed package; centralize the type-ignore on
+    # the adapter so callers stay clean.
+    p = Point(measurement)  # type: ignore[no-untyped-call]
     for tag_key, tag_value in tags.items():
-        p = p.tag(tag_key, tag_value)
+        p = p.tag(tag_key, tag_value)  # type: ignore[no-untyped-call]
     for field_key, field_value in fields.items():
-        p = p.field(field_key, field_value)
+        p = p.field(field_key, field_value)  # type: ignore[no-untyped-call]
     if time is not None:
-        p = p.time(time)
+        p = p.time(time)  # type: ignore[no-untyped-call]
     write_api.write(bucket=bucket, record=p)
