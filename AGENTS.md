@@ -21,7 +21,7 @@ Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.
 
 **Deploy:**
 
-- Canonical: merging to `main` is the deploy. GitHub Actions self-hosted runner on Pi-lab watches `deploy/**` and `.github/workflows/deploy.yml`; pushes to `main` matching those paths rsync + `docker compose build && up -d` + verify health. ~30-60s for single-service change. PRs touching only `tools/` or `docs/` do not deploy.
+- Canonical: merging to `main` is the deploy. GitHub Actions GitHub-hosted runner (ubuntu-latest) joins the tailnet as an ephemeral `tag:ci` node and reaches Pi-lab via Tailscale SSH; watches `deploy/**` and `.github/workflows/deploy.yml`; pushes to `main` matching those paths rsync + `docker compose build && up -d` + verify health. ~60-120s for single-service change (slower than self-hosted; network rsync over tailnet vs local cp). PRs touching only `tools/` or `docs/` do not deploy.
 - Agent stops at `gh pr create` per branching policy. Your merge of a `deploy/**` PR in the GitHub UI is the deploy action. No separate ops step.
 - Manual rsync (local-only testing) exists but gets overwritten on next push to main. Prefer branch + PR + merge.
 - `.env` lives only on Pi-lab (`chmod 600`). Never committed. SOPS-encrypted copy at `deploy/energy-stack/secrets/env.sops.env` is the recovery path.
