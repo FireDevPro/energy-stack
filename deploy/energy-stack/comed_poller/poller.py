@@ -34,16 +34,17 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
-from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client import InfluxDBClient, Point, WritePrecision  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
 def log(level: str, msg: str, **fields: object) -> None:
-    record = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
+    record: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     record.update(fields)
     print(json.dumps(record), flush=True)
 
@@ -76,14 +77,14 @@ class Config:
         )
 
 
-def parse_current_hour_avg(data: list) -> float | None:
+def parse_current_hour_avg(data: list[dict[str, Any]]) -> float | None:
     """Pull the price from a ``type=currenthouraverage`` response payload."""
     if not data:
         return None
     return float(data[0]["price"])
 
 
-def parse_latest_5min(data: list) -> tuple[int, float] | None:
+def parse_latest_5min(data: list[dict[str, Any]]) -> tuple[int, float] | None:
     """Pick the most recent (millisUTC, price_cents) tuple from a
     ``type=5minutefeed`` response payload.
 
@@ -115,7 +116,7 @@ def fetch_latest_5min(cfg: Config) -> tuple[int, float] | None:
     return parse_latest_5min(response.json())
 
 
-def write_points(write_api, cfg: Config, hourly_avg: float | None,
+def write_points(write_api: Any, cfg: Config, hourly_avg: float | None,
                  five_min: tuple[int, float] | None) -> int:
     points: list[Point] = []
 
@@ -123,7 +124,7 @@ def write_points(write_api, cfg: Config, hourly_avg: float | None,
         # Truncate to the current hour so repeated polls upsert the same point.
         now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         points.append(
-            Point("comed.prices")
+            Point("comed.prices")  # type: ignore[no-untyped-call]
             .tag("period_type", "hourly_avg")
             .field("price_cents_per_kwh", hourly_avg)
             .time(now, WritePrecision.S)
@@ -132,7 +133,7 @@ def write_points(write_api, cfg: Config, hourly_avg: float | None,
     if five_min is not None:
         millis_utc, price = five_min
         points.append(
-            Point("comed.prices")
+            Point("comed.prices")  # type: ignore[no-untyped-call]
             .tag("period_type", "5min")
             .field("price_cents_per_kwh", price)
             .time(millis_utc * 1_000_000, WritePrecision.NS)
@@ -156,7 +157,7 @@ def main() -> int:
 
     stop_requested = False
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         nonlocal stop_requested
         log("info", "signal_received", signum=signum)
         stop_requested = True
@@ -206,7 +207,7 @@ def main() -> int:
                 time.sleep(min(1.0, deadline - time.monotonic()))
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]
     return 0
 
 

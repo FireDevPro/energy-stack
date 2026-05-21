@@ -11,7 +11,7 @@ Run from this directory:
 """
 from __future__ import annotations
 
-from poller import parse_current_hour_avg, parse_latest_5min
+from .poller import parse_current_hour_avg, parse_latest_5min
 
 
 # ---- parse_current_hour_avg ----------------------------------------------
@@ -53,14 +53,18 @@ def test_parse_latest_5min_picks_max_millis():
 def test_parse_latest_5min_returns_int_millis():
     """API returns millisUTC as a string — parser must coerce to int."""
     data = [{"millisUTC": "1700000000000", "price": "3.0"}]
-    millis, _ = parse_latest_5min(data)
+    result = parse_latest_5min(data)
+    assert result is not None  # non-empty data; parser returns tuple
+    millis, _ = result
     assert isinstance(millis, int)
     assert millis == 1700000000000
 
 
 def test_parse_latest_5min_returns_float_price():
     data = [{"millisUTC": "1700000000000", "price": "3.456"}]
-    _, price = parse_latest_5min(data)
+    result = parse_latest_5min(data)
+    assert result is not None
+    _, price = result
     assert isinstance(price, float)
     assert price == 3.456
 
@@ -91,6 +95,8 @@ def test_parse_latest_5min_handles_string_millis_lexicographic_trap():
         {"millisUTC": "999000000000", "price": "3.0"},      # 12 chars
         {"millisUTC": "1700000000000", "price": "5.0"},     # 13 chars, actually newer
     ]
-    millis, price = parse_latest_5min(data)
+    result = parse_latest_5min(data)
+    assert result is not None
+    millis, price = result
     assert millis == 1700000000000
     assert price == 5.0

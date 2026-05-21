@@ -86,7 +86,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   comed-poller:
-    build: ./comed-poller
+    build: ./comed_poller
     container_name: comed-poller
     restart: unless-stopped
     depends_on:
