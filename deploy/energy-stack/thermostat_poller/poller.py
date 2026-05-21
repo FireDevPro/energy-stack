@@ -51,9 +51,9 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, cast
 
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 from pyControl4.account import C4Account
 from pyControl4.director import C4Director
@@ -117,11 +117,11 @@ class C4Client:
         self._token: str | None = None
         self._common_name: str | None = None
 
-    def _load_token(self) -> dict | None:
+    def _load_token(self) -> dict[str, Any] | None:
         if not self.cfg.token_file.exists():
             return None
         try:
-            return json.loads(self.cfg.token_file.read_text())
+            return cast(dict[str, Any], json.loads(self.cfg.token_file.read_text()))
         except Exception as exc:
             log("warn", "token_load_failed", error=str(exc))
             return None
@@ -162,6 +162,9 @@ class C4Client:
             log("info", "token_loaded_from_disk")
         else:
             await self._cloud_auth()
+        # Invariant: either _load_token() returned a truthy dict and we
+        # assigned cached["token"] above, or _cloud_auth() set self._token.
+        assert self._token is not None
         self._director = C4Director(self.cfg.controller_ip, self._token)
         self._climate = C4Climate(self._director, self.cfg.thermostat_id)
         return self._director
@@ -171,7 +174,7 @@ class C4Client:
         assert self._climate is not None
         return self._climate
 
-    async def call_with_reauth(self, coro_fn):
+    async def call_with_reauth(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
         try:
             return await coro_fn()
         except Exception as exc:
@@ -179,15 +182,17 @@ class C4Client:
             if "401" in txt or "unauthorized" in txt or "forbidden" in txt:
                 log("warn", "director_token_invalid_reauth", error=str(exc))
                 await self._cloud_auth()
+                # Invariant: _cloud_auth() set self._token (or raised).
+                assert self._token is not None
                 self._director = C4Director(self.cfg.controller_ip, self._token)
                 self._climate = C4Climate(self._director, self.cfg.thermostat_id)
                 return await coro_fn()
             raise
 
 
-async def read_snapshot(c4: C4Client) -> dict:
+async def read_snapshot(c4: C4Client) -> dict[str, Any]:
     climate = await c4.get_climate()
-    snap: dict = {}
+    snap: dict[str, Any] = {}
     snap["indoor_temp_f"] = await c4.call_with_reauth(climate.get_current_temperature_f)
     snap["cool_setpoint_f"] = await c4.call_with_reauth(climate.get_cool_setpoint_f)
     snap["heat_setpoint_f"] = await c4.call_with_reauth(climate.get_heat_setpoint_f)
@@ -199,22 +204,25 @@ async def read_snapshot(c4: C4Client) -> dict:
     return snap
 
 
-def write_snapshot(write_api, cfg: Config, snap: dict) -> None:
-    p = (Point("hvac.thermostat")
-         .tag("thermostat_id", str(cfg.thermostat_id))
-         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
-         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
-         .field("cool_setpoint_f", float(snap.get("cool_setpoint_f") or 0))
-         .field("heat_setpoint_f", float(snap.get("heat_setpoint_f") or 0))
-         .field("hvac_mode", str(snap.get("hvac_mode") or ""))
-         .field("hvac_state", str(snap.get("hvac_state") or ""))
-         .field("fan_mode", str(snap.get("fan_mode") or ""))
-         .field("hold_mode", str(snap.get("hold_mode") or ""))
-         )
+def write_snapshot(write_api: Any, cfg: Config, snap: dict[str, Any]) -> None:
+    # `p: Any` lets the Point()/.tag()/.field() chain (untyped in
+    # influxdb_client stubs) flow through without per-call ignores.
+    p: Any = (
+        Point("hvac.thermostat")  # type: ignore[no-untyped-call]
+        .tag("thermostat_id", str(cfg.thermostat_id))
+        .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
+        .field("humidity_pct", float(snap.get("humidity_pct") or 0))
+        .field("cool_setpoint_f", float(snap.get("cool_setpoint_f") or 0))
+        .field("heat_setpoint_f", float(snap.get("heat_setpoint_f") or 0))
+        .field("hvac_mode", str(snap.get("hvac_mode") or ""))
+        .field("hvac_state", str(snap.get("hvac_state") or ""))
+        .field("fan_mode", str(snap.get("fan_mode") or ""))
+        .field("hold_mode", str(snap.get("hold_mode") or ""))
+    )
     write_api.write(bucket=cfg.influx_bucket, record=p)
 
 
-def fetch_last_action(query_api, bucket: str) -> dict | None:
+def fetch_last_action(query_api: Any, bucket: str) -> dict[str, Any] | None:
     """Return the most recent applied (non-dry-run) hvac.actions row, with
     cool_setpoint_f / heat_setpoint_f / action_label / minutes_since_last_action."""
     flux = f'''
@@ -225,7 +233,7 @@ from(bucket: "{bucket}")
   |> last()
   |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
 '''
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for table in query_api.query(flux):
         for record in table.records:
             rows.append({**record.values})
@@ -245,7 +253,7 @@ from(bucket: "{bucket}")
     }
 
 
-def classify_override(snap: dict, last: dict, override_grace_min: float) -> dict | None:
+def classify_override(snap: dict[str, Any], last: dict[str, Any], override_grace_min: float) -> dict[str, Any] | None:
     """Decide whether the current thermostat snapshot represents a manual
     override of the last applied scheduler action.
 
@@ -285,7 +293,7 @@ def classify_override(snap: dict, last: dict, override_grace_min: float) -> dict
     }
 
 
-def detect_and_write_override(query_api, write_api, cfg: Config, snap: dict) -> dict | None:
+def detect_and_write_override(query_api: Any, write_api: Any, cfg: Config, snap: dict[str, Any]) -> dict[str, Any] | None:
     """If current setpoints differ from last applied action (after grace period),
     write hvac.overrides row and return the override summary. Returns None if
     no override or last action data unavailable."""
@@ -296,21 +304,24 @@ def detect_and_write_override(query_api, write_api, cfg: Config, snap: dict) -> 
     if summary is None:
         return None
 
-    p = (Point("hvac.overrides")
-         .tag("thermostat_id", str(cfg.thermostat_id))
-         .tag("source", "manual_override")
-         .field("expected_cool_setpoint_f", float(summary["expected_cool_f"]))
-         .field("actual_cool_setpoint_f", float(summary["actual_cool_f"]))
-         .field("delta_cool_f", float(summary["delta_cool_f"]))
-         .field("expected_heat_setpoint_f", float(summary["expected_heat_f"]))
-         .field("actual_heat_setpoint_f", float(summary["actual_heat_f"]))
-         .field("delta_heat_f", float(summary["delta_heat_f"]))
-         .field("last_action_label", str(summary["last_action_label"] or ""))
-         .field("minutes_since_last_action", float(summary["minutes_since_last_action"]))
-         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
-         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
-         .field("hvac_mode", str(snap.get("hvac_mode") or ""))
-         )
+    # `p: Any` lets the Point()/.tag()/.field() chain (untyped in
+    # influxdb_client stubs) flow through without per-call ignores.
+    p: Any = (
+        Point("hvac.overrides")  # type: ignore[no-untyped-call]
+        .tag("thermostat_id", str(cfg.thermostat_id))
+        .tag("source", "manual_override")
+        .field("expected_cool_setpoint_f", float(summary["expected_cool_f"]))
+        .field("actual_cool_setpoint_f", float(summary["actual_cool_f"]))
+        .field("delta_cool_f", float(summary["delta_cool_f"]))
+        .field("expected_heat_setpoint_f", float(summary["expected_heat_f"]))
+        .field("actual_heat_setpoint_f", float(summary["actual_heat_f"]))
+        .field("delta_heat_f", float(summary["delta_heat_f"]))
+        .field("last_action_label", str(summary["last_action_label"] or ""))
+        .field("minutes_since_last_action", float(summary["minutes_since_last_action"]))
+        .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
+        .field("humidity_pct", float(snap.get("humidity_pct") or 0))
+        .field("hvac_mode", str(snap.get("hvac_mode") or ""))
+    )
     write_api.write(bucket=cfg.influx_bucket, record=p)
     return summary
 
@@ -330,7 +341,7 @@ async def main_async(cfg: Config) -> int:
 
     stop = asyncio.Event()
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         log("info", "signal_received", signum=signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_stop)
@@ -362,7 +373,7 @@ async def main_async(cfg: Config) -> int:
                 pass
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # stubs lack annotation on InfluxDBClient.close
     return 0
 
 

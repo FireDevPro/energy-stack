@@ -206,7 +206,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   thermostat-poller:
-    build: ./thermostat-poller
+    build: ./thermostat_poller
     container_name: thermostat-poller
     restart: unless-stopped
     depends_on:

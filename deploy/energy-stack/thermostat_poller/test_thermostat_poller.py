@@ -15,13 +15,15 @@ Run from this directory:
 """
 from __future__ import annotations
 
-from poller import classify_override
+from typing import Any
+
+from .poller import classify_override
 
 
 # ---- classify_override ---------------------------------------------------
 
 
-def _last(cool=70, heat=65, label="PRE_COOL", minutes_since=30.0):
+def _last(cool: float = 70, heat: float = 65, label: str = "PRE_COOL", minutes_since: float = 30.0) -> dict[str, Any]:
     return {
         "cool_setpoint_f": cool,
         "heat_setpoint_f": heat,
@@ -30,7 +32,7 @@ def _last(cool=70, heat=65, label="PRE_COOL", minutes_since=30.0):
     }
 
 
-def _snap(cool=70, heat=65):
+def _snap(cool: float = 70, heat: float = 65) -> dict[str, Any]:
     return {
         "cool_setpoint_f": cool,
         "heat_setpoint_f": heat,

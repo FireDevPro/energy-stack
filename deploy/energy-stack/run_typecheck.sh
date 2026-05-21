@@ -32,6 +32,7 @@ service_dirs=(
     nws_poller
     eagle_poller
     refoss_poller
+    thermostat_poller
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set
