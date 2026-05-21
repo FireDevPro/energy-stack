@@ -823,7 +823,7 @@ git commit -m "feat(type-checker): verify influxdb_client stub status
 
 ---
 
-### Task 9: Run `mypy --install-types` to discover available stub packages
+### Task 9: Discover available stub packages via plain `mypy` hints
 
 **Files:**
 - Modify: `deploy/energy-stack/requirements-dev.in` (if stubs are found and we want them — add to intent file, then regenerate `.lock` per Task 2 step 3 procedure)
@@ -863,7 +863,7 @@ Expected: still clean.
 
 ```bash
 git add deploy/energy-stack/requirements-dev.in deploy/energy-stack/requirements-dev.lock docs/type-debt-backlog.md pyproject.toml
-git commit -m "feat(type-checker): review and install --install-types suggestions
+git commit -m "feat(type-checker): review mypy stub-suggestion hints and update lockfile
 
 [describe each stub added / declined and why]
 [note: requirements-dev.lock regenerated from updated .in]"
@@ -932,7 +932,7 @@ Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`doc
 - [x] The two \`freshness.py\` modules type-check clean under \`mypy --strict\`.
 - [ ] **GitHub branch protection / ruleset update:** operator copies the EXACT \`type-check / type-check\` check name from the Actions UI and adds it to required-checks for \`main\` immediately after this PR's workflow run completes green. Without this step, the workflow runs advisorily and the rollout's enforcement claim is false.
 - [x] **influxdb-client stub-status verification:** documented in \`docs/type-debt-backlog.md\`.
-- [x] **\`mypy --install-types\` discovery:** reviewed; relevant stubs added to \`requirements-dev.in\` and \`requirements-dev.lock\` regenerated (see backlog).
+- [x] **Mypy stub-suggestion-hint discovery (plain \`python -m mypy\`):** reviewed; relevant stubs added to \`requirements-dev.in\` and \`requirements-dev.lock\` regenerated (see backlog).
 - [x] **Pydantic plugin loads:** mypy starts without error.
 
 ## Operator post-merge tasks
