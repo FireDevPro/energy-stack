@@ -246,7 +246,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   haven-ingest:
-    build: ./haven-ingest
+    build: ./haven_ingest
     container_name: haven-ingest
     restart: unless-stopped
     depends_on:

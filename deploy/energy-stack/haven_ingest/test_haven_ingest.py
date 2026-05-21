@@ -15,11 +15,12 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-import app
-from app import Config, TokenManager, indoor_reading_to_point, outdoor_reading_to_point
+from . import app
+from .app import Config, TokenManager, indoor_reading_to_point, outdoor_reading_to_point
 
 
 # ---- TokenManager fixtures ------------------------------------------------
@@ -45,7 +46,7 @@ def _make_cfg(token_file: Path, refresh_token: str = "env-token") -> Config:
 # ---- TokenManager: load precedence ---------------------------------------
 
 
-def test_token_manager_loads_from_file_when_present(tmp_path: Path):
+def test_token_manager_loads_from_file_when_present(tmp_path: Path) -> None:
     """File takes precedence over env; this is the steady-state path
     after the first refresh has rotated the bootstrap token."""
     token_file = tmp_path / "haven_token.json"
@@ -54,14 +55,14 @@ def test_token_manager_loads_from_file_when_present(tmp_path: Path):
     assert tm._refresh_token == "from-file"
 
 
-def test_token_manager_falls_back_to_env_when_file_missing(tmp_path: Path):
+def test_token_manager_falls_back_to_env_when_file_missing(tmp_path: Path) -> None:
     """Bootstrap path: no file yet, use the env var."""
     token_file = tmp_path / "haven_token.json"
     tm = TokenManager(_make_cfg(token_file, refresh_token="env-token"))
     assert tm._refresh_token == "env-token"
 
 
-def test_token_manager_falls_back_to_env_on_unreadable_file(tmp_path: Path):
+def test_token_manager_falls_back_to_env_on_unreadable_file(tmp_path: Path) -> None:
     """Corrupt token file shouldn't kill the service — fall back to env."""
     token_file = tmp_path / "haven_token.json"
     token_file.write_text("not-json{")
@@ -69,7 +70,7 @@ def test_token_manager_falls_back_to_env_on_unreadable_file(tmp_path: Path):
     assert tm._refresh_token == "env-token"
 
 
-def test_token_manager_exits_when_neither_source_has_token(tmp_path: Path):
+def test_token_manager_exits_when_neither_source_has_token(tmp_path: Path) -> None:
     """No file AND no env var → service can't function. Exit cleanly so
     Docker restarts and the operator sees a clear error."""
     token_file = tmp_path / "haven_token.json"
@@ -79,7 +80,7 @@ def test_token_manager_exits_when_neither_source_has_token(tmp_path: Path):
     assert excinfo.value.code == 2
 
 
-def test_token_manager_uses_empty_refresh_token_in_file_as_missing(tmp_path: Path):
+def test_token_manager_uses_empty_refresh_token_in_file_as_missing(tmp_path: Path) -> None:
     """File present but refresh_token empty → fall back to env (don't use
     the empty string as a token)."""
     token_file = tmp_path / "haven_token.json"
@@ -92,15 +93,15 @@ def test_token_manager_uses_empty_refresh_token_in_file_as_missing(tmp_path: Pat
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
-    def raise_for_status(self):
+    def raise_for_status(self) -> None:
         pass
-    def json(self):
+    def json(self) -> dict[str, Any]:
         return self._payload
 
 
-def test_token_manager_persists_rotated_refresh_token(tmp_path: Path, monkeypatch):
+def test_token_manager_persists_rotated_refresh_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The CRITICAL test: when Auth0 returns a new refresh_token in the
     response, it MUST be written to the file. Without this persistence,
     the container loses access on restart."""
@@ -108,7 +109,7 @@ def test_token_manager_persists_rotated_refresh_token(tmp_path: Path, monkeypatc
     cfg = _make_cfg(token_file, refresh_token="env-token-bootstrap")
     tm = TokenManager(cfg)
 
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({
+    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
         "access_token": "new-access-token",
         "expires_in": 86400,
         "refresh_token": "rotated-refresh-token",
@@ -125,14 +126,14 @@ def test_token_manager_persists_rotated_refresh_token(tmp_path: Path, monkeypatc
     assert persisted == {"refresh_token": "rotated-refresh-token"}
 
 
-def test_token_manager_does_not_break_when_response_omits_refresh_token(tmp_path: Path, monkeypatch):
+def test_token_manager_does_not_break_when_response_omits_refresh_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Auth0 may not rotate every time — if the response omits
     refresh_token, keep using the existing one."""
     token_file = tmp_path / "haven_token.json"
     cfg = _make_cfg(token_file, refresh_token="kept-token")
     tm = TokenManager(cfg)
 
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({
+    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
         "access_token": "new-access-token",
         "expires_in": 86400,
         # no refresh_token key
@@ -144,14 +145,14 @@ def test_token_manager_does_not_break_when_response_omits_refresh_token(tmp_path
     assert not token_file.exists()
 
 
-def test_token_manager_get_token_refreshes_when_expired(tmp_path: Path, monkeypatch):
+def test_token_manager_get_token_refreshes_when_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """_get_token must trigger refresh when within 60s of expiry."""
     token_file = tmp_path / "haven_token.json"
     tm = TokenManager(_make_cfg(token_file, refresh_token="t"))
     tm._access_token = "old"
     tm._expires_at = time.monotonic() - 10  # already expired
 
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({
+    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
         "access_token": "fresh",
         "expires_in": 86400,
     }))
@@ -159,7 +160,7 @@ def test_token_manager_get_token_refreshes_when_expired(tmp_path: Path, monkeypa
     assert tm._get_token() == "fresh"
 
 
-def test_token_manager_get_token_does_not_refresh_when_fresh(tmp_path: Path):
+def test_token_manager_get_token_does_not_refresh_when_fresh(tmp_path: Path) -> None:
     """If access token is fresh, _get_token returns cached without an HTTP call."""
     token_file = tmp_path / "haven_token.json"
     tm = TokenManager(_make_cfg(token_file, refresh_token="t"))
@@ -174,7 +175,7 @@ def test_token_manager_get_token_does_not_refresh_when_fresh(tmp_path: Path):
 # ---- indoor_reading_to_point ---------------------------------------------
 
 
-def _indoor_reading():
+def _indoor_reading() -> dict[str, Any]:
     return {
         "timestamp": "2026-05-06T12:00:00+00:00",
         "airflow": 0.45,
@@ -219,7 +220,7 @@ def test_indoor_reading_to_point_uses_explicit_ts_when_provided():
 # ---- outdoor_reading_to_point --------------------------------------------
 
 
-def _outdoor_reading():
+def _outdoor_reading() -> dict[str, Any]:
     return {
         "timestamp": "2026-05-06T12:00:00+00:00",
         "temperature": 18.0,
