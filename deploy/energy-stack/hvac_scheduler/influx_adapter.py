@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from influxdb_client import Point  # type: ignore[attr-defined]  # influxdb_client lacks __all__/stubs for Point; ADAPTER is the only legitimate import site
+
 
 @dataclass(frozen=True)
 class TypedRecord:
@@ -84,3 +86,40 @@ def project_record(record: Any) -> TypedRecord:
         field=str(field_raw),
         measurement=str(measurement_raw),
     )
+
+
+def write_point(
+    write_api: Any,
+    bucket: str,
+    measurement: str,
+    *,
+    tags: dict[str, str],
+    fields: dict[str, float | int | bool | str],
+    time: datetime | None = None,
+) -> None:
+    """Typed write helper around influxdb_client.Point construction.
+
+    Eliminates the untyped ``Point().tag().field().time()`` chain pattern
+    from callers and centralizes the influxdb_client write-API import in
+    this module. Per spec §5.5 import-linter contract, callers should
+    import this function rather than touching ``influxdb_client.Point``
+    directly.
+
+    Field values may be int, float, bool, or str. Bools are passed
+    through to ``Point.field()`` so InfluxDB stores them as native
+    booleans (``healthy=true``/``healthy=false``) rather than coercing
+    to int. Tag values are always str. ``time`` is optional; when
+    provided, the Point uses that timestamp, otherwise Influx assigns
+    server-time at write.
+    """
+    # influxdb_client.Point and its builder methods (tag/field/time) lack
+    # type stubs in the installed package; centralize the type-ignore on
+    # the adapter so callers stay clean.
+    p = Point(measurement)  # type: ignore[no-untyped-call]
+    for tag_key, tag_value in tags.items():
+        p = p.tag(tag_key, tag_value)  # type: ignore[no-untyped-call]
+    for field_key, field_value in fields.items():
+        p = p.field(field_key, field_value)  # type: ignore[no-untyped-call]
+    if time is not None:
+        p = p.time(time)  # type: ignore[no-untyped-call]
+    write_api.write(bucket=bucket, record=p)

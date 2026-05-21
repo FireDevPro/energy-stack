@@ -17,6 +17,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -40,7 +41,7 @@ PRECOOL_EVENT = "decision_trace.precool_decision"
 DAY_TYPE_EVENT = "decision_trace.day_type_decision"
 
 
-def _parse_trace_lines(stdout: str, msg_filter: str | None = None) -> list[dict]:
+def _parse_trace_lines(stdout: str, msg_filter: str | None = None) -> list[dict[str, Any]]:
     """Parse JSON log lines from captured stdout; optionally filter by msg."""
     out = []
     for line in stdout.splitlines():
@@ -677,7 +678,7 @@ class TestPhase4PrecoolRejection:
         monkeypatch.setattr(app, "fetch_latest_forecast",
                             lambda q, b, period: forecast)
 
-        trace = []
+        trace: list[str] = []
         result = app.compute_price_aware_precool_window(
             MagicMock(), "energy", "2026-07-15", _ZoneInfo("America/Chicago"),
             forecast_period="tomorrow", trace_reason=trace,

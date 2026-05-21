@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -177,7 +178,7 @@ def test_hold_end_time_handles_top_of_hour():
 # ---- evaluate_5cp_risk: trigger conditions -------------------------------
 
 
-def _all_conditions_met_args(now_utc=T_AT_1430_CT):
+def _all_conditions_met_args(now_utc: datetime = T_AT_1430_CT) -> dict[str, Any]:
     """Helper: a kwargs dict where all four trigger conditions hold."""
     return dict(
         current_load_mw=18500.0,                    # ratio 18500/18000 = 1.027 > 0.95
@@ -399,7 +400,7 @@ def test_fetch_zone_live_computes_per_hour_derivative():
 # ---- fetch_forecast_peak_for_date (§7 wire-up) ---------------------------
 
 
-def _fake_query_api_with_responses(*responses):
+def _fake_query_api_with_responses(*responses: Any) -> MagicMock:
     """Stub query_api that returns ``responses[i]`` from the i-th call to
     ``.query()``. Each response is a list-of-floats (each float becomes
     one record's _value). ``get_time`` is stubbed to a fixed real UTC
@@ -409,7 +410,7 @@ def _fake_query_api_with_responses(*responses):
     (_latest_forecast_revision_tag) reads only get_value() so the time
     stub is inert for that call."""
     api = MagicMock()
-    side_effect_tables: list = []
+    side_effect_tables: list[Any] = []
     stub_time = datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc)
     for r in responses:
         if not r:
@@ -636,7 +637,7 @@ def _scope_evaluation_fixture(*,
                                state: FiveCPState = FiveCPState(),
                                now_utc: datetime = T_AT_1430_CT,
                                scope: DetectorScope = COMED_SCOPE,
-                               monkeypatch=None) -> ScopeEvaluation:
+                               monkeypatch: Any = None) -> ScopeEvaluation:
     """Common harness for evaluate_for_scope tests. Stubs the two IO
     helpers inside pjm_5cp so the scope-aware code path is exercised
     end-to-end without spinning up Flux."""
@@ -984,7 +985,7 @@ def test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast(monkeypatc
 # ---- P2: metered-load season-5th must dedup by hour -----------------------
 
 
-def _mock_metered_query_api(records: list[float]):
+def _mock_metered_query_api(records: list[float]) -> MagicMock:
     """Build a query_api mock whose ``.query(flux)`` captures the Flux
     string and returns one table of ``mw`` records. The fixed
     ``|> group()`` pipeline produces a single flattened table after
@@ -992,21 +993,21 @@ def _mock_metered_query_api(records: list[float]):
     mock = MagicMock()
     mock.last_flux = None
 
-    def _query(flux):
+    def _query(flux: str) -> list[Any]:
         mock.last_flux = flux
 
         class _Rec:
-            def __init__(self, v):
+            def __init__(self, v: float) -> None:
                 self._v = v
 
-            def get_value(self):
+            def get_value(self) -> float:
                 return self._v
 
-            def get_time(self):
+            def get_time(self) -> Any:
                 return None
 
         class _Table:
-            def __init__(self, recs):
+            def __init__(self, recs: list[float]) -> None:
                 self.records = [_Rec(r) for r in recs]
 
         return [_Table(records)]

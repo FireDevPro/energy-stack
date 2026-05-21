@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -60,7 +61,7 @@ from .app import (
 
 
 def _fresh_sample(cents: float, *, now_utc: datetime,
-                  age_min: float = 1.0):
+                  age_min: float = 1.0) -> Any:
     """Default-fresh PriceSample for tests not specifically exercising
     the freshness gate. `now_utc` is REQUIRED (no fallback to wall-clock
     — tests must drive time deterministically; see spec §8.7).
@@ -402,7 +403,7 @@ def test_resolve_cool_setpoint_standard_path_unchanged():
 # ---- execute_action: release-hold path ------------------------------------
 
 
-def _mock_c4_client():
+def _mock_c4_client() -> tuple[MagicMock, MagicMock]:
     """Build a C4Client mock whose call_with_reauth simply awaits the supplied
     callable. Captures the chain so the test can assert what was called."""
     c4 = MagicMock()
@@ -641,9 +642,9 @@ def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypa
     correctly classified as HOT_STREAK_DAY1 when tomorrow is also HOT."""
     monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
 
-    captured = {}
+    captured: dict[str, list[str]] = {}
 
-    def _forecast(query_api, bucket, period):
+    def _forecast(query_api: Any, bucket: str, period: str) -> Any:
         captured.setdefault("queried", []).append(period)
         if period == "today":
             return {"high_f": 96.0}
@@ -666,7 +667,7 @@ def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypa
 # ---- run_decision_revisit: intra-day forecast re-evaluation ---------------
 
 
-def _make_revisit_cfg(bucket: str = "energy", tz_name: str = "America/Chicago"):
+def _make_revisit_cfg(bucket: str = "energy", tz_name: str = "America/Chicago") -> MagicMock:
     """Build a Config-shaped object with just what run_decision_revisit reads.
     Avoids constructing the full Config (which would need every env-var
     field). app's frozen=True keeps mutability honest; using a Mock for the
@@ -1035,7 +1036,7 @@ def _build_da_lmp_query_result(
     hour_to_price_per_mwh: dict[int, float],
     target_date_iso: str = "2026-07-15",
     tz_name: str = "America/Chicago",
-):
+) -> list[MagicMock]:
     """Build a MagicMock query_api result list mirroring the InfluxDB
     Flux response for ``pjm.lmp_da_hourly`` rows. Each record carries an
     explicit ``get_time()`` returning the UTC instant corresponding to
@@ -1169,7 +1170,7 @@ def test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates(monkeypatch):
 
 def _make_schedule_check_cfg(bucket: str = "energy",
                               tz_name: str = "America/Chicago",
-                              dry_run: bool = True):
+                              dry_run: bool = True) -> MagicMock:
     cfg = MagicMock()
     cfg.influx_bucket = bucket
     cfg.tz_name = tz_name
@@ -1177,7 +1178,7 @@ def _make_schedule_check_cfg(bucket: str = "energy",
     return cfg
 
 
-def _stub_layer_eval_io(monkeypatch, *,
+def _stub_layer_eval_io(monkeypatch: Any, *,
                          price_cents: float | None = 5.0,
                          zone_load: float | None = 14000.0,
                          derivative: float = 0.0,
@@ -1186,7 +1187,7 @@ def _stub_layer_eval_io(monkeypatch, *,
                          rto_zone_load: float | None = None,
                          rto_derivative: float = 0.0,
                          rto_season_5th: float = 151525.0,
-                         rto_forecast_peak: float | None = None):
+                         rto_forecast_peak: float | None = None) -> None:
     """Stub the InfluxDB IO that _evaluate_layer_inputs makes. Lets tests
     drive the price/load/forecast inputs without spinning up Flux.
 
@@ -1211,7 +1212,7 @@ def _stub_layer_eval_io(monkeypatch, *,
     from .pjm_5cp import ZoneLoadSnapshot
     from . import pjm_5cp
 
-    def _snap(mw, deriv):
+    def _snap(mw: float, deriv: float) -> Any:
         return ZoneLoadSnapshot(
             current_mw=mw,
             derivative_mw_per_hour=deriv,
@@ -1578,14 +1579,14 @@ async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_uncha
 
 
 def _drive_run_schedule_check(
-    monkeypatch,
+    monkeypatch: Any,
     *,
     now_local: datetime,
     firing: FiringState,
     execute_result: tuple[bool, str | None] = (True, None),
     day_type: str = "NORMAL",
     dry_run: bool = False,
-):
+) -> tuple[Any, Any, Any]:
     """Drive ``app.run_schedule_check`` end-to-end with the IO stubbed.
     ``execute_result`` controls the (applied, error) tuple returned by
     the patched ``execute_action``. Returns the cfg/c4/write_api so
@@ -1737,7 +1738,7 @@ def test_already_fired_action_does_not_refire_within_window(monkeypatch):
 # ---- P1.3: _read_stored_decision multi-revision Flux semantics ------------
 
 
-def _mock_query_api_for_decisions(records: list[dict]):
+def _mock_query_api_for_decisions(records: list[dict[str, Any]]) -> MagicMock:
     """Build a query_api mock whose ``.query(flux)`` returns a list of
     tables. ``records`` is a flat list of dicts, each mapped to one
     Flux record's ``.values``. All records appear in a single table
@@ -1750,15 +1751,15 @@ def _mock_query_api_for_decisions(records: list[dict]):
     mock = MagicMock()
     mock.last_flux = None
 
-    def _query(flux):
+    def _query(flux: str) -> list[Any]:
         mock.last_flux = flux
 
         class _Rec:
-            def __init__(self, values):
+            def __init__(self, values: dict[str, Any]) -> None:
                 self.values = values
 
         class _Table:
-            def __init__(self, recs):
+            def __init__(self, recs: list[dict[str, Any]]) -> None:
                 self.records = [_Rec(r) for r in recs]
 
         return [_Table(records)]
@@ -1858,6 +1859,7 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
     Post-fix: when the feed is unavailable, the active tier's
     locked offset/override are looked up from PRICE_TIERS and
     carried forward to the layer-priority resolver."""
+    from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
     cfg = _make_schedule_check_cfg()
     now_local = datetime(2026, 7, 15, 14, 30,
@@ -1866,7 +1868,7 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
     # Simulate a prior tick where scarcity was active and the feed was
     # OK 2 min ago (well within the P2.2 stale threshold).
     firing = FiringState(
-        price_overlay_state=app.PriceOverlayState(
+        price_overlay_state=PriceOverlayState(
             current_tier="scarcity",
             triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
@@ -1886,13 +1888,14 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
 
 def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
     """Symmetric for the elevated tier (offset=+3, override=None)."""
+    from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
     cfg = _make_schedule_check_cfg()
     now_local = datetime(2026, 7, 15, 14, 30,
                           tzinfo=ZoneInfo("America/Chicago"))
     now_utc = now_local.astimezone(timezone.utc)
     firing = FiringState(
-        price_overlay_state=app.PriceOverlayState(
+        price_overlay_state=PriceOverlayState(
             current_tier="elevated",
             triggered_at_utc=now_utc - timedelta(minutes=10),
         ),
@@ -2437,10 +2440,10 @@ def test_writes_allowed_fails_closed_on_runtime_invalid_mode(monkeypatch):
 # ---- hvac.arm_mode telemetry (spec §11 #2) --------------------------------
 
 
-def _line_protocol(write_api):
+def _line_protocol(write_api: MagicMock) -> str:
     """Return the line-protocol body of the most recent write_api.write call."""
     record = write_api.write.call_args.kwargs.get("record")
-    return record.to_line_protocol()
+    return str(record.to_line_protocol())
 
 
 def test_write_arm_mode_writes_a_active_during_arm_a(monkeypatch):
@@ -2793,7 +2796,7 @@ def test_write_input_feed_health_empty_dict_is_noop():
 # are stress-testing here.
 
 
-def _all_schedule_actions() -> list:
+def _all_schedule_actions() -> list[Any]:
     """Every ScheduleAction across every locked schedule, plus
     synthetic actions used in mid-period repush and vacation paths.
     Each entry is (label, action, cool_setpoint_to_apply, hvac_mode).
@@ -2905,9 +2908,9 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
         freshness="warn",  # 8 min > 7-min fresh threshold
     )
 
-    captured_traces: list[dict] = []
+    captured_traces: list[dict[str, Any]] = []
 
-    def _capture_trace(event_name, **fields):
+    def _capture_trace(event_name: str, **fields: Any) -> None:
         if event_name == "decision_trace.price_overlay_eval":
             captured_traces.append(fields)
 
@@ -2962,7 +2965,7 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
 import pytest
 
 
-def _mock_query_api_returning(records):
+def _mock_query_api_returning(records: list[Any]) -> MagicMock:
     """Build a query_api mock whose .query() returns one table with the
     given records (each a dict-like with `get_value()` and `get_time()` callables)."""
     from unittest.mock import MagicMock
@@ -2973,7 +2976,7 @@ def _mock_query_api_returning(records):
     return api
 
 
-def _record(value, time):
+def _record(value: Any, time: Any) -> MagicMock:
     """Minimal Influx record stub matching influxdb-client's interface."""
     from unittest.mock import MagicMock
     rec = MagicMock()
@@ -3192,9 +3195,9 @@ def test_derive_price_feed_healthy_ignores_per_tick_freshness():
 
 # ---- Recency gate tests (spec §3.4, §8.2) ----
 
-def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
-                       last_fresh_bucket_source_ts, now_utc,
-                       nonfresh_after_hold_started_at_utc=None):
+def _run_evaluate_with(monkeypatch: Any, sample: Any, *, current_tier: Any, triggered_at_utc: Any,
+                       last_fresh_bucket_source_ts: Any, now_utc: datetime,
+                       nonfresh_after_hold_started_at_utc: datetime | None = None) -> Any:
     """Helper: invoke _evaluate_layer_inputs under fully-mocked conditions.
 
     `nonfresh_after_hold_started_at_utc` (added in Task 19) lets tests
@@ -3204,8 +3207,8 @@ def _run_evaluate_with(monkeypatch, sample, *, current_tier, triggered_at_utc,
     from .price_overlay import PriceOverlayState
     from unittest.mock import MagicMock
 
-    captured_traces: list[dict] = []
-    def _capture_trace(event_name, **fields):
+    captured_traces: list[dict[str, Any]] = []
+    def _capture_trace(event_name: str, **fields: Any) -> None:
         captured_traces.append({"_event": event_name, **fields})
 
     monkeypatch.setattr("hvac_scheduler.app.fetch_latest_comed",

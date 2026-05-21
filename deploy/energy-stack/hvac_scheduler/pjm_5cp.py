@@ -64,7 +64,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from .influx_adapter import project_record
@@ -388,7 +388,7 @@ def season_5th_highest_from_loads(loads_mw: list[float], *,
     return float(sorted_desc[MIN_OBSERVATIONS_FOR_5TH - 1])
 
 
-def update_season_5th_highest(query_api, bucket: str,
+def update_season_5th_highest(query_api: Any, bucket: str,
                               season_start_utc: datetime,
                               season_end_utc: datetime,
                               *, zone: str = "CE",
@@ -460,7 +460,7 @@ class ZoneLoadSnapshot:
     observed_at_utc: datetime
 
 
-def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[ZoneLoadSnapshot]:
+def fetch_zone_live(query_api: Any, bucket: str, *, area: str = "COMED") -> Optional[ZoneLoadSnapshot]:
     """Pull the two most recent ``pjm.inst_load`` observations for the
     given ComEd area and compute a simple discrete derivative (MW/hour).
 
@@ -532,12 +532,12 @@ class ScopeEvaluation:
     new_state: FiveCPState
     season_5th_mw: float
     snapshot: Optional[ZoneLoadSnapshot]
-    log_fields: dict
+    log_fields: dict[str, Any]
 
 
 def evaluate_for_scope(
     scope: DetectorScope,
-    query_api,
+    query_api: Any,
     bucket: str,
     season_start_utc: datetime,
     season_end_utc: datetime,
@@ -586,7 +586,7 @@ def evaluate_for_scope(
     """
     now_local = now_utc.astimezone(tz)
 
-    log_fields: dict = {
+    log_fields: dict[str, Any] = {
         "scope": scope.name,
         "area": scope.inst_load_area,
         "zone": scope.metered_load_zone,
@@ -666,7 +666,7 @@ def evaluate_for_scope(
     )
 
 
-def _latest_forecast_revision_tag(query_api, bucket: str,
+def _latest_forecast_revision_tag(query_api: Any, bucket: str,
                                    forecast_area: str,
                                    *, search_window: str = "-36h") -> Optional[str]:
     """Return the most recent ``evaluated_at_iso`` tag value for
@@ -708,7 +708,7 @@ def _latest_forecast_revision_tag(query_api, bucket: str,
     return None
 
 
-def fetch_forecast_peak_today(query_api, bucket: str,
+def fetch_forecast_peak_today(query_api: Any, bucket: str,
                                *, forecast_area: str = "COMED",
                                tz: ZoneInfo = CHICAGO) -> Optional[float]:
     """Pull the maximum hourly ``forecast_load_mw`` for today (local tz)
@@ -742,7 +742,7 @@ def fetch_forecast_peak_today(query_api, bucket: str,
     )
 
 
-def fetch_forecast_peak_for_date(query_api, bucket: str, target_date_iso: str,
+def fetch_forecast_peak_for_date(query_api: Any, bucket: str, target_date_iso: str,
                                   *, forecast_area: str = "COMED",
                                   tz: ZoneInfo = CHICAGO) -> Optional[float]:
     """Pull the maximum hourly ``forecast_load_mw`` for a specific target
@@ -771,7 +771,7 @@ def fetch_forecast_peak_for_date(query_api, bucket: str, target_date_iso: str,
     )
 
 
-def _max_forecast_in_window(query_api, bucket: str, forecast_area: str,
+def _max_forecast_in_window(query_api: Any, bucket: str, forecast_area: str,
                              revision_tag: str,
                              start_utc: datetime, end_utc: datetime) -> Optional[float]:
     """Filter pjm.load_forecast to a single revision and a UTC time

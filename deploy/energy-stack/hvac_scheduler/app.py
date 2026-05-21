@@ -78,10 +78,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # influxdb_client lacks __all__/stubs; main() owns this single import for client wiring
 from influxdb_client.client.write_api import SYNCHRONOUS
 from pyControl4.account import C4Account
 from pyControl4.director import C4Director
@@ -113,7 +113,7 @@ from .price_overlay import (
     offset_and_override_for_tier,
     tier_priority,
 )
-from .safety_supervisor import validate_setpoints
+from .safety_supervisor import SupervisorDecision, validate_setpoints
 from .decision_codes import (
     DayTypeCode,
     LayerResolutionCode,
@@ -445,7 +445,7 @@ def _classify_layer_resolution(
 
 
 def _classify_supervisor(
-    decision: "SupervisorDecision",
+    decision: SupervisorDecision,
     proposed_cool_f: int,
     proposed_heat_f: int,
 ) -> SupervisorCode:
@@ -493,7 +493,7 @@ def _trace_supervisor(
     *,
     tick_id: str, now_ct: datetime,
     proposed_cool_f: int, proposed_heat_f: int,
-    snapshot: dict, decision: "SupervisorDecision",
+    snapshot: dict[str, Any], decision: SupervisorDecision,
 ) -> None:
     """Emit one `decision_trace.supervisor` line per `validate_setpoints`
     call. Trace cadence is per-INVOCATION (not per scheduler tick) —
@@ -514,7 +514,7 @@ def _trace_supervisor(
         now_ct=now_ct,
         proposed_cool_f=int(proposed_cool_f),
         proposed_heat_f=int(proposed_heat_f),
-        indoor_temp_f=(float(indoor_f) if indoor_temp_available else None),
+        indoor_temp_f=(float(indoor_f) if isinstance(indoor_f, (int, float)) else None),
         indoor_temp_available=indoor_temp_available,
         decision=decision.decision,
         reason_code=reason_code.value,
@@ -528,7 +528,7 @@ def _trace_day_type(
     *,
     tick_id: str, now_ct: datetime,
     decision_for_date: str, winning_day_type: str,
-    reasons: dict,
+    reasons: dict[str, Any],
 ) -> None:
     """Emit one `decision_trace.day_type_decision` line per call to
     `decide_day_type`. Fires at 21:00 nightly (`run_decision`) and at
@@ -564,7 +564,7 @@ def _trace_precool(
     *,
     tick_id: str, now_ct: datetime,
     decision_for_date: str, day_type: str,
-    window: dict | None, reason_code: str,
+    window: dict[str, Any] | None, reason_code: str,
 ) -> None:
     """Emit one `decision_trace.precool_decision` line per call to the
     Phase 4 wrapper (one per night, at 21:00). Always `info` level — the
@@ -789,7 +789,7 @@ class Config:
 # ---- Influx queries --------------------------------------------------------
 
 from .freshness import Freshness, classify, THRESHOLDS  # noqa: E402
-from .influx_adapter import project_record, TypedRecord  # noqa: E402
+from .influx_adapter import project_record, TypedRecord, write_point  # noqa: E402
 
 # PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
 # label. Per spec §3.3 — the per-tick freshness label uses the data-source
@@ -825,8 +825,8 @@ from(bucket: "{bucket}")
 '''
 
 
-def fetch_latest_forecast(query_api, bucket: str, for_period: str) -> dict | None:
-    rows = []
+def fetch_latest_forecast(query_api: Any, bucket: str, for_period: str) -> dict[str, Any] | None:
+    rows: list[dict[str, Any]] = []
     for table in query_api.query(fq_latest_forecast(bucket, for_period)):
         for record in table.records:
             rows.append(record.values)
@@ -836,7 +836,7 @@ def fetch_latest_forecast(query_api, bucket: str, for_period: str) -> dict | Non
     return rows[0]
 
 
-def fetch_latest_comed(query_api, bucket: str, *, now_utc: datetime) -> "PriceSample | None":
+def fetch_latest_comed(query_api: Any, bucket: str, *, now_utc: datetime) -> "PriceSample | None":
     """Read the latest comed.prices 5-min bucket, bundle value + _time + freshness.
 
     Returns None when:
@@ -870,7 +870,7 @@ def fetch_latest_comed(query_api, bucket: str, *, now_utc: datetime) -> "PriceSa
     return None
 
 
-def fetch_rto_peak_forecast_today(query_api, bucket: str) -> float | None:
+def fetch_rto_peak_forecast_today(query_api: Any, bucket: str) -> float | None:
     """Read the latest PJM RTO projected daily-peak load from
     ``pjm.peak_forecast_rto`` (sourced from PJM DM2's
     ``ops_sum_frcst_peak_rto`` feed, area="PJM RTO"). PJM publishes
@@ -922,7 +922,7 @@ HOT_APPARENT_THRESHOLD_F = 90
 NORMAL_TEMP_THRESHOLD_F = 75
 
 
-def _classify_one_day(forecast: dict | None) -> str:
+def _classify_one_day(forecast: dict[str, Any] | None) -> str:
     """Single-day classification helper without the full reasons dict.
 
     Triggers (any one fires HOT):
@@ -958,7 +958,7 @@ def _classify_one_day(forecast: dict | None) -> str:
     return DAYTYPE_MILD
 
 
-def _classify_with_tape(forecast: dict | None) -> tuple[str, list[dict]]:
+def _classify_with_tape(forecast: dict[str, Any] | None) -> tuple[str, list[dict[str, Any]]]:
     """Phase-5 helper: same classification logic as `_classify_one_day`
     but also returns an evaluation tape — one entry per rule branch
     evaluated, recording threshold/actual/fired/reason_code. Used by
@@ -970,7 +970,7 @@ def _classify_with_tape(forecast: dict | None) -> tuple[str, list[dict]]:
     a new-test failure on the tape's `fired` flags. Both functions
     consult the same module-level threshold constants so threshold
     drift is structurally prevented."""
-    tape: list[dict] = []
+    tape: list[dict[str, Any]] = []
     if not forecast:
         tape.append({
             "rule": "no_forecast_fallback",
@@ -1050,12 +1050,12 @@ def _classify_with_tape(forecast: dict | None) -> tuple[str, list[dict]]:
     return DAYTYPE_MILD, tape
 
 
-def decide_day_type(forecast: dict | None,
-                    day2_forecast: dict | None = None,
+def decide_day_type(forecast: dict[str, Any] | None,
+                    day2_forecast: dict[str, Any] | None = None,
                     *,
                     tomorrow_peak_load_mw: float | None = None,
                     season_5th_highest_mw: float | None = None
-                    ) -> tuple[str, dict]:
+                    ) -> tuple[str, dict[str, Any]]:
     """Return (day_type, reasoning_dict).
 
     Two paths escalate a HOT day to HOT_STREAK_DAY1 (the deepest pre-cool
@@ -1125,10 +1125,14 @@ def decide_day_type(forecast: dict | None,
             tomorrow_peak_load_mw is not None
             and season_5th_highest_mw is not None
         )
-        risk_fired = risk_inputs_present and should_deepen_precool(
-            {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
-            season_5th_highest_mw,
-        )
+        if risk_inputs_present:
+            assert season_5th_highest_mw is not None  # narrowing for mypy
+            risk_fired = should_deepen_precool(
+                {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
+                season_5th_highest_mw,
+            )
+        else:
+            risk_fired = False
         evaluation_tape.append({
             "rule": "streak_5cp_risk",
             "threshold": "should_deepen_precool",
@@ -1274,6 +1278,10 @@ def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None
             and today_dewpoint_f is not None
             and today_dewpoint_f > HUMID_DEWPOINT_F):
         return action.cool_setpoint_humid_f, f"humid_override (dewpoint {today_dewpoint_f:.1f}F > {HUMID_DEWPOINT_F}F)"
+    # Non-release_hold ScheduleAction always carries cool_setpoint_f (per
+    # field-level invariant in the dataclass docstring); release_hold is
+    # the only path that leaves it None and that case returns above.
+    assert action.cool_setpoint_f is not None
     return action.cool_setpoint_f, "standard"
 
 
@@ -1288,11 +1296,12 @@ class C4Client:
         self._token: str | None = None
         self._common_name: str | None = None
 
-    def _load_token(self) -> dict | None:
+    def _load_token(self) -> dict[str, Any] | None:
         if not self.cfg.token_file.exists():
             return None
         try:
-            return json.loads(self.cfg.token_file.read_text())
+            result: dict[str, Any] = json.loads(self.cfg.token_file.read_text())
+            return result
         except Exception as exc:
             log("warn", "token_load_failed", error=str(exc))
             return None
@@ -1333,6 +1342,10 @@ class C4Client:
             log("info", "token_loaded_from_disk")
         else:
             await self._cloud_auth()
+        # Both paths above set self._token to a non-None bearer string
+        # (_cloud_auth sets it from the director-token endpoint; cached
+        # branch reads it off the saved token file).
+        assert self._token is not None
         self._director = C4Director(self.cfg.controller_ip, self._token)
         self._climate = C4Climate(self._director, self.cfg.thermostat_id)
         return self._director
@@ -1342,7 +1355,7 @@ class C4Client:
         assert self._climate is not None
         return self._climate
 
-    async def call_with_reauth(self, coro_fn):
+    async def call_with_reauth(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
         """Run a director call; on 401, re-auth and retry once."""
         try:
             return await coro_fn()
@@ -1351,6 +1364,9 @@ class C4Client:
             if "401" in txt or "unauthorized" in txt or "forbidden" in txt:
                 log("warn", "director_token_invalid_reauth", error=str(exc))
                 await self._cloud_auth()
+                # _cloud_auth sets self._token from the director-token
+                # endpoint; non-None on success, raises on failure.
+                assert self._token is not None
                 self._director = C4Director(self.cfg.controller_ip, self._token)
                 self._climate = C4Climate(self._director, self.cfg.thermostat_id)
                 return await coro_fn()
@@ -1437,7 +1453,7 @@ class FiringState:
 
 
 def fetch_day_ahead_prices_for_date(
-    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+    query_api: Any, bucket: str, target_date_iso: str, tz: ZoneInfo,
 ) -> list[float] | None:
     """Pull the 24 hourly day-ahead LMPs for ``target_date_iso`` from
     ``pjm.lmp_da_hourly`` and convert them to cents/kWh (the unit the
@@ -1526,10 +1542,10 @@ def fetch_day_ahead_prices_for_date(
 
 
 def compute_price_aware_precool_window(
-    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+    query_api: Any, bucket: str, target_date_iso: str, tz: ZoneInfo,
     *, forecast_period: str = "tomorrow",
     trace_reason: list[str] | None = None,
-) -> dict | None:
+) -> dict[str, int] | None:
     """Resolve the §7 day-ahead price-aware pre-cool window for the
     target date. Composes fetch_day_ahead_prices_for_date,
     fetch_latest_forecast, and the pure ``should_add_price_aware_precool``
@@ -1570,23 +1586,28 @@ def compute_price_aware_precool_window(
 
 
 def write_precool_window(
-    write_api, bucket: str, target_date_iso: str, window: dict,
+    write_api: Any, bucket: str, target_date_iso: str, window: dict[str, int],
 ) -> None:
     """Persist a §7 price-aware pre-cool window to InfluxDB so the
     schedule-check tick can read it back the next day. ``hvac.precool_window``
     is event-sourced (one row per decision); the schedule check looks up
     the latest row matching today's target_date tag."""
-    p = (Point("hvac.precool_window")
-         .tag("target_date", target_date_iso)
-         .tag("source", "decision")  # vs "schedule_check_recompute"
-         .field("hour_ct", int(window["hour_ct"]))
-         .field("depth_f", int(window["depth_f"])))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.precool_window",
+        tags={
+            "target_date": target_date_iso,
+            "source": "decision",  # vs "schedule_check_recompute"
+        },
+        fields={
+            "hour_ct": int(window["hour_ct"]),
+            "depth_f": int(window["depth_f"]),
+        },
+    )
 
 
 def read_precool_window_for_date(
-    query_api, bucket: str, target_date_iso: str,
-) -> dict | None:
+    query_api: Any, bucket: str, target_date_iso: str,
+) -> dict[str, int] | None:
     """Look up the most recent ``hvac.precool_window`` row for
     ``target_date_iso``. Returns ``{"hour_ct": int, "depth_f": int}`` or
     None when no row was written (no qualifying day-ahead pattern, or
@@ -1640,7 +1661,7 @@ def merge_same_hour_actions_deepest_wins(
     return sorted(by_time.values(), key=lambda a: (a.hour, a.minute))
 
 
-def precool_window_action(window: dict) -> ScheduleAction:
+def precool_window_action(window: dict[str, int]) -> ScheduleAction:
     """Synthesize a ScheduleAction at the §7 cheap-window's start hour
     with the depth_f the decision rule selected. fan_mode left None so
     the action doesn't override the base schedule's fan setting (the
@@ -1657,7 +1678,7 @@ def precool_window_action(window: dict) -> ScheduleAction:
 
 
 def _fetch_pjm_inputs_for_target_date(
-    query_api, bucket: str, target_date_iso: str, tz: ZoneInfo,
+    query_api: Any, bucket: str, target_date_iso: str, tz: ZoneInfo,
 ) -> tuple[float | None, float]:
     """Fetch ``(target_date_peak_load_mw, season_5th_highest_mw)`` so the
     §7 forecast 5CP-risk pre-cool deepening trigger can fire at 21:00 the
@@ -1703,7 +1724,7 @@ def _fetch_pjm_inputs_for_target_date(
 
 
 def write_5cp_state(
-    write_api, bucket: str,
+    write_api: Any, bucket: str,
     *, scope: str,
     is_active: bool,
     current_load_mw: float,
@@ -1720,21 +1741,25 @@ def write_5cp_state(
     inst_load gap for one scope still records the other rather than
     fabricating audit rows from absent inputs)."""
     ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
-    p = (Point("hvac.5cp_state")
-         .tag("scope", scope)
-         .tag("zone", zone)
-         .tag("is_active", "true" if is_active else "false")
-         .field("current_load_mw", float(current_load_mw))
-         .field("season_5th_highest_mw", float(season_5th_highest_mw))
-         .field("load_ratio", float(ratio))
-         .field("load_derivative_mw_per_hour", float(load_derivative_mw_per_hour))
-         .field("forecast_peak_today_mw", float(forecast_peak_today_mw))
-         )
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.5cp_state",
+        tags={
+            "scope": scope,
+            "zone": zone,
+            "is_active": "true" if is_active else "false",
+        },
+        fields={
+            "current_load_mw": float(current_load_mw),
+            "season_5th_highest_mw": float(season_5th_highest_mw),
+            "load_ratio": float(ratio),
+            "load_derivative_mw_per_hour": float(load_derivative_mw_per_hour),
+            "forecast_peak_today_mw": float(forecast_peak_today_mw),
+        },
+    )
 
 
 def write_price_overlay_transition(
-    write_api, bucket: str,
+    write_api: Any, bucket: str,
     *, prev_tier: str, new_tier: str,
     current_price_cents: float,
     schedule_cool_f: int, effective_cool_f: int,
@@ -1743,77 +1768,85 @@ def write_price_overlay_transition(
     """Write one ``hvac.price_overlay`` row when the price-overlay tier
     changes between scheduler ticks. Skipped when the tier is unchanged
     so dashboards aren't drowned in no-op rows."""
-    p = (Point("hvac.price_overlay")
-         .tag("prev_tier", prev_tier)
-         .tag("new_tier", new_tier)
-         .field("current_price_cents", float(current_price_cents))
-         .field("schedule_cool_f", float(schedule_cool_f))
-         .field("effective_cool_f", float(effective_cool_f))
-         .field("triggered_at_utc",
-                triggered_at_utc.isoformat() if triggered_at_utc else "")
-         )
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.price_overlay",
+        tags={
+            "prev_tier": prev_tier,
+            "new_tier": new_tier,
+        },
+        fields={
+            "current_price_cents": float(current_price_cents),
+            "schedule_cool_f": float(schedule_cool_f),
+            "effective_cool_f": float(effective_cool_f),
+            "triggered_at_utc":
+                triggered_at_utc.isoformat() if triggered_at_utc else "",
+        },
+    )
 
 
-def write_decision(write_api, bucket: str, decision_for_date: str,
-                   day_type: str, reasons: dict, comed_price: float | None) -> None:
-    p = (Point("hvac.decisions")
-         .tag("decision_for_date", decision_for_date)
-         .tag("day_type", day_type)
-         .field("high_f", float(reasons.get("high_f") or 0))
-         .field("max_dewpoint_f", float(reasons.get("max_dewpoint_f") or 0))
-         .field("is_heat_advisory", int(reasons.get("is_heat_advisory", False)))
-         .field("alert_summary", reasons.get("alert_summary") or "")
-         .field("reason", reasons.get("reason") or "")
-         .field("comed_price_at_decision", float(comed_price or 0))
-         )
-    write_api.write(bucket=bucket, record=p)
+def write_decision(write_api: Any, bucket: str, decision_for_date: str,
+                   day_type: str, reasons: dict[str, Any], comed_price: float | None) -> None:
+    write_point(
+        write_api, bucket, "hvac.decisions",
+        tags={
+            "decision_for_date": decision_for_date,
+            "day_type": day_type,
+        },
+        fields={
+            "high_f": float(reasons.get("high_f") or 0),
+            "max_dewpoint_f": float(reasons.get("max_dewpoint_f") or 0),
+            "is_heat_advisory": int(reasons.get("is_heat_advisory", False)),
+            "alert_summary": reasons.get("alert_summary") or "",
+            "reason": reasons.get("reason") or "",
+            "comed_price_at_decision": float(comed_price or 0),
+        },
+    )
 
 
-def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
+def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAction,
                  cool_applied_f: int, heat_applied_f: int,
                  fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
-                 thermostat_state_before: dict, error: str | None = None,
+                 thermostat_state_before: dict[str, Any], error: str | None = None,
                  supervisor_decision: str = "approved",
                  supervisor_reason: str | None = None,
                  layer_resolution: LayerResolution | None = None) -> None:
-    p = (Point("hvac.actions")
-         .tag("day_type", day_type)
-         .tag("action_label", action.label)
-         .tag("dry_run", "true" if dry_run else "false")
-         .tag("supervisor_decision", supervisor_decision)
-         .field("cool_setpoint_f", float(cool_applied_f))
-         .field("heat_setpoint_f", float(heat_applied_f))
-         .field("fan_mode", fan_mode_applied or "")
-         .field("setpoint_reason", setpoint_reason)
-         .field("supervisor_reason", supervisor_reason or "")
-         .field("cool_setpoint_proposed_f", float(action.cool_setpoint_f or 0))
-         .field("heat_setpoint_proposed_f", float(action.heat_setpoint_f))
-         .field("applied", int(applied))
-         .field("error", error or "")
-         .field("hvac_mode_before", str(thermostat_state_before.get("hvac_mode") or ""))
-         .field("indoor_temp_before_f", float(thermostat_state_before.get("indoor_temp_f") or 0))
-         .field("cool_setpoint_before_f", float(thermostat_state_before.get("cool_setpoint_f") or 0))
-         .field("heat_setpoint_before_f", float(thermostat_state_before.get("heat_setpoint_f") or 0))
-         .field("indoor_humidity_before_pct", float(thermostat_state_before.get("humidity") or 0))
-         )
+    tags: dict[str, str] = {
+        "day_type": day_type,
+        "action_label": action.label,
+        "dry_run": "true" if dry_run else "false",
+        "supervisor_decision": supervisor_decision,
+    }
+    fields: dict[str, float | int | bool | str] = {
+        "cool_setpoint_f": float(cool_applied_f),
+        "heat_setpoint_f": float(heat_applied_f),
+        "fan_mode": fan_mode_applied or "",
+        "setpoint_reason": setpoint_reason,
+        "supervisor_reason": supervisor_reason or "",
+        "cool_setpoint_proposed_f": float(action.cool_setpoint_f or 0),
+        "heat_setpoint_proposed_f": float(action.heat_setpoint_f),
+        "applied": int(applied),
+        "error": error or "",
+        "hvac_mode_before": str(thermostat_state_before.get("hvac_mode") or ""),
+        "indoor_temp_before_f": float(thermostat_state_before.get("indoor_temp_f") or 0),
+        "cool_setpoint_before_f": float(thermostat_state_before.get("cool_setpoint_f") or 0),
+        "heat_setpoint_before_f": float(thermostat_state_before.get("heat_setpoint_f") or 0),
+        "indoor_humidity_before_pct": float(thermostat_state_before.get("humidity") or 0),
+    }
     if layer_resolution is not None:
         # Layer-priority audit fields (§4). Always emitted when the
         # resolution is computed so dashboards can answer "why was the
         # effective setpoint different from the schedule baseline?"
-        p = (p
-             .tag("price_overlay_tier", layer_resolution.price_overlay_tier)
-             .tag("fivecp_active", "true" if layer_resolution.fivecp_active else "false")
-             .field("schedule_cool_f", float(layer_resolution.schedule_cool_f))
-             .field("price_cool_f", float(layer_resolution.price_cool_f))
-             .field("fivecp_cool_f", float(layer_resolution.fivecp_cool_f))
-             .field("effective_cool_f", float(layer_resolution.effective_cool_f))
-             )
-    write_api.write(bucket=bucket, record=p)
+        tags["price_overlay_tier"] = layer_resolution.price_overlay_tier
+        tags["fivecp_active"] = "true" if layer_resolution.fivecp_active else "false"
+        fields["schedule_cool_f"] = float(layer_resolution.schedule_cool_f)
+        fields["price_cool_f"] = float(layer_resolution.price_cool_f)
+        fields["fivecp_cool_f"] = float(layer_resolution.fivecp_cool_f)
+        fields["effective_cool_f"] = float(layer_resolution.effective_cool_f)
+    write_point(write_api, bucket, "hvac.actions", tags=tags, fields=fields)
 
 
-async def read_thermostat_snapshot(c4: C4Client) -> dict:
+async def read_thermostat_snapshot(c4: C4Client) -> dict[str, Any]:
     climate = await c4.get_climate()
     snapshot = {}
     try:
@@ -1840,7 +1873,7 @@ CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
 
 def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
                                   weather_ok: bool,
-                                  pjm_capacity_risk_ok: bool) -> dict:
+                                  pjm_capacity_risk_ok: bool) -> dict[str, bool]:
     """Return the dict of input-feed health flags REQUIRED for B-active
     classification at ``when_ct`` (spec §5 + §5.1).
 
@@ -1872,7 +1905,7 @@ def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
     return None
 
 
-def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
+def maybe_log_arm_switch(write_api: Any, bucket: str, last_arm: str | None,
                           *, arm_observed: bool,
                           when_ct: datetime) -> tuple[str | None, bool]:
     """Detect arm-boundary crossings (spec §11 #3) and write
@@ -1896,18 +1929,22 @@ def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
         return current_arm, True
 
     planned_ts = _planned_boundary_ts(when_naive)
-    p = (Point("hvac.switch_event")
-         .time(when_ct)
-         .field("from_arm", last_arm or "")
-         .field("to_arm", current_arm or "")
-         .field("boundary_planned_ts", planned_ts.isoformat() if planned_ts else "")
-         .field("boundary_actual_ts", when_naive.isoformat()))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.switch_event",
+        tags={},
+        fields={
+            "from_arm": last_arm or "",
+            "to_arm": current_arm or "",
+            "boundary_planned_ts": planned_ts.isoformat() if planned_ts else "",
+            "boundary_actual_ts": when_naive.isoformat(),
+        },
+        time=when_ct,
+    )
     return current_arm, True
 
 
-def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
-                              feeds: dict) -> None:
+def write_input_feed_health(write_api: Any, bucket: str, when_ct: datetime,
+                              feeds: dict[str, bool]) -> None:
     """Write one ``hvac.input_feed_health`` row per feed (spec §11 #4).
 
     ``feeds`` is the FULL feed-health dict (every feed, regardless of
@@ -1919,15 +1956,16 @@ def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
     filtered ``required_feeds`` dict.
     """
     for feed_name, healthy in feeds.items():
-        p = (Point("hvac.input_feed_health")
-             .time(when_ct)
-             .tag("feed", feed_name)
-             .field("healthy", bool(healthy)))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.input_feed_health",
+            tags={"feed": feed_name},
+            fields={"healthy": bool(healthy)},
+            time=when_ct,
+        )
 
 
-def write_arm_mode(write_api, bucket: str, when_ct: datetime,
-                    required_feeds: dict, controller_alive: bool) -> None:
+def write_arm_mode(write_api: Any, bucket: str, when_ct: datetime,
+                    required_feeds: dict[str, bool], controller_alive: bool) -> None:
     """Write one ``hvac.arm_mode`` row classifying the current cycle.
 
     Per spec §11 #2 + §5: in-window classification is one of A-active
@@ -1969,21 +2007,22 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
     arm = current_arm_at(when_naive)
     scheduler_mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
     if arm is None:
-        p = (Point("hvac.arm_mode")
-             .time(when_ct)
-             .tag("scheduler_mode", scheduler_mode)
-             .field("mode_actual", "outside-window"))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.arm_mode",
+            tags={"scheduler_mode": scheduler_mode},
+            fields={"mode_actual": "outside-window"},
+            time=when_ct,
+        )
         return
     if scheduler_mode != "experiment":
         # In-window protocol deviation: the spec §5 four-mode
         # classification only applies when SCHEDULER_MODE=experiment.
-        p = (Point("hvac.arm_mode")
-             .time(when_ct)
-             .tag("scheduler_mode", scheduler_mode)
-             .tag("arm", arm)
-             .field("mode_actual", f"off-protocol-{scheduler_mode}"))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.arm_mode",
+            tags={"scheduler_mode": scheduler_mode, "arm": arm},
+            fields={"mode_actual": f"off-protocol-{scheduler_mode}"},
+            time=when_ct,
+        )
         return
     if arm == "A":
         mode_actual = "A-active"
@@ -1993,18 +2032,18 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
         mode_actual = "B-fallback"
     else:
         mode_actual = "B-active"
-    p = (Point("hvac.arm_mode")
-         .time(when_ct)
-         .tag("scheduler_mode", scheduler_mode)
-         .tag("arm", arm)
-         .field("mode_actual", mode_actual))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.arm_mode",
+        tags={"scheduler_mode": scheduler_mode, "arm": arm},
+        fields={"mode_actual": mode_actual},
+        time=when_ct,
+    )
 
 
 async def execute_action(c4: C4Client, action: ScheduleAction,
                           cool_setpoint_to_apply: int,
                           heat_setpoint_to_apply: int,
-                          state: dict, dry_run: bool,
+                          state: dict[str, Any], dry_run: bool,
                           when_ct: datetime | None = None,
                           ) -> tuple[bool, str | None]:
     """Apply the action to the thermostat. Returns (applied, error).
@@ -2070,7 +2109,8 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         await asyncio.sleep(1)
         # Apply fan mode if specified for this period (e.g., Circulate during coast)
         if action.fan_mode:
-            await c4.call_with_reauth(lambda: climate.set_fan_mode(action.fan_mode))
+            fan_mode = action.fan_mode  # bind locally so the lambda closure carries the narrowed str type
+            await c4.call_with_reauth(lambda: climate.set_fan_mode(fan_mode))
             await asyncio.sleep(1)
         # Pin the override so thermostat baseline doesn't override our setpoint
         await c4.call_with_reauth(lambda: climate.set_hold_mode("Permanent"))
@@ -2079,7 +2119,7 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> None:
+def run_decision_revisit(cfg: Config, query_api: Any, write_api: Any, today_iso: str) -> None:
     """Re-evaluate today's day-type against the latest NWS forecast.
 
     Runs at each ``cfg.revisit_hours`` to catch forecast-bust days where
@@ -2143,7 +2183,7 @@ def run_decision_revisit(cfg: Config, query_api, write_api, today_iso: str) -> N
     write_decision(write_api, cfg.influx_bucket, today_iso, new_day_type, reasons, comed_price)
 
 
-async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: ZoneInfo,
+async def run_decision(cfg: Config, c4: C4Client, query_api: Any, write_api: Any, tz: ZoneInfo,
                         firing: FiringState) -> None:
     """Read tomorrow's forecast (with day-after lookahead), decide day-type, log."""
     forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "tomorrow")
@@ -2224,7 +2264,7 @@ async def run_decision(cfg: Config, c4: C4Client, query_api, write_api, tz: Zone
         dry_run=cfg.dry_run)
 
 
-def _read_stored_decision(query_api, bucket: str, decision_for_date: str) -> str | None:
+def _read_stored_decision(query_api: Any, bucket: str, decision_for_date: str) -> str | None:
     """Return the persisted day-type for ``decision_for_date``, or None if
     no decision was ever written.
 
@@ -2270,11 +2310,11 @@ from(bucket: "{bucket}")
         for record in table.records:
             day_type = record.values.get("day_type")
             if day_type:
-                return day_type
+                return str(day_type)
     return None
 
 
-def fetch_today_decision(query_api, write_api, bucket: str, today_iso: str) -> str:
+def fetch_today_decision(query_api: Any, write_api: Any, bucket: str, today_iso: str) -> str:
     """Look up day-type decision for today. If missing, recompute lazily
     from the live forecast and persist.
 
@@ -2437,7 +2477,7 @@ def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
 ACTION_MAKEUP_WINDOW_MIN = 5
 
 
-def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
+def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
                             firing: FiringState, now_local: datetime,
                             *, tick_id: str | None = None) -> LayerInputs:
     """Per-tick evaluation of the §2 price overlay and §3 5CP detector,
@@ -2538,6 +2578,9 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
 
     elif sample is not None:
         # State machine + caller-side gate (T12 logic).
+        # current_price_cents is sample.cents_per_kwh in this branch (line
+        # above), so the `sample is not None` guard implies non-None price.
+        assert current_price_cents is not None
         proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
@@ -2592,7 +2635,10 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_level = "info"
     elif safety_release_fired:
         po_outcome = "released"
-        po_reason = release_reason  # RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE
+        # safety_release_fired implies the release branch above set
+        # release_reason to RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE.
+        assert release_reason is not None
+        po_reason = release_reason
         po_level = "warn"  # warn level — real degraded state
     elif current_price_cents is None:
         po_outcome = "held"
@@ -2778,7 +2824,7 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
 
 
 async def _push_layer_change_mid_period(
-    cfg: Config, c4: C4Client, write_api,
+    cfg: Config, c4: C4Client, write_api: Any,
     firing: FiringState, day_type: str, layer_inputs: LayerInputs,
     today_dewpoint_f: float | None, override_note: str,
     now_local: datetime,
@@ -2913,7 +2959,7 @@ async def _push_layer_change_mid_period(
         firing.last_pushed_effective_cool_f = sup_cool
 
 
-async def run_schedule_check(cfg: Config, c4: C4Client, query_api, write_api,
+async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_api: Any,
                               tz: ZoneInfo, now_local: datetime,
                               firing: FiringState) -> None:
     """Check if any schedule action fires at the current local minute.
@@ -3236,7 +3282,7 @@ async def main_async(cfg: Config) -> int:
     firing = FiringState()
     stop = asyncio.Event()
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         log("info", "signal_received", signum=signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_stop)
@@ -3302,7 +3348,7 @@ async def main_async(cfg: Config) -> int:
             pass
 
     log("info", "shutdown")
-    influx.close()
+    influx.close()  # type: ignore[no-untyped-call]  # influxdb_client.InfluxDBClient.close lacks stubs
     return 0
 
 

@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "$STACK_DIR/../.." && pwd)"
 # Services in deploy/energy-stack/ currently in the enforced set
 # (underscore package names, post-rename + __init__.py)
 service_dirs=(
-    # populated as services migrate in via per-service PRs
+    hvac_scheduler
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set
@@ -82,10 +82,24 @@ done
 # enforced target exists. PYTHONPATH includes deploy/energy-stack so
 # service packages resolve. The CLI is `lint-imports`, NOT
 # `python -m importlinter` (the package has no __main__).
+#
+# PYTHONPATH uses a cwd-relative path ("deploy/energy-stack") inside
+# the subshell — same pattern as the bootstrap-guard fix in PR 1.
+# An absolute path via $STACK_DIR is MSYS-form under Git Bash on
+# Windows (e.g., /d/Projects/...) which Windows-native Python's
+# PYTHONPATH parser rejects with "Could not find package X in your
+# Python path".
+#
+# The `${PYTHONPATH:+:${PYTHONPATH}}` expansion appends `:$PYTHONPATH`
+# only when PYTHONPATH is set+non-empty. Avoids a trailing colon when
+# PYTHONPATH is unset — Windows Python reads `deploy/energy-stack:`
+# (with a trailing empty entry) as a malformed path and reports the
+# package as not found. Linux Python silently ignores trailing colons,
+# which is why this only bites on Windows.
 if [[ ${#service_dirs[@]} -gt 0 || ${#repo_targets[@]} -gt 0 ]]; then
     echo
     echo "=== checking import-linter contracts ==="
-    if ! (cd "$REPO_ROOT" && PYTHONPATH="$STACK_DIR:${PYTHONPATH:-}" lint-imports --config pyproject.toml); then
+    if ! (cd "$REPO_ROOT" && PYTHONPATH="deploy/energy-stack${PYTHONPATH:+:${PYTHONPATH}}" lint-imports --config pyproject.toml); then
         failed+=("import-linter")
     fi
 fi

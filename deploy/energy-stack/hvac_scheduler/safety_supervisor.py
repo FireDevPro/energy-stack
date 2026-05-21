@@ -42,6 +42,7 @@ decision to hvac.actions for audit.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 # Range bounds. Outside these, the equipment is either operating in
@@ -96,7 +97,7 @@ class SupervisorDecision:
 def validate_setpoints(
     proposed_cool_f: int,
     proposed_heat_f: int,
-    snapshot: dict,
+    snapshot: dict[str, Any],
 ) -> SupervisorDecision:
     """Decide what setpoints to actually push to the thermostat.
 
