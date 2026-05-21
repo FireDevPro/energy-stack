@@ -32,7 +32,7 @@ Authoring on Windows under `D:\Projects\energy-proxy\`. Runtime on Pi-lab (`192.
 - Canonical full-stack: `bash deploy/energy-stack/run_tests.sh`. Runs each service in its own pytest process to sidestep the `sys.modules` cache collision across services with identically-named `app.py`.
 - Single service: `cd deploy/energy-stack/<service>/ && python -m pytest .`
 - **DO NOT** run `python -m pytest deploy/energy-stack` from the repo root. Collection silently fails or imports the wrong `app.py`. See [deploy/energy-stack/pytest.ini](deploy/energy-stack/pytest.ini) for context.
-- One-time setup: `pip install -r deploy/energy-stack/requirements-dev.txt` plus each service's `requirements.txt` for imports.
+- One-time setup: `pip install -r deploy/energy-stack/requirements-dev.lock` plus each service's `requirements.txt` for imports.
 - Most services have test files; depth varies. Add tests when bugs surface.
 
 **Ops cheat sheet (on Pi-lab):** `docker compose ps`, `docker compose logs -f <service>`, `docker compose restart <service>`. Full ops table in [deploy/energy-stack/README.md](deploy/energy-stack/README.md).
