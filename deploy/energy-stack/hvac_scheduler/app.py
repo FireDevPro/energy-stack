@@ -1125,10 +1125,14 @@ def decide_day_type(forecast: dict | None,
             tomorrow_peak_load_mw is not None
             and season_5th_highest_mw is not None
         )
-        risk_fired = risk_inputs_present and should_deepen_precool(
-            {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
-            season_5th_highest_mw,
-        )
+        if risk_inputs_present:
+            assert season_5th_highest_mw is not None  # narrowing for mypy
+            risk_fired = should_deepen_precool(
+                {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
+                season_5th_highest_mw,
+            )
+        else:
+            risk_fired = False
         evaluation_tape.append({
             "rule": "streak_5cp_risk",
             "threshold": "should_deepen_precool",
@@ -1274,6 +1278,10 @@ def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None
             and today_dewpoint_f is not None
             and today_dewpoint_f > HUMID_DEWPOINT_F):
         return action.cool_setpoint_humid_f, f"humid_override (dewpoint {today_dewpoint_f:.1f}F > {HUMID_DEWPOINT_F}F)"
+    # Non-release_hold ScheduleAction always carries cool_setpoint_f (per
+    # field-level invariant in the dataclass docstring); release_hold is
+    # the only path that leaves it None and that case returns above.
+    assert action.cool_setpoint_f is not None
     return action.cool_setpoint_f, "standard"
 
 
@@ -1333,6 +1341,10 @@ class C4Client:
             log("info", "token_loaded_from_disk")
         else:
             await self._cloud_auth()
+        # Both paths above set self._token to a non-None bearer string
+        # (_cloud_auth sets it from the director-token endpoint; cached
+        # branch reads it off the saved token file).
+        assert self._token is not None
         self._director = C4Director(self.cfg.controller_ip, self._token)
         self._climate = C4Climate(self._director, self.cfg.thermostat_id)
         return self._director
@@ -1351,6 +1363,9 @@ class C4Client:
             if "401" in txt or "unauthorized" in txt or "forbidden" in txt:
                 log("warn", "director_token_invalid_reauth", error=str(exc))
                 await self._cloud_auth()
+                # _cloud_auth sets self._token from the director-token
+                # endpoint; non-None on success, raises on failure.
+                assert self._token is not None
                 self._director = C4Director(self.cfg.controller_ip, self._token)
                 self._climate = C4Climate(self._director, self.cfg.thermostat_id)
                 return await coro_fn()
@@ -2561,6 +2576,9 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
 
     elif sample is not None:
         # State machine + caller-side gate (T12 logic).
+        # current_price_cents is sample.cents_per_kwh in this branch (line
+        # above), so the `sample is not None` guard implies non-None price.
+        assert current_price_cents is not None
         proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
         )
@@ -2615,7 +2633,10 @@ def _evaluate_layer_inputs(query_api, write_api, cfg: Config,
         po_level = "info"
     elif safety_release_fired:
         po_outcome = "released"
-        po_reason = release_reason  # RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE
+        # safety_release_fired implies the release branch above set
+        # release_reason to RELEASED_NO_DATA or RELEASED_PERSISTENT_STALE.
+        assert release_reason is not None
+        po_reason = release_reason
         po_level = "warn"  # warn level — real degraded state
     elif current_price_cents is None:
         po_outcome = "held"
