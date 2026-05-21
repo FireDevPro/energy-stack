@@ -29,7 +29,7 @@ backlog tracks high-value surfaces where adapter wrapping pays off.
 
 **Surface:** the `record.get_value() / record.get_time() / record.get_field()` API used by `fetch_latest_comed` and related Influx query helpers. The 2026-05-19 19:18Z freshness bug was directly enabled by this surface returning `Any` — nothing checked whether callers handled both branches of `float | None` or whether the float represented current vs stale data.
 
-**Operator follow-up (PR 1 acceptance):** verify whether `influxdb_client==1.48.0` ships `py.typed`. If it does, the `[[tool.mypy.overrides]] ignore_missing_imports = true` for `influxdb_client.*` should be REMOVED (the upstream stubs would conflict). The adapter pattern still applies as a projection seam.
+**Operator follow-up (PR 1 acceptance):** VERIFIED 2026-05-21 — `influxdb_client==1.48.0` ships `py.typed`. The `[[tool.mypy.overrides]] ignore_missing_imports = true` block for `influxdb_client.*` has been removed from pyproject.toml; upstream stubs are now authoritative. The adapter pattern in PR 3 still applies as a projection seam.
 
 ### pyControl4 (`pyControl4.*`) — Priority: P1
 
@@ -54,7 +54,7 @@ Libraries with PyPI stub packages (`types-*` — add to `requirements-dev.in`, r
 
 PR 1 acceptance includes verifying the stub status of `influxdb_client==1.48.0`. Record the finding here:
 
-- `influxdb_client==1.48.0`: TBD (verify in PR 1 acceptance gate).
+- `influxdb_client==1.48.0`: ships `py.typed` (verified 2026-05-21 via local install on Python 3.13). Override block in pyproject.toml has been removed; upstream stubs are now active for mypy. The adapter pattern in PR 3 still applies as a projection seam.
 
 ---
 

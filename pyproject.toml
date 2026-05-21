@@ -35,9 +35,8 @@ files = [
 # `ignore_missing_imports = true` so mypy treats them as Any. Per-library
 # typed adapters (see import-linter contracts and spec §5.2-5.5) are
 # the path to recovering type safety on bug-prone surfaces.
-[[tool.mypy.overrides]]
-module = "influxdb_client.*"
-ignore_missing_imports = true
+# influxdb_client.* — VERIFIED ships py.typed; no override needed.
+# Upstream stubs are authoritative. See docs/type-debt-backlog.md.
 
 [[tool.mypy.overrides]]
 module = "pyControl4.*"
