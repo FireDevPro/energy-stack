@@ -39,7 +39,9 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 
 ## Authoring & deployment
 
-Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. **Deployment is automatic via GitHub Actions** — `git push` to `main` triggers the [Deploy to Pi workflow](../../.github/workflows/deploy.yml), which runs on a self-hosted runner installed on Pi-lab itself. The runner detects which compose project changed (`deploy/energy-stack/` vs `deploy/n8n-stack/`), rsyncs it into place, runs `docker compose build && docker compose up -d`, and verifies services are healthy. Single-service deploys typically complete in ~1 minute; cache misses may extend this. Detection uses `git diff HEAD^ HEAD` (single-commit lookback) — multi-commit pushes touching `deploy/**` in earlier commits may need a manual workflow_dispatch to deploy.
+Author on Windows under `D:\Projects\energy-proxy\deploy\energy-stack\`. **Deployment is automatic via GitHub Actions** — `git push` to `main` triggers the [Deploy to Pi workflow](../../.github/workflows/deploy.yml), which runs on a GitHub-hosted `ubuntu-latest` runner. The runner joins our Tailscale tailnet as an ephemeral `tag:ci` node, SSHes to Pi-lab via Tailscale SSH (no OpenSSH keys in GHA secrets — short-lived per-deploy certs issued by tailscaled), rsyncs the changed compose project into place, runs `docker compose build && docker compose up -d`, and verifies services are healthy. Single-service deploys complete in ~60-120 s. Detection uses `git diff HEAD^ HEAD` (single-commit lookback) — multi-commit pushes touching `deploy/**` in earlier commits may need a manual workflow_dispatch to deploy.
+
+The prior topology was a self-hosted runner installed on Pi-lab itself. It was retired ahead of the public-repo flip (self-hosted runners executing arbitrary code from public-repo PRs is a known security anti-pattern). The Tailscale-based replacement preserves the "merge to deploy" UX with zero public ingress on Pi.
 
 Manual deployment is still supported for local-only testing:
 
@@ -56,6 +58,17 @@ But anything you push to `main` will overwrite local-only edits on the next depl
 The `.env` file lives ONLY on Pi-lab (chmod 600). Never committed (`.gitignore`), never rsynced (CI workflow excludes it, manual rsync above excludes it). The SOPS-encrypted equivalent (`secrets/env.sops.env`) IS committed and IS deployed — that's the recovery path.
 
 To force a redeploy without making a code change: GitHub Actions UI → "Deploy to Pi" workflow → "Run workflow" → pick `energy-stack`, `n8n-stack`, or `both`.
+
+### Tailscale (deploy runner)
+
+The deploy pipeline depends on Tailscale; the operational surface is small but worth knowing:
+
+- **Pi-side daemon**: `tailscaled` runs on Pi-lab tagged `tag:server`, with `--ssh` enabled so tailscaled mediates SSH on the tailscale interface. The Pi's `100.x` address is reachable from any tailnet member; the WAN-side has no SSH ingress at all.
+- **Runner-side**: each deploy job uses [`tailscale/github-action@v3`](https://github.com/tailscale/github-action) to mint a one-time auth key (via the `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` repo secrets), join the tailnet as ephemeral `tag:ci`, then auto-deregister at job end. No persistent node, no key reuse.
+- **ACL**: defined at <https://login.tailscale.com/admin/acls/file>. The contract: `tag:ci` may reach `tag:server:22` only — no other ports, no other devices. A compromised secret can't pivot anywhere else on the tailnet. Edit ACLs only when adding new server nodes or new CI sources.
+- **Per-deploy audit**: every job leaves a connection-event trail in <https://login.tailscale.com/admin/machines> (look at the ephemeral `github-actions-*` node) and the corresponding GitHub Actions run. Time-aligned across both surfaces.
+- **Kill-switch**: rotate the OAuth client at <https://login.tailscale.com/admin/settings/oauth>. The Tailscale side is single-rotation; the new client secret then needs updating in GitHub repo secrets. All in-flight deploys finish; all future deploys fail until the secret is updated.
+- **SOC integration (optional)**: Tailscale supports streaming network + audit logs as JSON to Splunk/Datadog/Mezmo/S3. Configure at <https://login.tailscale.com/admin/logs>. Not currently wired into our SOC pipeline; documented here as the path when we are.
 
 ## First-time bootstrap (Pi-lab)
 
@@ -116,7 +129,7 @@ cd deploy/energy-stack/<service>/
 python -m pytest .
 ```
 
-> Why a wrapper rather than a single `pytest` invocation: every service has its own `app.py` (or `poller.py`) source file, and pytest's default `prepend` import mode caches the first one it loads in `sys.modules`. A single `pytest deploy/energy-stack` call would let one service's tests "see" another service's app.py. The wrapper runs each service in its own pytest process, sidestepping the collision. The proper fix (rename hyphens to underscores + `__init__.py` for proper packages) is on the followups list — see [pytest.ini](pytest.ini) for context.
+> Why a wrapper rather than a single `pytest` invocation: every service has its own `app.py` (or `poller.py`) source file, and pytest's default `prepend` import mode caches the first one it loads in `sys.modules`. A single `pytest deploy/energy-stack` call would let one service's tests "see" another service's app.py. The wrapper runs each service in its own pytest process, sidestepping the collision. Note: every service is now a proper Python package (`<service>/__init__.py` + relative imports + `python -m <service>.<entrypoint>`), so package isolation is real at import time — the wrapper survives only because pytest discovery would still flatten the modules into `sys.modules` under shared names. See [pytest.ini](pytest.ini) for context.
 
 `pytest.ini` at `deploy/energy-stack/` is the single source of truth for shared config (currently `asyncio_mode = auto` for the async-using services). Pytest's config discovery walks up from cwd, so individual services don't carry their own.
 
@@ -138,6 +151,26 @@ Currently covered (22 test files across 11 services + scripts/ suite as of 2026-
 Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot provisioning shell), `telegraf` (config-only). The compose-controlled containers (`influxdb`, `grafana`, `loki`, `promtail`, `mosquitto`) are all upstream images with no Python under test.
 
 > **History note**: until 2026-05-07 every service's tests file was named `tests.py`. The CodeX review caught that pytest couldn't collect more than one of them in a single invocation (duplicate top-level `tests` module name). The rename to `test_<service>.py` makes single-pass collection from the stack root work correctly.
+
+## Type checking
+
+Every Python service in this stack — plus `tools/cockpit/backend` — is enforced under `mypy --strict` and an import-linter contract. The enforcement is the project's structural defense against the freshness-class drift that motivated the 2026-05 type-checker rollout (see archived plan at `docs/plans/archive/type-checker-plan.md` and shipped spec at `docs/superpowers/specs/2026-05-20-type-checker-design.md`).
+
+Run locally:
+
+```bash
+bash deploy/energy-stack/run_typecheck.sh
+```
+
+The wrapper invokes mypy per-target (each service in `service_dirs`, plus `tools/cockpit/backend` in `repo_targets`) so an error in one service doesn't mask errors in another. Final step runs `import-linter` against the active contract.
+
+**Contract currently enforced**: `Only influx_adapter may import influxdb_client`. Direct use of `influxdb_client.*` outside `hvac_scheduler/influx_adapter.py` is a build failure. Adapter pattern documented in `docs/type-debt-backlog.md` (which also tracks future adapter candidates like `pyControl4`).
+
+**Test-relaxation overrides**: each service's `test_*.py` module appears in the `[[tool.mypy.overrides]]` block of `pyproject.toml` with `disallow_untyped_defs = false` + `disallow_untyped_decorators = false`. Production code is strict; tests get a controlled relaxation per spec §5.6. Other strict-mode flags (`disallow_incomplete_defs`, `disallow_any_generics`) still apply to tests — partial annotations must be completed.
+
+**CI enforcement**: `.github/workflows/typecheck.yml` runs the same `run_typecheck.sh` invocation on every push + PR to `main`. Required-status-check rule is set so a red type-check blocks merge.
+
+**Tactical `# type: ignore` discipline**: every ignore must carry an error code (`# type: ignore[no-untyped-call]`, etc.) AND a cited reason. Bare `# type: ignore` is a pattern violation. Concentrated ignores on `influxdb_client` imports + Point chain heads + `close()` are expected because the upstream stubs are incomplete at those surfaces.
 
 ## Ports
 
