@@ -15,7 +15,7 @@ jobs:
   type-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"  # match service Dockerfiles
