@@ -33,6 +33,7 @@ service_dirs=(
     eagle_poller
     refoss_poller
     thermostat_poller
+    haven_ingest
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set

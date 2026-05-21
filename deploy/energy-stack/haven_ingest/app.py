@@ -52,11 +52,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from types import FrameType
+from typing import Any, cast
 
 import requests
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client import InfluxDBClient, Point, WritePrecision  # type: ignore[attr-defined]  # stubs lack __all__
+from influxdb_client.client.write_api import SYNCHRONOUS, WriteApi
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
 HAVEN_API = "https://havenapi.tzoa.io"
@@ -130,7 +131,7 @@ class TokenManager:
         if tf.exists():
             try:
                 data = json.loads(tf.read_text())
-                token = data.get("refresh_token", "")
+                token = cast(str, data.get("refresh_token", ""))
                 if token:
                     log("info", "token_loaded_from_file", path=str(tf))
                     return token
@@ -152,7 +153,7 @@ class TokenManager:
         except Exception as exc:
             log("warning", "token_file_write_failed", path=str(tf), error=str(exc))
 
-    def headers(self) -> dict:
+    def headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._get_token()}",
             "Client-Application": "pro_portal",
@@ -185,13 +186,13 @@ class HavenClient:
         self._tokens = tokens
         self._cfg = cfg
 
-    def telemetry_current(self) -> dict:
+    def telemetry_current(self) -> dict[str, Any]:
         url = f"{HAVEN_API}/device/{self._cfg.device_id}/telemetry_current"
         r = requests.get(url, headers=self._tokens.headers(), timeout=15)
         r.raise_for_status()
-        return r.json()
+        return cast(dict[str, Any], r.json())
 
-    def telemetry_range(self, start: datetime, end: datetime, interval: str = "5m") -> list[dict]:
+    def telemetry_range(self, start: datetime, end: datetime, interval: str = "5m") -> list[dict[str, Any]]:
         url = f"{HAVEN_API}/device/{self._cfg.device_id}/telemetry_range"
         r = requests.get(url, headers=self._tokens.headers(), params={
             "start_time": start.isoformat(),
@@ -199,22 +200,25 @@ class HavenClient:
             "interval": interval,
         }, timeout=60)
         r.raise_for_status()
-        return r.json()
+        return cast(list[dict[str, Any]], r.json())
 
-    def outdoor_range(self, start: datetime, end: datetime) -> list[dict]:
+    def outdoor_range(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         url = f"{HAVEN_API}/outdoor_air/{self._cfg.outdoor_id}/range"
         r = requests.get(url, headers=self._tokens.headers(), params={
             "start_time": start.isoformat(),
             "end_time": end.isoformat(),
         }, timeout=60)
         r.raise_for_status()
-        return r.json()
+        return cast(list[dict[str, Any]], r.json())
 
 
-def indoor_reading_to_point(r: dict, device_id: str, ts: datetime | None = None) -> Point:
+def indoor_reading_to_point(r: dict[str, Any], device_id: str, ts: datetime | None = None) -> Point:
+    # `point: Any` lets the Point()/.tag()/.field() chain (untyped in
+    # influxdb_client stubs) flow through without per-call ignores.
+    # cast() at return restores the declared Point return type.
     t = ts or datetime.fromisoformat(r["timestamp"])
-    return (
-        Point("haven.indoor")
+    point: Any = (
+        Point("haven.indoor")  # type: ignore[no-untyped-call]
         .tag("device_id", device_id)
         .field("airflow", float(r["airflow"]))
         .field("voc_count", float(r["voc_count"]))
@@ -229,12 +233,13 @@ def indoor_reading_to_point(r: dict, device_id: str, ts: datetime | None = None)
         .field("combined_status", r["combined_status"])
         .time(t, WritePrecision.S)
     )
+    return cast(Point, point)
 
 
-def outdoor_reading_to_point(r: dict, station_id: str) -> Point:
+def outdoor_reading_to_point(r: dict[str, Any], station_id: str) -> Point:
     t = datetime.fromisoformat(r["timestamp"])
-    return (
-        Point("haven.outdoor")
+    point: Any = (
+        Point("haven.outdoor")  # type: ignore[no-untyped-call]
         .tag("station_id", station_id)
         .field("temperature_c", float(r["temperature"]))
         .field("humidity", float(r["humidity"]))
@@ -256,9 +261,10 @@ def outdoor_reading_to_point(r: dict, station_id: str) -> Point:
         .field("ragweed", float(r["ragweed"]))
         .time(t, WritePrecision.S)
     )
+    return cast(Point, point)
 
 
-def write_batch(write_api, bucket: str, points: list[Point], batch_size: int = 1000) -> int:
+def write_batch(write_api: WriteApi, bucket: str, points: list[Point], batch_size: int = 1000) -> int:
     for i in range(0, len(points), batch_size):
         write_api.write(bucket=bucket, record=points[i:i + batch_size])
     return len(points)
@@ -279,7 +285,7 @@ def main() -> int:
 
     stop_requested = False
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: FrameType | None) -> None:
         nonlocal stop_requested
         log("info", "signal_received", signum=signum)
         stop_requested = True
@@ -328,7 +334,7 @@ def main() -> int:
                 time.sleep(min(1.0, deadline - time.monotonic()))
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs lack close annotation
     return 0
 
 

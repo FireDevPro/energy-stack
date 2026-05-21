@@ -85,6 +85,8 @@ module = [
     "refoss_poller.test_refoss_poller",
     # thermostat-poller test modules (added in PR 11)
     "thermostat_poller.test_thermostat_poller",
+    # haven-ingest test modules (added in PR 12)
+    "haven_ingest.test_haven_ingest",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false

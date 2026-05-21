@@ -23,7 +23,7 @@ services=(
     comed_poller
     eagle_poller
     ecowitt-ingest
-    haven-ingest
+    haven_ingest
     hvac_scheduler
     hvac_scheduler_watchdog
     nws_poller
