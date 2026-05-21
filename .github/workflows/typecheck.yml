@@ -43,7 +43,7 @@ jobs:
         run: |
           for req in \
             deploy/energy-stack/comed_poller/requirements.txt \
-            deploy/energy-stack/eagle-poller/requirements.txt \
+            deploy/energy-stack/eagle_poller/requirements.txt \
             deploy/energy-stack/ecowitt-ingest/requirements.txt \
             deploy/energy-stack/haven-ingest/requirements.txt \
             deploy/energy-stack/hvac_scheduler/requirements.txt \

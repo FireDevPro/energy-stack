@@ -27,11 +27,12 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # EAGLE-3 uses a self-signed cert on the local network. We verify the
@@ -52,7 +53,7 @@ FIELD_BY_VAR = {
 
 
 def log(level: str, msg: str, **fields: object) -> None:
-    record = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
+    record: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     record.update(fields)
     print(json.dumps(record), flush=True)
 
@@ -183,9 +184,9 @@ def query_meter(cfg: Config) -> dict[str, float]:
     return readings
 
 
-def write_point(influx_write, bucket: str, cfg: Config, readings: dict[str, float]) -> None:
+def write_point(influx_write: Any, bucket: str, cfg: Config, readings: dict[str, float]) -> None:
     point = (
-        Point("eagle.meter")
+        Point("eagle.meter")  # type: ignore[no-untyped-call]
         .tag("hw_address", cfg.meter_hw)
         .tag("source", "eagle3")
     )
@@ -208,7 +209,7 @@ def main() -> int:
 
     stop_requested = False
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         nonlocal stop_requested
         log("info", "signal_received", signum=signum)
         stop_requested = True
@@ -252,7 +253,7 @@ def main() -> int:
                 time.sleep(min(1.0, deadline - time.monotonic()))
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]
     return 0
 
 

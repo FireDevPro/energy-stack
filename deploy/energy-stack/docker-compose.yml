@@ -68,7 +68,7 @@ services:
       start_period: 30s
 
   eagle-poller:
-    build: ./eagle-poller
+    build: ./eagle_poller
     container_name: eagle-poller
     restart: unless-stopped
     depends_on:
