@@ -81,6 +81,8 @@ module = [
     "nws_poller.test_nws_poller",
     # eagle-poller test modules (added in PR 9)
     "eagle_poller.test_eagle_poller",
+    # refoss-poller test modules (added in PR 10)
+    "refoss_poller.test_refoss_poller",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false

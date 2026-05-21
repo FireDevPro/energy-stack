@@ -14,7 +14,9 @@ Run from this directory:
 """
 from __future__ import annotations
 
-from poller import (
+from typing import Any
+
+from .poller import (
     build_channel_point,
     build_system_point,
     parse_channel_names,
@@ -86,13 +88,13 @@ def test_parse_channel_names_empty_config():
 # ---- build_channel_point --------------------------------------------------
 
 
-def _point_fields(p) -> dict:
+def _point_fields(p: Any) -> dict[str, Any]:
     """influxdb_client.Point exposes ``_fields`` directly — use it rather
     than parsing line protocol (which escapes spaces in tag values)."""
     return dict(p._fields)
 
 
-def _point_tags(p) -> dict:
+def _point_tags(p: Any) -> dict[str, Any]:
     return dict(p._tags)
 
 
