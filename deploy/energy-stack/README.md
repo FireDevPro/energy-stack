@@ -100,7 +100,7 @@ Pure-logic unit tests live alongside each service's source as `test_<service>.py
 
 One-time setup:
 ```bash
-pip install -r deploy/energy-stack/requirements-dev.txt
+pip install -r deploy/energy-stack/requirements-dev.lock
 # Plus each service's runtime requirements for its imports:
 pip install -r deploy/energy-stack/<service>/requirements.txt
 ```

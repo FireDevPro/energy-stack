@@ -1,0 +1,21 @@
+# Human-intent dev dependencies for the energy-stack test + type-checking pipeline.
+#
+# This file is HAND-EDITED. CI and local installs read requirements-dev.lock,
+# never this file. Workflow:
+#   1. Edit this file to add/remove a dependency.
+#   2. Regenerate the lock (see header of requirements-dev.lock).
+#   3. Commit BOTH files in the same commit.
+# See spec §8.2 R7B for the lockfile rationale.
+
+# --- Test runner -----------------------------------------------------
+pytest>=8
+pytest-asyncio>=0.23
+# Windows: ZoneInfo("America/Chicago") needs the iana database; container
+# python:3.13-slim bundles it but Windows Python doesn't.
+tzdata
+
+# --- Type-checking (spec §8.2) ---------------------------------------
+mypy
+pydantic
+import-linter
+types-requests

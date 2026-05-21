@@ -1,0 +1,92 @@
+# Energy-stack project configuration.
+# This file is the canonical location for tool config (mypy, import-linter)
+# per the type-checker rollout spec (docs/superpowers/specs/2026-05-20-type-checker-design.md).
+# The repo is NOT a single Python package; each service under
+# deploy/energy-stack/ is its own deployment unit.
+
+[tool.mypy]
+# Match service Dockerfiles (FROM python:3.13-slim).
+python_version = "3.13"
+strict = true
+# mypy 2 default flips — explicit per spec §8.2 R7A so intent is
+# documented and not subject to default-drift between minor versions.
+local_partial_types = true
+strict_bytes = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+
+# Make each renamed service under deploy/energy-stack/ a top-level
+# package on the mypy search path (e.g., hvac_scheduler.app).
+mypy_path = "deploy/energy-stack"
+
+# Bootstrap files list. PR 1 enforces ONLY these two modules via the
+# pyproject.toml files list. As each service migrates in (PR 2 onwards),
+# its individual freshness.py entry is removed from `files`; the
+# per-service mypy invocation in run_typecheck.sh covers the whole
+# package directory.
+files = [
+    "deploy/energy-stack/hvac-scheduler/freshness.py",
+    "tools/cockpit/backend/freshness.py",
+]
+
+# Third-party library overrides. Libraries without py.typed get
+# `ignore_missing_imports = true` so mypy treats them as Any. Per-library
+# typed adapters (see import-linter contracts and spec §5.2-5.5) are
+# the path to recovering type safety on bug-prone surfaces.
+# influxdb_client.* — VERIFIED ships py.typed; no override needed.
+# Upstream stubs are authoritative. See docs/type-debt-backlog.md.
+
+[[tool.mypy.overrides]]
+module = "pyControl4.*"
+ignore_missing_imports = true
+
+# Test-file relaxation. Mypy override `module` patterns must be
+# fully-qualified dotted module names (NOT filename globs). The list
+# below is populated per-service as migrations land. Each service PR
+# appends its own test module names.
+#
+# What stays strict in tests:
+#   - disallow_any_generics
+#   - no_implicit_optional
+#   - warn_redundant_casts
+#   - warn_return_any
+#   - strict_equality
+# What's relaxed:
+#   - disallow_untyped_defs (test functions return -> None implicitly)
+#   - disallow_untyped_decorators (mock/parametrize decorators have
+#     less-than-perfect types)
+[[tool.mypy.overrides]]
+module = [
+    # Populated per service. Example after PR 3:
+    # "hvac_scheduler.test_hvac_scheduler",
+    # "hvac_scheduler.test_freshness",
+    # "hvac_scheduler.test_decision_trace",
+    # "hvac_scheduler.conftest",
+]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# Adapter-boundary enforcement (spec §5.5). Each typed adapter ships a
+# corresponding `forbidden` contract banning direct use of the wrapped
+# library outside the adapter module. First contract lands in PR 3 with
+# the influx_adapter.
+[tool.importlinter]
+root_packages = []
+# Required for `forbidden` contracts targeting third-party modules.
+include_external_packages = true
+# Populated per-service as adapters are added. Example after PR 3:
+#   root_packages = ["hvac_scheduler"]
+# with a contract block:
+#   [[tool.importlinter.contracts]]
+#   name = "Only influx_adapter may import influxdb_client"
+#   type = "forbidden"
+#   source_modules = ["hvac_scheduler"]
+#   forbidden_modules = ["influxdb_client"]
+#   ignore_imports = ["hvac_scheduler.influx_adapter -> influxdb_client"]

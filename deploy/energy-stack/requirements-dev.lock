@@ -1,0 +1,40 @@
+# Lockfile for dev dependencies. EVERY direct + transitive dep pinned ==X.Y.Z.
+# DO NOT HAND-EDIT — regenerate via the procedure below when refreshing the toolchain.
+#
+# How this file was generated (PR 1, 2026-05-21, Python 3.13.13):
+#   python -m venv /tmp/typecheck-pin
+#   source /tmp/typecheck-pin/Scripts/activate
+#   python -m pip install --upgrade pip
+#   python -m pip install -r deploy/energy-stack/requirements-dev.in
+#   python -m pip freeze > deploy/energy-stack/requirements-dev.lock
+#
+# Refresh: same procedure in a clean venv. Update the date header above
+# and commit both .in and .lock together as a "refresh typecheck toolchain"
+# PR per spec §8.2 R7B.
+
+annotated-types==0.7.0
+ast_serialize==0.5.0
+click==8.4.0
+colorama==0.4.6
+grimp==3.14
+import-linter==2.11
+iniconfig==2.3.0
+librt==0.11.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+mypy==2.1.0
+mypy_extensions==1.1.0
+packaging==26.2
+pathspec==1.1.1
+pluggy==1.6.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
+rich==15.0.0
+types-requests==2.33.0.20260518
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.2
+urllib3==2.7.0

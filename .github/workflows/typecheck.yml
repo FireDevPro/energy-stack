@@ -1,0 +1,62 @@
+# Workflow name and job name are both "type-check" so the required
+# status check appears in GitHub branch protection predictably. The
+# operator copies the EXACT emitted check name from the Actions UI
+# when configuring branch protection (current GitHub behavior:
+# `type-check / type-check`).
+name: type-check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # match service Dockerfiles
+      - name: Cache mypy
+        uses: actions/cache@v4
+        with:
+          path: ~/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'deploy/energy-stack/requirements-dev.lock') }}
+      - name: Install dev dependencies
+        run: pip install -r deploy/energy-stack/requirements-dev.lock
+      - name: Install all service requirements
+        # Install every IN-SCOPE service's requirements.txt unconditionally
+        # so mypy can resolve typed library symbols regardless of which
+        # services are currently in the enforced set. Pip deduplicates
+        # shared deps. Avoids the "added a service to enforced set,
+        # forgot to update CI" failure mode.
+        #
+        # Explicit enumeration (not a glob) because `deploy/energy-stack/`
+        # also contains the out-of-scope `scripts/` directory (per spec
+        # §3.2) whose requirements would otherwise be installed and could
+        # fail the typecheck job for reasons unrelated to the enforced
+        # set. When a new service is added in scope, append it here AND
+        # to `run_typecheck.sh`. The migration template (spec §6.1)
+        # lists this.
+        run: |
+          for req in \
+            deploy/energy-stack/comed-poller/requirements.txt \
+            deploy/energy-stack/eagle-poller/requirements.txt \
+            deploy/energy-stack/ecowitt-ingest/requirements.txt \
+            deploy/energy-stack/haven-ingest/requirements.txt \
+            deploy/energy-stack/hvac-scheduler/requirements.txt \
+            deploy/energy-stack/hvac-scheduler-watchdog/requirements.txt \
+            deploy/energy-stack/nws-poller/requirements.txt \
+            deploy/energy-stack/pjm-dm2-poller/requirements.txt \
+            deploy/energy-stack/refoss-poller/requirements.txt \
+            deploy/energy-stack/telegram-notifier/requirements.txt \
+            deploy/energy-stack/thermostat-poller/requirements.txt \
+            tools/cockpit/backend/requirements.txt; do
+            if [[ -f "$req" ]]; then
+              pip install -r "$req"
+            fi
+          done
+      - name: Run type checks
+        run: bash deploy/energy-stack/run_typecheck.sh
