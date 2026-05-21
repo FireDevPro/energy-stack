@@ -189,7 +189,7 @@ Tags: `hw_address`, `source=eagle3`.
 
 ## comed-poller
 
-Build: `./comed-poller` · Cycle: `COMED_POLL_INTERVAL` (default 60 s)
+Build: `./comed_poller` · Cycle: `COMED_POLL_INTERVAL` (default 60 s)
 
 Polls the public ComEd Hourly Pricing API (`hourlypricing.comed.com/api`). Two endpoints per cycle:
 - `?type=5minutefeed&format=json` — last ~24 h of 5-min intervals (latest written each cycle)
