@@ -118,7 +118,7 @@ Where sources conflict, the question is raised but no winner is picked. Operator
 
 ### CQ-S — Dockerfile COPY claim (resolved by OPS-003+PR3)
 - **deploy/energy-stack/README.md:92:** "every Dockerfile only `COPY app.py .`".
-- **hvac-scheduler/Dockerfile:10:** 7-file COPY. **pjm_dm2_poller/Dockerfile:10:** 2-file COPY.
+- **hvac_scheduler/Dockerfile:10:** 7-file COPY. **pjm_dm2_poller/Dockerfile:10:** 2-file COPY.
 
 ### CQ-T — `validation_results.json` provenance (resolved by D6+RV-001+PR4)
 - **docs/replay-validation/2026-05-18-shadow/findings.md:39:** canonical is GitHub Actions run `26056757401` at SHA `4ad147e`.
