@@ -942,7 +942,7 @@ def test_stage2_quality_writes_qualifying_days_csv_with_data(tmp_path, monkeypat
 def test_dtod_periods_synced_with_precool_module():
     """The Stage 3 dollar-cost computation uses the ComEd DTOD delivery
     rate, which is also used live by the scheduler in
-    deploy/energy-stack/hvac-scheduler/precool.py. The two must stay
+    deploy/energy-stack/hvac_scheduler/precool.py. The two must stay
     aligned; this test loads precool by file path and asserts the
     rate schedule is identical.
     """
@@ -950,7 +950,7 @@ def test_dtod_periods_synced_with_precool_module():
     from pathlib import Path
     precool_path = (
         Path(__file__).resolve().parents[3]
-        / "deploy" / "energy-stack" / "hvac-scheduler" / "precool.py"
+        / "deploy" / "energy-stack" / "hvac_scheduler" / "precool.py"
     )
     spec = importlib.util.spec_from_file_location("precool", precool_path)
     precool = importlib.util.module_from_spec(spec)

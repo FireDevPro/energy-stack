@@ -24,7 +24,7 @@ services=(
     eagle-poller
     ecowitt-ingest
     haven-ingest
-    hvac-scheduler
+    hvac_scheduler
     hvac-scheduler-watchdog
     nws-poller
     pjm-dm2-poller

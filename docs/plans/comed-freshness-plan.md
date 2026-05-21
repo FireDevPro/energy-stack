@@ -59,19 +59,19 @@ Every implementer subagent prompt and every reviewer subagent prompt must includ
 
 | Path | Responsibility |
 |------|----------------|
-| `deploy/energy-stack/hvac-scheduler/freshness.py` | Canonical shared freshness module (Freshness literal, Thresholds dataclass, THRESHOLDS dict, classify fn). |
+| `deploy/energy-stack/hvac_scheduler/freshness.py` | Canonical shared freshness module (Freshness literal, Thresholds dataclass, THRESHOLDS dict, classify fn). |
 | `.github/workflows/check-freshness-drift.yml` | PR-triggered workflow that diffs the scheduler and cockpit Python freshness files; fails the PR on byte mismatch. |
 
 ### Existing files modified in this plan
 
 | Path | Why it changes |
 |------|----------------|
-| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass; refactor `fetch_latest_comed`; rename `FiringState` field; add `nonfresh_after_hold_started_at_utc` field; implement caller-side recency gate; implement controller-observation safety-release timer; update 3 audit-log callers; rename `price_ok` local var + `required_feeds_for_arm_mode` parameter to `price_feed_healthy`; update `decision_trace.price_overlay_eval` emission with new fields and reason codes; update Dockerfile-relevant imports. |
-| `deploy/energy-stack/hvac-scheduler/Dockerfile` | Add `freshness.py` to the explicit `COPY` line at L10. |
-| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | Expose `_tier_priority` as `tier_priority` and `_hold_elapsed` as `hold_elapsed` (public helpers used by the scheduler). |
-| `deploy/energy-stack/hvac-scheduler/decision_codes.py` | Rename `STALE_FEED_RELEASED` → `RELEASED_NO_DATA`; append `HELD_DOWNGRADE_BUCKET_AGE`; append `RELEASED_PERSISTENT_STALE`. |
-| `deploy/energy-stack/hvac-scheduler/conftest.py` | Add `_fresh_sample` test helper. |
-| `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` | New tests + migrate ~14 existing `fetch_latest_comed` mocks. |
+| `deploy/energy-stack/hvac_scheduler/app.py` | Add `PriceSample` dataclass; refactor `fetch_latest_comed`; rename `FiringState` field; add `nonfresh_after_hold_started_at_utc` field; implement caller-side recency gate; implement controller-observation safety-release timer; update 3 audit-log callers; rename `price_ok` local var + `required_feeds_for_arm_mode` parameter to `price_feed_healthy`; update `decision_trace.price_overlay_eval` emission with new fields and reason codes; update Dockerfile-relevant imports. |
+| `deploy/energy-stack/hvac_scheduler/Dockerfile` | Add `freshness.py` to the explicit `COPY` line at L10. |
+| `deploy/energy-stack/hvac_scheduler/price_overlay.py` | Expose `_tier_priority` as `tier_priority` and `_hold_elapsed` as `hold_elapsed` (public helpers used by the scheduler). |
+| `deploy/energy-stack/hvac_scheduler/decision_codes.py` | Rename `STALE_FEED_RELEASED` → `RELEASED_NO_DATA`; append `HELD_DOWNGRADE_BUCKET_AGE`; append `RELEASED_PERSISTENT_STALE`. |
+| `deploy/energy-stack/hvac_scheduler/conftest.py` | Add `_fresh_sample` test helper. |
+| `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` | New tests + migrate ~14 existing `fetch_latest_comed` mocks. |
 | `tools/cockpit/backend/freshness.py` | Update `"comed.prices"` threshold from 11/16/30 to 7/16/30; rewrite header comment; declare hand-pair relationship with scheduler's copy. |
 | `tools/cockpit/frontend/src/freshness.ts` | Same 7/16/30 threshold update; comment block updated. |
 
@@ -93,20 +93,20 @@ Per AGENTS.md plan-authoring rule, all phases are decomposed before any phase ex
 
 **Phase goal:** the outside-in acceptance test `test_19_18z_downgrade_refused_on_stale_bucket` passes against real implementation with zero scaffolding. The 2026-05-19 19:18Z bug class is fixed.
 
-**Demo at end of phase:** running `cd deploy/energy-stack/hvac-scheduler/ && python -m pytest test_hvac_scheduler.py::test_19_18z_downgrade_refused_on_stale_bucket -v` shows PASS (not xfailed, not skipped).
+**Demo at end of phase:** running `cd deploy/energy-stack/hvac_scheduler/ && python -m pytest test_hvac_scheduler.py::test_19_18z_downgrade_refused_on_stale_bucket -v` shows PASS (not xfailed, not skipped).
 
 ---
 
 ### Task 1: Outside-in acceptance test (xfail strict)
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (append at end of file)
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (append at end of file)
 
 This is the north star. It starts `xfail(strict=True)` — the marker comes off in Task 16 when implementation lands.
 
 - [ ] **Step 1: Add the acceptance test as the first commit of the branch**
 
-Append the following to the bottom of `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`. (Imports at the top of the file: confirm `from datetime import datetime, timedelta, timezone` is present; add if not. Also confirm `from unittest.mock import MagicMock` is present; add if not.)
+Append the following to the bottom of `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`. (Imports at the top of the file: confirm `from datetime import datetime, timedelta, timezone` is present; add if not. Also confirm `from unittest.mock import MagicMock` is present; add if not.)
 
 ```python
 # ---- Outside-in acceptance test (north star per AGENTS.md outside-in TDD) ----
@@ -204,7 +204,7 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
 - [ ] **Step 2: Confirm the test discovers and runs as xfail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py::test_19_18z_downgrade_refused_on_stale_bucket -v
 ```
 
@@ -213,7 +213,7 @@ Expected: `XFAIL` (collection succeeds, test fails as expected because `PriceSam
 - [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "test(comed-freshness): add 19:18Z acceptance test (xfail strict)
 
 North star for the freshness fix per AGENTS.md outside-in TDD rule.
@@ -227,14 +227,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 2: Shared `freshness.py` module (scheduler-canonical)
 
 **Files:**
-- Create: `deploy/energy-stack/hvac-scheduler/freshness.py`
-- Test: `deploy/energy-stack/hvac-scheduler/test_freshness.py` (new file)
+- Create: `deploy/energy-stack/hvac_scheduler/freshness.py`
+- Test: `deploy/energy-stack/hvac_scheduler/test_freshness.py` (new file)
 
 This is the canonical source-of-truth Python module. Cockpit's existing `tools/cockpit/backend/freshness.py` becomes a hand-paired copy in Task 3.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `deploy/energy-stack/hvac-scheduler/test_freshness.py`:
+Create `deploy/energy-stack/hvac_scheduler/test_freshness.py`:
 
 ```python
 """Tests for the scheduler-canonical freshness module."""
@@ -289,7 +289,7 @@ def test_classify_handles_negative_age_as_fresh():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_freshness.py -v
 ```
 
@@ -297,7 +297,7 @@ Expected: FAIL with `ImportError: No module named 'freshness'`.
 
 - [ ] **Step 3: Write the freshness module**
 
-Create `deploy/energy-stack/hvac-scheduler/freshness.py`:
+Create `deploy/energy-stack/hvac_scheduler/freshness.py`:
 
 ```python
 """Staleness classification per source cadence.
@@ -380,7 +380,7 @@ def classify(source: str, age_ms: int) -> Freshness:
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_freshness.py -v
 ```
 
@@ -389,7 +389,7 @@ Expected: 7 tests PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/freshness.py deploy/energy-stack/hvac-scheduler/test_freshness.py
+git add deploy/energy-stack/hvac_scheduler/freshness.py deploy/energy-stack/hvac_scheduler/test_freshness.py
 git commit -m "feat(comed-freshness): add scheduler-canonical freshness module
 
 Defines Freshness Literal, Thresholds dataclass, per-source THRESHOLDS
@@ -414,7 +414,7 @@ Make the cockpit's existing copy byte-identical to the scheduler's (except for t
 ```python
 """Staleness classification per source cadence (cockpit hand-paired copy).
 
-CANONICAL SOURCE: deploy/energy-stack/hvac-scheduler/freshness.py.
+CANONICAL SOURCE: deploy/energy-stack/hvac_scheduler/freshness.py.
 This file is byte-identical to the canonical except for this header
 docstring. Drift is enforced by the CI workflow at
 .github/workflows/check-freshness-drift.yml — any edit must land in
@@ -513,7 +513,7 @@ Replace with:
   // every 5-min publish cycle. Warn does NOT indicate a feed problem —
   // it indicates the controller would refuse a downgrade decision if
   // asked this tick. See spec §3.1.
-  // Hand-paired with deploy/energy-stack/hvac-scheduler/freshness.py.
+  // Hand-paired with deploy/energy-stack/hvac_scheduler/freshness.py.
   'comed.prices': {
     fresh_max_ms: min(7),
     warn_max_ms: min(16),
@@ -578,7 +578,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'deploy/energy-stack/hvac-scheduler/freshness.py'
+      - 'deploy/energy-stack/hvac_scheduler/freshness.py'
       - 'tools/cockpit/backend/freshness.py'
       - '.github/workflows/check-freshness-drift.yml'
 
@@ -612,11 +612,11 @@ jobs:
           ' "$1"
           }
 
-          A=$(strip_header deploy/energy-stack/hvac-scheduler/freshness.py)
+          A=$(strip_header deploy/energy-stack/hvac_scheduler/freshness.py)
           B=$(strip_header tools/cockpit/backend/freshness.py)
           if [ "$A" != "$B" ]; then
             echo "ERROR: freshness modules have drifted (excluding header docstrings)."
-            echo "Canonical: deploy/energy-stack/hvac-scheduler/freshness.py"
+            echo "Canonical: deploy/energy-stack/hvac_scheduler/freshness.py"
             echo "Cockpit:   tools/cockpit/backend/freshness.py"
             echo ""
             echo "Both files must contain the same Freshness Literal, Thresholds"
@@ -643,7 +643,7 @@ if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Cons
     lines = src.splitlines()
     src = "\n".join(lines[start:])
 print(src)
-' deploy/energy-stack/hvac-scheduler/freshness.py > /tmp/canonical.py
+' deploy/energy-stack/hvac_scheduler/freshness.py > /tmp/canonical.py
 
 python3 -c '
 import ast, sys
@@ -680,7 +680,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 5: `_fresh_sample` test helper in `test_hvac_scheduler.py`
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (add helper near the top of the file, after imports)
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (add helper near the top of the file, after imports)
 
 Helper that builds default-fresh `PriceSample` for tests not specifically exercising the gate. Per spec §8.7: `now_utc` is REQUIRED, no wall-clock fallback.
 
@@ -722,7 +722,7 @@ def _fresh_sample(cents: float, *, now_utc: datetime,
 - [ ] **Step 2: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "test(comed-freshness): add _fresh_sample helper to test module
 
 Default-fresh PriceSample builder for tests not specifically exercising
@@ -740,14 +740,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 6: `PriceSample` dataclass + `fetch_latest_comed` refactor
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:780-830`
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (add tests)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:780-830`
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (add tests)
 
 The data gap fix. `fetch_latest_comed` returns `Optional[PriceSample]`; the bucket's `_time` and freshness label travel with the price.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`:
+Append to `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`:
 
 ```python
 # ---- fetch_latest_comed new shape tests (spec §3.3, §8.3) ----
@@ -829,7 +829,7 @@ def test_fetch_latest_comed_classifies_stale_age():
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "fetch_latest_comed and (PriceSample or no_row or time_missing or warn_age or stale_age)" -v
 ```
 
@@ -837,7 +837,7 @@ Expected: 5 tests FAIL (most with `ImportError: cannot import name 'PriceSample'
 
 - [ ] **Step 3: Add `PriceSample` dataclass + refactor `fetch_latest_comed`**
 
-In `deploy/energy-stack/hvac-scheduler/app.py`, find the existing block at lines 787-827. Replace it with:
+In `deploy/energy-stack/hvac_scheduler/app.py`, find the existing block at lines 787-827. Replace it with:
 
 ```python
 # ---- Influx queries --------------------------------------------------------
@@ -922,7 +922,7 @@ Make sure `from dataclasses import dataclass` is in the imports at the top of th
 - [ ] **Step 4: Run the new tests to verify they pass**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "fetch_latest_comed and (PriceSample or no_row or time_missing or warn_age or stale_age)" -v
 ```
 
@@ -931,7 +931,7 @@ Expected: 5 tests PASS.
 - [ ] **Step 5: Run the rest of the existing scheduler tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -v 2>&1 | tail -50
 ```
 
@@ -940,7 +940,7 @@ Expected: many existing tests FAIL with `TypeError: fetch_latest_comed() missing
 - [ ] **Step 6: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(comed-freshness): refactor fetch_latest_comed to return PriceSample
 
 Bundles cents_per_kwh + source_ts + freshness label. Returns None when
@@ -956,7 +956,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 7: Public helpers from `price_overlay.py`
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/price_overlay.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/price_overlay.py`
 
 Expose `_tier_priority` and `_hold_elapsed` as public helpers (drop the leading underscore). They're needed by `_evaluate_layer_inputs` in Task 12.
 
@@ -991,7 +991,7 @@ Find all internal call sites in the same file (e.g., inside `evaluate_price_over
 - [ ] **Step 2: Run the existing `price_overlay` tests to verify nothing broke**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_price_overlay.py -v
 ```
 
@@ -1000,7 +1000,7 @@ Expected: existing tests PASS (rename is mechanical; no behavior change).
 - [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/price_overlay.py
+git add deploy/energy-stack/hvac_scheduler/price_overlay.py
 git commit -m "refactor(price-overlay): expose tier_priority and hold_elapsed as public
 
 The scheduler's _evaluate_layer_inputs needs these helpers for the
@@ -1015,14 +1015,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 8: Migrate ~14 existing `fetch_latest_comed` mocks
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (mocks at ~lines 588, 630, 665, 690, 712, 754, 787, 817, 841, 1173, 1250, 1454, 2193+)
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (mocks at ~lines 588, 630, 665, 690, 712, 754, 787, 817, 841, 1173, 1250, 1454, 2193+)
 
 Mechanical migration. After Task 6 the signature requires `now_utc`. Each mock needs to accept it and return a `PriceSample`.
 
 - [ ] **Step 1: Locate all mock sites**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 grep -n 'monkeypatch.setattr(app, "fetch_latest_comed"' test_hvac_scheduler.py
 ```
 
@@ -1080,7 +1080,7 @@ For these tests:
 - [ ] **Step 4: Run the test suite**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -v 2>&1 | tail -50
 ```
 
@@ -1091,7 +1091,7 @@ If any test fails with anything other than `firing.price_feed_last_ok_at_utc` or
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "test(comed-freshness): migrate fetch_latest_comed mocks to PriceSample shape
 
 ~14 mocks now accept now_utc kwarg and return PriceSample via the
@@ -1108,8 +1108,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 9: `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts` rename + tightened semantics
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:1377` (dataclass definition) + ALL usage sites
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (tests referencing the old name)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:1377` (dataclass definition) + ALL usage sites
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (tests referencing the old name)
 
 Rename the field, update its semantic: set only on fresh reads using `sample.source_ts` (not `now_utc`).
 
@@ -1195,7 +1195,7 @@ def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "last_fresh_bucket_source_ts" -v
 ```
 
@@ -1203,7 +1203,7 @@ Expected: FAIL with `AttributeError: 'FiringState' has no attribute 'last_fresh_
 
 - [ ] **Step 3: Rename the FiringState field**
 
-In `deploy/energy-stack/hvac-scheduler/app.py` at line 1377, find:
+In `deploy/energy-stack/hvac_scheduler/app.py` at line 1377, find:
 
 ```python
     # P2.2 stale-tier release: the wall-clock UTC of the most recent tick
@@ -1231,7 +1231,7 @@ Replace with:
 - [ ] **Step 4: Mass-rename usage sites**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 grep -n "price_feed_last_ok_at_utc" app.py test_hvac_scheduler.py
 ```
 
@@ -1275,7 +1275,7 @@ Find that line in the new structure and replace with:
 - [ ] **Step 7: Run tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "last_fresh_bucket_source_ts" -v
 ```
 
@@ -1290,8 +1290,8 @@ Expected: most tests PASS. Some tests around stale-release (2160 area) may need 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
-rm -f deploy/energy-stack/hvac-scheduler/app.py.bak deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py.bak  # if sed was used
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
+rm -f deploy/energy-stack/hvac_scheduler/app.py.bak deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py.bak  # if sed was used
 git commit -m "refactor(comed-freshness): rename price_feed_last_ok_at_utc field
 
 Field becomes last_fresh_bucket_source_ts. Updated semantic: set only
@@ -1308,14 +1308,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 10: Update the 3 audit-log callers
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:2044`, `2089`, `2245`
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:2044`, `2089`, `2245`
 
 Mechanical unwrap: `comed_price = fetch_latest_comed(...).cents_per_kwh if sample else None`.
 
 - [ ] **Step 1: Find the call sites**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 grep -n "fetch_latest_comed(" app.py
 ```
 
@@ -1373,7 +1373,7 @@ Replace with:
 - [ ] **Step 3: Run scheduler tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -v 2>&1 | tail -30
 ```
 
@@ -1382,7 +1382,7 @@ Expected: tests around `run_decision`, `run_decision_revisit`, and `fetch_today_
 - [ ] **Step 4: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py
+git add deploy/energy-stack/hvac_scheduler/app.py
 git commit -m "refactor(comed-freshness): update 3 audit-log callers for new fetch_latest_comed shape
 
 run_decision_revisit, run_decision, and fetch_today_decision unwrap
@@ -1397,8 +1397,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 11: Audit telemetry — rename `price_ok` → `price_feed_healthy` with corrected semantic
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:1781-1799` (`required_feeds_for_arm_mode` parameter)
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:2856-2887` (audit-derivation site in `run_schedule_check`)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:1781-1799` (`required_feeds_for_arm_mode` parameter)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:2856-2887` (audit-derivation site in `run_schedule_check`)
 
 Per spec §3.6: rename local variable AND function parameter; derive from `last_fresh_bucket_source_ts` vs 30-min wall clock (broad health), NOT from `sample.freshness == "fresh"`.
 
@@ -1406,7 +1406,7 @@ Per spec §3.6: rename local variable AND function parameter; derive from `last_
 
 - [ ] **Step 1: Extract the production helper `derive_price_feed_healthy`**
 
-In `deploy/energy-stack/hvac-scheduler/app.py`, find a good location near the existing `PRICE_FEED_STALE_THRESHOLD` constant (around line 2330). Add:
+In `deploy/energy-stack/hvac_scheduler/app.py`, find a good location near the existing `PRICE_FEED_STALE_THRESHOLD` constant (around line 2330). Add:
 
 ```python
 def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
@@ -1529,7 +1529,7 @@ def test_derive_price_feed_healthy_ignores_per_tick_freshness():
 - [ ] **Step 3: Run tests to verify they fail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "derive_price_feed_healthy" -v
 ```
 
@@ -1626,7 +1626,7 @@ Replace with:
 - [ ] **Step 6: Run tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -v 2>&1 | tail -30
 ```
 
@@ -1637,7 +1637,7 @@ If any test fails because it was passing `price_ok=...` kwarg to `required_feeds
 - [ ] **Step 7: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "refactor(comed-freshness): extract derive_price_feed_healthy helper + rename
 
 Per spec §3.6 named-split: extracted production helper
@@ -1656,15 +1656,15 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 12: Caller-side recency gate + new reason code
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/decision_codes.py` (append `HELD_DOWNGRADE_BUCKET_AGE`)
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:2382-2510` (`_evaluate_layer_inputs` gate logic)
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (gate tests)
+- Modify: `deploy/energy-stack/hvac_scheduler/decision_codes.py` (append `HELD_DOWNGRADE_BUCKET_AGE`)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:2382-2510` (`_evaluate_layer_inputs` gate logic)
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (gate tests)
 
 The behavior gap fix. Caller-side gate refuses downgrades when `sample.freshness != "fresh"`.
 
 - [ ] **Step 1: Append the new reason code**
 
-In `deploy/energy-stack/hvac-scheduler/decision_codes.py`, find the `PriceOverlayCode` enum (around lines 24-40). Add:
+In `deploy/energy-stack/hvac_scheduler/decision_codes.py`, find the `PriceOverlayCode` enum (around lines 24-40). Add:
 
 ```python
     # NEW (spec §3.7): recency gate refused a would-be downgrade because
@@ -1868,7 +1868,7 @@ def test_gate_treats_future_dated_bucket_as_fresh_and_allows_downgrade(monkeypat
 - [ ] **Step 3: Run tests to verify they fail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "gate_" -v
 ```
 
@@ -1960,7 +1960,7 @@ from price_overlay import (
 - [ ] **Step 5: Run gate tests to verify they pass**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "gate_" -v
 ```
 
@@ -1969,7 +1969,7 @@ Expected: 7 tests PASS, EXCEPT `test_gate_refuses_downgrade_when_sample_is_warn`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/decision_codes.py deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/decision_codes.py deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(comed-freshness): add caller-side recency gate
 
 Refuses tier downgrades when sample.freshness != 'fresh'. Holds and
@@ -1988,7 +1988,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 13: Trace classifier update — `bucket_age_sec`, `price_feed_unavailable`, `HELD_DOWNGRADE_BUCKET_AGE` routing
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py:2487-2501` (trace emission block)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py:2487-2501` (trace emission block)
 
 Add the new field, rename the misleading existing field, route the gate-held case to the new reason code.
 
@@ -2124,7 +2124,7 @@ Replace with:
 - [ ] **Step 3: Run gate tests to verify they all pass now**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "gate_" -v
 ```
 
@@ -2133,7 +2133,7 @@ Expected: 7 tests PASS including `test_gate_refuses_downgrade_when_sample_is_war
 - [ ] **Step 4: Verify the 19:18Z acceptance test now passes**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py::test_19_18z_downgrade_refused_on_stale_bucket -v
 ```
 
@@ -2142,7 +2142,7 @@ Expected: **XPASS** (was xfail). Because the xfail marker has `strict=True`, an 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py
+git add deploy/energy-stack/hvac_scheduler/app.py
 git commit -m "feat(comed-freshness): update trace classifier for new reason code + fields
 
 Gate-held branch routed to HELD_DOWNGRADE_BUCKET_AGE at info level.
@@ -2158,7 +2158,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 14: Dockerfile `COPY` line update
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/Dockerfile:10`
+- Modify: `deploy/energy-stack/hvac_scheduler/Dockerfile:10`
 
 Without this, the container build succeeds but runtime fails on `from freshness import ...` in `app.py`.
 
@@ -2181,7 +2181,7 @@ COPY app.py safety_supervisor.py pjm_5cp.py price_overlay.py precool.py arm_cale
 If Docker is available locally:
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 docker build -t hvac-scheduler-test .
 ```
 
@@ -2192,7 +2192,7 @@ If Docker isn't available locally, skip this verification — the production dep
 - [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/Dockerfile
+git add deploy/energy-stack/hvac_scheduler/Dockerfile
 git commit -m "build(hvac-scheduler): COPY freshness.py into container image
 
 Without this, the runtime container would fail on 'from freshness
@@ -2211,7 +2211,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: Run scheduler tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest . -v 2>&1 | tail -50
 ```
 
@@ -2234,7 +2234,7 @@ Skip if `git status` is clean.
 ### Task 16: Remove `xfail(strict=True)` from acceptance test
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`
 
 Implementation has caught up; the north star passes.
 
@@ -2259,7 +2259,7 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
 - [ ] **Step 2: Verify the test passes cleanly**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py::test_19_18z_downgrade_refused_on_stale_bucket -v
 ```
 
@@ -2268,7 +2268,7 @@ Expected: **PASSED** (not xpassed-as-failure, not xfailed).
 - [ ] **Step 3: Final scheduler-only test run**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest . -v 2>&1 | tail -20
 ```
 
@@ -2277,7 +2277,7 @@ Expected: all tests PASS.
 - [ ] **Step 4: Commit (closes Phase 1)**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "test(comed-freshness): remove xfail marker from 19:18Z acceptance test
 
 Implementation has caught up. The north star passes. Phase 1 tracer
@@ -2299,7 +2299,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 17: Decision-code renames + new release reason codes
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/decision_codes.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/decision_codes.py`
 
 Rename `STALE_FEED_RELEASED` → `RELEASED_NO_DATA`; append `RELEASED_PERSISTENT_STALE`.
 
@@ -2323,7 +2323,7 @@ Rename to:
 - [ ] **Step 2: Update existing references in `app.py`**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 grep -n "STALE_FEED_RELEASED" app.py test_hvac_scheduler.py
 ```
 
@@ -2332,7 +2332,7 @@ For each match in `app.py`, rename to `RELEASED_NO_DATA`. (Test file probably ha
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest . -v 2>&1 | tail -30
 ```
 
@@ -2341,7 +2341,7 @@ Expected: all tests still PASS (the rename is mechanical; no behavior change).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/decision_codes.py deploy/energy-stack/hvac-scheduler/app.py
+git add deploy/energy-stack/hvac_scheduler/decision_codes.py deploy/energy-stack/hvac_scheduler/app.py
 git commit -m "refactor(decision-codes): rename STALE_FEED_RELEASED -> RELEASED_NO_DATA
 
 Adds RELEASED_PERSISTENT_STALE. The pre-fix STALE_FEED_RELEASED only
@@ -2356,7 +2356,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 18: `FiringState.nonfresh_after_hold_started_at_utc` field
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py` (`FiringState` dataclass)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py` (`FiringState` dataclass)
 
 Add the new timer field. In-memory only; not persisted across restarts.
 
@@ -2383,7 +2383,7 @@ Find `FiringState` (the dataclass containing `last_fresh_bucket_source_ts` after
 - [ ] **Step 2: Verify the field exists without breaking tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest . -v 2>&1 | tail -10
 ```
 
@@ -2392,7 +2392,7 @@ Expected: all tests still PASS (the field is added with a default of `None`; not
 - [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py
+git add deploy/energy-stack/hvac_scheduler/app.py
 git commit -m "feat(comed-freshness): add nonfresh_after_hold_started_at_utc field
 
 Per spec §3.5 — controller-observation wall-clock timer for the
@@ -2407,8 +2407,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ### Task 19: Timer update logic + safety release check
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py` (`_evaluate_layer_inputs`)
-- Modify: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` (timer tests)
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py` (`_evaluate_layer_inputs`)
+- Modify: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` (timer tests)
 
 This is the load-bearing piece of Phase 2.
 
@@ -2846,7 +2846,7 @@ def test_safety_release_does_not_use_data_source_clock(monkeypatch):
 - [ ] **Step 3: Run tests to verify they fail**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "timer_ or safety_release" -v
 ```
 
@@ -2988,7 +2988,7 @@ Make sure the timer block runs BEFORE the trace classifier block — the classif
 - [ ] **Step 5: Run all timer + release tests**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest test_hvac_scheduler.py -k "timer_ or safety_release" -v
 ```
 
@@ -2997,7 +2997,7 @@ Expected: all timer tests PASS, including `test_safety_release_does_not_use_data
 - [ ] **Step 6: Run the full scheduler test suite**
 
 ```bash
-cd deploy/energy-stack/hvac-scheduler/
+cd deploy/energy-stack/hvac_scheduler/
 python -m pytest . -v 2>&1 | tail -30
 ```
 
@@ -3006,7 +3006,7 @@ Expected: all tests PASS. If a previously-passing test fails, investigate — mo
 - [ ] **Step 7: Commit (closes Phase 2)**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(comed-freshness): add controller-observation safety release timer
 
 Replaces the existing None-only wall-clock release path with the
@@ -3078,7 +3078,7 @@ if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Cons
     lines = src.splitlines()
     src = "\n".join(lines[start:])
 print(src)
-' deploy/energy-stack/hvac-scheduler/freshness.py | md5sum
+' deploy/energy-stack/hvac_scheduler/freshness.py | md5sum
 
 python3 -c '
 import ast, sys
@@ -3222,7 +3222,7 @@ Plan: `docs/plans/comed-freshness-plan.md`.
 ## Test plan
 
 - [x] `bash deploy/energy-stack/run_tests.sh` (canonical) — green.
-- [x] `cd deploy/energy-stack/hvac-scheduler/ && python -m pytest .` — green.
+- [x] `cd deploy/energy-stack/hvac_scheduler/ && python -m pytest .` — green.
 - [x] Acceptance test passes without `xfail` marker.
 - [x] All 9 spec §8.6 safety-release timer tests pass.
 - [x] `test_safety_release_does_not_use_data_source_clock` (anti-regression for the two-wall-clocks distinction) passes.

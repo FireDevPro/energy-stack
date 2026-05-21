@@ -36,7 +36,7 @@ All values pre-committed before OSF filing and frozen at the OSF commit hash.
 
 Recalibration captures 54% of historical price-spike days and 71% of scarcity days. The remaining 46% of spike days are grid-event-driven and addressed by real-time price reactivity. (Both figures reproduced by [`tools/comed_2025_analysis/verify_appendix_a.py`](../tools/comed_2025_analysis/verify_appendix_a.py).)
 
-**Naming note:** the spec-canonical enum value `HOT` is implemented in code as the constant `DAYTYPE_HOT = "HOT_5CP_RISK"` (see [`deploy/energy-stack/hvac-scheduler/app.py`](../deploy/energy-stack/hvac-scheduler/app.py)). Both names refer to the same enum value with the same trigger rule. [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) uses the code-canonical `HOT_5CP_RISK` string in its day-types table.
+**Naming note:** the spec-canonical enum value `HOT` is implemented in code as the constant `DAYTYPE_HOT = "HOT_5CP_RISK"` (see [`deploy/energy-stack/hvac_scheduler/app.py`](../deploy/energy-stack/hvac_scheduler/app.py)). Both names refer to the same enum value with the same trigger rule. [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) uses the code-canonical `HOT_5CP_RISK` string in its day-types table.
 
 ## Real-time RTP price-spike reactivity
 

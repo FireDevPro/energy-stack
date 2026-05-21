@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'deploy/energy-stack/hvac-scheduler/freshness.py'
+      - 'deploy/energy-stack/hvac_scheduler/freshness.py'
       - 'tools/cockpit/backend/freshness.py'
       - '.github/workflows/check-freshness-drift.yml'
 
@@ -39,11 +39,11 @@ jobs:
           ' "$1"
           }
 
-          A=$(strip_header deploy/energy-stack/hvac-scheduler/freshness.py)
+          A=$(strip_header deploy/energy-stack/hvac_scheduler/freshness.py)
           B=$(strip_header tools/cockpit/backend/freshness.py)
           if [ "$A" != "$B" ]; then
             echo "ERROR: freshness modules have drifted (excluding header docstrings)."
-            echo "Canonical: deploy/energy-stack/hvac-scheduler/freshness.py"
+            echo "Canonical: deploy/energy-stack/hvac_scheduler/freshness.py"
             echo "Cockpit:   tools/cockpit/backend/freshness.py"
             echo ""
             echo "Both files must contain the same Freshness Literal, Thresholds"

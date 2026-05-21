@@ -27,7 +27,7 @@ mypy_path = "deploy/energy-stack"
 # per-service mypy invocation in run_typecheck.sh covers the whole
 # package directory.
 files = [
-    "deploy/energy-stack/hvac-scheduler/freshness.py",
+    "deploy/energy-stack/hvac_scheduler/freshness.py",
     "tools/cockpit/backend/freshness.py",
 ]
 

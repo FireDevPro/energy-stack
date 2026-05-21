@@ -158,7 +158,7 @@ services:
       INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   hvac-scheduler:
-    build: ./hvac-scheduler
+    build: ./hvac_scheduler
     container_name: hvac-scheduler
     restart: unless-stopped
     depends_on:

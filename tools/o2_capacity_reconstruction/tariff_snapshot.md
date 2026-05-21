@@ -185,7 +185,7 @@ Across all 867 pages of Ill. C. C. No. 10 the ICC ratebook contains **no "class 
 | `data/pjm_weather_normalized_peaks.xlsx` | 27 KB | PJM Resource Adequacy Planning — locks ComEdNPL |
 | `data/pjm_oatt_attM2_comed.pdf` | 185 KB | PJM OATT eTariff Att. M-2 (ComEd), eff 2022-09-01 — the locked formula |
 | `data/ferc_er22_1520_filing_letter.pdf` | 679 KB | FERC ER22-1520-001 deficiency response, Exhibits 1(b)/2(b)(i)/2(b)(ii) — discloses Summer 2021 Weather Sensitive Customer portfolio sum = 2,033.653 MW (the `anchor_2021` scenario in §4) |
-| `data/cub_comed_delivery_tod_fact_sheet_2026-03.pdf` | 505 KB | CUB DTOD fact sheet, March 2026 — source for delivery-rate base values locked in `deploy/energy-stack/hvac-scheduler/precool.py` |
+| `data/cub_comed_delivery_tod_fact_sheet_2026-03.pdf` | 505 KB | CUB DTOD fact sheet, March 2026 — source for delivery-rate base values locked in `deploy/energy-stack/hvac_scheduler/precool.py` |
 
 ### Provenance / procedural context
 

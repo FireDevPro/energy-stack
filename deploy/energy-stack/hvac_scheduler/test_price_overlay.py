@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from price_overlay import (
+from .price_overlay import (
     DEFAULT_MINIMUM_HOLD_MINUTES,
     NORMAL_TIER_NAME,
     PRICE_TIERS,

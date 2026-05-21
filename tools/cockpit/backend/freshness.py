@@ -1,6 +1,6 @@
 """Staleness classification per source cadence (cockpit hand-paired copy).
 
-CANONICAL SOURCE: deploy/energy-stack/hvac-scheduler/freshness.py.
+CANONICAL SOURCE: deploy/energy-stack/hvac_scheduler/freshness.py.
 This file is byte-identical to the canonical except for this header
 docstring. Drift is enforced by the CI workflow at
 .github/workflows/check-freshness-drift.yml — any edit must land in

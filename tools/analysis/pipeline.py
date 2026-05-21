@@ -270,7 +270,7 @@ def enthalpy_btu_per_lb(temp_f: float, dewpoint_f: float, pressure_inhg: float =
 # --- ComEd DTOD delivery rates ($/kWh by hour-of-day CT) -------------------
 #
 # Used by Stage 3 O1/O4 dollar-cost computation. The same rate schedule is
-# used live by the scheduler in deploy/energy-stack/hvac-scheduler/precool.py
+# used live by the scheduler in deploy/energy-stack/hvac_scheduler/precool.py
 # (DTOD_PERIODS_CT). Synced by test_dtod_periods_synced_with_precool_module
 # in test_pipeline.py — if the scheduler updates rates, that test will fail
 # until this constant is updated to match.

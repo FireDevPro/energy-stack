@@ -22,12 +22,12 @@ from unittest.mock import MagicMock
 import pytest
 from zoneinfo import ZoneInfo
 
-import app
-from app import FiringState, _evaluate_layer_inputs
+from . import app
+from .app import FiringState, _evaluate_layer_inputs
 
 # Reuse the existing _evaluate_layer_inputs test scaffolding so the trace
 # tests drive the same caller surface the existing layer-input tests do.
-from test_hvac_scheduler import (  # noqa: E402
+from .test_hvac_scheduler import (  # noqa: E402
     _make_schedule_check_cfg,
     _mock_c4_client,
     _stub_layer_eval_io,
@@ -227,7 +227,7 @@ class TestPhase2LayerResolution:
           2. price=elevated tier (+3F), 5cp=inactive -> price overlay wins
           3. price=normal, 5cp=active (85F shutoff) -> 5cp wins
         """
-        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        from .app import FiringState, LayerInputs, _push_layer_change_mid_period
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         cfg = _make_schedule_check_cfg()
         c4, _ = _mock_c4_client()
@@ -327,7 +327,7 @@ class TestPhase2LayerResolution:
         `LAYER_RESOLUTION_TIE_WARMER_WINS`. Preserves the forensic
         distinction between "schedule won alone" and "schedule matched
         by a non-schedule layer at the warmest." """
-        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        from .app import FiringState, LayerInputs, _push_layer_change_mid_period
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         cfg = _make_schedule_check_cfg()
         c4, _ = _mock_c4_client()
@@ -374,8 +374,8 @@ class TestPhase2LayerResolution:
         """Patching `app.log` to raise on `decision_trace.layer_resolution`
         events must NOT propagate into `_push_layer_change_mid_period`'s
         caller path. The mid-period push behavior continues normally."""
-        from app import FiringState, LayerInputs, _push_layer_change_mid_period
-        import app as app_mod
+        from .app import FiringState, LayerInputs, _push_layer_change_mid_period
+        from . import app as app_mod
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
 
         original_log = app_mod.log
@@ -495,8 +495,8 @@ class TestPhase3Supervisor:
         7 reason codes (8 scenarios including approved-no-indoor-temp).
         Asserts reason_code, decision, level, and indoor_temp_available
         field present on every trace line."""
-        from app import _trace_supervisor
-        from safety_supervisor import validate_setpoints
+        from .app import _trace_supervisor
+        from .safety_supervisor import validate_setpoints
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
 
         now_ct = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -528,7 +528,7 @@ class TestPhase3Supervisor:
         supervisor trace when `_push_layer_change_mid_period` runs, and
         that the trace shares `tick_id` with the layer_resolution trace
         from the same tick."""
-        from app import FiringState, LayerInputs, _push_layer_change_mid_period
+        from .app import FiringState, LayerInputs, _push_layer_change_mid_period
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         cfg = _make_schedule_check_cfg()
         c4, _ = _mock_c4_client()
@@ -572,8 +572,8 @@ class TestPhase3Supervisor:
         """Patching `app.log` to raise on `decision_trace.supervisor`
         events must NOT propagate into the caller. The mid-period push
         + thermostat-write path continues to execute."""
-        from app import FiringState, LayerInputs, _push_layer_change_mid_period
-        import app as app_mod
+        from .app import FiringState, LayerInputs, _push_layer_change_mid_period
+        from . import app as app_mod
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
 
         original_log = app_mod.log
@@ -670,7 +670,7 @@ class TestPhase4PrecoolRejection:
         """Drive compute_price_aware_precool_window with mocked fetch
         helpers; capture trace_reason; assert the wrapper's out-list
         contains exactly one entry matching the expected PrecoolCode."""
-        import app
+        from . import app
         from zoneinfo import ZoneInfo as _ZoneInfo
         monkeypatch.setattr(app, "fetch_day_ahead_prices_for_date",
                             lambda q, b, d, tz: prices)
@@ -692,7 +692,7 @@ class TestPhase4PrecoolRejection:
         """Confirm the _trace_precool helper emits a well-formed
         decision_trace.precool_decision line with expected fields for
         both happy-path and rejection inputs."""
-        from app import _trace_precool
+        from .app import _trace_precool
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         now_ct = datetime(2026, 7, 14, 21, 0, tzinfo=ZoneInfo("America/Chicago"))
 
@@ -731,8 +731,8 @@ class TestPhase4PrecoolRejection:
     def test_precool_trace_is_failure_isolated(self, capsys, monkeypatch):
         """Patching `app.log` to raise on `decision_trace.precool_decision`
         events must NOT propagate. _trace_precool returns normally."""
-        from app import _trace_precool
-        import app as app_mod
+        from .app import _trace_precool
+        from . import app as app_mod
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         original_log = app_mod.log
         def _maybe_raise(level, msg, **fields):
@@ -770,7 +770,7 @@ class TestPhase5DayTypeTape:
         """A NORMAL day close to the HOT threshold (high_f=84,
         apparent_max_f=88) records HOT branches evaluated and rejected
         in the tape, then the NORMAL branch fired."""
-        from app import decide_day_type
+        from .app import decide_day_type
         forecast = {
             "high_f": 84.0, "apparent_max_f": 88.0,
             "is_heat_advisory": 0, "max_dewpoint_f": 60.0,
@@ -803,7 +803,7 @@ class TestPhase5DayTypeTape:
         """A HOT day with day2=HOT records both streak rules: the
         multi-day path fires (day2 also HOT), and the 5cp-risk rule was
         also evaluated. The winning path is HOT_STREAK_MULTI_DAY."""
-        from app import decide_day_type
+        from .app import decide_day_type
         forecast = {
             "high_f": 92.0, "apparent_max_f": 95.0,
             "is_heat_advisory": 0, "max_dewpoint_f": 70.0,
@@ -838,7 +838,7 @@ class TestPhase5DayTypeTape:
            `winning_reason` field contradict `evaluation_tape`'s
            reason_code.
         """
-        from app import decide_day_type
+        from .app import decide_day_type
         forecast = {
             # No high_f, no apparent_max_f — the degraded path.
             "is_heat_advisory": 0, "max_dewpoint_f": 60.0,
@@ -858,7 +858,7 @@ class TestPhase5DayTypeTape:
     def test_day_type_no_forecast_fallback_tape(self):
         """No-forecast input produces a single-entry tape with
         NORMAL_NO_FORECAST_FALLBACK fired."""
-        from app import decide_day_type
+        from .app import decide_day_type
         day_type, reasons = decide_day_type(None)
         assert day_type == "NORMAL"
         tape = reasons["evaluation_tape"]
@@ -877,7 +877,7 @@ class TestPhase5DayTypeTape:
         consume (high_f, apparent_max_f, is_heat_advisory,
         max_dewpoint_f, alert_summary, reason) plus the conditional
         streak fields when they fire."""
-        from app import decide_day_type
+        from .app import decide_day_type
         forecast = {
             "high_f": 80.0, "apparent_max_f": 82.0,
             "is_heat_advisory": 0, "max_dewpoint_f": 60.0,
@@ -897,7 +897,7 @@ class TestPhase5DayTypeTape:
         """Confirm _trace_day_type emits decision_trace.day_type_decision
         with the evaluation_tape inlined and the expected scalar
         fields."""
-        from app import _trace_day_type
+        from .app import _trace_day_type
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         now_ct = datetime(2026, 7, 14, 21, 0, tzinfo=ZoneInfo("America/Chicago"))
         reasons = {
@@ -932,8 +932,8 @@ class TestPhase5DayTypeTape:
     def test_day_type_trace_is_failure_isolated(self, monkeypatch):
         """Patching app.log to raise on day_type events must not
         propagate. _trace_day_type returns normally."""
-        from app import _trace_day_type
-        import app as app_mod
+        from .app import _trace_day_type
+        from . import app as app_mod
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         original_log = app_mod.log
         def _maybe_raise(level, msg, **fields):
@@ -981,7 +981,7 @@ class TestFeatureChain:
         With this test green and the per-phase tests green, the
         decision-trace feature is complete per AGENTS.md outside-in
         TDD rule."""
-        from app import (
+        from .app import (
             FiringState, LayerInputs,
             _evaluate_layer_inputs, _push_layer_change_mid_period,
         )

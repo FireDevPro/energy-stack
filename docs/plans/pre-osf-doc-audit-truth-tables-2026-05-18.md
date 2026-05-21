@@ -125,7 +125,7 @@ The measurements table has 8 verified drift entries (wrong field name, fabricate
 | Claim | Location | Ground-truth source | Verified value | Classification |
 |---|---|---|---|---|
 | Production-stack gate #1: per-service pytest loop | OSF_FILING.md:26-37 | matches AGENTS.md "Tests" guidance | matches operational reality | matches-truth (but superseded by spec §11 process-list framing) |
-| Production-stack gate #2: replay test files | OSF_FILING.md:38-43 | `deploy/energy-stack/hvac-scheduler/test_integration_2025_replay.py` + `test_pjm_5cp.py` both exist | files exist | matches-truth |
+| Production-stack gate #2: replay test files | OSF_FILING.md:38-43 | `deploy/energy-stack/hvac_scheduler/test_integration_2025_replay.py` + `test_pjm_5cp.py` both exist | files exist | matches-truth |
 | Production-stack gate #5: new measurements `hvac.price_overlay, hvac.5cp_state, hvac.arm_transitions` | OSF_FILING.md:48-53 | all three measurements ARE written by current code | exists | matches-truth (but does not include spec-§11 mandated `hvac.arm_mode, hvac.switch_event, hvac.input_feed_health, controller_alive`) |
 | Production-stack gate #7: "Assignment CSV regenerated with the locked seed" + `randomize_arms.py` + `experiment-assignments-summer-2026.csv` | OSF_FILING.md:55-61 | Binding spec §0 + doc's own banner: deterministic alternation per spec §2 retires randomization; `randomize_arms.py` + CSV + seed `20260601` explicitly retired | retired | drift — superseded by spec §11 |
 | Production-stack gate #8: "EXPERIMENT_DESIGN.md frozen at OSF commit hash" | OSF_FILING.md:62 | Spec §0: OSF references the rebaseline spec, THERMOSTAT_ARM_A_SCHEDULE.md, HVAC_LOGIC.md, NOT EXPERIMENT_DESIGN.md | drifted | drift — superseded by spec §11/§13 |

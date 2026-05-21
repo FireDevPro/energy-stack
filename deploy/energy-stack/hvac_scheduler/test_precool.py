@@ -1,7 +1,7 @@
 """Tests for the pre-cool depth/timing modulation triggers (§7)."""
 from __future__ import annotations
 
-from precool import (
+from .precool import (
     CHEAP_PRICE_THRESHOLD_C,
     DEEPEN_PEAK_RATIO,
     DEEPEN_TEMP_THRESHOLD_F,

@@ -50,7 +50,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 
 ### 3.1 Shared freshness module
 
-**Canonical location:** `deploy/energy-stack/hvac-scheduler/freshness.py`. The scheduler is the most important consumer; the file lives next to it for Docker COPY simplicity (the scheduler's Dockerfile build context is `./hvac-scheduler/` only).
+**Canonical location:** `deploy/energy-stack/hvac_scheduler/freshness.py`. The scheduler is the most important consumer; the file lives next to it for Docker COPY simplicity (the scheduler's Dockerfile build context is `./hvac_scheduler/` only).
 
 **Exports:**
 
@@ -81,7 +81,7 @@ class PriceSample:
     freshness: Freshness     # Imported from freshness.py
 ```
 
-Lives in `deploy/energy-stack/hvac-scheduler/app.py` next to the existing Influx-query helpers (after line 787 banner). NOT in the shared `freshness.py` module — the cockpit doesn't need this dataclass; it reads price data into a JSON-shaped dict for snapshot serialization. Keeping `PriceSample` scheduler-local prevents premature generalization (rule #4 — surgical).
+Lives in `deploy/energy-stack/hvac_scheduler/app.py` next to the existing Influx-query helpers (after line 787 banner). NOT in the shared `freshness.py` module — the cockpit doesn't need this dataclass; it reads price data into a JSON-shaped dict for snapshot serialization. Keeping `PriceSample` scheduler-local prevents premature generalization (rule #4 — surgical).
 
 ### 3.3 fetch_latest_comed (new signature)
 
@@ -378,17 +378,17 @@ Cockpit operators will observe the new `bucket_age_sec` field on `decision_trace
 
 | File | Purpose | LOC est. |
 |------|---------|----------|
-| `deploy/energy-stack/hvac-scheduler/freshness.py` | Canonical shared module (Freshness literal, Thresholds, THRESHOLDS dict, classify). | ~65 |
+| `deploy/energy-stack/hvac_scheduler/freshness.py` | Canonical shared module (Freshness literal, Thresholds, THRESHOLDS dict, classify). | ~65 |
 | `.github/workflows/check-freshness-drift.yml` | PR-triggered workflow that diffs the two Python copies; fails the PR on drift. | ~20 |
 
 ### Modified production files (5)
 
 | File | Changes |
 |------|---------|
-| `deploy/energy-stack/hvac-scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Add `FiringState.nonfresh_after_hold_started_at_utc: Optional[datetime] = None` for the §3.5 safety-release timer (controller-observation wall clock). NO new threshold constant — the existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)` at `app.py:2330` is reused unchanged. Update `_evaluate_layer_inputs` (sample branching, **controller-observation wall-clock safety release timer per §3.5 — replaces old data-source-clock release**, caller-side recency gate using `offset_and_override_for_tier` in the held branch, `downgrade_gate_held` flag threaded to trace classifier). Update 3 audit-log callers (mechanical unwrap). Update `run_schedule_check` audit derivation: `price_ok` → `price_feed_healthy` local variable, derives from `last_fresh_bucket_source_ts` vs `PRICE_FEED_STALE_THRESHOLD` (data-source clock — broad-health question, independent of the safety timer). Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches with `downgrade_gate_held` short-circuit). Rename `required_feeds_for_arm_mode` parameter `price_ok` → `price_feed_healthy`. Import `tier_priority` and `hold_elapsed` from `price_overlay` for the downgrade-detection check and the min-hold-elapsed gate. |
-| `deploy/energy-stack/hvac-scheduler/Dockerfile` | Add `freshness.py` to the `COPY` line at `Dockerfile:10`. Without this, the container build succeeds but runtime fails on import. |
-| `deploy/energy-stack/hvac-scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` AND `_hold_elapsed` as `hold_elapsed` (drop the leading underscores so the caller can use them for the downgrade-detection check and the min-hold-elapsed gate respectively). No new module constant. |
-| `deploy/energy-stack/hvac-scheduler/decision_codes.py` | Rename existing `STALE_FEED_RELEASED` → `RELEASED_NO_DATA` for consistency. Append two new enum values: `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_PERSISTENT_STALE`. |
+| `deploy/energy-stack/hvac_scheduler/app.py` | Add `PriceSample` dataclass. Update `fetch_latest_comed` signature/body (catch missing `_time`, log+return None). Rename `FiringState.price_feed_last_ok_at_utc` → `last_fresh_bucket_source_ts`. Add `FiringState.nonfresh_after_hold_started_at_utc: Optional[datetime] = None` for the §3.5 safety-release timer (controller-observation wall clock). NO new threshold constant — the existing `PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)` at `app.py:2330` is reused unchanged. Update `_evaluate_layer_inputs` (sample branching, **controller-observation wall-clock safety release timer per §3.5 — replaces old data-source-clock release**, caller-side recency gate using `offset_and_override_for_tier` in the held branch, `downgrade_gate_held` flag threaded to trace classifier). Update 3 audit-log callers (mechanical unwrap). Update `run_schedule_check` audit derivation: `price_ok` → `price_feed_healthy` local variable, derives from `last_fresh_bucket_source_ts` vs `PRICE_FEED_STALE_THRESHOLD` (data-source clock — broad-health question, independent of the safety timer). Update `decision_trace.price_overlay_eval` emission (new `bucket_age_sec`, rename `price_is_stale` → `price_feed_unavailable`, new outcome branches with `downgrade_gate_held` short-circuit). Rename `required_feeds_for_arm_mode` parameter `price_ok` → `price_feed_healthy`. Import `tier_priority` and `hold_elapsed` from `price_overlay` for the downgrade-detection check and the min-hold-elapsed gate. |
+| `deploy/energy-stack/hvac_scheduler/Dockerfile` | Add `freshness.py` to the `COPY` line at `Dockerfile:10`. Without this, the container build succeeds but runtime fails on import. |
+| `deploy/energy-stack/hvac_scheduler/price_overlay.py` | **No signature change.** Expose `_tier_priority` as `tier_priority` AND `_hold_elapsed` as `hold_elapsed` (drop the leading underscores so the caller can use them for the downgrade-detection check and the min-hold-elapsed gate respectively). No new module constant. |
+| `deploy/energy-stack/hvac_scheduler/decision_codes.py` | Rename existing `STALE_FEED_RELEASED` → `RELEASED_NO_DATA` for consistency. Append two new enum values: `HELD_DOWNGRADE_BUCKET_AGE`, `RELEASED_PERSISTENT_STALE`. |
 | `tools/cockpit/backend/freshness.py` | Update `"comed.prices"` threshold to 7/16/30 min (was 11/16/30). Rewrite the header comment at lines 40-47 to explain the new semantics (7-min = controller's actionability boundary). Header docstring also updated to point to canonical scheduler copy. Content otherwise byte-identical. |
 | `tools/cockpit/frontend/src/freshness.ts` | Same 7/16/30 threshold update (still hand-paired). Comment block updated similarly. |
 
@@ -396,9 +396,9 @@ Cockpit operators will observe the new `bucket_age_sec` field on `decision_trace
 
 | File | Changes |
 |------|---------|
-| `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py` | Outside-in acceptance test (19:18Z replay), initially `xfail(strict=True)`. **Recency-gate unit tests live here** (caller-side gate, not in `test_price_overlay.py`): refuses-downgrade-when-warn, refuses-when-stale, allows-when-fresh, doesn't-affect-upgrades, doesn't-affect-holds, boundary cases at exact-cutoff and cutoff+1s, future-dated-bucket edge case. New unit tests for `fetch_latest_comed` shape (PriceSample construction, None on empty, **returns None and logs error when `_time` missing**, warn/stale classification). FiringState rename + tightened semantics tests. Audit-derivation test asserting `price_feed_healthy` uses the 30-min threshold not the 7-min one. Trace-classifier test asserting `downgrade_gate_held=True` routes to `HELD_DOWNGRADE_BUCKET_AGE`, not generic `HELD_IN_TIER`. ~14 mock migrations to use `_fresh_sample()` helper. |
-| `deploy/energy-stack/hvac-scheduler/test_price_overlay.py` | No new gate tests (gate is caller-side, tests live in `test_hvac_scheduler.py`). Only update: tier-priority helper rename (`_tier_priority` → `tier_priority`) if any test references it directly. |
-| `deploy/energy-stack/hvac-scheduler/conftest.py` | Add `_fresh_sample(cents, *, now_utc: datetime, age_min: float = 1.0)` test helper. `now_utc` is REQUIRED (no default) to prevent flaky wall-clock fallbacks in tests that forget the kwarg. |
+| `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py` | Outside-in acceptance test (19:18Z replay), initially `xfail(strict=True)`. **Recency-gate unit tests live here** (caller-side gate, not in `test_price_overlay.py`): refuses-downgrade-when-warn, refuses-when-stale, allows-when-fresh, doesn't-affect-upgrades, doesn't-affect-holds, boundary cases at exact-cutoff and cutoff+1s, future-dated-bucket edge case. New unit tests for `fetch_latest_comed` shape (PriceSample construction, None on empty, **returns None and logs error when `_time` missing**, warn/stale classification). FiringState rename + tightened semantics tests. Audit-derivation test asserting `price_feed_healthy` uses the 30-min threshold not the 7-min one. Trace-classifier test asserting `downgrade_gate_held=True` routes to `HELD_DOWNGRADE_BUCKET_AGE`, not generic `HELD_IN_TIER`. ~14 mock migrations to use `_fresh_sample()` helper. |
+| `deploy/energy-stack/hvac_scheduler/test_price_overlay.py` | No new gate tests (gate is caller-side, tests live in `test_hvac_scheduler.py`). Only update: tier-priority helper rename (`_tier_priority` → `tier_priority`) if any test references it directly. |
+| `deploy/energy-stack/hvac_scheduler/conftest.py` | Add `_fresh_sample(cents, *, now_utc: datetime, age_min: float = 1.0)` test helper. `now_utc` is REQUIRED (no default) to prevent flaky wall-clock fallbacks in tests that forget the kwarg. |
 
 ### Total diff estimate
 
@@ -678,8 +678,8 @@ def _fresh_sample(cents: float, *, now_utc: datetime,
 
 Per AGENTS.md:
 - Canonical: `bash deploy/energy-stack/run_tests.sh`.
-- Just scheduler: `cd deploy/energy-stack/hvac-scheduler/ && python -m pytest .`.
-- Drift check (local): `diff deploy/energy-stack/hvac-scheduler/freshness.py tools/cockpit/backend/freshness.py`.
+- Just scheduler: `cd deploy/energy-stack/hvac_scheduler/ && python -m pytest .`.
+- Drift check (local): `diff deploy/energy-stack/hvac_scheduler/freshness.py tools/cockpit/backend/freshness.py`.
 
 PR 1 gates on: all three green. Plus pre-merge operational validation (§9 below).
 
@@ -758,8 +758,8 @@ Spec moves to `approved` after operator review of this revision. Then to `implem
 - Bug timeline: handoff §"The Bug Event"
 - Empirical data: handoff §"Empirical Data on ComEd's Publish Behavior"
 - Existing freshness module: `tools/cockpit/backend/freshness.py`, `tools/cockpit/frontend/src/freshness.ts`
-- Existing price overlay logic: `deploy/energy-stack/hvac-scheduler/price_overlay.py`
-- Existing decision-trace codes: `deploy/energy-stack/hvac-scheduler/decision_codes.py`
+- Existing price overlay logic: `deploy/energy-stack/hvac_scheduler/price_overlay.py`
+- Existing decision-trace codes: `deploy/energy-stack/hvac_scheduler/decision_codes.py`
 - Project conventions: `AGENTS.md`
 - Outside-in TDD discipline: `AGENTS.md` §"Core coding rules" #4
 - Plan-authoring rules (for the next phase): `AGENTS.md` §"Plan-authoring discipline"

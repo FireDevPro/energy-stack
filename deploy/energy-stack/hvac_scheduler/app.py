@@ -87,8 +87,8 @@ from pyControl4.account import C4Account
 from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
-from arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
-from pjm_5cp import (
+from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
+from .pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
     FiveCPState,
@@ -99,12 +99,12 @@ from pjm_5cp import (
     in_cooling_season,
     update_season_5th_highest,
 )
-from precool import (
+from .precool import (
     dtod_delivery_rates_24h,
     should_add_price_aware_precool,
     should_deepen_precool,
 )
-from price_overlay import (
+from .price_overlay import (
     DEFAULT_MINIMUM_HOLD_MINUTES,
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -113,8 +113,8 @@ from price_overlay import (
     offset_and_override_for_tier,
     tier_priority,
 )
-from safety_supervisor import validate_setpoints
-from decision_codes import (
+from .safety_supervisor import validate_setpoints
+from .decision_codes import (
     DayTypeCode,
     LayerResolutionCode,
     PrecoolCode,
@@ -788,7 +788,7 @@ class Config:
 
 # ---- Influx queries --------------------------------------------------------
 
-from freshness import Freshness, classify, THRESHOLDS  # noqa: E402
+from .freshness import Freshness, classify, THRESHOLDS  # noqa: E402
 
 # PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
 # label. Per spec §3.3 — the per-tick freshness label uses the data-source
