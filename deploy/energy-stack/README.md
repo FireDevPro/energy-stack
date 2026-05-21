@@ -128,9 +128,9 @@ Currently covered (22 test files across 11 services + scripts/ suite as of 2026-
 - `haven-ingest/test_haven_ingest.py`
 - `hvac-scheduler/` — five test files: `test_hvac_scheduler.py` (release_hold action, lazy decision recompute, safety supervisor), `test_decision_trace.py` (decision_trace.* event family), `test_pjm_5cp.py` (5CP detector), `test_precool.py` (§7 cheap-window search), `test_price_overlay.py` (tier state machine), `test_integration_2025_replay.py` (offline replay against 2025 PJM data)
 - `hvac_scheduler_watchdog/test_hvac_scheduler_watchdog.py`
-- `nws-poller/test_nws_poller.py`
+- `nws_poller/test_nws_poller.py`
 - `pjm_dm2_poller/test_pjm_dm2_poller.py`
-- `refoss-poller/test_refoss_poller.py`
+- `refoss_poller/test_refoss_poller.py`
 - `telegram-notifier/test_telegram_notifier.py`
 - `thermostat-poller/test_thermostat_poller.py`
 - `scripts/tests/` — six test files: `test_backfill_pjm.py`, `test_influx.py`, `test_log_arm_transition.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)

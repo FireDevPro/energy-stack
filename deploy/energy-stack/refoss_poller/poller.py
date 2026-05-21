@@ -41,11 +41,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
@@ -64,7 +65,7 @@ CHANNEL_FIELDS = {
 
 
 def log(level: str, msg: str, **fields: object) -> None:
-    record = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
+    record: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     record.update(fields)
     print(json.dumps(record), flush=True)
 
@@ -98,7 +99,7 @@ class Config:
         )
 
 
-def rpc_get(cfg: Config, method: str, timeout_s: float = 10.0) -> dict:
+def rpc_get(cfg: Config, method: str, timeout_s: float = 10.0) -> dict[str, Any]:
     """Call a Refoss JSON-RPC method via the GET shortcut.
 
     The EM16P exposes `GET /rpc/<Method>` as an unauth'd shortcut for
@@ -111,7 +112,7 @@ def rpc_get(cfg: Config, method: str, timeout_s: float = 10.0) -> dict:
         timeout=(5.0, timeout_s),
     )
     response.raise_for_status()
-    return response.json()
+    return cast(dict[str, Any], response.json())
 
 
 def assert_device_present(cfg: Config) -> None:
@@ -126,7 +127,7 @@ def assert_device_present(cfg: Config) -> None:
         mac=info.get("mac"), auth_en=info.get("auth_en"))
 
 
-def parse_channel_names(config: dict) -> dict[str, str]:
+def parse_channel_names(config: dict[str, Any]) -> dict[str, str]:
     """Extract {channel_key: user_label} from a Refoss.Config.Get response.
 
     Filters to em:N entries (skips emmerge:N and other config sections),
@@ -147,9 +148,12 @@ def fetch_channel_names(cfg: Config) -> dict[str, str]:
     return names
 
 
-def build_channel_point(channel_key: str, name: str, data: dict) -> Point:
-    point = (
-        Point("refoss.channel")
+def build_channel_point(channel_key: str, name: str, data: dict[str, Any]) -> Point:
+    # `point: Any` lets the Point()/.tag()/.field() chain (untyped in
+    # influxdb_client stubs) flow through without per-call ignores.
+    # cast() at return restores the declared Point return type.
+    point: Any = (
+        Point("refoss.channel")  # type: ignore[no-untyped-call]
         .tag("channel", channel_key)
         .tag("name", name)
     )
@@ -158,13 +162,13 @@ def build_channel_point(channel_key: str, name: str, data: dict) -> Point:
         if value is None:
             continue
         point = point.field(field_name, caster(value))
-    return point
+    return cast(Point, point)
 
 
-def build_system_point(status: dict) -> Point | None:
+def build_system_point(status: dict[str, Any]) -> Point | None:
     sys_block = status.get("sys") or {}
     wifi_block = status.get("wifi") or {}
-    point = Point("refoss.system")
+    point: Any = Point("refoss.system")  # type: ignore[no-untyped-call]
     wrote_any = False
     if "uptime" in sys_block:
         point = point.field("uptime_s", int(sys_block["uptime"]))
@@ -176,7 +180,7 @@ def build_system_point(status: dict) -> Point | None:
     if rssi is not None:
         point = point.field("wifi_rssi_dbm", int(rssi))
         wrote_any = True
-    return point if wrote_any else None
+    return cast(Point, point) if wrote_any else None
 
 
 def main() -> int:
@@ -192,7 +196,7 @@ def main() -> int:
 
     stop_requested = False
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         nonlocal stop_requested
         log("info", "signal_received", signum=signum)
         stop_requested = True
@@ -267,7 +271,7 @@ def main() -> int:
                 time.sleep(min(1.0, deadline - time.monotonic()))
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]
     return 0
 
 

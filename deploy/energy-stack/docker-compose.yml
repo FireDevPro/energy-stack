@@ -100,7 +100,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   refoss-poller:
-    build: ./refoss-poller
+    build: ./refoss_poller
     container_name: refoss-poller
     restart: unless-stopped
     depends_on:

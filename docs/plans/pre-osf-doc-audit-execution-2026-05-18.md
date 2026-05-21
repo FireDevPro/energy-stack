@@ -136,7 +136,7 @@ Open-ended template with binding spec attached via Zenodo DOI. Rationale:
 
 | Q | Resolution |
 |---|---|
-| Q1 Refoss range + A/B↔em:N | Device emits em:1..em:18 (verified at `refoss-poller/poller.py:5-7,17`). Study monitors 5 channels; SERVICES.md gets explicit A/B-label-to-em:N mapping table (see PR3). |
+| Q1 Refoss range + A/B↔em:N | Device emits em:1..em:18 (verified at `refoss_poller/poller.py:5-7,17`). Study monitors 5 channels; SERVICES.md gets explicit A/B-label-to-em:N mapping table (see PR3). |
 | Q2 RTO peak distribution | **Pending: Flux query against `pjm.coincident_peak` filtered to 2025 5CP hours, grouped by hour-of-day.** Blocks HVAC_LOGIC.md edits in PR3. Run before PR3 starts. |
 | Q3 Deploy timing | Reframe to "single-service deploys typically complete in ~1 minute; cache misses may extend this." No stopwatch. |
 | Q4 PJM catalog cadence | Add header line: "Catalog refreshed annually, or on PJM OpenAPI schema changes; last refresh: YYYY-MM-DD." |
