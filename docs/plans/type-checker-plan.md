@@ -9,15 +9,15 @@ role-label: chris
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Spec:** [docs/superpowers/specs/2026-05-20-type-checker-design.md](../superpowers/specs/2026-05-20-type-checker-design.md) — rev 6, architecture approved (4 dual-review rounds + 1 operator pre-execution review).
+**Spec:** [docs/superpowers/specs/2026-05-20-type-checker-design.md](../superpowers/specs/2026-05-20-type-checker-design.md) — rev 7, architecture approved (4 dual-review rounds + 2 operator pre-execution reviews).
 
 **Goal:** Land enforced `mypy --strict` type-checking on all 11 scheduler-stack Python services + cockpit-backend, before the OSF freeze locks in the binding implementation. Adapter-boundary enforcement via `import-linter`. Full package model (every service is a regular Python package with `__init__.py`, package-relative imports, `python -m <service>.<entrypoint>` Dockerfile CMD).
 
 **Architecture:** Three-layer (pyproject.toml mypy config + run_typecheck.sh per-service invocation + CI workflow), with per-service rollout. Each service PR includes: directory rename to underscore, `__init__.py` addition, sibling-import conversion to relative form, Dockerfile WORKDIR + CMD update, greenfield mypy clean, and import-linter contracts for adapters. Bootstrap mypy pass over a `files` list keeps the two freshness modules covered from PR 1 until each service migrates in. Bootstrap pass guarded by a tomllib check so it skips cleanly once `files` is empty (post-Phase-4).
 
-**Tech Stack:** Python 3.13, mypy 1.x with `--strict` (exact `==X.Y.Z` version captured at PR 1 implementation), pydantic v2 mypy plugin, import-linter (`lint-imports` CLI), GitHub Actions (ubuntu-latest runner), Docker Compose, pytest. All four type-checking dependencies (`mypy`, `pydantic`, `import-linter`, `types-requests`) are pinned to exact versions in `requirements-dev.txt` for the OSF-locked study window — range specifiers are forbidden (see spec §8.2).
+**Tech Stack:** Python 3.13, mypy 2.x with `--strict` (exact `==X.Y.Z` version captured at PR 1 implementation; mypy 2.0 GA 2026-05-06), pydantic v2 mypy plugin, import-linter (`lint-imports` CLI), GitHub Actions (ubuntu-latest runner), Docker Compose, pytest. Dev dependencies live in a `requirements-dev.in` (human intent) / `requirements-dev.lock` (all direct + transitive deps pinned `==X.Y.Z`) pair for the OSF-locked study window — see spec §8.2 for the lockfile rationale and the mypy 2 default-flag changes that may surface findings.
 
-**Branching:** **PR 0** (docs prelude) landed via `feat/type-checker` → `main` as PR #11 on 2026-05-20 and contained ONLY this spec + plan (no infrastructure). **PR 1** (this branch `feat/type-checker-pr1`) lands the infrastructure (`pyproject.toml`, `run_typecheck.sh`, `typecheck.yml`, `type-debt-backlog.md`, `requirements-dev.txt`). **PRs 2-15** each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
+**Branching:** **PR 0** (docs prelude) landed via `feat/type-checker` → `main` as PR #11 on 2026-05-20 and contained ONLY this spec + plan (no infrastructure). **PR 1** (this branch `feat/type-checker-pr1`) lands the infrastructure (`pyproject.toml`, `run_typecheck.sh`, `typecheck.yml`, `type-debt-backlog.md`, `requirements-dev.in` + `requirements-dev.lock`). **PRs 2-15** each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
 
 ---
 
@@ -42,7 +42,8 @@ There is no `pytest`-runnable acceptance test for this rollout because the test 
 - `deploy/energy-stack/run_typecheck.sh`: per-service mypy + import-linter runner
 - `.github/workflows/typecheck.yml`: CI workflow
 - `docs/type-debt-backlog.md`: adapter wishlist + library priorities
-- `deploy/energy-stack/requirements-dev.txt`: mypy + import-linter + pydantic + types-* stubs (update if exists)
+- `deploy/energy-stack/requirements-dev.in`: human-intent dev dependencies (test + type-checking, unpinned; ranges OK). Replaces the prior `requirements-dev.txt`.
+- `deploy/energy-stack/requirements-dev.lock`: generated lockfile — every direct + transitive dep pinned `==X.Y.Z` via clean Python 3.13 `pip install -r .in && pip freeze`.
 
 **Files modified in this phase:**
 - `docs/superpowers/specs/2026-05-20-type-checker-design.md`: already on branch (no further change)
@@ -50,10 +51,10 @@ There is no `pytest`-runnable acceptance test for this rollout because the test 
 
 ---
 
-### Task 1: Verify working tree + existing requirements-dev.txt
+### Task 1: Verify working tree + inspect existing requirements-dev.txt baseline
 
 **Files:**
-- Read: `deploy/energy-stack/requirements-dev.txt` (may or may not exist)
+- Read: `deploy/energy-stack/requirements-dev.txt` (the pre-rev-7 baseline file; will be retired in Task 2 in favor of the `.in` / `.lock` pair, but its current contents — pytest, pytest-asyncio, tzdata — must be preserved into `requirements-dev.in`).
 
 - [ ] **Step 1: Confirm we're on the correct branch with a clean tree**
 
@@ -63,7 +64,7 @@ git status --short --branch
 ```
 Expected: `## feat/type-checker-pr1` and no modified files. The spec + plan landed in PR 0 (PR #11, merged to `main` on 2026-05-20); this branch is cut fresh off `main` and starts empty.
 
-- [ ] **Step 2: Inspect any existing requirements-dev.txt**
+- [ ] **Step 2: Inspect the existing requirements-dev.txt baseline**
 
 Run:
 ```bash
@@ -75,7 +76,7 @@ If file exists, read it:
 cat deploy/energy-stack/requirements-dev.txt
 ```
 
-Note current contents. We'll be adding to it (not replacing) in a later task.
+Note current contents — Task 2 deletes this file and replaces it with the `.in` / `.lock` pair, but the human-intent lines (pytest, pytest-asyncio, tzdata, plus comments) must be preserved into `requirements-dev.in`.
 
 - [ ] **Step 3: Verify Python 3.13 + mypy availability for local testing**
 
@@ -89,65 +90,128 @@ If Python is older than 3.13, note this. Local tasks may need to run inside a 3.
 
 ---
 
-### Task 2: Create requirements-dev.txt with mypy + import-linter + pydantic
+### Task 2: Replace requirements-dev.txt with requirements-dev.in + requirements-dev.lock pair
+
+**Goal:** Retire the single mixed-pins file. Create a `.in` (human intent, unpinned) + `.lock` (every direct + transitive dep pinned `==X.Y.Z`) pair under Python 3.13. CI and local installs both read `.lock`. Toolchain refreshes are deliberate "refresh typecheck toolchain" PRs that re-run the freeze and update both files in one commit. (Spec §8.2 R7B.)
 
 **Files:**
-- Create or modify: `deploy/energy-stack/requirements-dev.txt`
+- Delete: `deploy/energy-stack/requirements-dev.txt` (the pre-rev-7 baseline)
+- Create: `deploy/energy-stack/requirements-dev.in`
+- Create: `deploy/energy-stack/requirements-dev.lock`
 
-- [ ] **Step 1: Determine current content**
+- [ ] **Step 1: Capture baseline content of the existing requirements-dev.txt**
 
-If `requirements-dev.txt` exists, preserve its current contents. We're adding to it.
-
-- [ ] **Step 2: Capture exact versions in a clean Python 3.13 env**
-
-Range specifiers are forbidden during the OSF-locked study window (see spec §8.2). The four type-checking packages must be pinned to EXACT `==X.Y.Z` versions captured from a fresh resolve.
+Read the file so the pytest / pytest-asyncio / tzdata lines and their comments are preserved into `requirements-dev.in`:
 
 ```bash
-# In a clean Python 3.13 venv (NOT a shared dev env that already has older mypy etc.):
+cat deploy/energy-stack/requirements-dev.txt
+```
+
+Expected (as of `ba067a1`): the file contains a header comment block, then `pytest>=8`, `pytest-asyncio>=0.23`, a Windows tzdata comment, then `tzdata`.
+
+- [ ] **Step 2: Write `requirements-dev.in`**
+
+Create `deploy/energy-stack/requirements-dev.in` with the baseline content above plus the type-checking section. Ranges are acceptable in `.in` because nothing installs from `.in` directly — it is the intent file.
+
+```
+# Human-intent dev dependencies for the energy-stack test + type-checking pipeline.
+#
+# This file is HAND-EDITED. CI and local installs read requirements-dev.lock,
+# never this file. Workflow:
+#   1. Edit this file to add/remove a dependency.
+#   2. Regenerate the lock (see header of requirements-dev.lock).
+#   3. Commit BOTH files in the same commit.
+# See spec §8.2 R7B for the lockfile rationale.
+
+# --- Test runner -----------------------------------------------------
+pytest>=8
+pytest-asyncio>=0.23
+# Windows: ZoneInfo("America/Chicago") needs the iana database; container
+# python:3.13-slim bundles it but Windows Python doesn't.
+tzdata
+
+# --- Type-checking (spec §8.2) ---------------------------------------
+mypy
+pydantic
+import-linter
+types-requests
+```
+
+- [ ] **Step 3: Generate `requirements-dev.lock` from a clean Python 3.13 venv**
+
+```bash
 python -m venv /tmp/typecheck-pin
-source /tmp/typecheck-pin/bin/activate   # or /tmp/typecheck-pin/Scripts/Activate.ps1 on Windows
-pip install --upgrade pip
-pip install mypy pydantic import-linter types-requests
-pip freeze | grep -E '^(mypy|pydantic|import-linter|types-requests)=='
+# git-bash on Windows uses the Scripts path; mac/linux uses bin:
+source /tmp/typecheck-pin/Scripts/activate    # PowerShell: \Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r deploy/energy-stack/requirements-dev.in
+python -m pip freeze > /tmp/lock-body.txt
 deactivate
 ```
 
-Copy the four `==X.Y.Z` lines from the `pip freeze` output. Note: `pydantic` may also pull in `pydantic-core` and `annotated-types`; capture those too if they appear in the freeze output — they are transitive but locking them avoids resolver surprises later.
-
-- [ ] **Step 3: Write the updated requirements with exact pins**
-
-Set the content to (preserve any existing lines above, then append/merge the type-checking section):
+Then prepend a generation header and write the result to the repo file:
 
 ```
-# Type-checking — EXACT pins for OSF-locked study window.
-# Captured by Step 2 via clean-env `pip install` + `pip freeze`.
-# Range specifiers (e.g., `mypy>=1.10,<2.0`) are forbidden here per spec §8.2:
-# a newer 1.x mypy could surface CI findings unrelated to our code.
-# Upgrades after the study are deliberate, separately-reviewed PRs.
-mypy==X.Y.Z              # paste from Step 2 pip freeze
-pydantic==X.Y.Z          # paste from Step 2 pip freeze
-pydantic-core==X.Y.Z     # paste if present in Step 2 freeze
-annotated-types==X.Y.Z   # paste if present in Step 2 freeze
-import-linter==X.Y.Z     # paste from Step 2 pip freeze
-types-requests==X.Y.Z    # paste from Step 2 pip freeze
+# Lockfile for dev dependencies. EVERY direct + transitive dep pinned ==X.Y.Z.
+# DO NOT HAND-EDIT — regenerate via the procedure below when refreshing the toolchain.
+#
+# How this file was generated (PR 1, 2026-MM-DD, Python 3.13.x):
+#   python -m venv /tmp/typecheck-pin
+#   source /tmp/typecheck-pin/Scripts/activate
+#   python -m pip install --upgrade pip
+#   python -m pip install -r deploy/energy-stack/requirements-dev.in
+#   python -m pip freeze > deploy/energy-stack/requirements-dev.lock
+#
+# Refresh: same procedure in a clean venv. Update the date header above
+# and commit both .in and .lock together as a "refresh typecheck toolchain"
+# PR per spec §8.2 R7B.
+
+<paste verbatim pip freeze output here>
 ```
 
-Use the Write tool. If the file already exists with other test dependencies (pytest, etc.), keep those and append the type-checking section. Replace each `X.Y.Z` placeholder with the actual version from Step 2.
+Replace `2026-MM-DD` with today's date and `3.13.x` with the actual `python --version` patch.
 
-- [ ] **Step 4: Install locally (optional but recommended)**
-
-Reuse the venv from Step 2, or install into your normal Python 3.13 environment:
-```bash
-pip install -r deploy/energy-stack/requirements-dev.txt
-```
-
-If pip install succeeds, continue. If you don't have a 3.13 env locally, CI will install these — local install is for ergonomics, not required.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Delete the old `requirements-dev.txt` and update any non-doc references**
 
 ```bash
-git add deploy/energy-stack/requirements-dev.txt
-git commit -m "feat(type-checker): add mypy + import-linter + pydantic to requirements-dev (exact pins)"
+git rm deploy/energy-stack/requirements-dev.txt
+git grep -nE "requirements-dev\.txt" -- ':!docs/'
+```
+
+Update each non-doc match (e.g., `run_tests.sh`, `Dockerfile` COPY lines, scripts) to `requirements-dev.lock`. Doc references are handled by the rev 7 doc revision, not by this task.
+
+- [ ] **Step 5: Install the lockfile locally as a sanity check**
+
+```bash
+pip install -r deploy/energy-stack/requirements-dev.lock
+```
+
+If pip install resolves cleanly, the lockfile is valid. If it fails, the lock has a defect — investigate before continuing (don't ship a broken lock).
+
+- [ ] **Step 6: Verify mypy major version matches spec intent**
+
+Confirm the captured mypy is on the 2.x line (matches spec §8.2 R7A intent):
+
+```bash
+grep -E '^mypy==' deploy/energy-stack/requirements-dev.lock
+```
+
+Expected: `mypy==2.X.Y` (NOT `mypy==1.X.Y`). If the resolve picked 1.x for any reason (e.g., a transitive constraint), STOP and escalate — the spec assumes mypy 2.x.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add deploy/energy-stack/requirements-dev.in deploy/energy-stack/requirements-dev.lock
+git rm deploy/energy-stack/requirements-dev.txt    # if not already staged in step 4
+git commit -m "feat(type-checker): add requirements-dev.{in,lock} pair (mypy 2.x, all transitives pinned)
+
+Replaces requirements-dev.txt with an .in/.lock pair per spec §8.2 R7B.
+.in = human intent (pytest + type-checking, unpinned).
+.lock = every direct + transitive dep pinned ==X.Y.Z, generated from a
+clean Python 3.13 \`pip install -r .in && pip freeze\`. CI and local
+installs both read .lock. mypy 2.x (spec §8.2 R7A: mypy 2.0 GA
+2026-05-06; no reason to ship intentionally-older mypy for the
+study window)."
 ```
 
 ---
@@ -470,7 +534,7 @@ jobs:
           path: ~/.mypy_cache
           key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Install dev dependencies
-        run: pip install -r deploy/energy-stack/requirements-dev.txt
+        run: pip install -r deploy/energy-stack/requirements-dev.lock
       - name: Install all service requirements
         # Install every IN-SCOPE service's requirements.txt unconditionally
         # so mypy can resolve typed library symbols regardless of which
@@ -585,7 +649,7 @@ Libraries that ship `py.typed` natively (no adapter needed, no override needed):
 - `fastapi`, `httpx`, `pydantic`, `uvicorn`, `python-dotenv` (used by cockpit-backend)
 - `aiohttp` (>=3.8) — used by `nws-poller`, `pjm-dm2-poller`, `telegram-notifier`. Bundled stubs surface usage issues; expect findings in those service PRs.
 
-Libraries with PyPI stub packages (`types-*` — install via `requirements-dev.txt`):
+Libraries with PyPI stub packages (`types-*` — add to `requirements-dev.in`, regenerate `requirements-dev.lock`):
 - `types-requests` for `requests` (if/when a service uses it)
 
 ---
@@ -630,13 +694,13 @@ natively and PyPI stub packages."
 - Read: `deploy/energy-stack/hvac-scheduler/freshness.py`
 - Read: `tools/cockpit/backend/freshness.py`
 
-- [ ] **Step 1: Install dev dependencies from the pinned requirements-dev.txt**
+- [ ] **Step 1: Install dev dependencies from the pinned requirements-dev.lock**
 
 ```bash
-pip install -r deploy/energy-stack/requirements-dev.txt
+pip install -r deploy/energy-stack/requirements-dev.lock
 ```
 
-This installs the exact `==X.Y.Z` versions captured by Task 2 step 2. Do NOT install via loose `>=` specifiers here — local environment must match what CI installs.
+This installs the exact `==X.Y.Z` versions captured by Task 2 step 3. Do NOT install via `requirements-dev.in` here — local environment must match what CI installs, which is always `.lock`.
 
 If pip install fails (no Python 3.13 locally), skip to step 4 (the CI run is the canonical verification).
 
@@ -753,14 +817,17 @@ git commit -m "feat(type-checker): verify influxdb_client stub status
 ### Task 9: Run `mypy --install-types` to discover available stub packages
 
 **Files:**
-- Modify: `deploy/energy-stack/requirements-dev.txt` (if stubs are found and we want them)
+- Modify: `deploy/energy-stack/requirements-dev.in` (if stubs are found and we want them — add to intent file, then regenerate `.lock` per Task 2 step 3 procedure)
+- Modify: `deploy/energy-stack/requirements-dev.lock` (regenerated from the updated `.in`)
 - Modify: `docs/type-debt-backlog.md`
 
-- [ ] **Step 1: Run install-types discovery**
+- [ ] **Step 1: Run install-types discovery (dry-run; don't actually install)**
 
 ```bash
-python -m mypy --install-types --non-interactive
+python -m mypy --install-types --non-interactive --dry-run
 ```
+
+`--dry-run` is important — without it, mypy mutates your local env outside the lockfile. We capture the SUGGESTION here and route any keepers through `.in` + regenerate `.lock`.
 
 Mypy will analyze imports and may suggest stub packages (`types-*`). Each suggestion is for a library that doesn't ship `py.typed` but has a PyPI stub.
 
@@ -770,7 +837,7 @@ For each suggested `types-*` package:
 - If the library is one we have an `ignore_missing_imports` override for, INSTALLING the stub would conflict. Choose ONE:
   - Remove the override + install the stub (the stubs are now authoritative, mypy will surface real findings).
   - Keep the override + DON'T install the stub.
-- If the library is NOT in our overrides, install the stub: add `types-<lib>` to `requirements-dev.txt`.
+- If the library is NOT in our overrides, install the stub: add `types-<lib>` to `requirements-dev.in` and regenerate `requirements-dev.lock` (clean Python 3.13 `pip install -r .in && pip freeze` per Task 2 step 3).
 - Document each decision in `type-debt-backlog.md` under a new "Stubs review (PR 1)" subsection.
 
 - [ ] **Step 3: Re-run the bootstrap mypy pass to confirm clean**
@@ -784,10 +851,11 @@ Expected: still clean.
 - [ ] **Step 4: Commit (if changes were made)**
 
 ```bash
-git add deploy/energy-stack/requirements-dev.txt docs/type-debt-backlog.md pyproject.toml
+git add deploy/energy-stack/requirements-dev.in deploy/energy-stack/requirements-dev.lock docs/type-debt-backlog.md pyproject.toml
 git commit -m "feat(type-checker): review and install --install-types suggestions
 
-[describe each stub added / declined and why]"
+[describe each stub added / declined and why]
+[note: requirements-dev.lock regenerated from updated .in]"
 ```
 
 If no changes were made (no stubs suggested or all declined), no commit needed — proceed to next task.
@@ -841,9 +909,10 @@ Lands the mypy + import-linter infrastructure and enforces the two freshness mod
 - \`deploy/energy-stack/run_typecheck.sh\` (NEW): per-service mypy + import-linter runner. tomllib-guarded bootstrap pass for the files-list lifecycle.
 - \`.github/workflows/typecheck.yml\` (NEW): CI workflow on Python 3.13 ubuntu-latest. Caches ~/.mypy_cache; installs IN-SCOPE service requirements via explicit enumeration (not a glob — scripts/ is excluded per spec §3.2).
 - \`docs/type-debt-backlog.md\` (NEW): adapter wishlist + library priorities. Seeded with influxdb-client (P0) and pyControl4 (P1).
-- \`deploy/energy-stack/requirements-dev.txt\` (UPDATED): EXACT pins (\`mypy==X.Y.Z\`, \`pydantic==X.Y.Z\`, \`import-linter==X.Y.Z\`, \`types-requests==X.Y.Z\`) — captured from \`pip freeze\` in a clean Python 3.13 env per plan Task 2 step 2. Range specifiers forbidden for OSF-locked study window per spec §8.2.
+- \`deploy/energy-stack/requirements-dev.in\` (NEW) + \`deploy/energy-stack/requirements-dev.lock\` (NEW): replace the prior \`requirements-dev.txt\` per spec §8.2 R7B. \`.in\` is human intent (pytest + type-checking, unpinned); \`.lock\` pins every direct + transitive dep \`==X.Y.Z\`, captured from a clean Python 3.13 \`pip install -r .in && pip freeze\`. CI installs \`.lock\`. mypy 2.x line (mypy 2.0 GA 2026-05-06 per spec §8.2 R7A).
+- \`deploy/energy-stack/requirements-dev.txt\` (DELETED): superseded by the \`.in\` / \`.lock\` pair.
 
-Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`docs/plans/type-checker-plan.md\`) were merged in PR 0 (PR #11). They are NOT in this PR's diff except for any rev 6 revisions co-bundled here.
+Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`docs/plans/type-checker-plan.md\`) were merged in PR 0 (PR #11). They are NOT in this PR's diff except for any rev 7 revisions co-bundled here.
 
 ## Acceptance criteria (per spec §7 Phase 1)
 
@@ -852,7 +921,7 @@ Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`doc
 - [x] The two \`freshness.py\` modules type-check clean under \`mypy --strict\`.
 - [ ] **GitHub branch protection / ruleset update:** operator copies the EXACT \`type-check / type-check\` check name from the Actions UI and adds it to required-checks for \`main\` immediately after this PR's workflow run completes green. Without this step, the workflow runs advisorily and the rollout's enforcement claim is false.
 - [x] **influxdb-client stub-status verification:** documented in \`docs/type-debt-backlog.md\`.
-- [x] **\`mypy --install-types\` discovery:** reviewed; relevant stubs added (see \`requirements-dev.txt\` + backlog).
+- [x] **\`mypy --install-types\` discovery:** reviewed; relevant stubs added to \`requirements-dev.in\` and \`requirements-dev.lock\` regenerated (see backlog).
 - [x] **Pydantic plugin loads:** mypy starts without error.
 
 ## Operator post-merge tasks
