@@ -21,10 +21,15 @@ _REPO_ROOT = _BACKEND_ROOT.parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from tools.cockpit.backend.app import app
-from tools.cockpit.backend.snapshot import build_snapshot_canned
+from tools.cockpit.backend.snapshot import (
+    _build_price_overlay_node,
+    build_snapshot_canned,
+)
 from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
 from tools.cockpit.backend.freshness import classify
 
@@ -196,3 +201,76 @@ class TestFastApiEndpoint:
         a["thermostat"]["indoor_temp_f"] = 999
         b = self.client.get("/api/snapshot").json()
         assert b["thermostat"]["indoor_temp_f"] != 999
+
+
+class TestPriceOverlayFreshness:
+    """Pin the price_overlay node's freshness to the shared classify()
+    module against the trace's own emit timestamp.
+
+    Pre-fix: snapshot.py read po.get('price_is_stale') — a field the
+    scheduler stopped emitting in the freshness PR (renamed to
+    price_feed_unavailable). The .get() always returned None → freshness
+    was always 'fresh', silently breaking operator visibility.
+
+    Post-fix: freshness is computed via classify(
+    'decision_trace.price_overlay_eval', age_ms) where age_ms is derived
+    from po['ts'] (the trace's UTC emit timestamp). Thresholds are
+    fresh ≤ 6m / warn ≤ 10m / stale ≤ 15m / missing > 15m
+    (per freshness.py THRESHOLDS).
+    """
+
+    _NOW = datetime(2026, 7, 14, 18, 0, 30, tzinfo=timezone.utc)
+
+    def _po(self, *, age_seconds: float | None) -> dict:
+        po: dict = {
+            "tick_id": "a1b2c3d4",
+            "price_cents": 8.4,
+            "prev_tier": "normal",
+            "new_tier": "normal",
+            "outcome": "held",
+            "reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER",
+            "hold_minutes_remaining": 0,
+        }
+        if age_seconds is not None:
+            po["ts"] = (self._NOW - timedelta(seconds=age_seconds)).isoformat()
+        return po
+
+    def _layer(self) -> dict:
+        return {"winning_layer": "schedule"}
+
+    def test_price_overlay_freshness_fresh_when_source_recent(self):
+        # 1 minute old < 6 min fresh threshold → "fresh"
+        node = _build_price_overlay_node(
+            self._po(age_seconds=60), self._layer(), self._NOW
+        )
+        assert node["freshness"] == "fresh"
+
+    def test_price_overlay_freshness_warn_at_eight_minutes(self):
+        # 8 min old > 6 min fresh, < 10 min warn → "warn"
+        node = _build_price_overlay_node(
+            self._po(age_seconds=8 * 60), self._layer(), self._NOW
+        )
+        assert node["freshness"] == "warn"
+
+    def test_price_overlay_freshness_stale_when_source_old(self):
+        # 13 min old > 10 min warn, < 15 min stale → "stale"
+        node = _build_price_overlay_node(
+            self._po(age_seconds=13 * 60), self._layer(), self._NOW
+        )
+        assert node["freshness"] == "stale"
+
+    def test_price_overlay_freshness_missing_when_no_source_ts(self):
+        # No ts on the trace payload → "missing"
+        node = _build_price_overlay_node(
+            self._po(age_seconds=None), self._layer(), self._NOW
+        )
+        assert node["freshness"] == "missing"
+
+    def test_price_overlay_freshness_ignores_old_price_is_stale_flag(self):
+        # Even with the orphan flag set, freshness must be driven by the
+        # trace's actual age — not by the field the scheduler stopped
+        # writing. Fresh-aged trace + price_is_stale=True → still "fresh".
+        po = self._po(age_seconds=60)
+        po["price_is_stale"] = True  # orphan: scheduler no longer emits this
+        node = _build_price_overlay_node(po, self._layer(), self._NOW)
+        assert node["freshness"] == "fresh"

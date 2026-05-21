@@ -74,11 +74,15 @@ def _layer_resolution(
 
 
 def _price_overlay_eval(tier: str = "normal", price_cents: float = 8.4) -> dict:
+    # `ts` is the trace's UTC emit time, set by the scheduler's `log()`
+    # helper on every decision_trace.* line. Cockpit's snapshot assembler
+    # uses it for the price_overlay node's freshness classification.
     return {
+        "ts": _fresh_ts(),
         "tick_id": "a1b2c3d4",
         "now_ct": _fresh_ts(),
         "price_cents": price_cents,
-        "price_is_stale": False,
+        "price_feed_unavailable": False,
         "prev_tier": tier,
         "new_tier": tier,
         "outcome": "held",

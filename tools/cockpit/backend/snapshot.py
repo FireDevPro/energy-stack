@@ -293,9 +293,15 @@ def _build_price_overlay_node(
     # without being the winning layer (e.g., when 5CP also fired warmer).
     winning = layer.get("winning_layer") == "price_overlay"
     new_tier = po.get("new_tier") or "normal"
+    # Freshness via shared classify() against the trace's emit timestamp.
+    # The scheduler stopped emitting `price_is_stale` in the freshness PR
+    # (renamed to `price_feed_unavailable`); reading it returned None on
+    # every tick → freshness silently locked to "fresh". Source of truth
+    # for the vocabulary is freshness.py (byte-identical to scheduler).
+    age = _age_ms(_parse_ts(po.get("ts")), now)
     return {
         "role_state": "winning" if winning else "dimmed",
-        "freshness": "stale" if po.get("price_is_stale") else "fresh",
+        "freshness": classify("decision_trace.price_overlay_eval", age),
         "freshness_label": "this tick",
         "title": "RTP Spike",
         "subtitle": str(new_tier),
