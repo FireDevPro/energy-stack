@@ -99,7 +99,7 @@ def _live_snapshot() -> dict[str, Any]:
     influxdb-client / httpx availability for every dev to spin up.
     """
     try:
-        from influxdb_client import InfluxDBClient  # noqa: PLC0415
+        from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # noqa: PLC0415  # stubs lack __all__
     except ImportError as e:
         raise HTTPException(
             status_code=503,

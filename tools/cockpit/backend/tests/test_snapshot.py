@@ -9,10 +9,11 @@ Drift between the Python fixture and the TS fixture surfaces here.
 from __future__ import annotations
 
 import json
-import pytest
-
 import sys
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 # Allow running as `pytest tools/cockpit/backend/tests/` from repo root
 # without installing as a package.
@@ -72,7 +73,7 @@ class TestFreshnessClassification:
             ("unknown.source", 1_000_000, "fresh"),  # unknown defaults to fresh
         ],
     )
-    def test_classify_buckets(self, source: str, age_ms: int, expected: str):
+    def test_classify_buckets(self, source: str, age_ms: int, expected: str) -> None:
         assert classify(source, age_ms) == expected
 
 
@@ -221,8 +222,8 @@ class TestPriceOverlayFreshness:
 
     _NOW = datetime(2026, 7, 14, 18, 0, 30, tzinfo=timezone.utc)
 
-    def _po(self, *, age_seconds: float | None) -> dict:
-        po: dict = {
+    def _po(self, *, age_seconds: float | None) -> dict[str, Any]:
+        po: dict[str, Any] = {
             "tick_id": "a1b2c3d4",
             "price_cents": 8.4,
             "prev_tier": "normal",
@@ -235,7 +236,7 @@ class TestPriceOverlayFreshness:
             po["ts"] = (self._NOW - timedelta(seconds=age_seconds)).isoformat()
         return po
 
-    def _layer(self) -> dict:
+    def _layer(self) -> dict[str, Any]:
         return {"winning_layer": "schedule"}
 
     def test_price_overlay_freshness_fresh_when_source_recent(self):

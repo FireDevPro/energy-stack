@@ -72,6 +72,9 @@ module = [
     "hvac_scheduler.test_integration_2025_replay",
     "hvac_scheduler.test_influx_adapter",
     "hvac_scheduler.conftest",
+    # Cockpit-backend test modules (added in PR 4)
+    "tools.cockpit.backend.tests.test_snapshot",
+    "tools.cockpit.backend.tests.test_live_assembler",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false

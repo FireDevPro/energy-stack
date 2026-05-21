@@ -19,7 +19,7 @@ Two assembly modes:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
 from tools.cockpit.backend.freshness import classify
@@ -27,7 +27,9 @@ from tools.cockpit.backend.freshness import classify
 
 def build_snapshot_canned() -> dict[str, Any]:
     """Return the canned summer_normal snapshot (deep-copied)."""
-    return _deep_copy(SUMMER_NORMAL)
+    # _deep_copy returns Any because it's recursive over arbitrary
+    # JSON-shaped structures; cast to narrow at this single entrypoint.
+    return cast(dict[str, Any], _deep_copy(SUMMER_NORMAL))
 
 
 # ---- Live assembly --------------------------------------------------
