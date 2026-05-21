@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
-from tools.cockpit.backend.freshness import classify
+from tools.cockpit.backend.freshness import Freshness, classify
 
 
 def build_snapshot_canned() -> dict[str, Any]:
@@ -295,16 +295,27 @@ def _build_price_overlay_node(
     # without being the winning layer (e.g., when 5CP also fired warmer).
     winning = layer.get("winning_layer") == "price_overlay"
     new_tier = po.get("new_tier") or "normal"
-    # Freshness via shared classify() against the trace's emit timestamp.
-    # The scheduler stopped emitting `price_is_stale` in the freshness PR
-    # (renamed to `price_feed_unavailable`); reading it returned None on
-    # every tick → freshness silently locked to "fresh". Source of truth
-    # for the vocabulary is freshness.py (byte-identical to scheduler).
-    age = _age_ms(_parse_ts(po.get("ts")), now)
+    # Freshness tracks the underlying ComEd price BUCKET age, NOT the
+    # trace's emit time. The scheduler logs decision_trace.price_overlay_eval
+    # every evaluation tick (~30s cadence) — so po["ts"] is always recent.
+    # po["bucket_age_sec"] is the actual age of the ComEd price bucket the
+    # scheduler is evaluating against, and po["price_feed_unavailable"]
+    # flags when no bucket was available at all (current_price_cents is None).
+    # Per spec §3.1, the comed.prices freshness vocabulary is the source
+    # of truth for price-data actionability.
+    bucket_age_sec = po.get("bucket_age_sec")
+    price_unavailable = bool(po.get("price_feed_unavailable"))
+    if bucket_age_sec is None or price_unavailable:
+        freshness: Freshness = "missing"
+        freshness_label = "no price data"
+    else:
+        bucket_age_ms = int(float(bucket_age_sec) * 1000)
+        freshness = classify("comed.prices", bucket_age_ms)
+        freshness_label = _label_age(bucket_age_ms)
     return {
         "role_state": "winning" if winning else "dimmed",
-        "freshness": classify("decision_trace.price_overlay_eval", age),
-        "freshness_label": "this tick",
+        "freshness": freshness,
+        "freshness_label": freshness_label,
         "title": "RTP Spike",
         "subtitle": str(new_tier),
         "details": {

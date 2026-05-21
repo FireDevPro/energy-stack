@@ -208,70 +208,136 @@ class TestPriceOverlayFreshness:
     """Pin the price_overlay node's freshness to the shared classify()
     module against the trace's own emit timestamp.
 
-    Pre-fix: snapshot.py read po.get('price_is_stale') — a field the
-    scheduler stopped emitting in the freshness PR (renamed to
-    price_feed_unavailable). The .get() always returned None → freshness
-    was always 'fresh', silently breaking operator visibility.
+    The price-overlay node's freshness MUST track the underlying ComEd
+    price BUCKET age, NOT the trace's emit time. The scheduler logs
+    decision_trace.price_overlay_eval every evaluation tick (~30s
+    cadence), so po["ts"] is always recent. The bucket the scheduler is
+    evaluating against may be many minutes old.
 
-    Post-fix: freshness is computed via classify(
-    'decision_trace.price_overlay_eval', age_ms) where age_ms is derived
-    from po['ts'] (the trace's UTC emit timestamp). Thresholds are
-    fresh ≤ 6m / warn ≤ 10m / stale ≤ 15m / missing > 15m
-    (per freshness.py THRESHOLDS).
+    Pre-fix history (PR 4 first attempt): snapshot.py read
+    po.get('price_is_stale') — a field the scheduler stopped emitting in
+    the freshness PR (renamed to price_feed_unavailable). The .get()
+    always returned None → freshness was always 'fresh', silently
+    breaking operator visibility.
+
+    First-pass fix (rejected): used classify('decision_trace.price_overlay_eval', age_ms)
+    against po['ts']. This also broke operator visibility: a fresh trace
+    emitted against stale price data still showed 'fresh'.
+
+    Final fix: classify('comed.prices', int(bucket_age_sec * 1000)).
+    comed.prices thresholds (per freshness.py): fresh ≤ 7m / warn ≤ 16m
+    / stale ≤ 30m / missing > 30m. Missing bucket_age_sec or
+    price_feed_unavailable=True → 'missing'.
     """
 
     _NOW = datetime(2026, 7, 14, 18, 0, 30, tzinfo=timezone.utc)
 
-    def _po(self, *, age_seconds: float | None) -> dict[str, Any]:
+    def _po(
+        self,
+        *,
+        bucket_age_sec: float | None,
+        price_feed_unavailable: bool = False,
+        trace_age_sec: float = 30,
+    ) -> dict[str, Any]:
+        """Build a price_overlay_eval trace payload.
+
+        trace_age_sec defaults to 30s ago — a recently-emitted trace.
+        These tests deliberately use fresh trace ages to prove that
+        trace freshness does NOT drive the node's freshness field.
+        """
         po: dict[str, Any] = {
             "tick_id": "a1b2c3d4",
-            "price_cents": 8.4,
+            "ts": (self._NOW - timedelta(seconds=trace_age_sec)).isoformat(),
+            "price_cents": None if price_feed_unavailable else 8.4,
+            "price_feed_unavailable": price_feed_unavailable,
             "prev_tier": "normal",
             "new_tier": "normal",
             "outcome": "held",
             "reason_code": "PRICE_OVERLAY_NORMAL_BELOW_TRIGGER",
             "hold_minutes_remaining": 0,
         }
-        if age_seconds is not None:
-            po["ts"] = (self._NOW - timedelta(seconds=age_seconds)).isoformat()
+        if bucket_age_sec is not None:
+            po["bucket_age_sec"] = bucket_age_sec
         return po
 
     def _layer(self) -> dict[str, Any]:
         return {"winning_layer": "schedule"}
 
-    def test_price_overlay_freshness_fresh_when_source_recent(self):
-        # 1 minute old < 6 min fresh threshold → "fresh"
+    def test_freshness_fresh_when_bucket_under_7_min(self) -> None:
+        # 1 minute < 7 min fresh threshold (comed.prices) → "fresh"
         node = _build_price_overlay_node(
-            self._po(age_seconds=60), self._layer(), self._NOW
+            self._po(bucket_age_sec=60), self._layer(), self._NOW
         )
         assert node["freshness"] == "fresh"
 
-    def test_price_overlay_freshness_warn_at_eight_minutes(self):
-        # 8 min old > 6 min fresh, < 10 min warn → "warn"
+    def test_freshness_warn_when_bucket_in_warn_band(self) -> None:
+        # 10 min > 7 min fresh, < 16 min warn → "warn"
         node = _build_price_overlay_node(
-            self._po(age_seconds=8 * 60), self._layer(), self._NOW
+            self._po(bucket_age_sec=10 * 60), self._layer(), self._NOW
         )
         assert node["freshness"] == "warn"
 
-    def test_price_overlay_freshness_stale_when_source_old(self):
-        # 13 min old > 10 min warn, < 15 min stale → "stale"
+    def test_freshness_stale_when_bucket_in_stale_band(self) -> None:
+        # 20 min > 16 min warn, < 30 min stale → "stale"
         node = _build_price_overlay_node(
-            self._po(age_seconds=13 * 60), self._layer(), self._NOW
+            self._po(bucket_age_sec=20 * 60), self._layer(), self._NOW
         )
         assert node["freshness"] == "stale"
 
-    def test_price_overlay_freshness_missing_when_no_source_ts(self):
-        # No ts on the trace payload → "missing"
+    def test_freshness_missing_when_no_bucket_age(self) -> None:
+        # No bucket_age_sec on the trace payload → "missing"
         node = _build_price_overlay_node(
-            self._po(age_seconds=None), self._layer(), self._NOW
+            self._po(bucket_age_sec=None), self._layer(), self._NOW
         )
         assert node["freshness"] == "missing"
 
-    def test_price_overlay_freshness_ignores_old_price_is_stale_flag(self):
+    def test_freshness_missing_when_price_feed_unavailable(self) -> None:
+        # price_feed_unavailable=True → "missing" regardless of any
+        # bucket_age_sec value (current_price_cents is None on the
+        # scheduler side; no real bucket to age).
+        node = _build_price_overlay_node(
+            self._po(bucket_age_sec=None, price_feed_unavailable=True),
+            self._layer(),
+            self._NOW,
+        )
+        assert node["freshness"] == "missing"
+
+    def test_freshness_tracks_bucket_not_trace_ts(self) -> None:
+        """REGRESSION: fresh trace ts must NOT mask stale bucket data.
+
+        The scheduler emits decision_trace.price_overlay_eval on every
+        evaluation tick. po['ts'] is therefore always recent. But the
+        underlying ComEd price bucket may be 10+ minutes old (the
+        scheduler still emits the trace at the regular cadence). The
+        cockpit's freshness display MUST reflect the bucket age, not
+        the trace emit time."""
+        # trace emitted 30s ago (fresh) + bucket 12 min old (warn band)
+        po = self._po(bucket_age_sec=12 * 60, trace_age_sec=30)
+        node = _build_price_overlay_node(po, self._layer(), self._NOW)
+        # Must be "warn" per comed.prices thresholds — not "fresh"
+        # from trace ts (which would be wrong).
+        assert node["freshness"] == "warn"
+
+    def test_freshness_label_reflects_bucket_age_not_this_tick(self) -> None:
+        """REGRESSION: freshness_label must reflect the bucket's age
+        ('Nm ago'), not literal 'this tick' which would be misleading
+        for stale price data."""
+        # bucket 12 min old + fresh trace ts
+        po = self._po(bucket_age_sec=12 * 60, trace_age_sec=30)
+        node = _build_price_overlay_node(po, self._layer(), self._NOW)
+        assert node["freshness_label"] == "12m ago"
+        assert node["freshness_label"] != "this tick"
+
+    def test_freshness_label_no_price_data_when_missing(self) -> None:
+        node = _build_price_overlay_node(
+            self._po(bucket_age_sec=None), self._layer(), self._NOW
+        )
+        assert node["freshness_label"] == "no price data"
+
+    def test_freshness_ignores_orphan_price_is_stale_flag(self) -> None:
         # Even with the orphan flag set, freshness must be driven by the
-        # trace's actual age — not by the field the scheduler stopped
-        # writing. Fresh-aged trace + price_is_stale=True → still "fresh".
-        po = self._po(age_seconds=60)
+        # bucket age — not by the field the scheduler stopped writing.
+        po = self._po(bucket_age_sec=60)  # fresh bucket
         po["price_is_stale"] = True  # orphan: scheduler no longer emits this
         node = _build_price_overlay_node(po, self._layer(), self._NOW)
         assert node["freshness"] == "fresh"

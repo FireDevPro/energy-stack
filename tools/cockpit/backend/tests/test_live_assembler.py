@@ -76,14 +76,19 @@ def _layer_resolution(
 
 def _price_overlay_eval(tier: str = "normal", price_cents: float = 8.4) -> dict[str, Any]:
     # `ts` is the trace's UTC emit time, set by the scheduler's `log()`
-    # helper on every decision_trace.* line. Cockpit's snapshot assembler
-    # uses it for the price_overlay node's freshness classification.
+    # helper on every decision_trace.* line. `bucket_age_sec` is the
+    # actual age of the ComEd price bucket the scheduler is evaluating
+    # against — the snapshot assembler classifies freshness from this
+    # (NOT from `ts`, which only proves the trace was emitted). Default
+    # 30s here so the fixture's freshness is "fresh" per comed.prices
+    # thresholds (≤ 7m).
     return {
         "ts": _fresh_ts(),
         "tick_id": "a1b2c3d4",
         "now_ct": _fresh_ts(),
         "price_cents": price_cents,
         "price_feed_unavailable": False,
+        "bucket_age_sec": 30,
         "prev_tier": tier,
         "new_tier": tier,
         "outcome": "held",
