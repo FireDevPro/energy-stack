@@ -956,10 +956,10 @@ git commit -m "feat(hvac-scheduler): add input-feed health telemetry (spec §11 
 ### Task 1.6: Add controller heartbeat watchdog
 
 **Files:**
-- Create: `deploy/energy-stack/hvac-scheduler-watchdog/check.sh`
-- Create: `deploy/energy-stack/hvac-scheduler-watchdog/Dockerfile` (or extend systemd unit)
+- Create: `deploy/energy-stack/hvac_scheduler_watchdog/check.sh`
+- Create: `deploy/energy-stack/hvac_scheduler_watchdog/Dockerfile` (or extend systemd unit)
 - Modify: `deploy/energy-stack/docker-compose.yml` (add watchdog service or cron)
-- Test: `deploy/energy-stack/hvac-scheduler-watchdog/test_check.py`
+- Test: `deploy/energy-stack/hvac_scheduler_watchdog/test_check.py`
 
 Implements spec §11 fix-list item #5.
 
@@ -1059,7 +1059,7 @@ Wire as cron entry on pi-lab: `*/5 * * * * /home/chris/energy-stack/scripts/chec
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler-watchdog/
+git add deploy/energy-stack/hvac_scheduler_watchdog/
 git commit -m "feat(watchdog): controller heartbeat detection (spec §11 #5)"
 ```
 

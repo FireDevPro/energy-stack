@@ -75,6 +75,8 @@ module = [
     "comed_poller.test_comed_poller",
     # pjm-dm2-poller test modules (added in PR 6)
     "pjm_dm2_poller.test_pjm_dm2_poller",
+    # hvac-scheduler-watchdog test modules (added in PR 7)
+    "hvac_scheduler_watchdog.test_hvac_scheduler_watchdog",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false

@@ -191,7 +191,7 @@ services:
       - hvac_scheduler_data:/data
 
   hvac-scheduler-watchdog:
-    build: ./hvac-scheduler-watchdog
+    build: ./hvac_scheduler_watchdog
     container_name: hvac-scheduler-watchdog
     restart: unless-stopped
     depends_on:

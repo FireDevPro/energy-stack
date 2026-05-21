@@ -13,14 +13,15 @@ the live InfluxDB so behavior is validated end-to-end.
 """
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-import check
+from . import check
 
 
-def _mock_query_api(arm_mode_count: int):
+def _mock_query_api(arm_mode_count: int) -> Any:
     """Build a query_api whose query() returns one table containing one
     record with the given count value (matching the Flux ``|> count()``
     output shape).

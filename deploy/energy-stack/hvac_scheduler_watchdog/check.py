@@ -22,12 +22,13 @@ from __future__ import annotations
 import os
 import sys
 import time
+from typing import Any
 
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
-def check_controller_alive(query_api, write_api, bucket: str,
+def check_controller_alive(query_api: Any, write_api: Any, bucket: str,
                             threshold_minutes: int = 10) -> bool:
     """Return True if at least one ``hvac.arm_mode`` row exists in the
     last ``threshold_minutes``. If False, also write
@@ -50,7 +51,7 @@ def check_controller_alive(query_api, write_api, bucket: str,
             break
 
     if not has_recent:
-        p = Point("hvac.heartbeat").field("controller_alive", False)
+        p = Point("hvac.heartbeat").field("controller_alive", False)  # type: ignore[no-untyped-call]
         write_api.write(bucket=bucket, record=p)
         return False
     return True
