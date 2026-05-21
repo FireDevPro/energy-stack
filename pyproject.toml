@@ -59,11 +59,15 @@ ignore_missing_imports = true
 #     less-than-perfect types)
 [[tool.mypy.overrides]]
 module = [
-    # Populated per service. Example after PR 3:
-    # "hvac_scheduler.test_hvac_scheduler",
-    # "hvac_scheduler.test_freshness",
-    # "hvac_scheduler.test_decision_trace",
-    # "hvac_scheduler.conftest",
+    "hvac_scheduler.test_hvac_scheduler",
+    "hvac_scheduler.test_decision_trace",
+    "hvac_scheduler.test_freshness",
+    "hvac_scheduler.test_pjm_5cp",
+    "hvac_scheduler.test_precool",
+    "hvac_scheduler.test_price_overlay",
+    "hvac_scheduler.test_integration_2025_replay",
+    "hvac_scheduler.test_influx_adapter",
+    "hvac_scheduler.conftest",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
