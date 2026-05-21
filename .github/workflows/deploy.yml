@@ -19,17 +19,44 @@ on:
         type: choice
         options: [auto, energy-stack, n8n-stack, both]
 
-# Self-hosted runner is the Pi itself, so all rsyncs are local cp-style
-# (faster than network rsync) and docker compose runs against the Pi's
-# own daemon. ~/energy-stack/.env and ~/n8n/.env stay put across deploys.
+# GitHub-hosted ubuntu-latest runners reach Pi-lab via Tailscale.
+# Each job joins the tailnet as an ephemeral node tagged `tag:ci`,
+# scoped by the tailnet ACL to SSH:22 on `tag:server` only (the Pi).
+# When the job ends, the ephemeral node auto-deregisters from the tailnet.
+#
+# Auth: Tailscale SSH (tailscaled on the Pi mediates SSH on the tailscale
+# interface — no OpenSSH keys in GHA secrets). The OAuth client_id +
+# secret are the only credentials. Tailscale's SSH layer issues short-
+# lived certs scoped to this run.
+#
+# Replaces the prior self-hosted runner (decommissioned ahead of public-
+# repo flip). Same contract: same triggers, same exclude list, same
+# smoke-test logic; just routed via Tailscale instead of running on Pi.
+
+# Don't race two deploys against each other. If a second push lands
+# while one is mid-flight, queue it rather than killing the in-flight one.
+concurrency:
+  group: deploy-pi
+  cancel-in-progress: false
+
+env:
+  PI_HOST: pi-lab
+  PI_USER: chris
+  # SSH options: tailscale-issued certs change per-deploy so accept-new
+  # is safe (no long-lived known_hosts to drift); BatchMode=yes prevents
+  # interactive password prompts on auth failure (fail fast); ConnectTimeout
+  # bounds a Pi outage so a stuck deploy doesn't hold the GHA runner.
+  SSH_OPTS: '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30'
+
 jobs:
   detect:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       energy-stack: ${{ steps.changes.outputs.energy-stack }}
       n8n-stack: ${{ steps.changes.outputs.n8n-stack }}
     steps:
-      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
@@ -38,7 +65,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Manual override
           case "${{ inputs.stack || 'auto' }}" in
             energy-stack) echo "energy-stack=true" >> $GITHUB_OUTPUT; echo "n8n-stack=false" >> $GITHUB_OUTPUT ;;
             n8n-stack)    echo "energy-stack=false" >> $GITHUB_OUTPUT; echo "n8n-stack=true" >> $GITHUB_OUTPUT ;;
@@ -64,9 +90,23 @@ jobs:
   deploy-energy-stack:
     needs: detect
     if: needs.detect.outputs.energy-stack == 'true'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
+      - uses: actions/checkout@v6
+
+      - name: Join tailnet (ephemeral tag:ci)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Verify reachability
+        shell: bash
+        run: |
+          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} \
+            "echo connected from $(hostname) at $(date -Iseconds); uname -a"
 
       - name: Sync to ~/energy-stack
         shell: bash
@@ -77,74 +117,95 @@ jobs:
           # API poller); kept for now so any historical CSV files left on
           # the Pi don't get blown away by --delete.
           rsync -av --delete \
+            -e "ssh ${{ env.SSH_OPTS }}" \
             --exclude '.env' \
             --exclude '.env.*' \
             --exclude 'inbox' \
             ./deploy/energy-stack/ \
-            $HOME/energy-stack/
+            ${{ env.PI_USER }}@${{ env.PI_HOST }}:~/energy-stack/
 
       - name: Build and deploy
         shell: bash
-        working-directory: ${{ github.workspace }}
         run: |
-          cd $HOME/energy-stack
-          docker compose pull --quiet
-          # Build picks up Dockerfile changes; layer cache makes unchanged services fast
-          docker compose build --quiet
-          docker compose up -d --remove-orphans
-          echo ""
-          echo "=== Service status ==="
-          docker compose ps
+          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
+            set -euo pipefail
+            cd ~/energy-stack
+            docker compose pull --quiet
+            # Build picks up Dockerfile changes; layer cache makes unchanged services fast
+            docker compose build --quiet
+            docker compose up -d --remove-orphans
+            echo ""
+            echo "=== Service status ==="
+            docker compose ps
+          EOF
 
       - name: Smoke test
         shell: bash
         run: |
-          cd $HOME/energy-stack
-          # Wait briefly for services to settle, then check none crashed
-          sleep 10
-          UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
-          if [ -n "$UNHEALTHY" ]; then
-            echo "::error::Some services not healthy after deploy:"
-            echo "$UNHEALTHY"
-            exit 1
-          fi
-          echo "All services healthy."
+          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
+            set -euo pipefail
+            cd ~/energy-stack
+            # Wait briefly for services to settle, then check none crashed
+            sleep 10
+            UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
+            if [ -n "$UNHEALTHY" ]; then
+              echo "::error::Some services not healthy after deploy:"
+              echo "$UNHEALTHY"
+              exit 1
+            fi
+            echo "All services healthy."
+          EOF
 
   deploy-n8n-stack:
     needs: detect
     if: needs.detect.outputs.n8n-stack == 'true'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
+      - uses: actions/checkout@v6
+
+      - name: Join tailnet (ephemeral tag:ci)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
 
       - name: Sync to ~/n8n
         shell: bash
         run: |
           rsync -av --delete \
+            -e "ssh ${{ env.SSH_OPTS }}" \
             --exclude '.env' \
             --exclude '.env.*' \
             ./deploy/n8n-stack/ \
-            $HOME/n8n/
+            ${{ env.PI_USER }}@${{ env.PI_HOST }}:~/n8n/
 
       - name: Deploy
         shell: bash
         run: |
-          cd $HOME/n8n
-          docker compose pull --quiet
-          docker compose up -d --remove-orphans
-          echo ""
-          echo "=== Service status ==="
-          docker compose ps
+          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
+            set -euo pipefail
+            cd ~/n8n
+            docker compose pull --quiet
+            docker compose up -d --remove-orphans
+            echo ""
+            echo "=== Service status ==="
+            docker compose ps
+          EOF
 
       - name: Smoke test
         shell: bash
         run: |
-          cd $HOME/n8n
-          sleep 10
-          UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
-          if [ -n "$UNHEALTHY" ]; then
-            echo "::error::n8n services not healthy after deploy:"
-            echo "$UNHEALTHY"
-            exit 1
-          fi
-          echo "All services healthy."
+          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
+            set -euo pipefail
+            cd ~/n8n
+            sleep 10
+            UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
+            if [ -n "$UNHEALTHY" ]; then
+              echo "::error::n8n services not healthy after deploy:"
+              echo "$UNHEALTHY"
+              exit 1
+            fi
+            echo "All services healthy."
+          EOF
