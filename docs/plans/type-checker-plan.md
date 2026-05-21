@@ -17,7 +17,7 @@ role-label: chris
 
 **Tech Stack:** Python 3.13, mypy 2.x with `--strict` (exact `==X.Y.Z` version captured at PR 1 implementation; mypy 2.0 GA 2026-05-06), pydantic v2 mypy plugin, import-linter (`lint-imports` CLI), GitHub Actions (ubuntu-latest runner), Docker Compose, pytest. Dev dependencies live in a `requirements-dev.in` (human intent) / `requirements-dev.lock` (all direct + transitive deps pinned `==X.Y.Z`) pair for the OSF-locked study window — see spec §8.2 for the lockfile rationale and the mypy 2 default-flag changes that may surface findings.
 
-**Branching:** **PR 0** (docs prelude) landed via `feat/type-checker` → `main` as PR #11 on 2026-05-20 and contained ONLY this spec + plan (no infrastructure). **PR 1** (this branch `feat/type-checker-pr1`) lands the infrastructure (`pyproject.toml`, `run_typecheck.sh`, `typecheck.yml`, `type-debt-backlog.md`, `requirements-dev.in` + `requirements-dev.lock`). **PRs 2-15** each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
+**Branching:** **PR 0** (docs prelude) landed via `feat/type-checker` → `main` as PR #11 on 2026-05-20 and contained ONLY the spec + plan documents (no infrastructure). Two follow-up docs PRs revised the plan and spec before PR 1 execution: PR #12 (rev 6 pre-execution feedback) and PR #14 (rev 7 mypy 2.x + .in/.lock pivot). **PR 1** (`feat/type-checker-pr1`, merged as PR #17 on 2026-05-21) landed the infrastructure: `pyproject.toml`, `run_typecheck.sh`, `typecheck.yml`, `type-debt-backlog.md`, `requirements-dev.in` + `requirements-dev.lock`. Plan rev 5 (this revision) folded back five small execution-time discoveries from PR 1 so subsequent PRs don't replay them. **PRs 2-15** each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
 
 ---
 
@@ -245,6 +245,10 @@ Create `pyproject.toml` at repo root with:
 # Match service Dockerfiles (FROM python:3.13-slim).
 python_version = "3.13"
 strict = true
+# mypy 2 default flips — explicit per spec §8.2 R7A so intent is
+# documented and not subject to default-drift between minor versions.
+local_partial_types = true
+strict_bytes = true
 warn_unreachable = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -408,13 +412,13 @@ failed=()
 # runs when the files list is non-empty — once the rollout completes
 # and `files` is removed entirely, this guard skips the bootstrap and
 # run_typecheck.sh does not fail on mypy's "no targets" error (code 2).
-if python -c "
+if (cd "$REPO_ROOT" && python -c "
 import tomllib, sys
-with open('$REPO_ROOT/pyproject.toml', 'rb') as f:
+with open('pyproject.toml', 'rb') as f:
     cfg = tomllib.load(f)
 files = cfg.get('tool', {}).get('mypy', {}).get('files', [])
 sys.exit(0 if files else 1)
-" 2>/dev/null; then
+"); then
     echo "=== type-checking pyproject.toml files list ==="
     if ! (cd "$REPO_ROOT" && python -m mypy); then
         failed+=("pyproject-files")
@@ -502,7 +506,7 @@ ls .github/workflows/
 cat .github/workflows/check-freshness-drift.yml | head -30
 ```
 
-This confirms the GitHub Actions version we should be using (`actions/checkout@v4` etc.) and the runner style. Match what's there.
+This confirms the GitHub Actions versions in repo convention (`actions/checkout@v6` with explicit `# Node 24, replaces deprecated v4 (Node 20)` comment, per deploy.yml + shadow-validation.yml + check-freshness-drift.yml). Match what's there.
 
 - [ ] **Step 2: Write typecheck.yml**
 
@@ -524,7 +528,7 @@ jobs:
   type-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6  # Node 24, replaces deprecated v4 (Node 20)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"  # match service Dockerfiles
@@ -532,7 +536,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.mypy_cache
-          key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          # Hash BOTH pyproject.toml AND the lockfile so a "refresh
+          # typecheck toolchain" PR (spec §8.2 R7B), which bumps mypy
+          # in requirements-dev.lock without touching pyproject.toml,
+          # still invalidates the incremental cache. Otherwise stale
+          # mypy_cache could mask findings from a cold run.
+          key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'deploy/energy-stack/requirements-dev.lock') }}
       - name: Install dev dependencies
         run: pip install -r deploy/energy-stack/requirements-dev.lock
       - name: Install all service requirements
@@ -814,22 +823,24 @@ git commit -m "feat(type-checker): verify influxdb_client stub status
 
 ---
 
-### Task 9: Run `mypy --install-types` to discover available stub packages
+### Task 9: Discover available stub packages via plain `mypy` hints
 
 **Files:**
 - Modify: `deploy/energy-stack/requirements-dev.in` (if stubs are found and we want them — add to intent file, then regenerate `.lock` per Task 2 step 3 procedure)
 - Modify: `deploy/energy-stack/requirements-dev.lock` (regenerated from the updated `.in`)
 - Modify: `docs/type-debt-backlog.md`
 
-- [ ] **Step 1: Run install-types discovery (dry-run; don't actually install)**
+- [ ] **Step 1: Run plain mypy to surface stub-suggestion notes (no mutation)**
 
 ```bash
-python -m mypy --install-types --non-interactive --dry-run
+python -m mypy
 ```
 
-`--dry-run` is important — without it, mypy mutates your local env outside the lockfile. We capture the SUGGESTION here and route any keepers through `.in` + regenerate `.lock`.
+mypy 2.x emits `note: Hint: "python3 -m pip install types-..."` lines whenever it sees a third-party import without a local override and a stub package exists on PyPI — WITHOUT mutating the environment. This is the safe discovery pattern.
 
-Mypy will analyze imports and may suggest stub packages (`types-*`). Each suggestion is for a library that doesn't ship `py.typed` but has a PyPI stub.
+**Do NOT add `--install-types` to this invocation.** That flag tells mypy to install missing-stub packages directly into the active Python env, bypassing the `.in`/`.lock` workflow. (Historical note: earlier mypy versions had `--install-types --dry-run` as a "surface hints without installing" mode; mypy 2.0 dropped the `--dry-run` flag, so the current safe equivalent is plain `python -m mypy`.)
+
+Mypy will analyze imports of files in its working set and may emit one or more `Hint:` notes. Each is for a library that doesn't ship `py.typed` but has a PyPI stub.
 
 - [ ] **Step 2: Review each suggested stub**
 
@@ -852,7 +863,7 @@ Expected: still clean.
 
 ```bash
 git add deploy/energy-stack/requirements-dev.in deploy/energy-stack/requirements-dev.lock docs/type-debt-backlog.md pyproject.toml
-git commit -m "feat(type-checker): review and install --install-types suggestions
+git commit -m "feat(type-checker): review mypy stub-suggestion hints and update lockfile
 
 [describe each stub added / declined and why]
 [note: requirements-dev.lock regenerated from updated .in]"
@@ -921,7 +932,7 @@ Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`doc
 - [x] The two \`freshness.py\` modules type-check clean under \`mypy --strict\`.
 - [ ] **GitHub branch protection / ruleset update:** operator copies the EXACT \`type-check / type-check\` check name from the Actions UI and adds it to required-checks for \`main\` immediately after this PR's workflow run completes green. Without this step, the workflow runs advisorily and the rollout's enforcement claim is false.
 - [x] **influxdb-client stub-status verification:** documented in \`docs/type-debt-backlog.md\`.
-- [x] **\`mypy --install-types\` discovery:** reviewed; relevant stubs added to \`requirements-dev.in\` and \`requirements-dev.lock\` regenerated (see backlog).
+- [x] **Mypy stub-suggestion-hint discovery (plain \`python -m mypy\`):** reviewed; relevant stubs added to \`requirements-dev.in\` and \`requirements-dev.lock\` regenerated (see backlog).
 - [x] **Pydantic plugin loads:** mypy starts without error.
 
 ## Operator post-merge tasks
