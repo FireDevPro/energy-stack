@@ -1,11 +1,26 @@
 ---
 date: 2026-05-19
 owner: chris
-status: draft
+status: superseded
 role-label: chris
 ---
 
 # Decision-trace report — Loki saturation fix + n8n SDK adoption + observability persistence plan
+
+> **SUPERSEDED 2026-05-21.** The n8n-based architecture this plan describes was abandoned mid-execution in favor of a desktop scheduled-task running a Claude Code skill. The skill produces a paragraph-form narrative report sized to one day (not seven), delivered via email through the Workspace MCP. The current pipeline lives at:
+>
+> - **Skill (the scheduled task itself):** `~/.claude/scheduled-tasks/decision-trace-report/SKILL.md` (outside the repo; Chris-local)
+> - **Style exemplar (repo-tracked):** `tools/decision-trace-report/report-template.md`
+>
+> What of this plan actually shipped:
+>
+> - **Phase 0** — n8n SDK MCP discipline rule in AGENTS.md — shipped in PR #8.
+> - **Phase 1** — Loki `max_entries_limit_per_query: 5000 → 20000` server-side cap raise — shipped in PR #10. (The n8n workflow itself still asks for `limit=5000` in its query, but that workflow is being decommissioned; the new skill does its own data pulls and never had the saturation issue.)
+> - **Phase 2 (SDK rebuild)** and **Phase 3 (Data Tables for cross-week observability)** — abandoned. The skill-based approach replaces both with a simpler one-day narrative; cross-week analysis happens via direct Claude queries when needed, not via persisted Data Tables.
+>
+> **Agents reading this archived plan: do not treat the unshipped phases as active work.** Future runs of the decision-trace report come from the skill at the path above; the n8n workflow `sxYIzx3uV01fKsZi` is on a path to deactivation.
+
+---
 
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax for tracking.
 

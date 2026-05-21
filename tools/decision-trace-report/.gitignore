@@ -1,0 +1,5 @@
+# Local copies of generated daily reports written by the scheduled task.
+# Useful to keep on disk for grep / reference, but not source of truth —
+# the canonical delivery is the email and the agent re-derives the report
+# from Loki/Influx each run. Don't pollute the repo with these.
+reports/
