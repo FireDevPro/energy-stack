@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-from poller import extract_hardware_addresses, extract_variable_value
+from .poller import extract_hardware_addresses, extract_variable_value
 
 
 # ---- extract_variable_value ----------------------------------------------

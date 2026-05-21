@@ -3,7 +3,7 @@
 // meter delivered-kWh is the canonical whole-home kWh source for bill
 // reconciliation (Refoss mains is fallback / sanity).
 //
-// Schema (from deploy/energy-stack/eagle-poller/poller.py):
+// Schema (from deploy/energy-stack/eagle_poller/poller.py):
 //   _measurement: "eagle.meter"
 //   _field:       "delivered_kwh"   (monotonic totalizer in kWh)
 //                 "received_kwh"    (monotonic totalizer in kWh)

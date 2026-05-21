@@ -123,7 +123,7 @@ python -m pytest .
 Currently covered (22 test files across 11 services + scripts/ suite as of 2026-05-18):
 
 - `comed_poller/test_comed_poller.py`
-- `eagle-poller/test_eagle_poller.py`
+- `eagle_poller/test_eagle_poller.py`
 - `ecowitt-ingest/test_ecowitt_ingest.py`
 - `haven-ingest/test_haven_ingest.py`
 - `hvac-scheduler/` — five test files: `test_hvac_scheduler.py` (release_hold action, lazy decision recompute, safety supervisor), `test_decision_trace.py` (decision_trace.* event family), `test_pjm_5cp.py` (5CP detector), `test_precool.py` (§7 cheap-window search), `test_price_overlay.py` (tier state machine), `test_integration_2025_replay.py` (offline replay against 2025 PJM data)

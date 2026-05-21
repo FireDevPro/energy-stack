@@ -107,7 +107,7 @@ cumulativeFields = [
 #   hvac.comfortnet.fault_critical  → (excluded; lives in hvac.comfortnet.events)
 ```
 
-**Field-name discipline matters here.** The names in `cumulativeFields` must match what the producing pollers actually write. eagle-poller writes `delivered_kwh` / `received_kwh` ([poller.py:49-50](../deploy/energy-stack/eagle-poller/poller.py)), not the upstream Zigbee names `summation_*`. The flux file originally referenced `summation_delivered` / `summation_received`; that misnamed list silently routed EAGLE cumulatives through the `mean()` / `max()` branches and corrupted the longterm bucket for billing reconciliation. Caught by the CodeX review on 2026-05-07; fixed at the same time as this doc edit.
+**Field-name discipline matters here.** The names in `cumulativeFields` must match what the producing pollers actually write. eagle-poller writes `delivered_kwh` / `received_kwh` ([poller.py:49-50](../deploy/energy-stack/eagle_poller/poller.py)), not the upstream Zigbee names `summation_*`. The flux file originally referenced `summation_delivered` / `summation_received`; that misnamed list silently routed EAGLE cumulatives through the `mean()` / `max()` branches and corrupted the longterm bucket for billing reconciliation. Caught by the CodeX review on 2026-05-07; fixed at the same time as this doc edit.
 
 ## ComfortNet schema implications
 
