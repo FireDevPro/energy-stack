@@ -1,13 +1,14 @@
 FROM python:3.13-slim
 
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 RUN pip install --no-cache-dir --upgrade pip
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/telegram_notifier/
+RUN pip install --no-cache-dir -r /app/telegram_notifier/requirements.txt
 
-COPY app.py .
+COPY . /app/telegram_notifier/
 
 RUN useradd --system --no-create-home --uid 1008 notifier && chown -R notifier /app
 USER notifier
@@ -18,4 +19,4 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=120s --timeout=5s --start-period=60s --retries=3 \
   CMD test -n "$(find /tmp/last_tick_ok -mmin -10 2>/dev/null)" || exit 1
 
-CMD ["python", "app.py"]
+CMD ["python", "-m", "telegram_notifier.app"]

@@ -41,7 +41,7 @@ This spec is PR 1. A separate spec (PR 2, after PR 1 merges) will scope a Python
 - Cockpit frontend changes. Cockpit's data flow is unchanged; only its `freshness.py` gets a header-comment update pointing to the canonical scheduler copy.
 - Poller changes. The poller correctly writes `_time = bucket millisUTC`; no fix needed at that layer.
 - 5CP detector freshness (separate data path, separate concerns; not in the 19:18Z bug class).
-- Telegram-notifier's parallel `check_pjm_feed_freshness` (`telegram-notifier/app.py:554-661`) — different vocabulary, different mechanism, future-unification spec.
+- Telegram-notifier's parallel `check_pjm_feed_freshness` (`telegram_notifier/app.py:554-661`) — different vocabulary, different mechanism, future-unification spec.
 - Frontend `freshness.ts` codegen / automated syncing — handoff explicitly punts this to a Phase-N future. The TS file gets the same threshold update by hand.
 - Historical audit-row migration. Pre-fix `hvac.input_feed_health` rows (with stale-data being recorded as healthy=True) are not rewritten; the semantic shift is forward-only and visible at the deploy timestamp. (Pre-OSF, no amendment process needed.)
 - Cockpit-side display of `bucket_age_sec`. The new field is emitted to Loki; operator-facing validation uses LogQL. Adding a cockpit panel for it is a follow-up cockpit PR if desired after field testing.

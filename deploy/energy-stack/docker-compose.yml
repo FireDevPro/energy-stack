@@ -268,7 +268,7 @@ services:
       - haven_ingest_data:/data
 
   telegram-notifier:
-    build: ./telegram-notifier
+    build: ./telegram_notifier
     container_name: telegram-notifier
     restart: unless-stopped
     depends_on:

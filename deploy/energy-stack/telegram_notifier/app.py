@@ -43,7 +43,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # influxdb_client.__init__ exports via __getattr__; stubs lack __all__
 
 
 def log(level: str, msg: str, **fields: Any) -> None:
@@ -113,15 +113,15 @@ async def send_telegram(cfg: Config, text: str, parse_mode: str = "HTML") -> boo
 
 # ---- Influx queries --------------------------------------------------------
 
-def fetch_one(query_api, flux: str) -> list[dict]:
-    out = []
+def fetch_one(query_api: Any, flux: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for table in query_api.query(flux):
         for r in table.records:
             out.append(r.values)
     return out
 
 
-def cost_proper_for_window(query_api, bucket: str, start: str, end: str) -> float | None:
+def cost_proper_for_window(query_api: Any, bucket: str, start: str, end: str) -> float | None:
     """Hour-by-hour price-weighted cost: sum over hours of (mean_kw × hourly_avg_price_c) / 100.
 
     This is the honest answer vs `total_kwh × avg_price`. The approximation
@@ -160,7 +160,7 @@ join(tables: {{ p: power_hourly, c: price_hourly }}, on: ["_time"])
         return None
 
 
-def yesterday_stats(query_api, bucket: str, tz: ZoneInfo) -> dict:
+def yesterday_stats(query_api: Any, bucket: str, tz: ZoneInfo) -> dict[str, Any]:
     """Yesterday's total kWh + cost + top circuits."""
     now_local = datetime.now(tz)
     start_local = (now_local - timedelta(days=1)).replace(
@@ -182,8 +182,11 @@ from(bucket: "{bucket}")
   |> sum()
 '''
     rows = fetch_one(query_api, flux_kwh)
-    # integral over Wh basis -> /1000 for kWh
-    total_kwh = (rows[0].get("_value") / 1000.0) if rows and rows[0].get("_value") else 0.0
+    # integral over Wh basis -> /1000 for kWh.
+    # Bind to a local so mypy can narrow `_kwh_val` after the truthy check
+    # (two separate `.get()` calls don't share narrowing).
+    _kwh_val = rows[0].get("_value") if rows else None
+    total_kwh = (_kwh_val / 1000.0) if _kwh_val else 0.0
 
     # Average ComEd hourly_avg yesterday for reference
     flux_avg_price = f'''
@@ -232,7 +235,7 @@ from(bucket: "{bucket}")
     }
 
 
-def today_so_far(query_api, bucket: str, tz: ZoneInfo) -> dict:
+def today_so_far(query_api: Any, bucket: str, tz: ZoneInfo) -> dict[str, Any]:
     """Today's running totals + current state."""
     now_local = datetime.now(tz)
     start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -292,7 +295,7 @@ from(bucket: "{bucket}")
     }
 
 
-def hvac_today_state(query_api, bucket: str, tz: ZoneInfo) -> dict:
+def hvac_today_state(query_api: Any, bucket: str, tz: ZoneInfo) -> dict[str, Any]:
     """Today's day-type decision + last action + next action."""
     today_iso = datetime.now(tz).date().isoformat()
     flux = f'''
@@ -322,7 +325,7 @@ from(bucket: "{bucket}")
     }
 
 
-def tomorrow_forecast(query_api, bucket: str) -> dict:
+def tomorrow_forecast(query_api: Any, bucket: str) -> dict[str, Any]:
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -3h)
@@ -336,7 +339,7 @@ from(bucket: "{bucket}")
     return rows[0]
 
 
-def poller_last_writes(query_api, bucket: str) -> dict:
+def poller_last_writes(query_api: Any, bucket: str) -> dict[str, datetime | None]:
     """For each major continuous-data measurement, return the last-write timestamp (UTC).
     Excludes haven-ingest. Originally excluded because the CSV-watcher only ran on
     weekly drops; haven-ingest is now an API poller (5-min cadence), so it could be
@@ -363,7 +366,7 @@ def poller_last_writes(query_api, bucket: str) -> dict:
         # heartbeats inside the lookback window.
         ("pjm.poller_heartbeat", "pjm-dm2-poller"),
     ]
-    out = {}
+    out: dict[str, datetime | None] = {}
     for meas, name in measurements:
         flux = f'''
 from(bucket: "{bucket}")
@@ -379,14 +382,14 @@ from(bucket: "{bucket}")
 
 # ---- Daily summary ---------------------------------------------------------
 
-def build_daily_summary(query_api, bucket: str, tz: ZoneInfo) -> str:
+def build_daily_summary(query_api: Any, bucket: str, tz: ZoneInfo) -> str:
     now_local = datetime.now(tz)
     yest = yesterday_stats(query_api, bucket, tz)
     today = today_so_far(query_api, bucket, tz)
     hvac = hvac_today_state(query_api, bucket, tz)
     tomorrow = tomorrow_forecast(query_api, bucket)
 
-    lines = []
+    lines: list[str] = []
     lines.append(f"<b>🏠 dePaola Home — Daily Summary</b>")
     lines.append(f"<i>{now_local.strftime('%a %b %d, %Y')}</i>")
     lines.append("")
@@ -430,10 +433,10 @@ class Alert:
     text: str  # message body
 
 
-def check_poller_silence(query_api, bucket: str, threshold_min: int) -> list[Alert]:
+def check_poller_silence(query_api: Any, bucket: str, threshold_min: int) -> list[Alert]:
     last_writes = poller_last_writes(query_api, bucket)
     now = datetime.now(timezone.utc)
-    out = []
+    out: list[Alert] = []
     for poller, last_ts in last_writes.items():
         if last_ts is None:
             out.append(Alert(
@@ -466,7 +469,7 @@ def check_poller_silence(query_api, bucket: str, threshold_min: int) -> list[Ale
     return out
 
 
-def check_price_spike(query_api, bucket: str, threshold_c: float) -> list[Alert]:
+def check_price_spike(query_api: Any, bucket: str, threshold_c: float) -> list[Alert]:
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -15m)
@@ -487,7 +490,7 @@ from(bucket: "{bucket}")
     return []
 
 
-def check_fridge_anomalies(query_api, bucket: str) -> list[Alert]:
+def check_fridge_anomalies(query_api: Any, bucket: str) -> list[Alert]:
     """Detect fridge/freezer circuits running significantly above their 14-day
     baseline. Common causes: door left open, compressor failure, defrost cycle
     stuck, refrigerant leak, blocked condenser/vents.
@@ -625,7 +628,7 @@ PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
 )
 
 
-def latest_pjm_feed_successes(query_api, bucket: str) -> dict[str, datetime]:
+def latest_pjm_feed_successes(query_api: Any, bucket: str) -> dict[str, datetime]:
     """{feed: latest_success_timestamp_utc}. Missing keys = no successful
     row in the last 400 days (covers the annual NSPL feed).
 
@@ -658,7 +661,7 @@ from(bucket: "{bucket}")
     return out
 
 
-def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert]:
+def check_pjm_feed_freshness(query_api: Any, bucket: str, tz: ZoneInfo) -> list[Alert]:
     """Per-feed staleness deadman on `pjm.feed_status`. Fires when a feed
     that has fired successfully before goes longer than its tolerance
     without another success — caught by comparing the most recent success
@@ -713,7 +716,7 @@ def check_pjm_feed_freshness(query_api, bucket: str, tz: ZoneInfo) -> list[Alert
     return alerts
 
 
-def latest_pjm_feed_failures(query_api, bucket: str, lookback_min: int) -> list[dict]:
+def latest_pjm_feed_failures(query_api: Any, bucket: str, lookback_min: int) -> list[dict[str, Any]]:
     """Return one dict per feed with the most recent `success=false` row
     within the last `lookback_min` minutes. Each dict carries the fields
     `feed`, `error_type`, `error_msg`, and `_time`.
@@ -735,7 +738,7 @@ from(bucket: "{bucket}")
   |> last(column: "_time")
 '''
     rows = fetch_one(query_api, flux)
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for r in rows:
         if not r.get("feed"):
             continue
@@ -748,7 +751,7 @@ from(bucket: "{bucket}")
     return out
 
 
-def check_pjm_feed_failures(query_api, bucket: str,
+def check_pjm_feed_failures(query_api: Any, bucket: str,
                             lookback_min: int = 10) -> list[Alert]:
     """Direct failure alert: any `pjm.feed_status` row written with
     `success=false` in the last `lookback_min` minutes fires an alert
@@ -786,7 +789,7 @@ def check_pjm_feed_failures(query_api, bucket: str,
     return alerts
 
 
-def check_hvac_action_errors(query_api, bucket: str) -> list[Alert]:
+def check_hvac_action_errors(query_api: Any, bucket: str) -> list[Alert]:
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -1h)
@@ -809,7 +812,7 @@ from(bucket: "{bucket}")
 
 # ---- Main loop -------------------------------------------------------------
 
-async def daily_summary_loop(cfg: Config, query_api, tz: ZoneInfo, stop: asyncio.Event):
+async def daily_summary_loop(cfg: Config, query_api: Any, tz: ZoneInfo, stop: asyncio.Event) -> None:
     log("info", "daily_summary_loop_starting", summary_hour=cfg.summary_hour)
     while not stop.is_set():
         now_local = datetime.now(tz)
@@ -832,7 +835,7 @@ async def daily_summary_loop(cfg: Config, query_api, tz: ZoneInfo, stop: asyncio
             log("error", "daily_summary_failed", error=str(exc), error_type=type(exc).__name__)
 
 
-async def alert_loop(cfg: Config, query_api, stop: asyncio.Event):
+async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
     from pathlib import Path
     health_marker = Path("/tmp/last_tick_ok")
     tz = ZoneInfo(cfg.tz_name)
@@ -885,7 +888,7 @@ async def main_async(cfg: Config) -> int:
 
     stop = asyncio.Event()
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         log("info", "signal_received", signum=signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_stop)
@@ -897,7 +900,7 @@ async def main_async(cfg: Config) -> int:
     )
 
     log("info", "shutdown")
-    influx.close()
+    influx.close()  # type: ignore[no-untyped-call]  # influxdb_client.InfluxDBClient.close() lacks annotations in upstream stubs
     return 0
 
 

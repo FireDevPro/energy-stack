@@ -35,6 +35,7 @@ service_dirs=(
     thermostat_poller
     haven_ingest
     ecowitt_ingest
+    telegram_notifier
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set

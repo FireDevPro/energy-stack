@@ -131,7 +131,7 @@ Currently covered (22 test files across 11 services + scripts/ suite as of 2026-
 - `nws_poller/test_nws_poller.py`
 - `pjm_dm2_poller/test_pjm_dm2_poller.py`
 - `refoss_poller/test_refoss_poller.py`
-- `telegram-notifier/test_telegram_notifier.py`
+- `telegram_notifier/test_telegram_notifier.py`
 - `thermostat_poller/test_thermostat_poller.py`
 - `scripts/tests/` — six test files: `test_backfill_pjm.py`, `test_influx.py`, `test_log_arm_transition.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
 

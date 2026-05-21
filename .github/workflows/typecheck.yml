@@ -51,7 +51,7 @@ jobs:
             deploy/energy-stack/nws_poller/requirements.txt \
             deploy/energy-stack/pjm_dm2_poller/requirements.txt \
             deploy/energy-stack/refoss_poller/requirements.txt \
-            deploy/energy-stack/telegram-notifier/requirements.txt \
+            deploy/energy-stack/telegram_notifier/requirements.txt \
             deploy/energy-stack/thermostat_poller/requirements.txt \
             tools/cockpit/backend/requirements.txt; do
             if [[ -f "$req" ]]; then
