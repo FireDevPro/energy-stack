@@ -21,9 +21,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-samples", type=int, default=72)
     parser.add_argument("--stage1-min-pct", type=float, default=5.0)
     parser.add_argument("--stage2-min-pct", type=float, default=75.0)
-    parser.add_argument("--outdoor-measurement", default="ecowitt.outdoor")
-    parser.add_argument("--outdoor-temp-field", default="outdoor_temp_f")
-    parser.add_argument("--solar-field", default="solar_radiation_w_m2")
+    parser.add_argument("--outdoor-measurement", default="ecowitt.weather")
+    parser.add_argument("--outdoor-temp-field", default="ch1_temp_f")
+    parser.add_argument("--solar-field", default="solar_wm2")
     parser.add_argument(
         "--output-json",
         type=Path,
