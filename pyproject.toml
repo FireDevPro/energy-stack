@@ -21,19 +21,15 @@ plugins = ["pydantic.mypy"]
 # package on the mypy search path (e.g., hvac_scheduler.app).
 mypy_path = "deploy/energy-stack"
 
-# Bootstrap files list. PR 1 enforces ONLY these two modules via the
-# pyproject.toml files list. As each service migrates in (PR 2 onwards),
-# its individual freshness.py entry is removed from `files`; the
-# per-service mypy invocation in run_typecheck.sh covers the whole
-# package directory.
-files = [
-    # hvac_scheduler/freshness.py moved from bootstrap to per-service
-    # coverage in PR 3b: the service_dirs entry in run_typecheck.sh
-    # covers the whole hvac_scheduler/ package via per-service mypy
-    # invocation. Cockpit-backend freshness.py STAYS here until PR 4
-    # adds tools/cockpit/backend to repo_targets.
-    "tools/cockpit/backend/freshness.py",
-]
+# Bootstrap files list. Empty after PR 4: both freshness modules are
+# now covered by per-target invocations (hvac_scheduler via
+# service_dirs; tools/cockpit/backend via repo_targets in
+# deploy/energy-stack/run_typecheck.sh). The tomllib guard in
+# run_typecheck.sh reads the live `files` value and skips the
+# bootstrap mypy pass when the list is empty. A future Phase 4 / PR 15
+# cleanup PR can remove the `files = []` line entirely (the guard
+# treats missing key and empty list identically).
+files = []
 
 # Third-party library overrides. Libraries without py.typed get
 # `ignore_missing_imports = true` so mypy treats them as Any. Per-library
