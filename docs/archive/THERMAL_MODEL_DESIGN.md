@@ -1,11 +1,20 @@
 # Thermal Model — Step 1 Design (Affine Fit)
 
-**Status**: Design proposed (2026-05-05), implementation gated on Ecowitt deployment + ~30 days of paired observation history
+**Status**: Read-only observer implemented (2026-05-20); scheduler integration still gated on stable/physically plausible fits.
 **Owner**: Chris dePaola
 **Depends on**: existing `energy-stack` (InfluxDB `hvac.thermostat`, `hvac.comfortnet`, `nws.forecast`, `refoss.channel`) plus `ecowitt.weather` once that station is online
 **Methodological anchor**: Bacher & Madsen 2011, *Identifying suitable models for the heat dynamics of buildings*, Energy and Buildings 43(7), [doi:10.1016/j.enbuild.2011.02.005](https://doi.org/10.1016/j.enbuild.2011.02.005)
 
 ---
+
+## Implementation Note
+
+The first implementation slice is a separate read-only `thermal_observer` under
+`deploy/energy-stack/scripts`. It estimates house thermal response from
+telemetry and prints diagnostics only. It does not write thermostat settings,
+derived InfluxDB measurements, JSON artifacts, or scheduler inputs. Scheduler
+integration remains a later explicit change, after fits are stable and
+physically plausible.
 
 ## Problem
 
@@ -124,11 +133,13 @@ The fit methodology in the §Methodology section was specified at 5-minute caden
 
 NWS gridpoint forecasts smooth across a 2.5 km grid cell and lag actual conditions at the house by 30–90 minutes during hot ramp-up. Fitting `1/τ` against a smoothed, lagged outdoor signal biases the time constant. The Ecowitt sensor co-located on the house gives the actual `T_out` driving the envelope, plus solar irradiance, plus humidity (which lets us do a saturation-enthalpy correction in Step 2 if needed). Per ASHRAE Handbook of Fundamentals (2021) Ch. 18, envelope identification with non-co-located weather is widely understood to inflate residuals; the gain from a $200 PWS is well-documented across the residential RC literature.
 
-We do not block other thermal-model work on Ecowitt — Step 1 implementation can land before the station is online and run in "preliminary" mode against the fallback path above, with results stored to InfluxDB but explicitly marked unratified.
+We do not block other thermal-model work on Ecowitt — Step 1 implementation can run in "preliminary" mode and print unratified diagnostics for inspection.
 
-## Outputs
+## Future Outputs
 
-A single fit run writes one point to InfluxDB and one JSON file to `/data` on `pi-lab`.
+The current `thermal_observer` implementation does not write outputs. If a
+later post-experiment phase promotes the model into scheduler-adjacent tooling,
+the proposed write targets below need a separate plan and review.
 
 ### `hvac.thermal_model` (InfluxDB, `energy-longterm` bucket)
 
@@ -152,7 +163,7 @@ One point per fit run. Tagged `model_version = "step1.affine.v1"`.
 
 ### `/data/thermal_model.json` (on `pi-lab`)
 
-Latest ratified fit, materialized to disk so the scheduler doesn't query Influx on every decision tick. Same schema as the fields above. Pattern mirrors `/data/haven_token.json` (rotating refresh token persistence). The fit script writes both the Influx point and the JSON file atomically; the scheduler reads only the JSON file.
+Future scheduler-integrated design: latest ratified fit, materialized to disk so the scheduler doesn't query Influx on every decision tick. Same schema as the fields above. Pattern mirrors `/data/haven_token.json` (rotating refresh token persistence). A future fit script would write both the Influx point and the JSON file atomically; the scheduler would read only the JSON file.
 
 If the JSON file is missing or its `fit_window_end` is older than 60 days, the scheduler logs a warning and falls back to the existing fixed-rule constants. No setpoint logic ever runs against a stale fit silently.
 
@@ -181,9 +192,9 @@ deploy/energy-stack/
 └── (no new container — fit_thermal_model.py is a script, like parse_comed_bill.py)
 ```
 
-The fit job is a script, not a service. It runs once per night via a cron entry on `pi-lab` (`0 2 * * *`), reads the prior 30 days from InfluxDB, runs the OLS fit + validation, writes the Influx point and `/data/thermal_model.json`. ~5 seconds per run. Lives in the repo for the same reason `parse_comed_bill.py` does — future-Claude shouldn't have to recreate the masking rules from scratch.
+Future scheduler-integrated design: the fit job would be a script, not a service. It would run once per night via a cron entry on `pi-lab` (`0 2 * * *`), read the prior 30 days from InfluxDB, run the OLS fit + validation, and write the future Influx point plus `/data/thermal_model.json`. The current `thermal_observer` does not do this.
 
-A workstation alias `thermal-fit` invokes it on demand: `ssh pi-lab "cd ~/energy-stack && python scripts/fit_thermal_model.py [--window-days N] [--write|--dry-run]"`. Dry-run prints the fit + skill score without writing.
+A future workstation alias `thermal-fit` could invoke it on demand: `ssh pi-lab "cd ~/energy-stack && python scripts/fit_thermal_model.py [--window-days N] [--write|--dry-run]"`. The current observer prints the fit + skill score without writing.
 
 ## Sequencing
 
