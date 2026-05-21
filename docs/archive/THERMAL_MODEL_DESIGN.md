@@ -11,9 +11,10 @@
 
 The first implementation slice is a separate read-only `thermal_observer` under
 `deploy/energy-stack/scripts`. It estimates house thermal response from
-telemetry and writes diagnostics to `hvac.thermal_observer`, but it does not
-feed scheduler decisions. Scheduler integration remains a later explicit
-change, after fits are stable and physically plausible.
+telemetry and prints diagnostics only. It does not write thermostat settings,
+derived InfluxDB measurements, JSON artifacts, or scheduler inputs. Scheduler
+integration remains a later explicit change, after fits are stable and
+physically plausible.
 
 ## Problem
 
@@ -132,11 +133,13 @@ The fit methodology in the §Methodology section was specified at 5-minute caden
 
 NWS gridpoint forecasts smooth across a 2.5 km grid cell and lag actual conditions at the house by 30–90 minutes during hot ramp-up. Fitting `1/τ` against a smoothed, lagged outdoor signal biases the time constant. The Ecowitt sensor co-located on the house gives the actual `T_out` driving the envelope, plus solar irradiance, plus humidity (which lets us do a saturation-enthalpy correction in Step 2 if needed). Per ASHRAE Handbook of Fundamentals (2021) Ch. 18, envelope identification with non-co-located weather is widely understood to inflate residuals; the gain from a $200 PWS is well-documented across the residential RC literature.
 
-We do not block other thermal-model work on Ecowitt — Step 1 implementation can land before the station is online and run in "preliminary" mode against the fallback path above, with results stored to InfluxDB but explicitly marked unratified.
+We do not block other thermal-model work on Ecowitt — Step 1 implementation can run in "preliminary" mode and print unratified diagnostics for inspection.
 
-## Outputs
+## Future Outputs
 
-A single fit run writes one point to InfluxDB and one JSON file to `/data` on `pi-lab`.
+The current `thermal_observer` implementation does not write outputs. If a
+later post-experiment phase promotes the model into scheduler-adjacent tooling,
+the proposed write targets below need a separate plan and review.
 
 ### `hvac.thermal_model` (InfluxDB, `energy-longterm` bucket)
 

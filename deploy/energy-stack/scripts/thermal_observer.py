@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import isfinite, sqrt
 from typing import Any
 
@@ -48,6 +48,10 @@ class FitConfig:
     stage1_min_pct: float = 5.0
     stage2_min_pct: float = 75.0
     min_samples: int = 72
+    min_stage1_samples: int = 3
+    min_stage2_samples: int = 3
+    min_skill_score: float = 0.5
+    setpoint_mask_minutes: int = 30
     tau_min_hours: float = 2.0
     tau_max_hours: float = 48.0
     stage2_min_cooling_f_per_hr: float = 1.5
@@ -93,14 +97,19 @@ def build_intervals(samples: list[ThermalSample], cfg: FitConfig) -> tuple[list[
     intervals: list[ThermalInterval] = []
     expected_hours = cfg.sample_minutes / 60.0
     max_gap_hours = expected_hours * cfg.max_gap_factor
+    setpoint_mask_until: datetime | None = None
 
     for prev, cur in zip(ordered, ordered[1:]):
         gap_hours = (cur.ts - prev.ts).total_seconds() / 3600.0
         if gap_hours <= 0 or gap_hours > max_gap_hours:
             counts["gap"] += 1
             continue
+        if setpoint_mask_until is not None and prev.ts < setpoint_mask_until:
+            counts["setpoint_change"] += 1
+            continue
         if cur.setpoint_changed:
             counts["setpoint_change"] += 1
+            setpoint_mask_until = cur.ts + timedelta(minutes=cfg.setpoint_mask_minutes)
             continue
         if not _has_finite_hvac_controls(prev) or not _has_finite_hvac_controls(cur):
             counts["non_finite"] += 1
@@ -153,15 +162,27 @@ def fit_thermal_response(samples: list[ThermalSample], cfg: FitConfig) -> Therma
     tau_hours = None if env_coef <= 0 else 1.0 / env_coef
     stage1_cooling = -stage1_coef
     stage2_cooling = -(stage1_coef + stage2_delta_coef)
+    stage1_only_count = sum(
+        1 for interval in train if interval.stage1_active and not interval.stage2_active
+    )
+    stage2_count = sum(1 for interval in train if interval.stage2_active)
 
     rejection_reasons: list[str] = []
+    if stage1_only_count < cfg.min_stage1_samples:
+        rejection_reasons.append("not_enough_stage1_samples")
+    if stage2_count < cfg.min_stage2_samples:
+        rejection_reasons.append("not_enough_stage2_samples")
     if tau_hours is None or tau_hours < cfg.tau_min_hours or tau_hours > cfg.tau_max_hours:
         rejection_reasons.append("tau_out_of_bounds")
+    if stage1_cooling <= 0:
+        rejection_reasons.append("stage1_cooling_out_of_bounds")
     if (
         stage2_cooling < cfg.stage2_min_cooling_f_per_hr
         or stage2_cooling > cfg.stage2_max_cooling_f_per_hr
     ):
         rejection_reasons.append("stage2_cooling_out_of_bounds")
+    if stage2_cooling < stage1_cooling:
+        rejection_reasons.append("stage_order_invalid")
 
     train_rmse = _rmse_delta_f(train, coef)
     test_rmse = _rmse_delta_f(test, coef) if test else None
@@ -169,6 +190,10 @@ def fit_thermal_response(samples: list[ThermalSample], cfg: FitConfig) -> Therma
     skill_score = None
     if test_rmse is not None and persistence_rmse is not None and persistence_rmse > 0:
         skill_score = 1.0 - (test_rmse / persistence_rmse)
+    if skill_score is None:
+        rejection_reasons.append("skill_unavailable")
+    elif skill_score < cfg.min_skill_score:
+        rejection_reasons.append("skill_below_threshold")
 
     return ThermalFitResult(
         tau_hours=tau_hours,

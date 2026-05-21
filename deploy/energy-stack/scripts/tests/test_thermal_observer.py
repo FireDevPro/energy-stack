@@ -60,6 +60,29 @@ def test_build_intervals_drops_stage_transition_and_setpoint_change():
     assert intervals[1].stage1_active == 1
 
 
+def test_build_intervals_masks_thirty_minutes_after_setpoint_change():
+    samples = [make_sample(i, 74.0 - (0.1 * i), 84.0, cool_pct=50.0) for i in range(7)]
+    samples[2] = ThermalSample(
+        ts=samples[2].ts,
+        indoor_temp_f=samples[2].indoor_temp_f,
+        outdoor_temp_f=samples[2].outdoor_temp_f,
+        solar_radiation_w_m2=samples[2].solar_radiation_w_m2,
+        cool_actual_pct=samples[2].cool_actual_pct,
+        heat_actual_pct=samples[2].heat_actual_pct,
+        cool_setpoint_f=72.0,
+        setpoint_changed=True,
+    )
+
+    intervals, counts = build_intervals(samples, FitConfig(sample_minutes=10))
+
+    assert [(interval.start_ts, interval.end_ts) for interval in intervals] == [
+        (samples[0].ts, samples[1].ts),
+        (samples[5].ts, samples[6].ts),
+    ]
+    assert counts["setpoint_change"] == 4
+    assert counts["valid"] == 2
+
+
 def test_build_intervals_drops_non_finite_hvac_control_samples():
     samples = [
         make_sample(0, 74.0, 84.0, cool_pct=0.0),
@@ -114,6 +137,78 @@ def test_fit_thermal_response_recovers_synthetic_tau_and_cooling_rates():
     assert result.stage1_cooling_f_per_hr == pytest.approx(1.8, rel=0.15)
     assert result.stage2_cooling_f_per_hr == pytest.approx(3.0, rel=0.15)
     assert result.skill_score > 0.80
+
+
+def test_fit_rejects_holdout_skill_below_threshold():
+    cfg = FitConfig(sample_minutes=10, min_samples=40, min_skill_score=0.5)
+    samples: list[ThermalSample] = []
+    indoor = 76.0
+    for i in range(96):
+        outdoor = 86.0 if i < 48 else 78.0
+        cool_pct = 0.0
+        if 20 <= i < 45:
+            cool_pct = 50.0
+        if 45 <= i < 60:
+            cool_pct = 100.0
+        solar = 500.0 if 36 <= i < 72 else 0.0
+        samples.append(make_sample(i, indoor, outdoor, cool_pct=cool_pct, solar=solar))
+
+        stage1 = 1.0 if cool_pct >= cfg.stage1_min_pct else 0.0
+        stage2 = 1.0 if cool_pct >= cfg.stage2_min_pct else 0.0
+        dtdt = 0.1 * (outdoor - indoor) - 1.8 * stage1 - 1.2 * stage2 + 0.001 * solar
+        if i >= 77:
+            dtdt = -dtdt * 3.0
+        indoor = indoor + dtdt * (cfg.sample_minutes / 60.0)
+
+    result = fit_thermal_response(samples, cfg)
+
+    assert result.accepted is False
+    assert result.skill_score is not None
+    assert result.skill_score < cfg.min_skill_score
+    assert "skill_below_threshold" in result.rejection_reasons
+
+
+def test_fit_rejects_when_stage2_is_not_observed_in_training_window():
+    cfg = FitConfig(sample_minutes=10, min_samples=40, min_skill_score=0.0)
+    samples: list[ThermalSample] = []
+    indoor = 76.0
+    for i in range(96):
+        outdoor = 86.0 if i < 48 else 78.0
+        cool_pct = 50.0 if 20 <= i < 70 else 0.0
+        samples.append(make_sample(i, indoor, outdoor, cool_pct=cool_pct))
+
+        stage1 = 1.0 if cool_pct >= cfg.stage1_min_pct else 0.0
+        dtdt = 0.1 * (outdoor - indoor) - 2.0 * stage1
+        indoor = indoor + dtdt * (cfg.sample_minutes / 60.0)
+
+    result = fit_thermal_response(samples, cfg)
+
+    assert result.accepted is False
+    assert "not_enough_stage2_samples" in result.rejection_reasons
+
+
+def test_fit_rejects_when_stage2_cooling_is_less_than_stage1():
+    cfg = FitConfig(sample_minutes=10, min_samples=40, min_skill_score=0.0)
+    samples: list[ThermalSample] = []
+    indoor = 76.0
+    for i in range(96):
+        outdoor = 86.0 if i < 48 else 78.0
+        cool_pct = 0.0
+        if 20 <= i < 45:
+            cool_pct = 50.0
+        if 45 <= i < 65:
+            cool_pct = 100.0
+        samples.append(make_sample(i, indoor, outdoor, cool_pct=cool_pct))
+
+        stage1 = 1.0 if cool_pct >= cfg.stage1_min_pct else 0.0
+        stage2 = 1.0 if cool_pct >= cfg.stage2_min_pct else 0.0
+        dtdt = 0.1 * (outdoor - indoor) - 3.0 * stage1 + 1.0 * stage2
+        indoor = indoor + dtdt * (cfg.sample_minutes / 60.0)
+
+    result = fit_thermal_response(samples, cfg)
+
+    assert result.accepted is False
+    assert "stage_order_invalid" in result.rejection_reasons
 
 
 def test_fit_rejects_implausible_tau():

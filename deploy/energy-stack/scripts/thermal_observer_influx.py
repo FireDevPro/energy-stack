@@ -1,28 +1,26 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from thermal_observer import ThermalFitResult, ThermalSample
-
-
-MODEL_VERSION = "thermal_observer.v1"
-MEASUREMENT = "hvac.thermal_observer"
+from thermal_observer import ThermalSample
 
 
 def rows_to_samples(rows: list[dict[str, Any]]) -> list[ThermalSample]:
     samples: list[ThermalSample] = []
     previous_cool_setpoint: float | None = None
+    required_fields = (
+        "_time",
+        "indoor_temp_f",
+        "outdoor_temp_f",
+        "solar_radiation_w_m2",
+        "cool_actual_pct",
+        "heat_actual_pct",
+    )
 
     for row in rows:
-        indoor_temp = row.get("indoor_temp_f")
-        outdoor_temp = row.get("outdoor_temp_f")
-        if indoor_temp is None or outdoor_temp is None:
+        if any(row.get(field) is None for field in required_fields):
             continue
 
         cool_setpoint = _optional_float(row.get("cool_setpoint_f"))
@@ -37,11 +35,11 @@ def rows_to_samples(rows: list[dict[str, Any]]) -> list[ThermalSample]:
         samples.append(
             ThermalSample(
                 ts=row["_time"],
-                indoor_temp_f=float(indoor_temp),
-                outdoor_temp_f=float(outdoor_temp),
-                solar_radiation_w_m2=float(row.get("solar_radiation_w_m2") or 0.0),
-                cool_actual_pct=float(row.get("cool_actual_pct") or 0.0),
-                heat_actual_pct=float(row.get("heat_actual_pct") or 0.0),
+                indoor_temp_f=float(row["indoor_temp_f"]),
+                outdoor_temp_f=float(row["outdoor_temp_f"]),
+                solar_radiation_w_m2=float(row["solar_radiation_w_m2"]),
+                cool_actual_pct=float(row["cool_actual_pct"]),
+                heat_actual_pct=float(row["heat_actual_pct"]),
                 cool_setpoint_f=cool_setpoint,
                 setpoint_changed=setpoint_changed,
             )
@@ -97,129 +95,8 @@ join(tables: {{hvac: hvac, weather: weather}}, on: ["_time"])
   |> sort(columns: ["_time"])"""
 
 
-def build_line_protocol(
-    result: ThermalFitResult,
-    outdoor_measurement: str,
-    generated_at: datetime,
-) -> str:
-    tags = {
-        "model_version": MODEL_VERSION,
-        "outdoor_measurement": outdoor_measurement,
-        "read_only": "true",
-        "accepted": _bool_tag(result.accepted),
-    }
-    fields = _result_fields(result)
-    timestamp_ns = _datetime_to_ns(generated_at)
-
-    tag_text = ",".join(
-        f"{_escape_tag_part(key)}={_escape_tag_part(value)}"
-        for key, value in tags.items()
-    )
-    field_text = ",".join(
-        f"{_escape_tag_part(key)}={_format_field_value(value)}"
-        for key, value in fields.items()
-    )
-    return f"{_escape_measurement(MEASUREMENT)},{tag_text} {field_text} {timestamp_ns}"
-
-
-def json_artifact_payload(
-    result: ThermalFitResult,
-    outdoor_measurement: str,
-    generated_at: datetime,
-) -> dict[str, Any]:
-    return {
-        "model_version": MODEL_VERSION,
-        "read_only": True,
-        "outdoor_measurement": outdoor_measurement,
-        "generated_at": _normalized_datetime(generated_at).isoformat(),
-        "result": result.to_json_dict(),
-    }
-
-
-def write_json_atomic(path: str | Path, payload: dict[str, Any]) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"{destination.name}.",
-        suffix=".tmp",
-        dir=destination.parent,
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
-            json.dump(payload, tmp_file, indent=2, sort_keys=True)
-            tmp_file.write("\n")
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-        os.replace(tmp_name, destination)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _result_fields(result: ThermalFitResult) -> dict[str, Any]:
-    result_dict = result.to_json_dict()
-    fields: dict[str, Any] = {}
-    for key, value in result_dict.items():
-        if key == "accepted":
-            continue
-        if key == "filter_counts":
-            for filter_key in sorted(value):
-                fields[f"filter_{filter_key}"] = value[filter_key]
-            continue
-        if value is not None:
-            fields[key] = value
-    return fields
-
-
-def _format_field_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return f"{value}i"
-    if isinstance(value, float):
-        return repr(value)
-    if isinstance(value, (tuple, list)):
-        return json.dumps(json.dumps(list(value), separators=(",", ":")))
-    if isinstance(value, str):
-        return json.dumps(value)
-    return json.dumps(value, separators=(",", ":"))
-
-
-def _datetime_to_ns(value: datetime) -> int:
-    normalized = _normalized_datetime(value)
-    return int(normalized.timestamp()) * 1_000_000_000 + normalized.microsecond * 1_000
-
-
-def _normalized_datetime(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _bool_tag(value: bool) -> str:
-    return "true" if value else "false"
-
-
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
-
-
-def _escape_measurement(value: str) -> str:
-    return value.replace("\\", "\\\\").replace(",", r"\,").replace(" ", r"\ ")
-
-
-def _escape_tag_part(value: object) -> str:
-    return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace(",", r"\,")
-        .replace(" ", r"\ ")
-        .replace("=", r"\=")
-    )
 
 
 def _flux_record_ref(field: str) -> str:

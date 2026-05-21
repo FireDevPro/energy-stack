@@ -4,18 +4,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from thermal_observer import FitConfig, fit_thermal_response
-from thermal_observer_influx import (
-    build_line_protocol,
-    build_query,
-    json_artifact_payload,
-    rows_to_samples,
-    write_json_atomic,
-)
+from thermal_observer_influx import build_query, rows_to_samples
 
 
 REQUIRED_ENV_VARS = ("INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "INFLUX_BUCKET")
@@ -35,8 +28,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-json",
         type=Path,
         default=Path.home() / "energy-stack" / "runtime" / "thermal_observer_latest.json",
+        help="Deprecated no-op; retained so older operator commands stay read-only.",
     )
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="No-op; all runs are read-only.")
     return parser.parse_args(argv)
 
 
@@ -46,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     if env is None:
         return 2
 
-    from influxdb_client import InfluxDBClient, WritePrecision
+    from influxdb_client import InfluxDBClient
 
     query = build_query(
         bucket=env["INFLUX_BUCKET"],
@@ -75,19 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
 
-        generated_at = datetime.now(timezone.utc)
         _print_summary(result, len(rows), len(samples))
-
-        if not args.dry_run:
-            payload = json_artifact_payload(result, args.outdoor_measurement, generated_at)
-            write_json_atomic(args.output_json, payload)
-            line = build_line_protocol(result, args.outdoor_measurement, generated_at)
-            client.write_api().write(
-                bucket=env["INFLUX_BUCKET"],
-                org=env["INFLUX_ORG"],
-                record=line,
-                write_precision=WritePrecision.NS,
-            )
 
     return 0 if result.total_interval_count > 0 else 1
 
@@ -122,7 +104,15 @@ def _print_summary(result: Any, row_count: int, sample_count: int) -> None:
     print(f"Tau hours: {_format_optional(result.tau_hours)}")
     print(f"Stage 1 cooling F/hr: {_format_optional(result.stage1_cooling_f_per_hr)}")
     print(f"Stage 2 cooling F/hr: {_format_optional(result.stage2_cooling_f_per_hr)}")
+    print(f"Train RMSE F/sample: {_format_optional(result.train_rmse_f_per_sample)}")
+    print(f"Test RMSE F/sample: {_format_optional(result.test_rmse_f_per_sample)}")
+    print(f"Persistence RMSE F/sample: {_format_optional(result.persistence_rmse_f_per_sample)}")
     print(f"Skill score: {_format_optional(result.skill_score)}")
+    print(f"Fit window start: {result.fit_window_start or 'n/a'}")
+    print(f"Fit window end: {result.fit_window_end or 'n/a'}")
+    print("Filter counts:")
+    for name in sorted(result.filter_counts):
+        print(f"  {name}: {result.filter_counts[name]}")
 
 
 def _format_optional(value: float | None) -> str:

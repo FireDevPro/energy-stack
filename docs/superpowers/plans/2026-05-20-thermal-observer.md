@@ -2,17 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a read-only thermal observer that fits the house's warm-up/cool-down behavior from existing telemetry and writes validated model diagnostics without changing HVAC control behavior.
+**2026-05-20 amendment:** User clarified that "read-only" means no writes at all for this slice: no thermostat settings, no scheduler inputs, no derived InfluxDB measurement, and no JSON artifact. Any older task detail below that mentions line protocol, JSON artifacts, or write-mode runs is superseded by this amendment.
 
-**Architecture:** Add a small scripts-side analysis package: one pure Python module for thermal-response math, one InfluxDB adapter module, and one CLI entrypoint that can run dry or write results. The first version estimates envelope time constant, stage cooling rates, solar coupling, fit quality, and sample-filter counts, then writes a JSON artifact under the Pi-lab user home plus one Influx point tagged as read-only.
+**Goal:** Build a strictly read-only thermal observer that fits the house's warm-up/cool-down behavior from existing telemetry and prints validated model diagnostics without changing HVAC control behavior or writing derived data.
 
-**Tech Stack:** Python 3, `numpy` for least-squares fitting, `influxdb-client` for reads/writes, pytest for unit tests, existing `deploy/energy-stack/scripts` operational-script pattern.
+**Architecture:** Add a small scripts-side analysis package: one pure Python module for thermal-response math, one InfluxDB read adapter module, and one CLI entrypoint that always runs read-only. The first version estimates envelope time constant, stage cooling rates, solar coupling, fit quality, and sample-filter counts, then prints diagnostics for manual or cron-log inspection.
+
+**Tech Stack:** Python 3, `numpy` for least-squares fitting, `influxdb-client` for reads, pytest for unit tests, existing `deploy/energy-stack/scripts` operational-script pattern.
 
 ---
 
 ## Scope
 
-This plan implements a separate thermal-observer subproject. It does not modify `hvac-scheduler`, `safety_supervisor.py`, experiment assignments, OSF-bound controller behavior, Docker compose services, or thermostat setpoint logic.
+This plan implements a separate thermal-observer subproject. It does not modify `hvac-scheduler`, `safety_supervisor.py`, experiment assignments, OSF-bound controller behavior, Docker compose services, thermostat setpoint logic, or any existing InfluxDB measurement.
 
 The implementation uses current telemetry:
 
@@ -22,24 +24,24 @@ The implementation uses current telemetry:
 
 Setpoint-change masking is inferred from `hvac.thermostat.cool_setpoint_f` changes in the resampled data.
 
-The output measurement is `hvac.thermal_observer`, intentionally distinct from `hvac.thermal_model` so these read-only fits are not mistaken for a ratified controller input.
+There is no output measurement in this slice. Later post-experiment persistence of model diagnostics requires a separate plan.
 
 ## File Structure
 
 - Create `deploy/energy-stack/scripts/thermal_observer.py`
   - Pure dataclasses, sample filtering, design-matrix construction, OLS fit, validation, and JSON-safe result conversion.
 - Create `deploy/energy-stack/scripts/thermal_observer_influx.py`
-  - Flux query builders, Influx row parsing, result line-protocol builder, and atomic JSON writer.
+  - Flux query builders and Influx row parsing only.
 - Create `deploy/energy-stack/scripts/fit_thermal_observer.py`
-  - CLI entrypoint for Pi-lab/manual runs. Reads env, fetches telemetry, runs fit, prints summary, and optionally writes Influx + JSON.
+  - CLI entrypoint for Pi-lab/manual runs. Reads env, fetches telemetry, runs fit, and prints summary.
 - Create `deploy/energy-stack/scripts/tests/test_thermal_observer.py`
   - Unit tests for fitting, filtering, physical gates, and validation skill.
 - Create `deploy/energy-stack/scripts/tests/test_thermal_observer_influx.py`
-  - Unit tests for Flux query strings, line protocol escaping, and JSON artifact shape.
+  - Unit tests for Flux query strings and row parsing.
 - Modify `deploy/energy-stack/scripts/requirements.txt`
   - Add `numpy`.
 - Modify `deploy/energy-stack/scripts/README.md`
-  - Add operator usage, dry-run command, write command, env vars, output schema, and suggested cron.
+  - Add operator usage, env vars, printed diagnostics, and suggested cron.
 - Modify `docs/THERMAL_MODEL_DESIGN.md`
   - Add a short status note that the first implemented artifact is a read-only thermal observer, not scheduler integration.
 
