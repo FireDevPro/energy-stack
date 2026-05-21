@@ -244,9 +244,9 @@ Use the Write tool to create the file with exactly this content.
 
 - [ ] **Step 3: Verify it's a valid TOML file**
 
-Run:
+Run (use absolute path to guard against cwd resets between bash invocations):
 ```bash
-python -c "import tomllib; print(list(tomllib.load(open('pyproject.toml', 'rb')).keys()))"
+(cd /Users/christopherdepaola/Developer/energy-stack-1 && python -c "import tomllib; print(list(tomllib.load(open('pyproject.toml', 'rb')).keys()))")
 ```
 Expected: `['tool']` (or similar — proves it parses).
 
@@ -981,16 +981,19 @@ Expected: file exists, 0 bytes.
 ls deploy/energy-stack/hvac_scheduler/*.py
 ```
 
-List the Python files in the scheduler dir. Common ones include:
+List the Python files in the scheduler dir. The known sibling modules are (verified against current `app.py` imports):
 - `app.py` (main entrypoint)
 - `freshness.py`
 - `price_overlay.py`
 - `decision_codes.py`
 - `pjm_5cp.py`
+- `arm_calendar.py` (local copy, hash-sync-checked in CI)
+- `precool.py`
+- `safety_supervisor.py`
 - `conftest.py`
-- `test_*.py` (multiple)
+- `test_*.py` (multiple test files including `test_precool.py`, `test_pjm_5cp.py`, etc.)
 
-Each `from <name> import X` where `<name>.py` exists as a sibling is a cross-file sibling import that needs conversion.
+Each `from <name> import X` where `<name>.py` exists as a sibling is a cross-file sibling import that needs conversion. The `from arm_calendar import ...` line has a `# local copy, hash-sync-checked in CI` comment — preserve that comment as it documents the unusual coupling.
 
 - [ ] **Step 2: Generate the conversion list**
 
@@ -1012,11 +1015,14 @@ For each sibling-module import found in Step 2, convert:
 - `import <sibling>` → `from . import <sibling>`
 - `import <sibling> as <alias>` → `from . import <sibling> as <alias>`
 
-The scheduler likely has these patterns based on file listing (verify against actual code):
+The scheduler has these specific patterns to convert (verified against current `app.py`):
 - `from freshness import Freshness, classify, THRESHOLDS` → `from .freshness import Freshness, classify, THRESHOLDS`
 - `from price_overlay import ...` → `from .price_overlay import ...`
 - `from decision_codes import ...` → `from .decision_codes import ...`
 - `from pjm_5cp import ...` → `from .pjm_5cp import ...`
+- `from arm_calendar import ARM_CALENDAR, current_arm_at` (with `# local copy, hash-sync-checked in CI` comment) → `from .arm_calendar import ARM_CALENDAR, current_arm_at` (preserve the comment)
+- `from precool import (...)` → `from .precool import (...)`
+- `from safety_supervisor import validate_setpoints` → `from .safety_supervisor import validate_setpoints`
 - Test files importing `from app import X` → `from .app import X`
 - Cross-test imports like `from test_hvac_scheduler import some_fixture` → `from .test_hvac_scheduler import some_fixture`
 
@@ -1034,12 +1040,12 @@ The scheduler likely has these patterns based on file listing (verify against ac
 
 ```bash
 cd /Users/christopherdepaola/Developer/energy-stack-1
-grep -rnE "^from (freshness|price_overlay|decision_codes|pjm_5cp|app|test_[a-z0-9_]+) import|^import (freshness|price_overlay|decision_codes|pjm_5cp|app) " deploy/energy-stack/hvac_scheduler/
+grep -rnE "^from (freshness|price_overlay|decision_codes|pjm_5cp|arm_calendar|precool|safety_supervisor|app|test_[a-z0-9_]+) import|^import (freshness|price_overlay|decision_codes|pjm_5cp|arm_calendar|precool|safety_supervisor|app) " deploy/energy-stack/hvac_scheduler/
 ```
 Expected: empty (every cross-file sibling import is now relative).
 
 ```bash
-git grep -nE "[\"'](app|freshness|price_overlay|decision_codes|pjm_5cp)\\." deploy/energy-stack/hvac_scheduler/
+git grep -nE "[\"'](app|freshness|price_overlay|decision_codes|pjm_5cp|arm_calendar|precool|safety_supervisor)\\." deploy/energy-stack/hvac_scheduler/
 ```
 Expected: only matches with `hvac_scheduler.` prefix (any unprefixed bare module references need updating).
 
@@ -1927,13 +1933,18 @@ DO NOT proceed to step 4 until mypy is fully clean.
 **Files:**
 - Modify: `pyproject.toml`
 
-- [ ] **Step 1: List the scheduler test module names**
+- [ ] **Step 1: List the scheduler test module names (check both root and tests/ subdir)**
 
 ```bash
 ls deploy/energy-stack/hvac_scheduler/test_*.py deploy/energy-stack/hvac_scheduler/conftest.py 2>/dev/null
+ls deploy/energy-stack/hvac_scheduler/tests/test_*.py deploy/energy-stack/hvac_scheduler/tests/conftest.py 2>/dev/null
 ```
 
-Convert each to its dotted module form: `hvac_scheduler.test_<name>`, `hvac_scheduler.conftest`.
+Convert each to its dotted module form:
+- Root-level: `hvac_scheduler.test_<name>`, `hvac_scheduler.conftest`
+- Sub-package `tests/`: `hvac_scheduler.tests.test_<name>`, `hvac_scheduler.tests.conftest` (only if a `tests/__init__.py` exists; otherwise pytest will discover them but mypy may not — check)
+
+Note: the scheduler currently has `tests/fixtures/` (data only, no Python files). If `tests/` ever gains Python files, the dotted form changes accordingly.
 
 - [ ] **Step 2: Update the override block in pyproject.toml**
 
@@ -1996,14 +2007,18 @@ The expected bug-finding focus per the spec: the `query_api` parameter is untype
 - `query_api: Any` if we accept the library's untyped surface (with a comment referencing the influx_adapter for typed projection)
 - `query_api: "QueryApi"` from `influxdb_client.client.query_api import QueryApi` if the stub is available
 
-- [ ] **Step 3: Iterate to clean state**
+- [ ] **Step 3: Iterate to clean state, with bounded effort**
 
 After fixes, re-run:
 ```bash
 bash deploy/energy-stack/run_typecheck.sh
 ```
 
-Repeat triage until zero errors.
+**Bounded iteration discipline:**
+- **Maximum 5 round-trips of fix → re-run.** If after 5 rounds there are remaining errors you cannot resolve without a `# type: ignore` annotation, STOP and escalate to the operator. Report each unresolved error with: file:line, the mypy error message, your attempted fix, and why the fix didn't work.
+- **`# type: ignore` requires a comment citing the reason.** Bare `# type: ignore` is NOT acceptable. Example acceptable form: `# type: ignore[assignment]  # upstream stub mismatches our usage of QueryApi.query() — see backlog`. Each `# type: ignore` added becomes a small entry in `docs/type-debt-backlog.md` so it doesn't rot.
+- **Don't add `# type: ignore` to silence a real bug.** If the error points at a logic issue (None-handling missing, wrong return type), FIX the logic, don't ignore.
+- **Re-state in PR description:** if any `# type: ignore` annotations are added, list each one in the PR description under a "Tactical ignores added" subsection, with the rationale.
 
 - [ ] **Step 4: Commit incrementally**
 
@@ -2291,12 +2306,16 @@ files = []
 - [ ] **Step 3: Add cockpit test modules to the test-relaxation override**
 
 ```bash
+# Check both root and tests/ subdir for cockpit-backend
 ls tools/cockpit/backend/test_*.py tools/cockpit/backend/conftest.py 2>/dev/null
+ls tools/cockpit/backend/tests/test_*.py tools/cockpit/backend/tests/conftest.py 2>/dev/null
 ```
 
-(Cockpit tests may be under `tools/cockpit/backend/tests/`. Adjust paths.)
+Cockpit-backend tests are most likely in `tools/cockpit/backend/tests/`. Verify which path actually contains files.
 
-Add the test module names (in dotted form like `tools.cockpit.backend.tests.test_X`) to the `[[tool.mypy.overrides]]` block in `pyproject.toml`.
+Add the test module names to the `[[tool.mypy.overrides]]` block in `pyproject.toml`, using the correct dotted form:
+- Root-level tests: `tools.cockpit.backend.test_<name>`, `tools.cockpit.backend.conftest`
+- `tests/` sub-package: `tools.cockpit.backend.tests.test_<name>`, `tools.cockpit.backend.tests.conftest` (requires `tools/cockpit/backend/tests/__init__.py` to exist — confirm by `ls tools/cockpit/backend/tests/__init__.py`)
 
 - [ ] **Step 4: Run mypy + import-linter**
 
@@ -2494,8 +2513,60 @@ The following template applies to EACH service PR (5-13). The comed-poller is do
 - [ ] **Step 15: Push + PR**
   ```bash
   git push -u origin feat/type-checker-comed-poller
-  gh pr create --base main --title "feat(type-checker): comed-poller enforced (PR 5)" --body "..."
+
+  gh pr create --base main --title "feat(type-checker): comed-poller enforced (PR 5)" --body "$(cat <<'EOF'
+## Summary
+
+PR 5 of the type-checker rollout. Brings comed-poller into the enforced set.
+
+Spec: \`docs/superpowers/specs/2026-05-20-type-checker-design.md\`
+Plan: \`docs/plans/type-checker-plan.md\` (Task 42)
+
+## What's in this PR
+
+- \`deploy/energy-stack/comed-poller/\` → \`comed_poller/\` (git mv, history preserved)
+- Empty \`__init__.py\` added.
+- All cross-file sibling imports converted to relative form (\`from .<sibling> import X\`).
+- Dockerfile updated: WORKDIR \`/app\`, \`ENV PYTHONPATH=/app\`, CMD \`python -m comed_poller.poller\`.
+- \`docker-compose.yml\` build.context path updated (service name \`comed-poller\` STAYS hyphenated).
+- \`run_tests.sh\` services array updated.
+- \`comed_poller\` added to \`run_typecheck.sh\` service_dirs.
+- \`pyproject.toml\` test-relaxation override extended with comed-poller test modules.
+- \`mypy --strict\` triage complete; real bugs fixed.
+
+## Acceptance criteria (per spec §9.1)
+
+- [x] \`mypy --strict\` returns 0 errors on this service.
+- [x] \`lint-imports --config pyproject.toml\` returns 0 violations.
+- [x] Service tests pass.
+- [ ] Container builds with new \`python -m comed_poller.poller\` entrypoint (verified post-merge via deploy.yml).
+- [x] Operational identifier (\`comed-poller\` in compose, Grafana, Influx, Telegraf, promtail) unchanged — verified by positive grep.
+- [x] No stale \`deploy/energy-stack/comed-poller/\` filesystem-path references outside archive docs — verified by negative grep.
+
+## Real bugs found by mypy
+
+[List each real bug found during triage. Format: file:line — description. Or "None — only annotations added" if no real bugs surfaced.]
+
+## Tactical ignores added (if any)
+
+[List any \`# type: ignore\` annotations added, with rationale and backlog entry.]
+
+## Test plan
+
+- [x] \`cd deploy/energy-stack/comed_poller/ && python -m pytest .\`
+- [x] \`bash deploy/energy-stack/run_tests.sh\`
+- [x] \`bash deploy/energy-stack/run_typecheck.sh\`
+- [ ] \`docker compose build comed-poller\` (if local Docker available)
+EOF
+)"
   ```
+
+**For PRs 6-13:** use the same PR body template above, substituting:
+- The PR number (`5` → `6`, `7`, etc.)
+- The service hyphenated name (`comed-poller` → `pjm-dm2-poller`, etc.)
+- The service underscore name (`comed_poller` → `pjm_dm2_poller`, etc.)
+- The entrypoint module from the variations table (`comed_poller.poller` → e.g., `pjm_dm2_poller.app`)
+- Adjust the operational-identifier grep paths if the service has different operational-config locations (most won't)
 
 ---
 
