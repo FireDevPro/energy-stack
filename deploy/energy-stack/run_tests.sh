@@ -26,7 +26,7 @@ services=(
     haven-ingest
     hvac_scheduler
     hvac_scheduler_watchdog
-    nws-poller
+    nws_poller
     pjm_dm2_poller
     refoss-poller
     telegram-notifier

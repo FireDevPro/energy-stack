@@ -186,7 +186,7 @@ The originally-planned `feeds.py` constants module collapsed into top-of-file co
 
 ## Testing
 
-`pytest` in `pjm_dm2_poller/test_pjm_dm2_poller.py` (matching the pattern in `nws-poller/test_nws_poller.py`):
+`pytest` in `pjm_dm2_poller/test_pjm_dm2_poller.py` (matching the pattern in `nws_poller/test_nws_poller.py`):
 
 - Mock httpx responses against canned JSON fixtures (one per measurement). Fixtures derived from real `/metadata` responses to keep schemas honest.
 - Test the timezone conversion (PJM ept → UTC) on DST boundaries.
