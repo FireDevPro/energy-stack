@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from influxdb_client import Point  # ADAPTER is the only legitimate import site
+
 
 @dataclass(frozen=True)
 class TypedRecord:
@@ -84,3 +86,37 @@ def project_record(record: Any) -> TypedRecord:
         field=str(field_raw),
         measurement=str(measurement_raw),
     )
+
+
+def write_point(
+    write_api: Any,
+    bucket: str,
+    measurement: str,
+    *,
+    tags: dict[str, str],
+    fields: dict[str, float | int | bool | str],
+    time: datetime | None = None,
+) -> None:
+    """Typed write helper around influxdb_client.Point construction.
+
+    Eliminates the untyped ``Point().tag().field().time()`` chain pattern
+    from callers and centralizes the influxdb_client write-API import in
+    this module. Per spec §5.5 import-linter contract, callers should
+    import this function rather than touching ``influxdb_client.Point``
+    directly.
+
+    Field values may be int, float, bool, or str. Bools are passed
+    through to ``Point.field()`` so InfluxDB stores them as native
+    booleans (``healthy=true``/``healthy=false``) rather than coercing
+    to int. Tag values are always str. ``time`` is optional; when
+    provided, the Point uses that timestamp, otherwise Influx assigns
+    server-time at write.
+    """
+    p = Point(measurement)
+    for tag_key, tag_value in tags.items():
+        p = p.tag(tag_key, tag_value)
+    for field_key, field_value in fields.items():
+        p = p.field(field_key, field_value)
+    if time is not None:
+        p = p.time(time)
+    write_api.write(bucket=bucket, record=p)

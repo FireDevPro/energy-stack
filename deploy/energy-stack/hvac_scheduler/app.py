@@ -81,7 +81,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient
 from influxdb_client.client.write_api import SYNCHRONOUS
 from pyControl4.account import C4Account
 from pyControl4.director import C4Director
@@ -789,7 +789,7 @@ class Config:
 # ---- Influx queries --------------------------------------------------------
 
 from .freshness import Freshness, classify, THRESHOLDS  # noqa: E402
-from .influx_adapter import project_record, TypedRecord  # noqa: E402
+from .influx_adapter import project_record, TypedRecord, write_point  # noqa: E402
 
 # PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
 # label. Per spec §3.3 — the per-tick freshness label uses the data-source
@@ -1576,12 +1576,17 @@ def write_precool_window(
     schedule-check tick can read it back the next day. ``hvac.precool_window``
     is event-sourced (one row per decision); the schedule check looks up
     the latest row matching today's target_date tag."""
-    p = (Point("hvac.precool_window")
-         .tag("target_date", target_date_iso)
-         .tag("source", "decision")  # vs "schedule_check_recompute"
-         .field("hour_ct", int(window["hour_ct"]))
-         .field("depth_f", int(window["depth_f"])))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.precool_window",
+        tags={
+            "target_date": target_date_iso,
+            "source": "decision",  # vs "schedule_check_recompute"
+        },
+        fields={
+            "hour_ct": int(window["hour_ct"]),
+            "depth_f": int(window["depth_f"]),
+        },
+    )
 
 
 def read_precool_window_for_date(
@@ -1720,17 +1725,21 @@ def write_5cp_state(
     inst_load gap for one scope still records the other rather than
     fabricating audit rows from absent inputs)."""
     ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
-    p = (Point("hvac.5cp_state")
-         .tag("scope", scope)
-         .tag("zone", zone)
-         .tag("is_active", "true" if is_active else "false")
-         .field("current_load_mw", float(current_load_mw))
-         .field("season_5th_highest_mw", float(season_5th_highest_mw))
-         .field("load_ratio", float(ratio))
-         .field("load_derivative_mw_per_hour", float(load_derivative_mw_per_hour))
-         .field("forecast_peak_today_mw", float(forecast_peak_today_mw))
-         )
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.5cp_state",
+        tags={
+            "scope": scope,
+            "zone": zone,
+            "is_active": "true" if is_active else "false",
+        },
+        fields={
+            "current_load_mw": float(current_load_mw),
+            "season_5th_highest_mw": float(season_5th_highest_mw),
+            "load_ratio": float(ratio),
+            "load_derivative_mw_per_hour": float(load_derivative_mw_per_hour),
+            "forecast_peak_today_mw": float(forecast_peak_today_mw),
+        },
+    )
 
 
 def write_price_overlay_transition(
@@ -1743,31 +1752,39 @@ def write_price_overlay_transition(
     """Write one ``hvac.price_overlay`` row when the price-overlay tier
     changes between scheduler ticks. Skipped when the tier is unchanged
     so dashboards aren't drowned in no-op rows."""
-    p = (Point("hvac.price_overlay")
-         .tag("prev_tier", prev_tier)
-         .tag("new_tier", new_tier)
-         .field("current_price_cents", float(current_price_cents))
-         .field("schedule_cool_f", float(schedule_cool_f))
-         .field("effective_cool_f", float(effective_cool_f))
-         .field("triggered_at_utc",
-                triggered_at_utc.isoformat() if triggered_at_utc else "")
-         )
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.price_overlay",
+        tags={
+            "prev_tier": prev_tier,
+            "new_tier": new_tier,
+        },
+        fields={
+            "current_price_cents": float(current_price_cents),
+            "schedule_cool_f": float(schedule_cool_f),
+            "effective_cool_f": float(effective_cool_f),
+            "triggered_at_utc":
+                triggered_at_utc.isoformat() if triggered_at_utc else "",
+        },
+    )
 
 
 def write_decision(write_api, bucket: str, decision_for_date: str,
                    day_type: str, reasons: dict, comed_price: float | None) -> None:
-    p = (Point("hvac.decisions")
-         .tag("decision_for_date", decision_for_date)
-         .tag("day_type", day_type)
-         .field("high_f", float(reasons.get("high_f") or 0))
-         .field("max_dewpoint_f", float(reasons.get("max_dewpoint_f") or 0))
-         .field("is_heat_advisory", int(reasons.get("is_heat_advisory", False)))
-         .field("alert_summary", reasons.get("alert_summary") or "")
-         .field("reason", reasons.get("reason") or "")
-         .field("comed_price_at_decision", float(comed_price or 0))
-         )
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.decisions",
+        tags={
+            "decision_for_date": decision_for_date,
+            "day_type": day_type,
+        },
+        fields={
+            "high_f": float(reasons.get("high_f") or 0),
+            "max_dewpoint_f": float(reasons.get("max_dewpoint_f") or 0),
+            "is_heat_advisory": int(reasons.get("is_heat_advisory", False)),
+            "alert_summary": reasons.get("alert_summary") or "",
+            "reason": reasons.get("reason") or "",
+            "comed_price_at_decision": float(comed_price or 0),
+        },
+    )
 
 
 def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
@@ -1778,39 +1795,39 @@ def write_action(write_api, bucket: str, day_type: str, action: ScheduleAction,
                  supervisor_decision: str = "approved",
                  supervisor_reason: str | None = None,
                  layer_resolution: LayerResolution | None = None) -> None:
-    p = (Point("hvac.actions")
-         .tag("day_type", day_type)
-         .tag("action_label", action.label)
-         .tag("dry_run", "true" if dry_run else "false")
-         .tag("supervisor_decision", supervisor_decision)
-         .field("cool_setpoint_f", float(cool_applied_f))
-         .field("heat_setpoint_f", float(heat_applied_f))
-         .field("fan_mode", fan_mode_applied or "")
-         .field("setpoint_reason", setpoint_reason)
-         .field("supervisor_reason", supervisor_reason or "")
-         .field("cool_setpoint_proposed_f", float(action.cool_setpoint_f or 0))
-         .field("heat_setpoint_proposed_f", float(action.heat_setpoint_f))
-         .field("applied", int(applied))
-         .field("error", error or "")
-         .field("hvac_mode_before", str(thermostat_state_before.get("hvac_mode") or ""))
-         .field("indoor_temp_before_f", float(thermostat_state_before.get("indoor_temp_f") or 0))
-         .field("cool_setpoint_before_f", float(thermostat_state_before.get("cool_setpoint_f") or 0))
-         .field("heat_setpoint_before_f", float(thermostat_state_before.get("heat_setpoint_f") or 0))
-         .field("indoor_humidity_before_pct", float(thermostat_state_before.get("humidity") or 0))
-         )
+    tags: dict[str, str] = {
+        "day_type": day_type,
+        "action_label": action.label,
+        "dry_run": "true" if dry_run else "false",
+        "supervisor_decision": supervisor_decision,
+    }
+    fields: dict[str, float | int | bool | str] = {
+        "cool_setpoint_f": float(cool_applied_f),
+        "heat_setpoint_f": float(heat_applied_f),
+        "fan_mode": fan_mode_applied or "",
+        "setpoint_reason": setpoint_reason,
+        "supervisor_reason": supervisor_reason or "",
+        "cool_setpoint_proposed_f": float(action.cool_setpoint_f or 0),
+        "heat_setpoint_proposed_f": float(action.heat_setpoint_f),
+        "applied": int(applied),
+        "error": error or "",
+        "hvac_mode_before": str(thermostat_state_before.get("hvac_mode") or ""),
+        "indoor_temp_before_f": float(thermostat_state_before.get("indoor_temp_f") or 0),
+        "cool_setpoint_before_f": float(thermostat_state_before.get("cool_setpoint_f") or 0),
+        "heat_setpoint_before_f": float(thermostat_state_before.get("heat_setpoint_f") or 0),
+        "indoor_humidity_before_pct": float(thermostat_state_before.get("humidity") or 0),
+    }
     if layer_resolution is not None:
         # Layer-priority audit fields (§4). Always emitted when the
         # resolution is computed so dashboards can answer "why was the
         # effective setpoint different from the schedule baseline?"
-        p = (p
-             .tag("price_overlay_tier", layer_resolution.price_overlay_tier)
-             .tag("fivecp_active", "true" if layer_resolution.fivecp_active else "false")
-             .field("schedule_cool_f", float(layer_resolution.schedule_cool_f))
-             .field("price_cool_f", float(layer_resolution.price_cool_f))
-             .field("fivecp_cool_f", float(layer_resolution.fivecp_cool_f))
-             .field("effective_cool_f", float(layer_resolution.effective_cool_f))
-             )
-    write_api.write(bucket=bucket, record=p)
+        tags["price_overlay_tier"] = layer_resolution.price_overlay_tier
+        tags["fivecp_active"] = "true" if layer_resolution.fivecp_active else "false"
+        fields["schedule_cool_f"] = float(layer_resolution.schedule_cool_f)
+        fields["price_cool_f"] = float(layer_resolution.price_cool_f)
+        fields["fivecp_cool_f"] = float(layer_resolution.fivecp_cool_f)
+        fields["effective_cool_f"] = float(layer_resolution.effective_cool_f)
+    write_point(write_api, bucket, "hvac.actions", tags=tags, fields=fields)
 
 
 async def read_thermostat_snapshot(c4: C4Client) -> dict:
@@ -1896,13 +1913,17 @@ def maybe_log_arm_switch(write_api, bucket: str, last_arm: str | None,
         return current_arm, True
 
     planned_ts = _planned_boundary_ts(when_naive)
-    p = (Point("hvac.switch_event")
-         .time(when_ct)
-         .field("from_arm", last_arm or "")
-         .field("to_arm", current_arm or "")
-         .field("boundary_planned_ts", planned_ts.isoformat() if planned_ts else "")
-         .field("boundary_actual_ts", when_naive.isoformat()))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.switch_event",
+        tags={},
+        fields={
+            "from_arm": last_arm or "",
+            "to_arm": current_arm or "",
+            "boundary_planned_ts": planned_ts.isoformat() if planned_ts else "",
+            "boundary_actual_ts": when_naive.isoformat(),
+        },
+        time=when_ct,
+    )
     return current_arm, True
 
 
@@ -1919,11 +1940,12 @@ def write_input_feed_health(write_api, bucket: str, when_ct: datetime,
     filtered ``required_feeds`` dict.
     """
     for feed_name, healthy in feeds.items():
-        p = (Point("hvac.input_feed_health")
-             .time(when_ct)
-             .tag("feed", feed_name)
-             .field("healthy", bool(healthy)))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.input_feed_health",
+            tags={"feed": feed_name},
+            fields={"healthy": bool(healthy)},
+            time=when_ct,
+        )
 
 
 def write_arm_mode(write_api, bucket: str, when_ct: datetime,
@@ -1969,21 +1991,22 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
     arm = current_arm_at(when_naive)
     scheduler_mode = os.environ.get("SCHEDULER_MODE", SCHEDULER_MODE)
     if arm is None:
-        p = (Point("hvac.arm_mode")
-             .time(when_ct)
-             .tag("scheduler_mode", scheduler_mode)
-             .field("mode_actual", "outside-window"))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.arm_mode",
+            tags={"scheduler_mode": scheduler_mode},
+            fields={"mode_actual": "outside-window"},
+            time=when_ct,
+        )
         return
     if scheduler_mode != "experiment":
         # In-window protocol deviation: the spec §5 four-mode
         # classification only applies when SCHEDULER_MODE=experiment.
-        p = (Point("hvac.arm_mode")
-             .time(when_ct)
-             .tag("scheduler_mode", scheduler_mode)
-             .tag("arm", arm)
-             .field("mode_actual", f"off-protocol-{scheduler_mode}"))
-        write_api.write(bucket=bucket, record=p)
+        write_point(
+            write_api, bucket, "hvac.arm_mode",
+            tags={"scheduler_mode": scheduler_mode, "arm": arm},
+            fields={"mode_actual": f"off-protocol-{scheduler_mode}"},
+            time=when_ct,
+        )
         return
     if arm == "A":
         mode_actual = "A-active"
@@ -1993,12 +2016,12 @@ def write_arm_mode(write_api, bucket: str, when_ct: datetime,
         mode_actual = "B-fallback"
     else:
         mode_actual = "B-active"
-    p = (Point("hvac.arm_mode")
-         .time(when_ct)
-         .tag("scheduler_mode", scheduler_mode)
-         .tag("arm", arm)
-         .field("mode_actual", mode_actual))
-    write_api.write(bucket=bucket, record=p)
+    write_point(
+        write_api, bucket, "hvac.arm_mode",
+        tags={"scheduler_mode": scheduler_mode, "arm": arm},
+        fields={"mode_actual": mode_actual},
+        time=when_ct,
+    )
 
 
 async def execute_action(c4: C4Client, action: ScheduleAction,
