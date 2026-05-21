@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from freshness import THRESHOLDS, Thresholds, classify
+from .freshness import THRESHOLDS, Thresholds, classify
 
 
 def test_comed_prices_threshold_is_seven_minutes_fresh():

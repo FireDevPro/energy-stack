@@ -17,7 +17,7 @@ experiment_start: 2026-06-01
 
 **Architecture:** Six phases. Phase 1 lands controller-side telemetry + arm-mode gating (foundation for everything). Phase 2 adds bill-canonical pricing infrastructure. Phase 3 rewrites the analysis pipeline around arm-period units with cost-matched exclusion + single validity gate. Phase 4 selects the NOAA-archived ASOS fallback station for Ecowitt-gap hours (NO historical baseline pull — spec §6 within-sample standardization eliminates the need for ERA5 / 2020-2025 historical data). Phase 5 freezes documentation. Phase 6 runs end-to-end shadow validation. Phase 2 + Phase 4 can run in parallel with Phase 3.
 
-**Tech Stack:** Python 3.11 + pytest, InfluxDB 2 + Flux, Docker Compose on Pi-lab, ComEd parse_comed_bill + PJM DataMiner2 + Ecowitt + Refoss EM16P + Eagle-3 HAN. Existing tooling in `tools/analysis/`, `deploy/energy-stack/hvac-scheduler/`, `deploy/energy-stack/pjm-dm2-poller/`.
+**Tech Stack:** Python 3.11 + pytest, InfluxDB 2 + Flux, Docker Compose on Pi-lab, ComEd parse_comed_bill + PJM DataMiner2 + Ecowitt + Refoss EM16P + Eagle-3 HAN. Existing tooling in `tools/analysis/`, `deploy/energy-stack/hvac_scheduler/`, `deploy/energy-stack/pjm-dm2-poller/`.
 
 **Spec source of truth:** [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](sced-rebaseline-spec-2026-05-13.md). Every task in this plan cites the spec section it implements.
 
@@ -32,7 +32,7 @@ experiment_start: 2026-06-01
 | Path | Responsibility |
 |---|---|
 | `tools/analysis/arm_calendar.py` | Locked 12-arm calendar (Section 2 of spec) + hour-index ↔ datetime conversion |
-| `deploy/energy-stack/hvac-scheduler/arm_calendar.py` | Byte-identical copy of above (CI hash-sync check per M5) — controller container needs local copy, no shared PYTHONPATH |
+| `deploy/energy-stack/hvac_scheduler/arm_calendar.py` | Byte-identical copy of above (CI hash-sync check per M5) — controller container needs local copy, no shared PYTHONPATH |
 | `tools/analysis/mode_classification.py` | 4-mode per-hour classification (Section 5 of spec) |
 | `tools/analysis/arm_period_pipeline.py` | Arm-period-shaped pipeline (replaces weekly Stage 3/5 framing) |
 | `tools/analysis/cost_matched_exclusion.py` | Greedy cost-matched symmetric exclusion (Section 5 of spec) |
@@ -46,8 +46,8 @@ experiment_start: 2026-06-01
 
 | Path | Change scope |
 |---|---|
-| `deploy/energy-stack/hvac-scheduler/app.py` | Add arm-calendar reading, mode-gating around `execute_action`, mode/switch/feed-health telemetry writes |
-| `deploy/energy-stack/hvac-scheduler/precool.py` | Optional pre-freeze: upgrade DTOD base→resultant rates (controller-side, NOT mandated for OSF) |
+| `deploy/energy-stack/hvac_scheduler/app.py` | Add arm-calendar reading, mode-gating around `execute_action`, mode/switch/feed-health telemetry writes |
+| `deploy/energy-stack/hvac_scheduler/precool.py` | Optional pre-freeze: upgrade DTOD base→resultant rates (controller-side, NOT mandated for OSF) |
 | `deploy/energy-stack/pjm-dm2-poller/app.py` | Add `rt_hrl_lmps` feed alongside existing `da_hrl_lmps` |
 | `tools/analysis/pipeline.py` | Major: remove `$/CDD` outcomes, weekly Stage 3/5 framing, bootstrap/SCED randomization. Wire to new arm-period pipeline. |
 | `tools/analysis/replay/manifest.py` | Add `rt_hrl_lmps` to KNOWN_MEASUREMENTS |
@@ -560,15 +560,15 @@ git commit -m "feat(analysis): add locked SCED arm calendar (spec §2)"
 ### Task 1.2: Add arm-mode gating to scheduler
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py` (add arm-calendar read + gate around `execute_action`)
-- Test: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py` (add arm-calendar read + gate around `execute_action`)
+- Test: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`
 
 Implements spec §3 (Arm A = scheduler in passive mode, Arm B = active).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py (add to existing file)
+# deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py (add to existing file)
 import datetime
 import pytest
 
@@ -684,16 +684,16 @@ def test_missing_scheduler_mode_fails_startup(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd deploy/energy-stack/hvac-scheduler && python -m pytest test_hvac_scheduler.py -k "scheduler_mode or experiment_mode or shadow_mode or production_mode" -v`
+Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_hvac_scheduler.py -k "scheduler_mode or experiment_mode or shadow_mode or production_mode" -v`
 Expected: FAIL — `SCHEDULER_MODE` env handling and `_writes_allowed` gate not yet implemented.
 
 - [ ] **Step 3: Write minimal implementation**
 
-**Import-path note (M5 resolution):** the hvac-scheduler container does NOT have `tools/analysis/` on its PYTHONPATH (per existing service-isolation pattern). Solution: duplicate `arm_calendar.py` into `deploy/energy-stack/hvac-scheduler/arm_calendar.py` and add a CI hash-sync check at every PR that asserts the two files are byte-identical. This respects the existing per-service Dockerfile pattern and avoids cross-service Python-path coupling.
+**Import-path note (M5 resolution):** the hvac-scheduler container does NOT have `tools/analysis/` on its PYTHONPATH (per existing service-isolation pattern). Solution: duplicate `arm_calendar.py` into `deploy/energy-stack/hvac_scheduler/arm_calendar.py` and add a CI hash-sync check at every PR that asserts the two files are byte-identical. This respects the existing per-service Dockerfile pattern and avoids cross-service Python-path coupling.
 
-Add `deploy/energy-stack/hvac-scheduler/arm_calendar.py` as a copy of `tools/analysis/arm_calendar.py`. Add to CI: `python -c "import hashlib, pathlib; a = hashlib.sha256(pathlib.Path('tools/analysis/arm_calendar.py').read_bytes()).hexdigest(); b = hashlib.sha256(pathlib.Path('deploy/energy-stack/hvac-scheduler/arm_calendar.py').read_bytes()).hexdigest(); assert a == b, f'arm_calendar.py copies out of sync ({a} != {b})'"`.
+Add `deploy/energy-stack/hvac_scheduler/arm_calendar.py` as a copy of `tools/analysis/arm_calendar.py`. Add to CI: `python -c "import hashlib, pathlib; a = hashlib.sha256(pathlib.Path('tools/analysis/arm_calendar.py').read_bytes()).hexdigest(); b = hashlib.sha256(pathlib.Path('deploy/energy-stack/hvac_scheduler/arm_calendar.py').read_bytes()).hexdigest(); assert a == b, f'arm_calendar.py copies out of sync ({a} != {b})'"`.
 
-In `deploy/energy-stack/hvac-scheduler/app.py`:
+In `deploy/energy-stack/hvac_scheduler/app.py`:
 
 ```python
 import os
@@ -761,7 +761,7 @@ Expected: PASS — both new tests + all existing tests still pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(hvac-scheduler): add arm-mode gating around execute_action (spec §3)"
 ```
 
@@ -770,8 +770,8 @@ git commit -m "feat(hvac-scheduler): add arm-mode gating around execute_action (
 ### Task 1.3: Add hvac.arm_mode telemetry
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py` (write `hvac.arm_mode` per decision cycle)
-- Test: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py` (write `hvac.arm_mode` per decision cycle)
+- Test: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`
 
 Implements spec §11 fix-list item #2.
 
@@ -839,7 +839,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(hvac-scheduler): add hvac.arm_mode telemetry per cycle (spec §11 #2)"
 ```
 
@@ -848,7 +848,7 @@ git commit -m "feat(hvac-scheduler): add hvac.arm_mode telemetry per cycle (spec
 ### Task 1.4: Add hvac.switch_event logging at boundaries
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py`
 - Test: existing test file
 
 Implements spec §11 fix-list item #3.
@@ -896,7 +896,7 @@ Wire into main loop: track `last_arm` across cycles, call on each cycle.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(hvac-scheduler): log arm-switch events at boundaries (spec §11 #3)"
 ```
 
@@ -905,7 +905,7 @@ git commit -m "feat(hvac-scheduler): log arm-switch events at boundaries (spec �
 ### Task 1.5: Add input-feed health telemetry
 
 **Files:**
-- Modify: `deploy/energy-stack/hvac-scheduler/app.py`
+- Modify: `deploy/energy-stack/hvac_scheduler/app.py`
 - Test: existing test file
 
 Implements spec §11 fix-list item #4. Reuse the `feeds` dict from Task 1.3.
@@ -947,7 +947,7 @@ Wire into decision cycle alongside arm_mode write.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/app.py deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/app.py deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "feat(hvac-scheduler): add input-feed health telemetry (spec §11 #4)"
 ```
 
@@ -1068,7 +1068,7 @@ git commit -m "feat(watchdog): controller heartbeat detection (spec §11 #5)"
 ### Task 1.7: Dry-run guard comprehensive audit
 
 **Files:**
-- Add tests: `deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py`
+- Add tests: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`
 
 Implements spec §11 fix-list item #9. Verify NO branch of `execute_action` calls Control4 setpoint-write methods when `dry_run=True`.
 
@@ -1108,7 +1108,7 @@ Fix any branch that fails the test.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py
+git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
 git commit -m "test(hvac-scheduler): comprehensive dry-run guard audit (spec §11 #9)"
 ```
 
@@ -2910,7 +2910,7 @@ git commit -m "docs(arm-a): freeze CTK04AE thermostat schedule (spec §3, §11 #
 - [ ] **Step 1: Enumerate day-types from code**
 
 ```bash
-grep -nE "day_type|DayType" deploy/energy-stack/hvac-scheduler/app.py | head -30
+grep -nE "day_type|DayType" deploy/energy-stack/hvac_scheduler/app.py | head -30
 ```
 
 List all day-types: MILD, NORMAL, HOT, HOT_STREAK_DAY1, HOT_STREAK_DAY2, ...

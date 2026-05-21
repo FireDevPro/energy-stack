@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from pjm_5cp import (
+from .pjm_5cp import (
     COMED_PRE_SEASON_FALLBACK_5TH_MW,
     COMED_SCOPE,
     RTO_PRE_SEASON_FALLBACK_5TH_MW,
@@ -508,7 +508,7 @@ def test_fetch_forecast_peak_today_uses_local_tz_not_utc_today(monkeypatch):
     midnight start, so evening CT (after 19:00 CDT = 00:00 UTC next day)
     queried tomorrow-UTC and missed today CT data. Verify the new
     implementation builds the window from Chicago today."""
-    from pjm_5cp import fetch_forecast_peak_today
+    from .pjm_5cp import fetch_forecast_peak_today
 
     api = _fake_query_api_with_responses(
         ["2026-07-15T17:00:00+00:00"],
@@ -523,7 +523,7 @@ def test_fetch_forecast_peak_today_uses_local_tz_not_utc_today(monkeypatch):
             # wrong day.
             return datetime(2026, 7, 16, 4, 30, tzinfo=timezone.utc).astimezone(tz) if tz else datetime(2026, 7, 15, 23, 30)
 
-    monkeypatch.setattr("pjm_5cp.datetime", _StubDatetime)
+    monkeypatch.setattr("hvac_scheduler.pjm_5cp.datetime", _StubDatetime)
     fetch_forecast_peak_today(api, "energy", tz=ZoneInfo("America/Chicago"))
     # Second call is the value query (first is the revision query).
     second_flux = api.query.call_args_list[1][0][0]
@@ -630,7 +630,7 @@ def _scope_evaluation_fixture(*,
     """Common harness for evaluate_for_scope tests. Stubs the two IO
     helpers inside pjm_5cp so the scope-aware code path is exercised
     end-to-end without spinning up Flux."""
-    import pjm_5cp
+    from . import pjm_5cp
     monkeypatch.setattr(pjm_5cp, "fetch_zone_live",
                         lambda q, b, *, area: snapshot)
     monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
@@ -895,7 +895,7 @@ def test_evaluate_for_scope_skips_off_season(monkeypatch):
     This is the safety guard against the 2026-05-11 incident: even
     if InfluxDB had bogus May 2026 RTO rows, the detector cannot
     fire during off-season."""
-    import pjm_5cp
+    from . import pjm_5cp
 
     # Spies: we should NEVER reach the Flux helpers during off-season.
     called: dict[str, bool] = {"fetch_zone_live": False, "update_season": False}

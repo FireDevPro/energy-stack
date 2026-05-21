@@ -5,7 +5,7 @@ Retired 2026-05-13 by docs/plans/sced-rebaseline-spec-2026-05-13.md §0 + §2.
 The current experiment uses deterministic 14-day arm alternation (12 arms,
 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment
 CSV. The canonical arm calendar is now in tools/analysis/arm_calendar.py
-(analysis-side) and deploy/energy-stack/hvac-scheduler/arm_calendar.py
+(analysis-side) and deploy/energy-stack/hvac_scheduler/arm_calendar.py
 (controller-side, byte-identical, CI hash-sync checked).
 
 This script and its output docs/experiment-assignments-summer-2026.csv are

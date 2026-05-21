@@ -526,7 +526,7 @@ def _build_action_node(
 
 
 def _classify_tier(cents: Any) -> str:
-    """Mirror of deploy/energy-stack/hvac-scheduler/price_overlay.py
+    """Mirror of deploy/energy-stack/hvac_scheduler/price_overlay.py
     tier policy: normal < 18¢, elevated < 20¢, scarcity >= 20¢."""
     if cents is None:
         return "normal"

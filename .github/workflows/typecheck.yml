@@ -46,7 +46,7 @@ jobs:
             deploy/energy-stack/eagle-poller/requirements.txt \
             deploy/energy-stack/ecowitt-ingest/requirements.txt \
             deploy/energy-stack/haven-ingest/requirements.txt \
-            deploy/energy-stack/hvac-scheduler/requirements.txt \
+            deploy/energy-stack/hvac_scheduler/requirements.txt \
             deploy/energy-stack/hvac-scheduler-watchdog/requirements.txt \
             deploy/energy-stack/nws-poller/requirements.txt \
             deploy/energy-stack/pjm-dm2-poller/requirements.txt \

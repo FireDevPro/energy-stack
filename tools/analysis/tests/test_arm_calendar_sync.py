@@ -1,5 +1,5 @@
 """Hash-sync check: tools/analysis/arm_calendar.py and the
-deploy/energy-stack/hvac-scheduler/arm_calendar.py copy MUST be
+deploy/energy-stack/hvac_scheduler/arm_calendar.py copy MUST be
 byte-identical.
 
 The hvac-scheduler container does not have tools/analysis on its
@@ -20,7 +20,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ANALYSIS_COPY = REPO_ROOT / "tools" / "analysis" / "arm_calendar.py"
-SCHEDULER_COPY = REPO_ROOT / "deploy" / "energy-stack" / "hvac-scheduler" / "arm_calendar.py"
+SCHEDULER_COPY = REPO_ROOT / "deploy" / "energy-stack" / "hvac_scheduler" / "arm_calendar.py"
 
 
 def _sha256(path: Path) -> str:

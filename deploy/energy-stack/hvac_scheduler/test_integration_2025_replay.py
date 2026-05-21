@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from price_overlay import (
+from .price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
     evaluate_price_overlay,

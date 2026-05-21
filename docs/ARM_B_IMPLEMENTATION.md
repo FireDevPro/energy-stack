@@ -18,7 +18,7 @@ supersession_note: largely-superseded; sections retained as historical primer pe
 > - **§10 (Acceptance criteria for OSF filing)** — fully superseded by binding spec [`plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) §11 + the pre-OSF doc-audit execution plan.
 > - Any assignment-CSV references, `randomize_arms.py` references, the `20260601` seed, and bootstrap/SCED-randomization-test framing — retired per spec §0.
 >
-> **Operational content still useful as primer:** day-type classifier rules (§1 thresholds), RTP price-spike reactivity (§2 module structure), PJM 5CP detection (§3 dual-scope state machine), layer priority (§4 formula). Authoritative locked values for all of these live in [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md); deviations from CONTROLLER_CONSTANTS.md or the live `deploy/energy-stack/hvac-scheduler/app.py` are bugs in THIS doc, not in those sources.
+> **Operational content still useful as primer:** day-type classifier rules (§1 thresholds), RTP price-spike reactivity (§2 module structure), PJM 5CP detection (§3 dual-scope state machine), layer priority (§4 formula). Authoritative locked values for all of these live in [`CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md); deviations from CONTROLLER_CONSTANTS.md or the live `deploy/energy-stack/hvac_scheduler/app.py` are bugs in THIS doc, not in those sources.
 >
 > Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137); supersession-tightening landed in [PR6 of the pre-OSF doc audit](plans/pre-osf-doc-audit-execution-2026-05-18.md).
 
@@ -30,7 +30,7 @@ supersession_note: largely-superseded; sections retained as historical primer pe
 
 ## Overview
 
-Arm B requires four new capabilities on top of the currently deployed scheduler ([`deploy/energy-stack/hvac-scheduler/app.py`](../deploy/energy-stack/hvac-scheduler/app.py)):
+Arm B requires four new capabilities on top of the currently deployed scheduler ([`deploy/energy-stack/hvac_scheduler/app.py`](../deploy/energy-stack/hvac_scheduler/app.py)):
 
 1. **Recalibrated day-type classifier** (HOT at ≥85°F max OR apparent ≥90°F)
 2. **Real-time RTP price-spike reactivity** (3-tier with hysteresis)
@@ -134,7 +134,7 @@ Variables of interest:
 
 ## 1. Day-type classifier recalibration
 
-**Location:** [`deploy/energy-stack/hvac-scheduler/app.py:396`](../deploy/energy-stack/hvac-scheduler/app.py) (`_classify_one_day()`)
+**Location:** [`deploy/energy-stack/hvac_scheduler/app.py:396`](../deploy/energy-stack/hvac_scheduler/app.py) (`_classify_one_day()`)
 
 **Prior thresholds (pre-recalibration, historical reference):**
 - MILD if forecast high < 82°F
@@ -154,7 +154,7 @@ Variables of interest:
 
 **Test:**
 
-Add unit tests to [`test_hvac_scheduler.py`](../deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py) covering:
+Add unit tests to [`test_hvac_scheduler.py`](../deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py) covering:
 
 - 88°F max + apparent 88°F → HOT (currently NORMAL)
 - 82°F max + apparent 92°F → HOT (currently NORMAL)
@@ -168,7 +168,7 @@ Add unit tests to [`test_hvac_scheduler.py`](../deploy/energy-stack/hvac-schedul
 
 ## 2. Real-time RTP price-spike reactivity
 
-**New module:** `deploy/energy-stack/hvac-scheduler/price_overlay.py`
+**New module:** `deploy/energy-stack/hvac_scheduler/price_overlay.py`
 
 **Integration point:** Called from `execute_action()` (line 628) before the safety supervisor.
 
@@ -294,7 +294,7 @@ Run scheduler in dry-run against May 2025 logged ComEd hourly prices. Verify the
 
 ## 3. PJM 5CP-eligibility detection
 
-**New module:** `deploy/energy-stack/hvac-scheduler/pjm_5cp.py`
+**New module:** `deploy/energy-stack/hvac_scheduler/pjm_5cp.py`
 
 **Integration point:** Called from `execute_action()` after price overlay, before safety supervisor.
 
@@ -491,7 +491,7 @@ Run detector against historical PJM data for 2024 and 2025 cooling seasons. Veri
 
 ## 4. Layer priority resolution
 
-**Location:** [`execute_action()`](../deploy/energy-stack/hvac-scheduler/app.py) line 628
+**Location:** [`execute_action()`](../deploy/energy-stack/hvac_scheduler/app.py) line 628
 
 The resolution order, applied in `execute_action()` before the safety supervisor:
 
@@ -631,7 +631,7 @@ The 24-hour dry-run produces:
 
 Already partially implemented as `HOT_STREAK_DAY1` schedule (multi-day heat trigger). Extend to also trigger on forecast 5CP risk:
 
-**Location:** [`decide_day_type()`](../deploy/energy-stack/hvac-scheduler/app.py) line 409, evaluated at 21:00 the night before.
+**Location:** [`decide_day_type()`](../deploy/energy-stack/hvac_scheduler/app.py) line 409, evaluated at 21:00 the night before.
 
 **Architecture (locked):** overnight pre-cool stays primary in both NORMAL and HOT schedules. The day-ahead ComEd price forecast adds a secondary depth/timing modulation layer on top of the temperature-driven base decision. This handles the case observed in 2025-2026 data where shoulder-season days with weather-mild forecasts (no day-type-driven pre-cool trigger) had negative-price afternoon windows followed by evening spikes — those windows are now capturable via the price-aware modulation layer without restructuring the temperature-driven pre-cool decision for hot summer days.
 

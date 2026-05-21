@@ -200,12 +200,12 @@ PR #121 contains the fix + live verification.
 
 | File | Role |
 |---|---|
-| [`deploy/energy-stack/hvac-scheduler/app.py`](../deploy/energy-stack/hvac-scheduler/app.py) | Main scheduler: `run_schedule_check`, `run_decision`, `_evaluate_layer_inputs`, `_push_layer_change_mid_period`, `fetch_day_ahead_prices_for_date`, all `_trace_*` helpers |
-| [`deploy/energy-stack/hvac-scheduler/precool.py`](../deploy/energy-stack/hvac-scheduler/precool.py) | §7 cheap-window + spike-window pure rule functions, DTOD rate schedule |
-| [`deploy/energy-stack/hvac-scheduler/safety_supervisor.py`](../deploy/energy-stack/hvac-scheduler/safety_supervisor.py) | `validate_setpoints` clamp + emergency-override logic |
-| [`deploy/energy-stack/hvac-scheduler/price_overlay.py`](../deploy/energy-stack/hvac-scheduler/price_overlay.py) | Tier state machine (normal / elevated / scarcity) with hysteresis + minimum hold |
-| [`deploy/energy-stack/hvac-scheduler/pjm_5cp.py`](../deploy/energy-stack/hvac-scheduler/pjm_5cp.py) | Dual-scope 5CP detector (ComEd zone + PJM RTO) |
-| [`deploy/energy-stack/hvac-scheduler/decision_codes.py`](../deploy/energy-stack/hvac-scheduler/decision_codes.py) | Append-only enums for all `reason_code` values |
+| [`deploy/energy-stack/hvac_scheduler/app.py`](../deploy/energy-stack/hvac_scheduler/app.py) | Main scheduler: `run_schedule_check`, `run_decision`, `_evaluate_layer_inputs`, `_push_layer_change_mid_period`, `fetch_day_ahead_prices_for_date`, all `_trace_*` helpers |
+| [`deploy/energy-stack/hvac_scheduler/precool.py`](../deploy/energy-stack/hvac_scheduler/precool.py) | §7 cheap-window + spike-window pure rule functions, DTOD rate schedule |
+| [`deploy/energy-stack/hvac_scheduler/safety_supervisor.py`](../deploy/energy-stack/hvac_scheduler/safety_supervisor.py) | `validate_setpoints` clamp + emergency-override logic |
+| [`deploy/energy-stack/hvac_scheduler/price_overlay.py`](../deploy/energy-stack/hvac_scheduler/price_overlay.py) | Tier state machine (normal / elevated / scarcity) with hysteresis + minimum hold |
+| [`deploy/energy-stack/hvac_scheduler/pjm_5cp.py`](../deploy/energy-stack/hvac_scheduler/pjm_5cp.py) | Dual-scope 5CP detector (ComEd zone + PJM RTO) |
+| [`deploy/energy-stack/hvac_scheduler/decision_codes.py`](../deploy/energy-stack/hvac_scheduler/decision_codes.py) | Append-only enums for all `reason_code` values |
 | [`deploy/energy-stack/pjm-dm2-poller/app.py`](../deploy/energy-stack/pjm-dm2-poller/app.py) | `fetch_da_lmp_for_tomorrow` + per-feed schedule |
 | [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) | Prose specification of day-type schedules, supervisor rules, ISU settings, fallback behavior |
 | [`docs/plans/archive/decision-trace-plan.md`](plans/archive/decision-trace-plan.md) | Phased plan that delivered the `decision_trace.*` event family (Phases 1-5, all merged; archived) |

@@ -55,7 +55,7 @@ export const FRESHNESS_THRESHOLDS: Record<string, FreshnessThresholds> = {
   // every 5-min publish cycle. Warn does NOT indicate a feed problem —
   // it indicates the controller would refuse a downgrade decision if
   // asked this tick. See spec §3.1.
-  // Hand-paired with deploy/energy-stack/hvac-scheduler/freshness.py.
+  // Hand-paired with deploy/energy-stack/hvac_scheduler/freshness.py.
   'comed.prices': {
     fresh_max_ms: min(7),
     warn_max_ms: min(16),

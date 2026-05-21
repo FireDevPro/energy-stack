@@ -40,7 +40,7 @@ The 19:18Z downgrade was a wrong decision. The bucket the scheduler trusted was 
 
 The scheduler is **freshness-blind**. The function it uses to read the current ComEd price returns only the price value, with no timestamp or freshness information attached.
 
-### The function at `deploy/energy-stack/hvac-scheduler/app.py:821-827`:
+### The function at `deploy/energy-stack/hvac_scheduler/app.py:821-827`:
 
 ```python
 def fetch_latest_comed(query_api, bucket: str) -> float | None:
@@ -71,7 +71,7 @@ So the field tracks "the last time we made a query that returned anything at all
 
 ### The Flux query
 
-`deploy/energy-stack/hvac-scheduler/app.py:799-807`:
+`deploy/energy-stack/hvac_scheduler/app.py:799-807`:
 
 ```python
 def fq_latest_comed_5min(bucket: str) -> str:
@@ -91,7 +91,7 @@ The query returns the most recent bucket within the last 30 minutes. A bucket th
 
 ## The Four Callers of `fetch_latest_comed`
 
-Grep for `fetch_latest_comed` in `deploy/energy-stack/hvac-scheduler/app.py` shows four production call sites:
+Grep for `fetch_latest_comed` in `deploy/energy-stack/hvac_scheduler/app.py` shows four production call sites:
 
 1. `app.py:2044` — in `revisit_today_decision`. Used for audit logging only (records price-at-decision in `hvac.decisions` table).
 2. `app.py:2089` — in `run_decision`. Also audit logging only.
@@ -168,7 +168,7 @@ This pattern is applied in at least 11 places across services and docs (search f
 
 1. **Refactor `fetch_latest_comed` and downstream code** to make freshness a first-class concept that all consumers can check.
 2. **Unify the freshness definition** across the controller and the cockpit (they currently have independent definitions).
-3. **Add a Python type checker** (`mypy --strict` or equivalent) to the test suite for `deploy/energy-stack/hvac-scheduler/` and `tools/cockpit/backend/`. The project currently has no type checker enforcing the type hints in the code. This is a contributing factor to bugs that should have been caught at write-time but were caught only at runtime via review.
+3. **Add a Python type checker** (`mypy --strict` or equivalent) to the test suite for `deploy/energy-stack/hvac_scheduler/` and `tools/cockpit/backend/`. The project currently has no type checker enforcing the type hints in the code. This is a contributing factor to bugs that should have been caught at write-time but were caught only at runtime via review.
 
 The next agent should investigate the code at the file:line references above, understand the full picture, and propose a refactor that respects the project's principles (fail loud, single source of truth, surgical changes).
 
@@ -176,13 +176,13 @@ The next agent should investigate the code at the file:line references above, un
 
 ## Key Files to Read
 
-- `deploy/energy-stack/hvac-scheduler/app.py` — the controller, particularly:
+- `deploy/energy-stack/hvac_scheduler/app.py` — the controller, particularly:
   - `fetch_latest_comed` at 821-827
   - `fq_latest_comed_5min` at 799-807
   - `FiringState.price_feed_last_ok_at_utc` at 1377
   - `_evaluate_layer_inputs` at 2382-2487 (the critical-path caller block)
   - `write_input_feed_health` at 1849-1865 (the audit telemetry)
-- `deploy/energy-stack/hvac-scheduler/price_overlay.py` — the price-overlay state machine and tier definitions
+- `deploy/energy-stack/hvac_scheduler/price_overlay.py` — the price-overlay state machine and tier definitions
 - `deploy/energy-stack/comed-poller/poller.py` — the data ingestion layer (also freshness-blind)
 - `tools/cockpit/backend/freshness.py` — the cockpit's independent freshness module
 - `tools/cockpit/README.md` — explains why the cockpit runs locally rather than in the docker stack

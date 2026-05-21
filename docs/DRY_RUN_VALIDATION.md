@@ -54,7 +54,7 @@ A change requires `docker compose restart hvac-scheduler` to pick up. The retire
 `dry_run=True`, before any Control4 call. The check sits at the top of
 the function, above the release_hold and setpoint paths, so no controller
 upstream of `execute_action` can leak a setpoint push when dry-run is
-active. See [test_hvac_scheduler.py](../deploy/energy-stack/hvac-scheduler/test_hvac_scheduler.py)
+active. See [test_hvac_scheduler.py](../deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py)
 tests:
 
   * `test_execute_release_hold_dry_run_does_not_call_thermostat`

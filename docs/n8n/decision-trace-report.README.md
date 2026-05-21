@@ -177,4 +177,4 @@ the `Influx Feed Health` node hasn't been edited to skip the `keep`.
 - Spec for the fact packet contract: this directory's `*.prompt.md`
 - Source of the Flux query lessons: PR #125 (initial impl), #126 (live-
   verification fixes)
-- Decision codes the report references: `deploy/energy-stack/hvac-scheduler/decision_codes.py`
+- Decision codes the report references: `deploy/energy-stack/hvac_scheduler/decision_codes.py`
