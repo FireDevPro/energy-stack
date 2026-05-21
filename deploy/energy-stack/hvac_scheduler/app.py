@@ -789,6 +789,7 @@ class Config:
 # ---- Influx queries --------------------------------------------------------
 
 from .freshness import Freshness, classify, THRESHOLDS  # noqa: E402
+from .influx_adapter import project_record, TypedRecord  # noqa: E402
 
 # PriceSample: per-tick ComEd read bundles value + bucket _time + freshness
 # label. Per spec §3.3 — the per-tick freshness label uses the data-source
@@ -845,19 +846,25 @@ def fetch_latest_comed(query_api, bucket: str, *, now_utc: datetime) -> "PriceSa
     """
     for table in query_api.query(fq_latest_comed_5min(bucket)):
         for record in table.records:
-            v = record.get_value()
-            if v is None:
-                continue
-            source_ts = record.get_time()
-            if source_ts is None:
-                log("error", "comed_row_missing_time",
-                    bucket=bucket, value=float(v))
+            try:
+                rec = project_record(record)
+            except ValueError as exc:
+                # project_record raises ValueError when any required
+                # attribute (value/time/field/measurement) is missing or
+                # malformed. Preserve prior spec §7 semantic: malformed
+                # Influx state for the latest comed.prices row is logged
+                # and short-circuited (supervisor-continuity — do not
+                # raise). The earlier code split this into value=skip vs
+                # time=log+None; collapsing both into the malformed path
+                # is safe because under the live Flux query both indicate
+                # a broken row that cannot produce a usable PriceSample.
+                log("error", "comed_row_missing_time", bucket=bucket, error=str(exc))
                 return None
-            age_ms = int((now_utc - source_ts).total_seconds() * 1000)
+            age_ms = int((now_utc - rec.time_utc).total_seconds() * 1000)
             label = classify("comed.prices", age_ms)
             return PriceSample(
-                cents_per_kwh=float(v),
-                source_ts=source_ts,
+                cents_per_kwh=rec.value,
+                source_ts=rec.time_utc,
                 freshness=label,
             )
     return None
