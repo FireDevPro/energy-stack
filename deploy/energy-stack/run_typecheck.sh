@@ -44,13 +44,13 @@ failed=()
 # runs when the files list is non-empty — once the rollout completes
 # and `files` is removed entirely, this guard skips the bootstrap and
 # run_typecheck.sh does not fail on mypy's "no targets" error (code 2).
-if python -c "
+if (cd "$REPO_ROOT" && python -c "
 import tomllib, sys
-with open('$REPO_ROOT/pyproject.toml', 'rb') as f:
+with open('pyproject.toml', 'rb') as f:
     cfg = tomllib.load(f)
 files = cfg.get('tool', {}).get('mypy', {}).get('files', [])
 sys.exit(0 if files else 1)
-" 2>/dev/null; then
+"); then
     echo "=== type-checking pyproject.toml files list ==="
     if ! (cd "$REPO_ROOT" && python -m mypy); then
         failed+=("pyproject-files")
