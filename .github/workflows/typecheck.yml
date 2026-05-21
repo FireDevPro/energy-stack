@@ -44,7 +44,7 @@ jobs:
           for req in \
             deploy/energy-stack/comed_poller/requirements.txt \
             deploy/energy-stack/eagle_poller/requirements.txt \
-            deploy/energy-stack/ecowitt-ingest/requirements.txt \
+            deploy/energy-stack/ecowitt_ingest/requirements.txt \
             deploy/energy-stack/haven_ingest/requirements.txt \
             deploy/energy-stack/hvac_scheduler/requirements.txt \
             deploy/energy-stack/hvac_scheduler_watchdog/requirements.txt \

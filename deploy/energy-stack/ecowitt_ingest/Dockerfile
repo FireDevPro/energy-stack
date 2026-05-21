@@ -1,13 +1,14 @@
 FROM python:3.13-slim
 
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 RUN pip install --no-cache-dir --upgrade pip
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/ecowitt_ingest/
+RUN pip install --no-cache-dir -r /app/ecowitt_ingest/requirements.txt
 
-COPY app.py .
+COPY . /app/ecowitt_ingest/
 
 RUN useradd --system --no-create-home --uid 1010 ecowitt
 USER ecowitt
@@ -22,4 +23,4 @@ EXPOSE 8088
 HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
   CMD test -n "$(find /tmp/last_push_ok -mmin -7 2>/dev/null)" || exit 1
 
-CMD ["python", "app.py"]
+CMD ["python", "-m", "ecowitt_ingest.app"]

@@ -311,7 +311,7 @@ from(bucket: "{bucket}")
             by_field[str(row["_field"])] = int(row["_value"])
     # Coverage-fraction guard: treat ch1_* as meaningfully populated only
     # if it covers >=50% of ws90_* row count (ws90_* is "always present"
-    # per ecowitt-ingest/app.py and serves as the natural baseline).
+    # per ecowitt_ingest/app.py and serves as the natural baseline).
     CANONICAL_COVERAGE_FRACTION_OF_WS90 = 0.5
     ch1_temp_n = by_field.get("ch1_temp_f", 0)
     ch1_dewpt_n = by_field.get("ch1_dewpoint_f", 0)

@@ -227,7 +227,7 @@ services:
       - thermostat_poller_data:/data
 
   ecowitt-ingest:
-    build: ./ecowitt-ingest
+    build: ./ecowitt_ingest
     container_name: ecowitt-ingest
     restart: unless-stopped
     depends_on:
