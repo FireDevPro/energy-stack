@@ -29,6 +29,7 @@ from .app import (
     check_pjm_feed_freshness,
     check_poller_silence,
     check_price_spike,
+    poller_last_writes,
 )
 
 
@@ -200,6 +201,69 @@ def test_check_price_spike_at_threshold_fires(monkeypatch):
     alerts = check_price_spike(MagicMock(), "energy", threshold_c=20)
     assert len(alerts) == 1
     assert "20.0" in alerts[0].text
+
+
+# ---- poller_last_writes ---------------------------------------------------
+
+
+def test_poller_last_writes_picks_max_when_stale_row_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGRESSION: Flux `|> last()` returns ONE row per series, so a
+    multi-series measurement like `comed.prices` (period_type=5min AND
+    period_type=hourly_avg) yields multiple rows. Picking `rows[0]`
+    arbitrarily can land on the stale hourly_avg series (written once
+    per hour) and produce a false "comed-poller silent for 27 min"
+    alert when the 5min series is fresh.
+
+    The function MUST take the MAX `_time` across all rows so a poller
+    counts as "writing" if ANY of its series is recent.
+
+    Worst-case ordering: stale row first, fresh row second. Under the
+    buggy `rows[0]` code this test FAILS (returns the stale time).
+    Under the max-across-rows fix it returns the fresh time.
+    """
+    fresh = datetime(2026, 5, 20, 14, 30, 0, tzinfo=timezone.utc)
+    stale = datetime(2026, 5, 20, 14,  3, 0, tzinfo=timezone.utc)  # 27 min earlier
+
+    def _multi_row_fetch(query_api: Any, flux: str) -> list[dict[str, Any]]:
+        # Simulate Flux returning the stale series first
+        return [
+            {"_time": stale, "result": "_result", "table": 0},
+            {"_time": fresh, "result": "_result", "table": 1},
+        ]
+
+    monkeypatch.setattr(app, "fetch_one", _multi_row_fetch)
+    result = poller_last_writes(MagicMock(), "energy")
+
+    # Every poller in the measurement list should resolve to the FRESH time.
+    for poller, ts in result.items():
+        assert ts == fresh, f"{poller} got {ts}, expected fresh {fresh}"
+
+
+def test_poller_last_writes_picks_max_when_fresh_row_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defensive: ordering doesn't matter. With fresh first the buggy
+    `rows[0]` code happens to be correct; the fix must not regress this
+    case."""
+    fresh = datetime(2026, 5, 20, 14, 30, 0, tzinfo=timezone.utc)
+    stale = datetime(2026, 5, 20, 14,  3, 0, tzinfo=timezone.utc)
+
+    def _multi_row_fetch(query_api: Any, flux: str) -> list[dict[str, Any]]:
+        return [
+            {"_time": fresh, "result": "_result", "table": 0},
+            {"_time": stale, "result": "_result", "table": 1},
+        ]
+
+    monkeypatch.setattr(app, "fetch_one", _multi_row_fetch)
+    result = poller_last_writes(MagicMock(), "energy")
+    for poller, ts in result.items():
+        assert ts == fresh, f"{poller} got {ts}, expected fresh {fresh}"
+
+
+def test_poller_last_writes_returns_none_when_no_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A poller with no rows in the lookback window resolves to None."""
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [])
+    result = poller_last_writes(MagicMock(), "energy")
+    for poller, ts in result.items():
+        assert ts is None, f"{poller} got {ts}, expected None"
 
 
 def test_check_price_spike_well_above_threshold_fires(monkeypatch):
