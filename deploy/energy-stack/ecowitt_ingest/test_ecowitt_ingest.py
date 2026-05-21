@@ -3,10 +3,19 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
-import app
+from . import app
+
+
+def _line(pt: Any) -> str:
+    """Test helper: serialise an influxdb_client Point to its line-protocol
+    string. Wrapped in a typed shim because influxdb_client's stubs lack
+    annotations on ``Point.to_line_protocol``."""
+    result: str = pt.to_line_protocol()
+    return result
 
 
 # ---------- dewpoint ----------
@@ -115,7 +124,7 @@ def _payload_with_shaded_and_sun() -> dict[str, str]:
 def test_outdoor_sourced_from_configured_shaded_channel():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     # outdoor_* IS the shaded WN31 (channel 1), not the sun-exposed WS90
     assert "outdoor_temp_f=74.6" in lp
     assert "outdoor_rh_pct=38" in lp
@@ -127,7 +136,7 @@ def test_outdoor_omitted_when_shaded_channel_unset():
     # WS90 sun reading -- downstream analysis would be biased.
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=None)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "outdoor_temp_f" not in lp
     assert "outdoor_rh_pct" not in lp
     assert "outdoor_dewpoint_f" not in lp
@@ -145,7 +154,7 @@ def test_outdoor_omitted_when_shaded_channel_silent():
 
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "outdoor_temp_f" not in lp
     assert "outdoor_rh_pct" not in lp
     assert "outdoor_dewpoint_f" not in lp
@@ -156,7 +165,7 @@ def test_outdoor_omitted_when_shaded_channel_silent():
 def test_ws90_onboard_always_emitted():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "ws90_temp_f=82.4" in lp
     assert "ws90_rh_pct=31" in lp
     assert "ws90_dewpoint_f=" in lp
@@ -165,7 +174,7 @@ def test_ws90_onboard_always_emitted():
 def test_ws90_onboard_emitted_even_without_shaded_channel():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=None)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "ws90_temp_f=82.4" in lp
     assert "ws90_rh_pct=31" in lp
 
@@ -175,7 +184,7 @@ def test_ws90_and_outdoor_are_independent_values():
     # collapsed.
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "outdoor_temp_f=74.6" in lp
     assert "ws90_temp_f=82.4" in lp
 
@@ -185,7 +194,7 @@ def test_ws90_and_outdoor_are_independent_values():
 def test_ws90_wind_solar_baro_fields_present():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "wind_mph=3.2" in lp
     assert "wind_gust_mph=5.8" in lp
     assert "wind_dir_deg=224" in lp
@@ -198,7 +207,7 @@ def test_ws90_wind_solar_baro_fields_present():
 def test_rain_fields_use_correct_types():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "rain_state=0i" in lp  # int
     assert "rain_event_in=0" in lp
     assert "rain_daily_in=0" in lp
@@ -207,7 +216,7 @@ def test_rain_fields_use_correct_types():
 def test_gw1200_internal_fields_present():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "indoor_temp_f=71.8" in lp
     assert "indoor_rh_pct=34" in lp
     assert "baro_abs_inhg=29.51" in lp
@@ -224,7 +233,7 @@ def test_other_channels_emitted_as_ch_fields():
 
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     # Shaded canonical still on channel 1
     assert "outdoor_temp_f=74.6" in lp
     # Supplemental channel 3 emitted as ch3_*
@@ -239,7 +248,7 @@ def test_shaded_channel_not_duplicated_as_ch_fields():
     # two field names would confuse downstream analysis.
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "ch1_temp_f" not in lp
     assert "ch1_rh_pct" not in lp
     assert "ch1_dewpoint_f" not in lp
@@ -248,7 +257,7 @@ def test_shaded_channel_not_duplicated_as_ch_fields():
 def test_unpaired_channels_omitted():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     for ch in (2, 3, 4, 5, 6, 7, 8):
         assert f"ch{ch}_temp_f" not in lp
 
@@ -261,7 +270,7 @@ def test_multiple_supplemental_channels_emitted():
 
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     for ch in (2, 4, 7):
         assert f"ch{ch}_temp_f={60 + ch}" in lp
         assert f"ch{ch}_rh_pct={50 + ch}" in lp
@@ -272,7 +281,7 @@ def test_multiple_supplemental_channels_emitted():
 def test_build_point_uses_dateutc_for_timestamp():
     p = app.build_point(_payload_with_shaded_and_sun(), shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     expected_ts = int(datetime(2026, 5, 11, 19, 0, 0, tzinfo=timezone.utc).timestamp())
     assert lp.endswith(f" {expected_ts}")
 
@@ -293,7 +302,7 @@ def test_build_point_handles_partial_payload():
     form.pop("windgustmph")
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "wind_mph" not in lp
     assert "wind_gust_mph" not in lp
     # Both temp streams still present.
@@ -306,7 +315,7 @@ def test_build_point_ignores_garbage_numeric_values():
     form["tempf"] = "not-a-number"
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     # ws90 sun comparator silently dropped, not crashed.
     assert "ws90_temp_f" not in lp
     # Shaded outdoor unaffected (separate sensor).
@@ -318,7 +327,7 @@ def test_build_point_tags_unknown_gateway_when_passkey_missing():
     form.pop("PASSKEY")
     p = app.build_point(form, shaded_channel=1)
     assert p is not None
-    lp = p.to_line_protocol()
+    lp = _line(p)
     assert "gateway=unknown" in lp
 
 

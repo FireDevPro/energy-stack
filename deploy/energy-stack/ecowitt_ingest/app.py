@@ -106,10 +106,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs
 
-from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client import InfluxDBClient, Point, WritePrecision  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 HEALTH_MARKER = Path("/tmp/last_push_ok")
@@ -289,7 +289,14 @@ def build_point(form: dict[str, str], shaded_channel: int | None = None) -> Poin
     if not fields:
         return None
 
-    p = Point(MEASUREMENT).tag("gateway", passkey).time(ts, WritePrecision.S)
+    # `p: Any` lets the Point()/.tag()/.time()/.field() chain (untyped in
+    # influxdb_client stubs) flow through without per-call ignores.
+    # cast() at return restores the declared Point return type.
+    p: Any = (
+        Point(MEASUREMENT)  # type: ignore[no-untyped-call]  # influxdb_client stubs lack Point/.tag/.time annotations
+        .tag("gateway", passkey)
+        .time(ts, WritePrecision.S)
+    )
     for name, value in fields.items():
         # Force float for measurements (avoids InfluxDB type-collision errors
         # if the same field is later written by a different writer as int).
@@ -298,12 +305,14 @@ def build_point(form: dict[str, str], shaded_channel: int | None = None) -> Poin
             p = p.field(name, int(value))
         else:
             p = p.field(name, float(value))
-    return p
+    return cast(Point, p)
 
 
 class _Handler(BaseHTTPRequestHandler):
-    # Class attrs set in make_handler closure.
-    write_api = None  # type: ignore[assignment]
+    # Class attrs set in make_handler closure. write_api is annotated Any to
+    # accept the None sentinel default AND the closure-bound real instance;
+    # influxdb_client's write_api type is untyped in stubs regardless.
+    write_api: Any = None
     bucket: str = ""
     org: str = ""
     shaded_channel: int | None = None
@@ -364,7 +373,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._bad(500, "ingest error")
 
 
-def make_handler(write_api, bucket: str, org: str, shaded_channel: int | None):
+def make_handler(
+    write_api: Any, bucket: str, org: str, shaded_channel: int | None
+) -> type[BaseHTTPRequestHandler]:
     class Bound(_Handler):
         pass
 
@@ -413,8 +424,8 @@ def main() -> None:
         server.serve_forever()
     finally:
         server.server_close()
-        write_api.close()
-        client.close()
+        write_api.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs lack close annotation
+        client.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs lack close annotation
         log("info", "stopped")
 
 
