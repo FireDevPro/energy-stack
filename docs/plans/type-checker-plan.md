@@ -9,15 +9,15 @@ role-label: chris
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Spec:** [docs/superpowers/specs/2026-05-20-type-checker-design.md](../superpowers/specs/2026-05-20-type-checker-design.md) — rev 5.1, architecture approved (4 dual-review rounds).
+**Spec:** [docs/superpowers/specs/2026-05-20-type-checker-design.md](../superpowers/specs/2026-05-20-type-checker-design.md) — rev 6, architecture approved (4 dual-review rounds + 1 operator pre-execution review).
 
 **Goal:** Land enforced `mypy --strict` type-checking on all 11 scheduler-stack Python services + cockpit-backend, before the OSF freeze locks in the binding implementation. Adapter-boundary enforcement via `import-linter`. Full package model (every service is a regular Python package with `__init__.py`, package-relative imports, `python -m <service>.<entrypoint>` Dockerfile CMD).
 
 **Architecture:** Three-layer (pyproject.toml mypy config + run_typecheck.sh per-service invocation + CI workflow), with per-service rollout. Each service PR includes: directory rename to underscore, `__init__.py` addition, sibling-import conversion to relative form, Dockerfile WORKDIR + CMD update, greenfield mypy clean, and import-linter contracts for adapters. Bootstrap mypy pass over a `files` list keeps the two freshness modules covered from PR 1 until each service migrates in. Bootstrap pass guarded by a tomllib check so it skips cleanly once `files` is empty (post-Phase-4).
 
-**Tech Stack:** Python 3.13, mypy `>=1.10,<2.0` with `--strict`, pydantic v2 mypy plugin, import-linter (`lint-imports` CLI), GitHub Actions (ubuntu-latest runner), Docker Compose, pytest.
+**Tech Stack:** Python 3.13, mypy 1.x with `--strict` (exact `==X.Y.Z` version captured at PR 1 implementation), pydantic v2 mypy plugin, import-linter (`lint-imports` CLI), GitHub Actions (ubuntu-latest runner), Docker Compose, pytest. All four type-checking dependencies (`mypy`, `pydantic`, `import-linter`, `types-requests`) are pinned to exact versions in `requirements-dev.txt` for the OSF-locked study window — range specifiers are forbidden (see spec §8.2).
 
-**Branching:** PR 1 lands the spec + plan + infrastructure together from this `feat/type-checker` branch. PRs 2-14 each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
+**Branching:** **PR 0** (docs prelude) landed via `feat/type-checker` → `main` as PR #11 on 2026-05-20 and contained ONLY this spec + plan (no infrastructure). **PR 1** (this branch `feat/type-checker-pr1`) lands the infrastructure (`pyproject.toml`, `run_typecheck.sh`, `typecheck.yml`, `type-debt-backlog.md`, `requirements-dev.txt`). **PRs 2-15** each branch from `main` after the prior PR merges. No stacking; one PR at a time per AGENTS.md.
 
 ---
 
@@ -61,7 +61,7 @@ Run:
 ```bash
 git status --short --branch
 ```
-Expected: `## feat/type-checker` and no modified files (the spec + plan are already committed).
+Expected: `## feat/type-checker-pr1` and no modified files. The spec + plan landed in PR 0 (PR #11, merged to `main` on 2026-05-20); this branch is cut fresh off `main` and starts empty.
 
 - [ ] **Step 2: Inspect any existing requirements-dev.txt**
 
@@ -98,34 +98,56 @@ If Python is older than 3.13, note this. Local tasks may need to run inside a 3.
 
 If `requirements-dev.txt` exists, preserve its current contents. We're adding to it.
 
-- [ ] **Step 2: Write the updated requirements**
+- [ ] **Step 2: Capture exact versions in a clean Python 3.13 env**
 
-Set the content to (preserve any existing lines above, then append/merge):
+Range specifiers are forbidden during the OSF-locked study window (see spec §8.2). The four type-checking packages must be pinned to EXACT `==X.Y.Z` versions captured from a fresh resolve.
+
+```bash
+# In a clean Python 3.13 venv (NOT a shared dev env that already has older mypy etc.):
+python -m venv /tmp/typecheck-pin
+source /tmp/typecheck-pin/bin/activate   # or /tmp/typecheck-pin/Scripts/Activate.ps1 on Windows
+pip install --upgrade pip
+pip install mypy pydantic import-linter types-requests
+pip freeze | grep -E '^(mypy|pydantic|import-linter|types-requests)=='
+deactivate
+```
+
+Copy the four `==X.Y.Z` lines from the `pip freeze` output. Note: `pydantic` may also pull in `pydantic-core` and `annotated-types`; capture those too if they appear in the freeze output — they are transitive but locking them avoids resolver surprises later.
+
+- [ ] **Step 3: Write the updated requirements with exact pins**
+
+Set the content to (preserve any existing lines above, then append/merge the type-checking section):
 
 ```
-# Type-checking
-mypy>=1.10,<2.0
-pydantic>=2.5
-import-linter>=2.0
-types-requests
+# Type-checking — EXACT pins for OSF-locked study window.
+# Captured by Step 2 via clean-env `pip install` + `pip freeze`.
+# Range specifiers (e.g., `mypy>=1.10,<2.0`) are forbidden here per spec §8.2:
+# a newer 1.x mypy could surface CI findings unrelated to our code.
+# Upgrades after the study are deliberate, separately-reviewed PRs.
+mypy==X.Y.Z              # paste from Step 2 pip freeze
+pydantic==X.Y.Z          # paste from Step 2 pip freeze
+pydantic-core==X.Y.Z     # paste if present in Step 2 freeze
+annotated-types==X.Y.Z   # paste if present in Step 2 freeze
+import-linter==X.Y.Z     # paste from Step 2 pip freeze
+types-requests==X.Y.Z    # paste from Step 2 pip freeze
 ```
 
-Use the Write tool. If the file already exists with other test dependencies (pytest, etc.), keep those and append the type-checking section.
+Use the Write tool. If the file already exists with other test dependencies (pytest, etc.), keep those and append the type-checking section. Replace each `X.Y.Z` placeholder with the actual version from Step 2.
 
-- [ ] **Step 3: Install locally (optional but recommended)**
+- [ ] **Step 4: Install locally (optional but recommended)**
 
-If you have a local Python 3.13 environment:
+Reuse the venv from Step 2, or install into your normal Python 3.13 environment:
 ```bash
 pip install -r deploy/energy-stack/requirements-dev.txt
 ```
 
 If pip install succeeds, continue. If you don't have a 3.13 env locally, CI will install these — local install is for ergonomics, not required.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add deploy/energy-stack/requirements-dev.txt
-git commit -m "feat(type-checker): add mypy + import-linter + pydantic to requirements-dev"
+git commit -m "feat(type-checker): add mypy + import-linter + pydantic to requirements-dev (exact pins)"
 ```
 
 ---
@@ -450,13 +472,33 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r deploy/energy-stack/requirements-dev.txt
       - name: Install all service requirements
-        # Install every service's requirements.txt unconditionally so
-        # mypy can resolve typed library symbols regardless of which
+        # Install every IN-SCOPE service's requirements.txt unconditionally
+        # so mypy can resolve typed library symbols regardless of which
         # services are currently in the enforced set. Pip deduplicates
         # shared deps. Avoids the "added a service to enforced set,
         # forgot to update CI" failure mode.
+        #
+        # Explicit enumeration (not a glob) because `deploy/energy-stack/`
+        # also contains the out-of-scope `scripts/` directory (per spec
+        # §3.2) whose requirements would otherwise be installed and could
+        # fail the typecheck job for reasons unrelated to the enforced
+        # set. When a new service is added in scope, append it here AND
+        # to `run_typecheck.sh`. The migration template (spec §6.1)
+        # lists this.
         run: |
-          for req in deploy/energy-stack/*/requirements.txt tools/cockpit/backend/requirements.txt; do
+          for req in \
+            deploy/energy-stack/comed-poller/requirements.txt \
+            deploy/energy-stack/eagle-poller/requirements.txt \
+            deploy/energy-stack/ecowitt-ingest/requirements.txt \
+            deploy/energy-stack/haven-ingest/requirements.txt \
+            deploy/energy-stack/hvac-scheduler/requirements.txt \
+            deploy/energy-stack/hvac-scheduler-watchdog/requirements.txt \
+            deploy/energy-stack/nws-poller/requirements.txt \
+            deploy/energy-stack/pjm-dm2-poller/requirements.txt \
+            deploy/energy-stack/refoss-poller/requirements.txt \
+            deploy/energy-stack/telegram-notifier/requirements.txt \
+            deploy/energy-stack/thermostat-poller/requirements.txt \
+            tools/cockpit/backend/requirements.txt; do
             if [[ -f "$req" ]]; then
               pip install -r "$req"
             fi
@@ -588,11 +630,13 @@ natively and PyPI stub packages."
 - Read: `deploy/energy-stack/hvac-scheduler/freshness.py`
 - Read: `tools/cockpit/backend/freshness.py`
 
-- [ ] **Step 1: Install mypy + pydantic + import-linter locally**
+- [ ] **Step 1: Install dev dependencies from the pinned requirements-dev.txt**
 
 ```bash
-pip install 'mypy>=1.10,<2.0' 'pydantic>=2.5' 'import-linter>=2.0' types-requests
+pip install -r deploy/energy-stack/requirements-dev.txt
 ```
+
+This installs the exact `==X.Y.Z` versions captured by Task 2 step 2. Do NOT install via loose `>=` specifiers here — local environment must match what CI installs.
 
 If pip install fails (no Python 3.13 locally), skip to step 4 (the CI run is the canonical verification).
 
@@ -762,12 +806,12 @@ git status --short --branch
 git log --oneline main..HEAD
 ```
 
-Expected: clean tree; 8-12 commits ahead of main (depending on Task 8/9 changes).
+Expected: clean tree; 8-12 commits ahead of main (depending on Task 8/9 changes). Current branch: `feat/type-checker-pr1`.
 
 - [ ] **Step 2: Push the branch**
 
 ```bash
-git push -u origin feat/type-checker
+git push -u origin feat/type-checker-pr1
 ```
 
 Expected: branch pushed successfully. If a pre-push hook fails, do NOT bypass with `--no-verify` per AGENTS.md. Diagnose the hook failure and fix the underlying issue.
@@ -785,19 +829,21 @@ Lands the mypy + import-linter infrastructure and enforces the two freshness mod
 **Subsequent PRs (per spec §6.3):**
 - PR 2: scheduler rename + package conversion (no enforcement yet)
 - PR 3: scheduler enforced + first typed adapter (influx_adapter)
-- PR 4: cockpit-backend enforced + price_is_stale consumer fix
-- PR 5-13: pollers + watchdog + telegram-notifier (one per service)
-- PR 14: cleanup
+- PR 4: cockpit-backend enforced + price_is_stale consumer fix + add tools/cockpit/__init__.py
+- PR 5-14: pollers + watchdog + telegram-notifier (one per service)
+- PR 15: cleanup
+
+**Note:** PR 0 (this PR's predecessor) was PR #11 on 2026-05-20 — it landed the spec + plan documents only. This PR (PR 1) lands the infrastructure.
 
 ## What's in this PR
 
 - \`pyproject.toml\` (NEW): mypy \`--strict\` config (Python 3.13, pydantic plugin, library overrides, test-relaxation block, import-linter skeleton).
 - \`deploy/energy-stack/run_typecheck.sh\` (NEW): per-service mypy + import-linter runner. tomllib-guarded bootstrap pass for the files-list lifecycle.
-- \`.github/workflows/typecheck.yml\` (NEW): CI workflow on Python 3.13 ubuntu-latest. Caches ~/.mypy_cache; installs all service requirements.
+- \`.github/workflows/typecheck.yml\` (NEW): CI workflow on Python 3.13 ubuntu-latest. Caches ~/.mypy_cache; installs IN-SCOPE service requirements via explicit enumeration (not a glob — scripts/ is excluded per spec §3.2).
 - \`docs/type-debt-backlog.md\` (NEW): adapter wishlist + library priorities. Seeded with influxdb-client (P0) and pyControl4 (P1).
-- \`deploy/energy-stack/requirements-dev.txt\` (UPDATED): mypy>=1.10, pydantic>=2.5, import-linter>=2.0, types-requests.
-- \`docs/superpowers/specs/2026-05-20-type-checker-design.md\` (NEW): rev 5.1 spec (5 rounds of dual-review).
-- \`docs/plans/type-checker-plan.md\` (NEW): this multi-PR plan.
+- \`deploy/energy-stack/requirements-dev.txt\` (UPDATED): EXACT pins (\`mypy==X.Y.Z\`, \`pydantic==X.Y.Z\`, \`import-linter==X.Y.Z\`, \`types-requests==X.Y.Z\`) — captured from \`pip freeze\` in a clean Python 3.13 env per plan Task 2 step 2. Range specifiers forbidden for OSF-locked study window per spec §8.2.
+
+Spec + plan (\`docs/superpowers/specs/2026-05-20-type-checker-design.md\`, \`docs/plans/type-checker-plan.md\`) were merged in PR 0 (PR #11). They are NOT in this PR's diff except for any rev 6 revisions co-bundled here.
 
 ## Acceptance criteria (per spec §7 Phase 1)
 
@@ -841,7 +887,7 @@ Per AGENTS.md dual-review discipline, before operator merges PR 1, run the stand
 - `superpowers:requesting-code-review` (in-harness)
 - Codex adversarial review via `codex exec review` CLI
 
-Brief both with: branch `feat/type-checker`, base `main`, this is PR 1 of a 14-PR rollout, focus on infrastructure correctness, file structure, CI integration, no implementation code yet.
+Brief both with: branch `feat/type-checker-pr1`, base `main`, this is PR 1 of a 15-PR rollout (PR 0 docs prelude already merged), focus on infrastructure correctness, file structure, CI integration, no implementation code yet.
 
 - [ ] **Step 2: Synthesize findings**
 
@@ -856,7 +902,7 @@ Once reviews are clean, operator merges PR 1 in the GitHub UI.
 ```bash
 git checkout main
 git pull --ff-only origin main
-git branch -d feat/type-checker
+git branch -d feat/type-checker-pr1
 ```
 
 This is also a good moment for the operator to perform the deliberate-failure verification described in PR 1's acceptance criteria (Step 3 of PR 1's "operator post-merge tasks").
@@ -2240,12 +2286,34 @@ data age."
 
 ---
 
-### Task 38: Convert any remaining script-style imports in cockpit-backend
+### Task 38: Close cockpit namespace-package gap + convert any remaining script-style imports
 
 **Files:**
+- Create: `tools/cockpit/__init__.py` (empty)
 - Modify: `tools/cockpit/backend/*.py` (if any have non-package-form imports)
 
-- [ ] **Step 1: Audit imports**
+- [ ] **Step 1: Verify the namespace gap**
+
+Filesystem audit (run before editing):
+```bash
+ls -la tools/__init__.py tools/cockpit/__init__.py tools/cockpit/backend/__init__.py
+```
+
+Expected state BEFORE this step: `tools/__init__.py` and `tools/cockpit/backend/__init__.py` present; `tools/cockpit/__init__.py` ABSENT. This is the namespace-package gap (per spec §3.1 rev 6 audit and §6.3 PR 4 note). `tools/cockpit` is currently a PEP 420 namespace package, which import-linter's grimp backend rejects.
+
+- [ ] **Step 2: Add the missing `__init__.py`**
+
+```bash
+touch tools/cockpit/__init__.py
+```
+
+Verify it was created (and is empty):
+```bash
+ls -la tools/cockpit/__init__.py
+wc -c tools/cockpit/__init__.py    # expect 0 bytes
+```
+
+- [ ] **Step 3: Audit cockpit-backend imports**
 
 ```bash
 grep -rnE "^from [a-z0-9_]+ import|^import [a-z0-9_]+$" tools/cockpit/backend/*.py
@@ -2255,14 +2323,34 @@ For each match:
 - Stdlib / external library: SKIP.
 - Sibling module in `tools/cockpit/backend/` (e.g., `freshness.py`, `influx.py`, `loki.py`): should already be `from tools.cockpit.backend.X import Y` (absolute form). If it's not, convert.
 
-Most cockpit-backend imports are already absolute form (the directory has always been a proper package). This task may be a no-op.
+Most cockpit-backend imports are already absolute form (the backend directory has always had its own `__init__.py`). This step may be a no-op apart from Step 2's new file.
 
-- [ ] **Step 2: NO commit yet if no changes; otherwise commit:**
+- [ ] **Step 4: Verify mypy can resolve the package chain**
 
 ```bash
-git add tools/cockpit/backend/
-git commit -m "refactor(cockpit): convert any remaining script-style imports to absolute form"
+python -c "import tools.cockpit.backend; print(tools.cockpit.backend.__file__)"
 ```
+
+Expected: prints the `__init__.py` path for `tools/cockpit/backend/__init__.py`. If this fails, something else is wrong — investigate before continuing.
+
+- [ ] **Step 5: Stage but do NOT commit yet** — commit happens after Task 39's pyproject + run_typecheck.sh edits land. Combined commit:
+
+```bash
+git add tools/cockpit/__init__.py tools/cockpit/backend/
+git commit -m "refactor(cockpit): close namespace-package gap + normalize imports
+
+Adds the missing tools/cockpit/__init__.py so the full
+tools.cockpit.backend.* chain resolves as regular packages, not
+via PEP 420 namespace traversal. Required by import-linter's grimp
+backend (which rejects namespace packages). Audit during plan rev 6
+found tools/__init__.py and tools/cockpit/backend/__init__.py
+present but tools/cockpit/__init__.py missing.
+
+Also converts any remaining script-style sibling imports in
+cockpit-backend to absolute form (most were already correct)."
+```
+
+(If Task 39's edits happen in the same PR, defer this commit until Task 39 step 5 and combine.)
 
 ---
 
@@ -2298,7 +2386,7 @@ For cleanliness, leave the `files = []` line with a comment explaining its lifec
 ```toml
 # files: empty after Phase 2b (PR 3) + Phase 3 (PR 4). All previously-
 # bootstrap-covered freshness modules now covered by their respective
-# service's per-service invocation. The Phase 4 (PR 14) cleanup PR
+# service's per-service invocation. The Phase 6 (PR 15) cleanup PR
 # removes this key entirely.
 files = []
 ```
@@ -2411,7 +2499,7 @@ Per spec §9.3, the pre-OSF gate requires:
 - [x] Cockpit-backend enforced (this PR).
 - [ ] \`type-check\` is a required status check on \`main\` (operator-configured after PR 1; please verify).
 
-Once this PR merges, the pre-OSF gate is satisfied. Remaining PRs (5-13 for pollers, 14 for cleanup) can complete post-OSF if needed.
+Once this PR merges, the pre-OSF gate is satisfied. Remaining PRs (5-14 for pollers/watchdog/telegram-notifier, 15 for cleanup) can complete post-OSF if needed.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
@@ -2422,7 +2510,7 @@ Report the PR URL.
 
 ---
 
-## Phase 5: Remaining Services (PR 5-13)
+## Phase 5: Remaining Services (PR 5-14)
 
 **Goal:** Bring each remaining Python service into the enforced set. Each PR follows the §6.1 template from the spec.
 
@@ -2570,7 +2658,7 @@ EOF
 
 ---
 
-### Per-service variations table (PR 5-13)
+### Per-service variations table (PR 5-14)
 
 Use the comed-poller template above for each subsequent service. The variations are:
 
@@ -2610,11 +2698,11 @@ The plan does NOT enumerate each step verbatim per service — they're identical
 
 ---
 
-## Phase 6: Cleanup (PR 14 — or post-PR-14)
+## Phase 6: Cleanup (PR 15)
 
 **Goal:** Remove leftover bootstrap scaffolding now that all services are enforced via per-service invocations. Update spec status to `shipped`. Verify required-check is still active.
 
-NOTE: If PR 14 in the table above is `telegram-notifier`, then this cleanup is PR 15. Adjust numbering accordingly. The intent: this phase happens AFTER all services are enforced.
+NOTE: This phase happens AFTER all services in Phase 5 are enforced (PR 14 = `telegram-notifier`). Cleanup is PR 15.
 
 ---
 

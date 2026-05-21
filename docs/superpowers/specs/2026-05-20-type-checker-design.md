@@ -66,7 +66,7 @@ Establish enforced static type-checking on all production Python code paths in t
 - `thermostat-poller/` → `thermostat_poller/`
 
 **Tools:**
-- `tools/cockpit/backend/` (already a valid Python path; no rename needed)
+- `tools/cockpit/backend/` (no directory rename needed). PR 4 adds the missing `tools/cockpit/__init__.py` so `tools.cockpit.backend.*` resolves as a chain of regular packages rather than via PEP 420 namespace traversal. The audit performed during plan rev 3 found: `tools/__init__.py` exists; `tools/cockpit/backend/__init__.py` exists; `tools/cockpit/__init__.py` is MISSING. Adding the missing file is mechanical and keeps the "no namespace packages anywhere in the enforced set" invariant intact.
 
 **Tests:** included with strict mode. `# type: ignore[misc]` annotations accepted for mock-heavy fixtures.
 
@@ -119,8 +119,11 @@ plugins = ["pydantic.mypy"]
 # deploy/energy-stack is on sys.path so each service directory is a
 # top-level package (e.g., hvac_scheduler.app, hvac_scheduler.freshness).
 # cockpit-backend uses absolute imports under the tools.cockpit.backend
-# namespace, which is already a regular package, so it's discoverable
-# from repo root without additional mypy_path entries.
+# namespace. PR 4 adds the missing `tools/cockpit/__init__.py` so the
+# full path resolves as regular packages (not PEP 420 namespace
+# traversal), preserving the "no namespace packages" invariant required
+# by import-linter (grimp raises NamespacePackageEncountered on PEP 420
+# roots). Discoverable from repo root; no additional mypy_path entries.
 mypy_path = "deploy/energy-stack"
 
 # files list grows as services migrate into enforced set.
@@ -345,14 +348,33 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r deploy/energy-stack/requirements-dev.txt
       - name: Install all service requirements
-        # Install every service's requirements.txt unconditionally so
-        # mypy can resolve typed library symbols regardless of which
+        # Install every IN-SCOPE service's requirements.txt unconditionally
+        # so mypy can resolve typed library symbols regardless of which
         # services are currently in the enforced set. Pip deduplicates
         # shared deps (most services pin influxdb-client==1.48.0).
         # Avoids the "add a service to enforced set, forget to add its
         # requirements to CI" failure mode.
+        #
+        # Explicit enumeration (not a glob) because `deploy/energy-stack/`
+        # also contains the out-of-scope `scripts/` directory (per §3.2)
+        # whose requirements would otherwise be installed and could fail
+        # the typecheck job for reasons unrelated to the enforced set.
+        # When a new service is added in scope, append it here AND to
+        # `run_typecheck.sh`. The migration template (§6.1) lists this.
         run: |
-          for req in deploy/energy-stack/*/requirements.txt tools/cockpit/backend/requirements.txt; do
+          for req in \
+            deploy/energy-stack/comed-poller/requirements.txt \
+            deploy/energy-stack/eagle-poller/requirements.txt \
+            deploy/energy-stack/ecowitt-ingest/requirements.txt \
+            deploy/energy-stack/haven-ingest/requirements.txt \
+            deploy/energy-stack/hvac-scheduler/requirements.txt \
+            deploy/energy-stack/hvac-scheduler-watchdog/requirements.txt \
+            deploy/energy-stack/nws-poller/requirements.txt \
+            deploy/energy-stack/pjm-dm2-poller/requirements.txt \
+            deploy/energy-stack/refoss-poller/requirements.txt \
+            deploy/energy-stack/telegram-notifier/requirements.txt \
+            deploy/energy-stack/thermostat-poller/requirements.txt \
+            tools/cockpit/backend/requirements.txt; do
             if [[ -f "$req" ]]; then
               pip install -r "$req"
             fi
@@ -383,9 +405,12 @@ deploy/energy-stack/
 │   └── ...
 ├── comed_poller/                                   # renamed in its PR
 └── ...
-tools/cockpit/backend/                              # no rename needed (already a regular package)
-├── freshness.py                                    # enforced after PR 1
-└── ...                                             # added to repo_targets in PR 4 (cockpit enforcement)
+tools/cockpit/                                      # PR 4 adds missing __init__.py here (closes namespace gap)
+├── __init__.py                                     # NEW (PR 4): empty; makes tools.cockpit a regular package
+└── backend/                                        # no rename needed (backend already has __init__.py)
+    ├── __init__.py                                 # pre-existing
+    ├── freshness.py                                # enforced after PR 1 via bootstrap files list
+    └── ...                                         # added to repo_targets in PR 4 (cockpit enforcement)
 .github/workflows/
 ├── deploy.yml                                      # existing — unchanged
 ├── check-freshness-drift.yml                       # PATH FILTER UPDATED in PR 2 (hvac-scheduler → hvac_scheduler)
@@ -604,22 +629,23 @@ Every service-rollout PR (PR 2 onwards) follows this template verbatim. Document
 
 Canonical PR numbering under the default plan (Phase 2 split):
 
-- **PR 1** — Infrastructure (mypy config, run_typecheck.sh, CI workflow, type-debt backlog).
+- **PR 0** — Docs prelude (this spec + plan). Already merged as `feat/type-checker` → `main` (PR #11, 2026-05-20). No infrastructure shipped in PR 0; it landed the spec and plan documents only.
+- **PR 1** — Infrastructure (mypy config, `run_typecheck.sh`, CI workflow, type-debt backlog, `requirements-dev.txt` with exact pins). First PR on the `feat/type-checker-pr1` branch.
 - **PR 2** — Phase 2a: scheduler rename + infrastructure-only (no enforcement yet).
 - **PR 3** — Phase 2b: scheduler enforced + first typed adapter. The bootstrap-pass guard in `run_typecheck.sh` keeps cockpit-backend's `freshness.py` covered via the `files` list until PR 4 takes over — no coverage gap.
-- **PR 4** — Cockpit-backend enforcement + annotation + bug fixes (specifically the `price_is_stale` consumer fix deferred from the freshness PR). Adds `tools/cockpit/backend` to `repo_targets`; removes the cockpit freshness.py entry from `files`.
+- **PR 4** — Cockpit-backend enforcement + annotation + bug fixes (specifically the `price_is_stale` consumer fix deferred from the freshness PR). Adds `tools/cockpit/__init__.py` (the namespace-package gap, see §3.1), adds `tools/cockpit/backend` to `repo_targets`, removes the cockpit `freshness.py` entry from `files`.
 - **PR 5** — `comed-poller` (data pipeline; freshness-bug-adjacent).
 - **PR 6** — `pjm-dm2-poller` (DM2 / 5CP risk inputs).
 - **PR 7** — `hvac-scheduler-watchdog` (depends on scheduler module shape).
-- **PR 8-12** — Remaining pollers + ingest services in any order: `nws-poller`, `eagle-poller`, `ecowitt-ingest`, `haven-ingest`, `refoss-poller`, `thermostat-poller`.
-- **PR 13** — `telegram-notifier` (simplest code; serves as final-template demonstration).
-- **PR 14** — Cleanup (Phase 4: remove `pytest.ini` workaround docstring, mark spec shipped).
+- **PR 8-13** — Remaining pollers + ingest services, one PR each, in any order: `nws-poller`, `eagle-poller`, `ecowitt-ingest`, `haven-ingest`, `refoss-poller`, `thermostat-poller` (six services, six PRs — the per-service template forbids combining services into a single PR).
+- **PR 14** — `telegram-notifier` (simplest code; serves as final-template demonstration).
+- **PR 15** — Cleanup (Phase 4: remove `pytest.ini` workaround docstring, remove `files` key from `pyproject.toml`, mark spec shipped).
 
 This order can be revised based on what bugs surface in early PRs.
 
-**Note for the cockpit-backend PR (PR 4):** the §6.1 template applies in spirit but several steps are skipped because `tools/cockpit/backend/` is already a valid Python path (and already has `__init__.py`):
+**Note for the cockpit-backend PR (PR 4):** the §6.1 template applies in spirit but several steps are modified because `tools/cockpit/backend/` is already a valid Python path (and already has its own `__init__.py`):
 - Step 1 (rename) — skip.
-- Step 2 (`__init__.py`) — already exists.
+- Step 2 (`__init__.py`) — `tools/cockpit/backend/__init__.py` already exists; **ADD** the missing `tools/cockpit/__init__.py` (empty file) so the full `tools.cockpit.backend.*` chain is regular-package all the way down. Without this file, `tools/cockpit` is a PEP 420 namespace package, which import-linter's grimp backend rejects.
 - Step 3 (import conversion) — cockpit-backend already uses absolute imports under `tools.cockpit.backend.*`. Verify they all work under mypy; any remaining sibling-style imports need conversion to relative form.
 - Step 4 (docker-compose) — cockpit-backend isn't in docker-compose (runs locally for operator monitoring); no compose change.
 - Step 5 (Dockerfile) — n/a.
@@ -640,7 +666,7 @@ This order can be revised based on what bugs surface in early PRs.
 - `deploy/energy-stack/run_typecheck.sh` (empty `service_dirs` and `repo_targets`; freshness modules enforced via pyproject.toml `files` list during this phase only).
 - `.github/workflows/typecheck.yml` (runs `run_typecheck.sh` on every push/PR; Python 3.13 to match service Dockerfiles).
 - `docs/type-debt-backlog.md` (seeded with influxdb_client and pyControl4 as known-priority adapter candidates).
-- `deploy/energy-stack/requirements-dev.txt` updated with `mypy>=1.10,<2.0`, `pydantic`, `import-linter`, and `types-requests`.
+- `deploy/energy-stack/requirements-dev.txt` updated with EXACT pins for `mypy`, `pydantic`, `import-linter`, and `types-requests`. Versions selected by Task 2 of plan: install the four packages into a clean Python 3.13 env, capture `pip freeze` output, paste those exact `==X.Y.Z` lines into `requirements-dev.txt`. Range specifiers (e.g., `>=1.10,<2.0`) are forbidden during the OSF-locked study window — a newer 1.x mypy/import-linter could surface CI findings unrelated to our code. Upgrades after the study are deliberate, separately-reviewed PRs.
 - `STALE_DATA_HANDOFF.md`-class documentation: brief note in `AGENTS.md` (or referenced from there) describing the per-service migration template location.
 
 **Acceptance criteria:**
@@ -697,7 +723,7 @@ The scheduler is the largest service and the highest-density type-hint surface (
 - The `query_api` parameter is typed across the 10+ scheduler functions where it currently lacks an annotation. (Most direct descendent of the 19:18Z bug class.)
 - Real bugs found are fixed in-PR with anti-regression tests where applicable. Each "real bug" entry in the PR description includes the file:line and a one-line description.
 
-### Phase 3: Remaining services (PR 4 — cockpit-backend; PR 5-13 — pollers, watchdog, telegram-notifier)
+### Phase 3: Remaining services (PR 4 — cockpit-backend; PR 5-14 — pollers, watchdog, telegram-notifier)
 
 Each remaining service migrates per the §6 template. PR 4 is cockpit-backend (enforcement + annotation + the `price_is_stale` consumer fix). PR 5 is `comed-poller`. PR 6-13 follow per §6.3 ordering. One PR per service. No stacking; wait for prior PR to merge before opening the next.
 
@@ -711,7 +737,7 @@ Each remaining service migrates per the §6 template. PR 4 is cockpit-backend (e
 - Any real bugs found are fixed in-PR.
 - Both verification greps in §6.1 step 15 pass.
 
-### Phase 4: Cleanup (PR 14, after all services enforced)
+### Phase 4: Cleanup (PR 15, after all services enforced)
 
 **Deliverables:**
 - Remove the `files` key entirely from `pyproject.toml` `[tool.mypy]` (all services are now covered by per-service invocations).
@@ -732,7 +758,7 @@ The scheduler is ~350+ annotated lines and many more unannotated. Strict mode ma
 
 Mypy releases regularly; new versions surface new findings. CI could go red on dependency updates unrelated to our code changes.
 
-**Mitigation:** pin `mypy` version in `requirements-dev.txt`. Upgrades are deliberate PRs that triage new findings. Pin to `mypy>=1.10,<2.0` for the major version we land on.
+**Mitigation:** pin EXACT versions of `mypy`, `import-linter`, `pydantic`, and `types-requests` in `requirements-dev.txt` (`==X.Y.Z` form, captured from `pip freeze` after a clean install). Range specifiers like `>=1.10,<2.0` are forbidden during the OSF-locked study window — they re-introduce the exact drift risk this mitigation is meant to prevent. Upgrades are deliberate post-study PRs that triage new findings.
 
 ### 8.3 Risk: hyphenated-dir collisions during partial migration
 
@@ -815,3 +841,4 @@ Other services may complete post-OSF.
 | 2026-05-20 | draft (rev 4) | Third-pass dual-review findings applied. **Major design pivot:** the rev 3 namespace-package model is incompatible with import-linter (grimp raises `NamespacePackageEncountered` for PEP 420 root packages). After three rounds of trying to minimize per-service blast radius via clever invocation patterns, the operator's call: "stop trying to work around things — what's the right way to do it." Switching to FULL PACKAGE MODEL: every renamed service gets `__init__.py`, every cross-file sibling import is converted from script-style (`from freshness import X`) to relative form (`from .freshness import X`), every Dockerfile WORKDIR + CMD is updated to use `python -m <service>.app` invocation. Per-service blast radius is larger but all tooling now works natively (mypy + import-linter + pytest, no special invocation paths). Other rev-4 fixes: (a) bootstrap mypy pass guarded by tomllib check that reads actual `files` list — skips when empty, preventing Phase 4 CI breakage; (b) test-relaxation override changed from invalid `*.test_*` glob to literal per-service module names; (c) `python -m importlinter` corrected to `lint-imports` (actual CLI); (d) cockpit-backend mypy invocation moved to repo root (preserves `tools.cockpit.backend.*` absolute imports); (e) PR 3/4 lifecycle reverted to cleaner shape (PR 3 = scheduler only, PR 4 = cockpit) — bootstrap guard prevents coverage gap; (f) remaining stale `Type Check` references updated to `type-check`. Open for fourth-pass dual-review. |
 | 2026-05-20 | draft (rev 5) | Fourth-pass dual-review found no design issues — full package model architecture approved. Polish-pass fixes for stale prose left over from prior revisions: (1) §4.4 entrypoint annotation corrected from `python app.py` to `python -m hvac_scheduler.app`; (2) §5.6 test-override TOML block replaced the stale `["*.test_*", "*.conftest"]` glob with the literal per-service form (matching §4.1); (3) §5.5 and §9.1 stale `python -m importlinter` references corrected to `lint-imports --config pyproject.toml`; (4) §5.2 adapter example import corrected from script-style `from influx_adapter import` to relative `from .influx_adapter import`; (5) §9.3 and §4.4 stale "added in PR 3" references for cockpit `repo_targets` corrected to PR 4; (6) §6.1 step 3 expanded to cover indented imports, late module-level imports with `# noqa: E402`, `as` aliased imports, string module references in monkeypatch/mocks, and cross-test-file imports; (7) §6.1 step 5 entrypoint module name made explicit per service (e.g., `hvac_scheduler_watchdog.check`, not `<service>.app`). |
 | 2026-05-20 | draft (rev 5.1) | Fifth-pass review (Claude in-harness; Codex hit usage limit mid-run, partial). Two targeted fixes applied: (1) §6.1 step 5 entrypoint table — `nws_poller.poller` and `pjm_dm2_poller.poller` were guesses based on naming pattern; Claude verified the actual Dockerfile CMDs and they're `nws_poller.app` and `pjm_dm2_poller.app`. Same for `telegram_notifier.app`. The list is now verified per-service and includes a "follow the Dockerfile, not this list" caveat for future drift. (2) §6.1 step 3 verification grep regex `[a-z_]*` expanded to `[a-z0-9_]*` so module names containing digits (e.g., `pjm_5cp.py` in the scheduler) are caught. Codex re-run pending operator's call (limit resets at 23:22 local); architecture was already approved in pass 4, and Claude's pass-5 review was thorough and verified against the actual codebase. Ready for plan/execute pending operator decision on whether to wait for Codex pass-5 re-run. |
+| 2026-05-21 | draft (rev 6) | Sixth-pass review — Chris operator pre-execution review against post-merge state on `feat/type-checker-pr1` worktree. Five findings applied: (F1) `requirements-dev.txt` and §8.2 mitigation language now require EXACT pins (`==X.Y.Z`) for `mypy`, `pydantic`, `import-linter`, and `types-requests`; range specifiers explicitly forbidden during the OSF-locked study window. Versions selected at plan Task 2 implementation time via clean-env `pip install` + `pip freeze`. (F2) CI workflow's "Install all service requirements" loop replaced the `deploy/energy-stack/*/requirements.txt` glob with an explicit enumeration of the eleven in-scope service requirement files plus `tools/cockpit/backend/requirements.txt`. The glob caught the out-of-scope `deploy/energy-stack/scripts/requirements.txt` (confirmed exists), which could have failed the typecheck job for reasons unrelated to the enforced set. (F3) PR numbering reconciled across §6.3 and §7.0.3: PR 0 = docs prelude (PR #11, already merged); PR 1 = infrastructure; PR 2-3 = scheduler; PR 4 = cockpit-backend; PR 5-7 = comed/pjm-dm2/watchdog; PR 8-13 = six remaining pollers/ingests (one PR per service); PR 14 = telegram-notifier; PR 15 = cleanup. Earlier rev's `PR 8-12` undercounted (5 PR slots for 6 services). (F4) §3.1 and §6.3 cockpit-backend notes now require ADDING the missing `tools/cockpit/__init__.py` in PR 4. Filesystem audit during rev 6 confirmed: `tools/__init__.py` present, `tools/cockpit/backend/__init__.py` present, `tools/cockpit/__init__.py` MISSING. Adding it preserves the no-namespace-package invariant required by import-linter's grimp backend. §4.4 file-structure diagram updated. (F5) §7 Phase 1 narrative clarified to reflect that PR 0 was docs-only and PR 1 is the infrastructure PR (this branch). |
