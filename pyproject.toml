@@ -27,7 +27,11 @@ mypy_path = "deploy/energy-stack"
 # per-service mypy invocation in run_typecheck.sh covers the whole
 # package directory.
 files = [
-    "deploy/energy-stack/hvac_scheduler/freshness.py",
+    # hvac_scheduler/freshness.py moved from bootstrap to per-service
+    # coverage in PR 3b: the service_dirs entry in run_typecheck.sh
+    # covers the whole hvac_scheduler/ package via per-service mypy
+    # invocation. Cockpit-backend freshness.py STAYS here until PR 4
+    # adds tools/cockpit/backend to repo_targets.
     "tools/cockpit/backend/freshness.py",
 ]
 
@@ -79,18 +83,29 @@ warn_required_dynamic_aliases = true
 
 # Adapter-boundary enforcement (spec §5.5). Each typed adapter ships a
 # corresponding `forbidden` contract banning direct use of the wrapped
-# library outside the adapter module. First contract lands in PR 3 with
-# the influx_adapter.
+# library outside the adapter module.
 [tool.importlinter]
-root_packages = []
+root_packages = ["hvac_scheduler"]
 # Required for `forbidden` contracts targeting third-party modules.
 include_external_packages = true
-# Populated per-service as adapters are added. Example after PR 3:
-#   root_packages = ["hvac_scheduler"]
-# with a contract block:
-#   [[tool.importlinter.contracts]]
-#   name = "Only influx_adapter may import influxdb_client"
-#   type = "forbidden"
-#   source_modules = ["hvac_scheduler"]
-#   forbidden_modules = ["influxdb_client"]
-#   ignore_imports = ["hvac_scheduler.influx_adapter -> influxdb_client"]
+
+[[tool.importlinter.contracts]]
+name = "Only influx_adapter may import influxdb_client"
+type = "forbidden"
+source_modules = ["hvac_scheduler"]
+forbidden_modules = ["influxdb_client"]
+ignore_imports = [
+    # The adapter itself owns the read + write surfaces and is the
+    # only legitimate site for these imports per spec §5.5.
+    "hvac_scheduler.influx_adapter -> influxdb_client",
+    # app.py.main() still constructs InfluxDBClient + uses SYNCHRONOUS
+    # for write_api configuration. import-linter / grimp consolidates
+    # all imports from a module to influxdb_client.* into a single
+    # edge, so the single ignore below covers both `from
+    # influxdb_client import InfluxDBClient` and
+    # `from influxdb_client.client.write_api import SYNCHRONOUS`.
+    # A future PR could move client + write_api construction into
+    # the adapter too, eliminating this exemption; PR 3b leaves it
+    # as a bounded exception.
+    "hvac_scheduler.app -> influxdb_client",
+]
