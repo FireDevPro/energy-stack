@@ -1297,7 +1297,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run once, verify InfluxDB has full coverage**
 
 ```bash
-ssh pi-lab 'docker exec pjm-dm2-poller python backfill_rt_hrl_lmps.py'
+ssh pi-lab 'docker exec pjm-dm2-poller python -m pjm_dm2_poller.backfill_rt_hrl_lmps'
 ssh pi-lab 'docker exec influxdb influx query --raw "
 from(bucket: \"energy\")
   |> range(start: 2026-01-01)
