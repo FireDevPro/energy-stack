@@ -81,11 +81,11 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
@@ -211,7 +211,7 @@ FEED_SCHEDULE: dict[str, Schedule] = {
 
 
 def log(level: str, msg: str, **fields_: object) -> None:
-    rec = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
+    rec: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     rec.update(fields_)
     print(json.dumps(rec), flush=True)
 
@@ -268,7 +268,7 @@ class PJMClient:
         if self._owns_session and self._session is not None:
             await self._session.close()
 
-    async def fetch(self, feed: str, params: dict[str, str | int]) -> list[dict]:
+    async def fetch(self, feed: str, params: dict[str, str | int]) -> list[dict[str, Any]]:
         assert self._session is not None
         url = f"{PJM_API_BASE}/{feed}"
         headers = {"Ocp-Apim-Subscription-Key": self._cfg.api_key}
@@ -302,7 +302,7 @@ def _parse_ept(s: str) -> datetime:
     return datetime.fromisoformat(s).replace(tzinfo=EPT)
 
 
-def build_rt_lmp_points(items: list[dict]) -> list[Point]:
+def build_rt_lmp_points(items: list[dict[str, Any]]) -> list[Point]:
     """Convert ``rt_hrl_lmps`` items to ``pjm.lmp_rt_hourly`` points.
     One point per hourly settled LMP row for the COMED zone.
 
@@ -334,7 +334,7 @@ def build_rt_lmp_points(items: list[dict]) -> list[Point]:
             continue
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
-            Point("pjm.lmp_rt_hourly")
+            Point("pjm.lmp_rt_hourly")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("pnode_id", str(it.get("pnode_id", "")))
             .tag("pnode_name", it.get("pnode_name", "") or "")
             .tag("zone", it.get("zone") or it.get("pnode_name") or "")
@@ -348,12 +348,12 @@ def build_rt_lmp_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_da_lmp_points(items: list[dict]) -> list[Point]:
+def build_da_lmp_points(items: list[dict[str, Any]]) -> list[Point]:
     out: list[Point] = []
     for it in items:
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
-            Point("pjm.lmp_da_hourly")
+            Point("pjm.lmp_da_hourly")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("pnode_id", str(it.get("pnode_id", "")))
             .tag("pnode_name", it.get("pnode_name", "") or "")
             .tag("zone", it.get("zone") or it.get("pnode_name") or "")
@@ -367,14 +367,14 @@ def build_da_lmp_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_load_forecast_points(items: list[dict]) -> list[Point]:
+def build_load_forecast_points(items: list[dict[str, Any]]) -> list[Point]:
     out: list[Point] = []
     for it in items:
         target_utc = _parse_ept(it["forecast_datetime_beginning_ept"]).astimezone(timezone.utc)
         evaluated_utc = _parse_ept(it["evaluated_at_datetime_ept"]).astimezone(timezone.utc)
         horizon_hours = int((target_utc - evaluated_utc).total_seconds() // 3600)
         p = (
-            Point("pjm.load_forecast")
+            Point("pjm.load_forecast")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("forecast_area", it.get("forecast_area", "") or "")
             .tag("evaluated_at_iso", evaluated_utc.isoformat())
             .field("forecast_load_mw", float(it.get("forecast_load_mw") or 0.0))
@@ -385,7 +385,7 @@ def build_load_forecast_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_inst_load_points(items: list[dict]) -> list[Point]:
+def build_inst_load_points(items: list[dict[str, Any]]) -> list[Point]:
     """Convert ``inst_load`` items to ``pjm.inst_load`` points. One point
     per posted observation (PJM publishes throughout the operating day at
     irregular sub-hour intervals); tagged by ``area``. The ``mw`` field
@@ -395,7 +395,7 @@ def build_inst_load_points(items: list[dict]) -> list[Point]:
     for it in items:
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         out.append(
-            Point("pjm.inst_load")
+            Point("pjm.inst_load")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("area", it.get("area", "") or "")
             .field("mw", float(it.get("instantaneous_load") or 0.0))
             .time(ts_utc)
@@ -403,14 +403,14 @@ def build_inst_load_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_metered_load_points(items: list[dict]) -> list[Point]:
+def build_metered_load_points(items: list[dict[str, Any]]) -> list[Point]:
     """Convert hrl_load_metered items to `pjm.metered_load` points.
     One point per hour; tagged by zone (`CE` for ComEd) and is_verified."""
     out: list[Point] = []
     for it in items:
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
-            Point("pjm.metered_load")
+            Point("pjm.metered_load")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("zone", it.get("zone", "") or "")
             .tag("load_area", it.get("load_area", "") or "")
             .tag("is_verified", str(bool(it.get("is_verified"))).lower())
@@ -421,7 +421,7 @@ def build_metered_load_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_peak_forecast_points(items: list[dict]) -> list[Point]:
+def build_peak_forecast_points(items: list[dict[str, Any]]) -> list[Point]:
     """Convert ops_sum_frcst_peak_rto items to `pjm.peak_forecast_rto` points.
     Timestamp is `generated_at_ept` (when PJM published the forecast); the
     projected-peak datetime is stored as a string field for downstream
@@ -431,7 +431,7 @@ def build_peak_forecast_points(items: list[dict]) -> list[Point]:
         ts_utc = _parse_ept(it["generated_at_ept"]).astimezone(timezone.utc)
         projected_local = it.get("projected_peak_datetime_ept", "") or ""
         p = (
-            Point("pjm.peak_forecast_rto")
+            Point("pjm.peak_forecast_rto")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("area", it.get("area", "") or "")
             .field("load_forecast_mw", float(it.get("load_forecast") or 0.0))
             .field("total_scheduled_capacity_mw", float(it.get("total_scheduled_capacity") or 0.0))
@@ -446,7 +446,7 @@ def build_peak_forecast_points(items: list[dict]) -> list[Point]:
     return out
 
 
-def build_nspl_points(items: list[dict]) -> list[Point]:
+def build_nspl_points(items: list[dict[str, Any]]) -> list[Point]:
     """Convert annual_zonal_nspl items to `pjm.nspl_zonal` points.
     Timestamp is the actual peak hour from the prior summer (which is the
     underlying load coincidence that determined this NSPL). Tagged by
@@ -455,7 +455,7 @@ def build_nspl_points(items: list[dict]) -> list[Point]:
     for it in items:
         ts_utc = _parse_ept(it["datetime_beginning_ept"]).astimezone(timezone.utc)
         p = (
-            Point("pjm.nspl_zonal")
+            Point("pjm.nspl_zonal")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("zone", it.get("zone", "") or "")
             .tag("year", str(it.get("year", "")))
             .field("nspl_mw", float(it.get("nspl_mw") or 0.0))
@@ -601,7 +601,7 @@ async def fetch_load_forecast(client: PJMClient, cfg: Config, now_local: datetim
     return build_load_forecast_points(items)
 
 
-def _check_rto_metered_load_rows_per_hour(items: list[dict]) -> None:
+def _check_rto_metered_load_rows_per_hour(items: list[dict[str, Any]]) -> None:
     """P1.1 first-call invariant: PJM's ``hrl_load_metered`` feed
     treats ``RTO`` as an aggregation level that should return *one*
     aggregate row per hour (per ``datetime_beginning_ept``), not N
@@ -796,7 +796,7 @@ FEED_DISPATCHERS: dict[
 
 
 def _write_feed_status(
-    write_api,
+    write_api: Any,
     cfg: Config,
     feed_name: str,
     *,
@@ -817,7 +817,7 @@ def _write_feed_status(
     `warn` and swallowed — we don't want monitoring to fail the cycle.
     """
     point = (
-        Point("pjm.feed_status")
+        Point("pjm.feed_status")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
         .tag("feed", feed_name)
         .tag("success", "true" if success else "false")
         .field("points_written", int(points))
@@ -832,7 +832,7 @@ def _write_feed_status(
             error=str(exc), error_type=type(exc).__name__)
 
 
-async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
+async def poll_once(client: PJMClient, write_api: Any, cfg: Config) -> None:
     """One pass through the feed schedule. Each feed fires only when its
     Schedule says so; a single feed failure does not abort the cycle.
 
@@ -899,7 +899,7 @@ async def poll_once(client: PJMClient, write_api, cfg: Config) -> None:
         write_api.write(
             bucket=cfg.influx_bucket,
             record=[
-                Point("pjm.poller_heartbeat")
+                Point("pjm.poller_heartbeat")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
                 .field("alive", 1)
                 .time(datetime.now(timezone.utc))
             ],
@@ -930,13 +930,13 @@ def main() -> int:
 
     stop = asyncio.Event()
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: Any) -> None:
         log("info", "signal_received", signum=signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
 
-    async def run():
+    async def run() -> None:
         async with PJMClient(cfg) as client:
             # Initial alignment: sleep to the next clock-aligned tick so
             # the loop's wake times land on the minute marks the schedule
@@ -970,7 +970,7 @@ def main() -> int:
         asyncio.run(run())
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
     return 0
 
 

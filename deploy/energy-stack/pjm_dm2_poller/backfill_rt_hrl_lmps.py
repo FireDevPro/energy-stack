@@ -15,7 +15,7 @@ has a complete settled-LMP series for the experiment window.
 Run inside the pjm-dm2-poller container so it shares the live
 poller's env (PJM_DM2_API_KEY, INFLUXDB_*):
 
-    docker exec pjm-dm2-poller python backfill_rt_hrl_lmps.py
+    docker exec pjm-dm2-poller python -m pjm_dm2_poller.backfill_rt_hrl_lmps
 
 Idempotent — re-runs upsert the same (pnode_id, timestamp) points.
 
@@ -33,10 +33,10 @@ headroom for that co-tenancy. Math:
 dates on the first real backfill execution.
 
 Usage:
-    python backfill_rt_hrl_lmps.py
-    python backfill_rt_hrl_lmps.py --start 2026-03-01 --end 2026-05-13
-    python backfill_rt_hrl_lmps.py --sleep 20
-    python backfill_rt_hrl_lmps.py --dry-run
+    python -m pjm_dm2_poller.backfill_rt_hrl_lmps
+    python -m pjm_dm2_poller.backfill_rt_hrl_lmps --start 2026-03-01 --end 2026-05-13
+    python -m pjm_dm2_poller.backfill_rt_hrl_lmps --sleep 20
+    python -m pjm_dm2_poller.backfill_rt_hrl_lmps --dry-run
 
 Environment:
     PJM_DM2_API_KEY            (required)
@@ -55,11 +55,12 @@ import asyncio
 import sys
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta
+from typing import Any
 
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-from app import (
+from .app import (
     Config,
     PJMClient,
     fetch_rt_lmp_for_date,
@@ -115,7 +116,7 @@ COMPLETE_DAY_ROW_COUNTS: frozenset[int] = frozenset({23, 24, 25})
 
 async def backfill_range(
     client: PJMClient,
-    write_api,
+    write_api: Any,
     cfg: Config,
     *,
     start_date: date,
@@ -268,7 +269,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 if result.needs_followup() else "all dates covered"
             ))
     finally:
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
     return 0
 
 

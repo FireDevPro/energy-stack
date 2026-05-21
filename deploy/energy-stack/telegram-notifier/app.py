@@ -590,7 +590,7 @@ def _annual_check_window(dt: datetime) -> bool:
 # not the 7h same-day gap) plus a 1-2 hour buffer. A tolerance shorter
 # than the natural max gap produces guaranteed false alarms whenever
 # the longest gap straddles the alert window. Tuned per feed against
-# FEED_SCHEDULE in pjm-dm2-poller/app.py.
+# FEED_SCHEDULE in pjm_dm2_poller/app.py.
 PJM_FEED_SLAS: tuple[FeedSLA, ...] = (
     FeedSLA(
         feed="da_hrl_lmps",

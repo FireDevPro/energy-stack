@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Any, cast
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from app import (
+from .app import (
     COMED_FORECAST_AREA,
     COMED_INST_AREA,
     COMED_METERED_ZONE,
@@ -25,6 +26,7 @@ from app import (
     RTO_INST_AREA,
     RTO_METERED_ZONE,
     Config,
+    PJMClient,
     Schedule,
     _check_rto_metered_load_rows_per_hour,
     _parse_ept,
@@ -49,6 +51,14 @@ from app import (
 )
 
 CHICAGO = ZoneInfo("America/Chicago")
+
+
+def _line(pt: Any) -> str:
+    """Test helper: serialise an influxdb_client Point to its line-protocol
+    string. Wrapped in a typed shim because influxdb_client's stubs lack
+    annotations on ``Point.to_line_protocol``."""
+    result: str = pt.to_line_protocol()
+    return result
 
 
 # =========================================================================
@@ -133,10 +143,10 @@ def test_da_lmp_fetcher_queries_tomorrow_not_today():
     2026-07-10T17:00 fetch must request datetime_beginning_ept=2026-07-11.
     Querying today produces already-past prices that are useless for
     forecast-bias modeling and scheduler planning."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -146,7 +156,7 @@ def test_da_lmp_fetcher_queries_tomorrow_not_today():
     now_local = datetime(2026, 7, 10, 17, 0, tzinfo=CHICAGO)
 
     import asyncio
-    asyncio.run(fetch_da_lmp_for_tomorrow(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_da_lmp_for_tomorrow(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "da_hrl_lmps"
     assert captured["params"]["datetime_beginning_ept"] == "2026-07-11T00:00:00.0"
@@ -202,10 +212,10 @@ def test_rt_lmp_recent_uses_7_day_range_window_in_ept():
     so PJM's documented calendar-day worst case (Monday-holiday
     Friday) self-heals on subsequent cycles without operator
     backfill."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -214,7 +224,7 @@ def test_rt_lmp_recent_uses_7_day_range_window_in_ept():
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 11, 12, 0, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_rt_lmp_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_rt_lmp_recent(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "rt_hrl_lmps"
     assert (
@@ -228,17 +238,17 @@ def test_rt_lmp_recent_filters_to_current_revisions_only():
     """row_is_current=true filters out PJM's superseded revisions.
     RT LMP is bill-canonical; non-deterministic upserts on revision
     rows would compromise the OSF-pre-registered HVAC$ outcome."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
     cfg = MagicMock()
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 11, 12, 0, tzinfo=CHICAGO)
-    asyncio.run(fetch_rt_lmp_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_rt_lmp_recent(cast(PJMClient, FakeClient()), cfg, now_local))
     assert captured["params"]["row_is_current"] == "true"
 
 
@@ -246,16 +256,16 @@ def test_rt_lmp_for_date_constructs_explicit_target():
     """The for_date helper used by the backfill script accepts any
     EPT date and queries that date specifically. Independent of
     'recent' wall-clock semantics."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
     cfg = MagicMock()
     target_date = datetime(2026, 1, 5, 0, 0)  # naive; treated as EPT date
-    asyncio.run(fetch_rt_lmp_for_date(FakeClient(), cfg, target_date))
+    asyncio.run(fetch_rt_lmp_for_date(cast(PJMClient, FakeClient()), cfg,target_date))
 
     assert captured["params"]["datetime_beginning_ept"] == "2026-01-05T00:00:00.0"
     assert captured["params"]["pnode_id"] == COMED_PNODE_ID
@@ -264,22 +274,22 @@ def test_rt_lmp_for_date_constructs_explicit_target():
 def test_rt_lmp_for_date_includes_row_is_current_filter():
     """Backfill must also filter to current revisions only — same
     determinism rationale as the live fetcher."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
     cfg = MagicMock()
-    asyncio.run(fetch_rt_lmp_for_date(FakeClient(), cfg, datetime(2026, 1, 5, 0, 0)))
+    asyncio.run(fetch_rt_lmp_for_date(cast(PJMClient, FakeClient()), cfg,datetime(2026, 1, 5, 0, 0)))
     assert captured["params"]["row_is_current"] == "true"
 
 
 # ---- build_rt_lmp_points ------------------------------------------------
 
 
-def _rt_item(hour: int, lmp: float = 30.0) -> dict:
+def _rt_item(hour: int, lmp: float = 30.0) -> dict[str, Any]:
     return {
         "datetime_beginning_ept": f"2026-07-15T{hour:02d}:00:00",
         "pnode_id": COMED_PNODE_ID,
@@ -300,13 +310,13 @@ def test_rt_lmp_points_count_matches_input():
 
 def test_rt_lmp_writes_to_pjm_lmp_rt_hourly_measurement():
     [pt] = build_rt_lmp_points([_rt_item(10)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert line.startswith("pjm.lmp_rt_hourly,")
 
 
 def test_rt_lmp_carries_pnode_id_and_zone_tags():
     [pt] = build_rt_lmp_points([_rt_item(10)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert f"pnode_id={COMED_PNODE_ID}" in line
     # zone falls back to pnode_name when item['zone'] is None — same
     # pattern as da_hrl_lmps
@@ -315,7 +325,7 @@ def test_rt_lmp_carries_pnode_id_and_zone_tags():
 
 def test_rt_lmp_carries_all_four_price_fields():
     [pt] = build_rt_lmp_points([_rt_item(10, lmp=42.5)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "total_lmp_rt=42.5" in line
     assert "system_energy_price_rt=41.5" in line
     assert "congestion_price_rt=0.5" in line
@@ -327,7 +337,7 @@ def test_rt_lmp_handles_missing_optional_fields():
     item["congestion_price_rt"] = None
     item["marginal_loss_price_rt"] = None
     [pt] = build_rt_lmp_points([item])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "congestion_price_rt=0" in line
     assert "marginal_loss_price_rt=0" in line
 
@@ -369,7 +379,7 @@ def test_rt_lmp_timestamp_is_ept_converted_to_utc():
     TZ bug in the parser would surface as a test failure rather than
     self-confirming."""
     [pt] = build_rt_lmp_points([_rt_item(13)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     # 2026-07-15 13:00 EDT == 2026-07-15 17:00 UTC == 1784134800 epoch
     expected_ns = 1784134800 * 1_000_000_000
     assert line.endswith(f" {expected_ns}")
@@ -386,21 +396,21 @@ def test_rt_lmp_timestamp_is_ept_converted_to_utc():
 
 def test_iter_target_dates_inclusive_range():
     from datetime import date
-    from backfill_rt_hrl_lmps import iter_target_dates
+    from .backfill_rt_hrl_lmps import iter_target_dates
     out = list(iter_target_dates(date(2026, 1, 1), date(2026, 1, 3)))
     assert out == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
 
 
 def test_iter_target_dates_single_day():
     from datetime import date
-    from backfill_rt_hrl_lmps import iter_target_dates
+    from .backfill_rt_hrl_lmps import iter_target_dates
     out = list(iter_target_dates(date(2026, 5, 15), date(2026, 5, 15)))
     assert out == [date(2026, 5, 15)]
 
 
 def test_iter_target_dates_empty_when_start_after_end():
     from datetime import date
-    from backfill_rt_hrl_lmps import iter_target_dates
+    from .backfill_rt_hrl_lmps import iter_target_dates
     out = list(iter_target_dates(date(2026, 5, 15), date(2026, 5, 14)))
     assert out == []
 
@@ -409,7 +419,7 @@ def test_default_start_date_is_spec_locked():
     """Spec §8 + plan Task 2.3: backfill from 2026-01-01 (minimum;
     24-month retention is aspirational)."""
     from datetime import date
-    from backfill_rt_hrl_lmps import DEFAULT_START_DATE
+    from .backfill_rt_hrl_lmps import DEFAULT_START_DATE
     assert DEFAULT_START_DATE == date(2026, 1, 1)
 
 
@@ -419,7 +429,7 @@ def test_default_sleep_seconds_pinned_to_15():
     Non-Member's 6 calls/min ceiling — and produced 66 HTTP 429
     failures across 133 dates. Pin to 15.0 so the math is visibly
     correct in source AND can't silently regress via a quick edit."""
-    from backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
+    from .backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
     assert DEFAULT_SLEEP_SECONDS == 15.0
 
 
@@ -436,7 +446,7 @@ def test_default_sleep_keeps_combined_rate_under_pjm_ceiling():
         60 / DEFAULT_SLEEP_SECONDS ≤ 4
         DEFAULT_SLEEP_SECONDS ≥ 15.0
     """
-    from backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
+    from .backfill_rt_hrl_lmps import DEFAULT_SLEEP_SECONDS
     PJM_NON_MEMBER_CEILING_PER_MIN = 6
     LIVE_POLLER_CO_TENANCY_CALLS_PER_MIN = 2  # inst_load + inst_load_rto
     max_backfill_per_min = 60.0 / DEFAULT_SLEEP_SECONDS
@@ -453,7 +463,7 @@ def test_argparse_sleep_default_uses_module_constant():
     """Belt-and-braces: the CLI default and the module constant must
     agree. A future edit that changes one without the other would
     leave a discrepancy that this test catches."""
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
     args = bf._parse_args([])
     assert args.sleep == bf.DEFAULT_SLEEP_SECONDS
 
@@ -463,7 +473,7 @@ def test_backfill_range_default_sleep_uses_module_constant():
     do not pass sleep_s must inherit the module constant, not a
     locally-baked-in 5.0 from the function signature."""
     import inspect
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
     sig = inspect.signature(bf.backfill_range)
     assert sig.parameters["sleep_s"].default == bf.DEFAULT_SLEEP_SECONDS
 
@@ -473,12 +483,12 @@ def test_default_end_date_is_yesterday():
     The backfill default ends at yesterday so the two together cover
     everything without a gap or double-write."""
     from datetime import date, timedelta
-    from backfill_rt_hrl_lmps import default_end_date
+    from .backfill_rt_hrl_lmps import default_end_date
     today = date.today()
     assert default_end_date(today=today) == today - timedelta(days=1)
 
 
-def _mock_points(n: int) -> list:
+def _mock_points(n: int) -> list[Any]:
     """n fake Point-like objects per date — backfill_range only counts
     them and passes them to write_api.write, so MagicMocks suffice."""
     return [MagicMock() for _ in range(n)]
@@ -492,7 +502,7 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
     test specifically exercises the happy path; partial-day cases live
     in their own tests below."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     fetched_dates: list[date] = []
     write_calls: list[int] = []
@@ -509,7 +519,7 @@ def test_backfill_range_calls_fetcher_once_per_date(monkeypatch):
     sleeps: list[float] = []
     async def fake_sleep(s):
         sleeps.append(s)
-    monkeypatch.setattr(bf.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr("asyncio.sleep",fake_sleep)
 
     cfg = MagicMock()
     cfg.influx_bucket = "energy"
@@ -538,7 +548,7 @@ def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
     list. Track the date in empty_dates so the end-of-run summary
     can flag it for follow-up."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     async def fake_fetch(client, cfg, target_date_ept):
         # Return [] on the middle day
@@ -549,7 +559,7 @@ def test_backfill_range_skips_write_on_empty_fetch(monkeypatch):
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
     async def no_sleep(s): pass
-    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep",no_sleep)
 
     result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
@@ -574,7 +584,7 @@ def test_backfill_range_flags_partial_day_when_row_count_below_24(monkeypatch):
     Influx (idempotent retry is safe) AND recorded as partial so the
     end-of-run summary surfaces it for follow-up."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     async def fake_fetch(client, cfg, target_date_ept):
         if target_date_ept.day == 2:
@@ -584,7 +594,7 @@ def test_backfill_range_flags_partial_day_when_row_count_below_24(monkeypatch):
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
     async def no_sleep(s): pass
-    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep",no_sleep)
 
     result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
@@ -606,7 +616,7 @@ def test_backfill_range_accepts_23_hours_as_complete_dst_spring_forward(monkeypa
     so the calendar date has only 23 hours. PJM returns 23 rows; that
     is COMPLETE, not partial."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     async def fake_fetch(client, cfg, target_date_ept):
         return _mock_points(23)
@@ -614,7 +624,7 @@ def test_backfill_range_accepts_23_hours_as_complete_dst_spring_forward(monkeypa
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
     async def no_sleep(s): pass
-    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep",no_sleep)
 
     result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
@@ -631,7 +641,7 @@ def test_backfill_range_accepts_25_hours_as_complete_dst_fall_back(monkeypatch):
     the calendar date has 25 hours. PJM returns 25 rows; that is
     COMPLETE, not partial."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     async def fake_fetch(client, cfg, target_date_ept):
         return _mock_points(25)
@@ -639,7 +649,7 @@ def test_backfill_range_accepts_25_hours_as_complete_dst_fall_back(monkeypatch):
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
     async def no_sleep(s): pass
-    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep",no_sleep)
 
     result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
@@ -658,7 +668,7 @@ def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
     manually compute the resume offset for. Spec §8 retention is
     bill-canonical input; resilience here matters."""
     from datetime import date
-    import backfill_rt_hrl_lmps as bf
+    from . import backfill_rt_hrl_lmps as bf
 
     async def fake_fetch(client, cfg, target_date_ept):
         if target_date_ept.day == 2:
@@ -668,7 +678,7 @@ def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
     write_api = MagicMock()
     monkeypatch.setattr(bf, "fetch_rt_lmp_for_date", fake_fetch)
     async def no_sleep(s): pass
-    monkeypatch.setattr(bf.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep",no_sleep)
 
     result = asyncio.run(bf.backfill_range(
         MagicMock(), write_api, MagicMock(influx_bucket="energy"),
@@ -686,7 +696,7 @@ def test_backfill_range_continues_after_transient_fetch_error(monkeypatch):
 
 
 def test_backfill_result_needs_followup_clean():
-    from backfill_rt_hrl_lmps import BackfillResult
+    from .backfill_rt_hrl_lmps import BackfillResult
     r = BackfillResult()
     r.dates_attempted = 130
     r.total_points = 3120
@@ -694,7 +704,7 @@ def test_backfill_result_needs_followup_clean():
 
 
 def test_backfill_result_needs_followup_true_when_partial_dates_present():
-    from backfill_rt_hrl_lmps import BackfillResult
+    from .backfill_rt_hrl_lmps import BackfillResult
     from datetime import date
     r = BackfillResult()
     r.dates_attempted = 130
@@ -769,10 +779,10 @@ def test_fetch_metered_load_recent_uses_5_day_window():
     lookback absorbs PJM's typical 2-3 day publish delay plus weekend
     gaps. Earlier 3h lookback (May 2026) was wrong against PJM's actual
     publishing cadence and produced 0-row writes post-deploy."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -782,7 +792,7 @@ def test_fetch_metered_load_recent_uses_5_day_window():
     now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
 
     import asyncio
-    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_metered_load_recent(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "hrl_load_metered"
     assert captured["params"]["zone"] == COMED_METERED_ZONE
@@ -800,10 +810,10 @@ def test_fetch_inst_load_recent_uses_30min_window_and_area_filter():
     per the DM2 OpenAPI spec — and the ComEd code on inst_load's allowed
     list is "COMED" (not "CE" like hrl_load_metered's). 30-minute
     lookback catches stragglers if the 5-min poll missed a tick."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -813,7 +823,7 @@ def test_fetch_inst_load_recent_uses_30min_window_and_area_filter():
     now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
 
     import asyncio
-    asyncio.run(fetch_inst_load_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_inst_load_recent(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "inst_load"
     assert captured["params"]["area"] == COMED_INST_AREA
@@ -883,7 +893,7 @@ def test_summer_ept_produces_edt_offset_in_influx_point():
         "zone": "CE",
     }
     [pt] = build_metered_load_points([item])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     ts_ns = int(line.split()[-1])
     expected_utc = int(datetime(2025, 6, 23, 21, 0, 0, tzinfo=timezone.utc).timestamp() * 1e9)
     assert ts_ns == expected_utc
@@ -894,7 +904,7 @@ def test_summer_ept_produces_edt_offset_in_influx_point():
 # =========================================================================
 
 
-def _da_item(hour: int, lmp: float = 30.0) -> dict:
+def _da_item(hour: int, lmp: float = 30.0) -> dict[str, Any]:
     return {
         "datetime_beginning_ept": f"2026-07-15T{hour:02d}:00:00",
         "pnode_id": COMED_PNODE_ID,
@@ -915,7 +925,7 @@ def test_da_lmp_points_count_matches_input():
 
 def test_da_lmp_zone_tag_falls_back_to_pnode_name():
     [pt] = build_da_lmp_points([_da_item(0)])
-    assert "zone=COMED" in pt.to_line_protocol()
+    assert "zone=COMED" in _line(pt)
 
 
 def test_da_lmp_handles_missing_optional_fields():
@@ -923,7 +933,7 @@ def test_da_lmp_handles_missing_optional_fields():
     item["congestion_price_da"] = None
     item["marginal_loss_price_da"] = None
     [pt] = build_da_lmp_points([item])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "congestion_price_da=0" in line
     assert "marginal_loss_price_da=0" in line
 
@@ -933,7 +943,7 @@ def test_da_lmp_handles_missing_optional_fields():
 # =========================================================================
 
 
-def _forecast_item(target_hour: int, eval_hour: int, mw: float = 10000.0) -> dict:
+def _forecast_item(target_hour: int, eval_hour: int, mw: float = 10000.0) -> dict[str, Any]:
     return {
         "evaluated_at_datetime_ept": f"2026-07-15T{eval_hour:02d}:00:00",
         "forecast_area": COMED_FORECAST_AREA,
@@ -946,14 +956,14 @@ def test_forecast_points_carry_evaluated_at_tag():
     [a, b] = build_load_forecast_points(
         [_forecast_item(15, 6, 11000), _forecast_item(15, 13, 11500)],
     )
-    eval_a = next(t for t in a.to_line_protocol().split(",") if "evaluated_at_iso" in t)
-    eval_b = next(t for t in b.to_line_protocol().split(",") if "evaluated_at_iso" in t)
+    eval_a = next(t for t in _line(a).split(",") if "evaluated_at_iso" in t)
+    eval_b = next(t for t in _line(b).split(",") if "evaluated_at_iso" in t)
     assert eval_a != eval_b
 
 
 def test_forecast_horizon_field():
     [pt] = build_load_forecast_points([_forecast_item(15, 6)])
-    assert "horizon_hours=33i" in pt.to_line_protocol()
+    assert "horizon_hours=33i" in _line(pt)
 
 
 # =========================================================================
@@ -961,7 +971,7 @@ def test_forecast_horizon_field():
 # =========================================================================
 
 
-def _metered_item(hour: int, mw: float = 12000.0, verified: bool = True) -> dict:
+def _metered_item(hour: int, mw: float = 12000.0, verified: bool = True) -> dict[str, Any]:
     return {
         "datetime_beginning_ept": f"2026-07-15T{hour:02d}:00:00",
         "is_verified": verified,
@@ -978,7 +988,7 @@ def test_metered_load_points_count():
 
 def test_metered_load_carries_zone_and_verification_tags():
     [pt] = build_metered_load_points([_metered_item(13, 14500.5)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "pjm.metered_load" in line
     assert "zone=CE" in line  # NOTE: not COMED — see COMED_METERED_ZONE constant
     assert "is_verified=true" in line
@@ -987,7 +997,7 @@ def test_metered_load_carries_zone_and_verification_tags():
 
 def test_metered_load_unverified_rows_marked():
     [pt] = build_metered_load_points([_metered_item(0, verified=False)])
-    assert "is_verified=false" in pt.to_line_protocol()
+    assert "is_verified=false" in _line(pt)
 
 
 # =========================================================================
@@ -995,7 +1005,7 @@ def test_metered_load_unverified_rows_marked():
 # =========================================================================
 
 
-def _inst_load_item(hour: int, mw: float = 14000.0, minute: int = 0) -> dict:
+def _inst_load_item(hour: int, mw: float = 14000.0, minute: int = 0) -> dict[str, Any]:
     return {
         "datetime_beginning_ept": f"2026-07-15T{hour:02d}:{minute:02d}:00",
         "area": COMED_INST_AREA,
@@ -1016,7 +1026,7 @@ def test_inst_load_carries_area_tag_and_mw_field():
     field name (matches pjm.metered_load's `mw` field so the §3 detector
     can swap feeds without renaming downstream queries)."""
     [pt] = build_inst_load_points([_inst_load_item(13, 14250.5)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert line.startswith("pjm.inst_load")
     assert "area=COMED" in line
     assert "mw=14250.5" in line
@@ -1027,7 +1037,7 @@ def test_inst_load_carries_area_tag_and_mw_field():
 # =========================================================================
 
 
-def _peak_item(hour_generated: int = 8, peak_hour: int = 16) -> dict:
+def _peak_item(hour_generated: int = 8, peak_hour: int = 16) -> dict[str, Any]:
     return {
         "generated_at_ept": f"2026-07-15T{hour_generated:02d}:30:00",
         "projected_peak_datetime_ept": f"2026-07-15T{peak_hour:02d}:00:00",
@@ -1044,7 +1054,7 @@ def _peak_item(hour_generated: int = 8, peak_hour: int = 16) -> dict:
 
 def test_peak_forecast_points_carry_load_forecast():
     [pt] = build_peak_forecast_points([_peak_item()])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "pjm.peak_forecast_rto" in line
     assert "area=PJM" in line  # Influx tag escapes spaces; see line for actual form
     assert "load_forecast_mw=124761" in line
@@ -1054,7 +1064,7 @@ def test_peak_forecast_includes_projected_peak_string():
     """The projected-peak datetime is stored as a string field for
     downstream parsing rather than being collapsed into the timestamp."""
     [pt] = build_peak_forecast_points([_peak_item(peak_hour=17)])
-    assert 'projected_peak_datetime_ept="2026-07-15T17:00:00"' in pt.to_line_protocol()
+    assert 'projected_peak_datetime_ept="2026-07-15T17:00:00"' in _line(pt)
 
 
 def test_peak_forecast_uses_generated_at_as_timestamp():
@@ -1064,7 +1074,7 @@ def test_peak_forecast_uses_generated_at_as_timestamp():
         [_peak_item(hour_generated=8), _peak_item(hour_generated=14)],
     )
     # Different generated_at -> different Influx timestamps
-    assert a.to_line_protocol().split()[-1] != b.to_line_protocol().split()[-1]
+    assert _line(a).split()[-1] != _line(b).split()[-1]
 
 
 # =========================================================================
@@ -1072,7 +1082,7 @@ def test_peak_forecast_uses_generated_at_as_timestamp():
 # =========================================================================
 
 
-def _nspl_item(year: int = 2026, peak_dt: str = "2025-06-23T17:00:00", mw: float = 20713.7) -> dict:
+def _nspl_item(year: int = 2026, peak_dt: str = "2025-06-23T17:00:00", mw: float = 20713.7) -> dict[str, Any]:
     return {
         "year": year,
         "datetime_beginning_ept": peak_dt,
@@ -1083,7 +1093,7 @@ def _nspl_item(year: int = 2026, peak_dt: str = "2025-06-23T17:00:00", mw: float
 
 def test_nspl_points_carry_year_tag():
     [pt] = build_nspl_points([_nspl_item(year=2026)])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     assert "pjm.nspl_zonal" in line
     assert "year=2026" in line
     assert "zone=COMED" in line  # NOTE: this feed uses "COMED", not "CE"
@@ -1100,7 +1110,7 @@ def test_nspl_timestamp_is_underlying_peak_hour():
     used the operator's ``cfg.tz=America/Chicago`` and produced 22:00
     UTC -- one hour late."""
     [pt] = build_nspl_points([_nspl_item(peak_dt="2025-06-23T17:00:00")])
-    line = pt.to_line_protocol()
+    line = _line(pt)
     # Final field of line protocol is the unix-ns timestamp
     ts_ns = int(line.split()[-1])
     # 17:00 EDT == 21:00 UTC
@@ -1223,7 +1233,7 @@ async def test_poll_once_continues_when_one_feed_fails(monkeypatch, tmp_path):
     _stub_health_marker(monkeypatch, tmp_path)
 
     client = MagicMock()
-    calls: list[tuple[str, dict]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
 
     async def maybe_fail(feed, params):
         calls.append((feed, params))
@@ -1415,7 +1425,7 @@ async def test_feed_status_failure_to_write_does_not_break_cycle(monkeypatch, tm
     # write whose record list has exactly one point is treated as a
     # status write and fails.
     def selective_write(*, bucket, record):
-        if len(record) == 1 and "pjm.feed_status" in record[0].to_line_protocol():
+        if len(record) == 1 and "pjm.feed_status" in _line(record[0]):
             raise RuntimeError("Influx transient error")
         return None
     write_api.write = MagicMock(side_effect=selective_write)
@@ -1486,7 +1496,7 @@ async def test_heartbeat_write_failure_does_not_break_cycle(monkeypatch, tmp_pat
 
     def selective_write(*, bucket, record):
         for pt in record:
-            if "pjm.poller_heartbeat" in pt.to_line_protocol():
+            if "pjm.poller_heartbeat" in _line(pt):
                 raise RuntimeError("Influx transient error")
         return None
     write_api.write = MagicMock(side_effect=selective_write)
@@ -1513,7 +1523,7 @@ def _measurements_written(write_api: MagicMock) -> list[str]:
     for call in write_api.write.call_args_list:
         record = call.kwargs.get("record") or (call.args[1] if len(call.args) > 1 else [])
         for pt in record:
-            line = pt.to_line_protocol()
+            line = _line(pt)
             out.append(line.split(",", 1)[0].split(" ", 1)[0])
     return out
 
@@ -1524,22 +1534,22 @@ def _status_rows(write_api: MagicMock) -> list[str]:
     for call in write_api.write.call_args_list:
         record = call.kwargs.get("record") or (call.args[1] if len(call.args) > 1 else [])
         for pt in record:
-            line = pt.to_line_protocol()
+            line = _line(pt)
             if line.startswith("pjm.feed_status"):
                 out.append(line)
     return out
 
 
-def _stub_health_marker(monkeypatch, tmp_path):
+def _stub_health_marker(monkeypatch: Any, tmp_path: Any) -> Any:
     """Redirect HEALTH_MARKER to a temp path so tests can assert touch state
     without touching /tmp."""
     from pathlib import Path
     marker = Path(tmp_path) / "last_poll_ok"
-    monkeypatch.setattr("app.HEALTH_MARKER", marker)
+    monkeypatch.setattr("pjm_dm2_poller.app.HEALTH_MARKER", marker)
     return marker
 
 
-def _stub_config_at(monkeypatch, when: datetime) -> Config:
+def _stub_config_at(monkeypatch: Any, when: datetime) -> Config:
     """Build a Config and stub `datetime.now(tz)` to return `when` in CT."""
     cfg = Config(
         api_key="fake-key",
@@ -1557,7 +1567,7 @@ def _stub_config_at(monkeypatch, when: datetime) -> Config:
         def now(cls, tz=None):
             return fake_now if tz is not None else fake_now.replace(tzinfo=None)
 
-    monkeypatch.setattr("app.datetime", _StubDatetime)
+    monkeypatch.setattr("pjm_dm2_poller.app.datetime", _StubDatetime)
     return cfg
 
 
@@ -1597,10 +1607,10 @@ def test_fetch_inst_load_recent_rto_uses_pjm_rto_area():
     """The RTO inst_load fetcher hits the same endpoint as ComEd's but
     with area=PJM RTO. HTTP-client-side URL encoding turns the space
     into %20 -- verify the raw param string here, not the encoded form."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -1609,7 +1619,7 @@ def test_fetch_inst_load_recent_rto_uses_pjm_rto_area():
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 14, 17, 30, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_inst_load_recent_rto(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_inst_load_recent_rto(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "inst_load"
     assert captured["params"]["area"] == "PJM RTO"
@@ -1618,10 +1628,10 @@ def test_fetch_inst_load_recent_rto_uses_pjm_rto_area():
 
 def test_fetch_metered_load_recent_rto_uses_rto_zone():
     """RTO metered uses zone=RTO. Same endpoint as ComEd's, different filter."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["feed"] = feed
             captured["params"] = params
             return []
@@ -1630,7 +1640,7 @@ def test_fetch_metered_load_recent_rto_uses_rto_zone():
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_metered_load_recent_rto(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_metered_load_recent_rto(cast(PJMClient, FakeClient()), cfg, now_local))
 
     assert captured["feed"] == "hrl_load_metered"
     assert captured["params"]["zone"] == "RTO"
@@ -1680,14 +1690,14 @@ def test_rto_tripwire_runs_inside_rto_fetcher(capsys):
     ]
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             return duplicate_response
 
     cfg = MagicMock()
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_metered_load_recent_rto(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_metered_load_recent_rto(cast(PJMClient, FakeClient()), cfg, now_local))
     captured = capsys.readouterr()
     assert "rto_metered_load_unexpected_rows_per_hour" in captured.out
 
@@ -1708,14 +1718,14 @@ def test_comed_metered_does_not_run_rto_tripwire(capsys):
     ]
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             return duplicate_response
 
     cfg = MagicMock()
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=CHICAGO)
 
-    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_metered_load_recent(cast(PJMClient, FakeClient()), cfg, now_local))
     captured = capsys.readouterr()
     assert "rto_metered_load_unexpected_rows_per_hour" not in captured.out
 
@@ -1733,10 +1743,10 @@ def test_request_window_is_ept_not_chicago_for_inst_load():
     to the same Eastern wall-clock regardless of which DST band
     we're in. This test pins the EDT case (Jul = both CDT and EDT
     in summer)."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
@@ -1744,7 +1754,7 @@ def test_request_window_is_ept_not_chicago_for_inst_load():
     cfg.tz = CHICAGO
     # 12:00 CT = 13:00 ET in summer (cleanly hour-aligned for clarity).
     now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
-    asyncio.run(fetch_inst_load_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_inst_load_recent(cast(PJMClient, FakeClient()), cfg, now_local))
 
     # The window must end at 13:00 EDT, not 12:00 (which would be CDT
     # leaking through as if it were EDT).
@@ -1757,17 +1767,17 @@ def test_request_window_is_ept_not_chicago_for_inst_load():
 def test_request_window_is_ept_not_chicago_for_metered_load():
     """Symmetric for ``hrl_load_metered`` (5-day window). The window
     boundaries are in EPT regardless of cfg.tz."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
     cfg = MagicMock()
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
-    asyncio.run(fetch_metered_load_recent(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_metered_load_recent(cast(PJMClient, FakeClient()), cfg, now_local))
 
     # End in EDT (13:00 ET), 5 days back from there.
     assert (
@@ -1780,10 +1790,10 @@ def test_request_window_is_ept_for_da_lmp_tomorrow():
     """The DA LMP fetcher asks for tomorrow's date at 00:00 EPT. The
     "tomorrow" boundary must be computed in Eastern -- a late-night
     Chicago poll could fall on a different EPT date."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
@@ -1792,7 +1802,7 @@ def test_request_window_is_ept_for_da_lmp_tomorrow():
     # Edge case: 23:30 CT = 00:30 EDT next day. EPT "tomorrow" is two
     # calendar days from now in Chicago terms.
     now_local = datetime(2026, 7, 15, 23, 30, 0, tzinfo=CHICAGO)
-    asyncio.run(fetch_da_lmp_for_tomorrow(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_da_lmp_for_tomorrow(cast(PJMClient, FakeClient()), cfg, now_local))
 
     # 23:30 CDT (Jul 15) = 00:30 EDT (Jul 16). Tomorrow in EPT = Jul 17.
     assert captured["params"]["datetime_beginning_ept"] == "2026-07-17T00:00:00.0"
@@ -1802,17 +1812,17 @@ def test_request_window_is_ept_for_peak_forecast_rto():
     """``ops_sum_frcst_peak_rto`` uses ``generated_at_ept`` which also
     needs to be EPT-formatted. The "today midnight" boundary is in
     Eastern."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeClient:
-        async def fetch(self, feed: str, params: dict) -> list[dict]:
+        async def fetch(self, feed: str, params: dict[str, Any]) -> list[dict[str, Any]]:
             captured["params"] = params
             return []
 
     cfg = MagicMock()
     cfg.tz = CHICAGO
     now_local = datetime(2026, 7, 15, 12, 0, 0, tzinfo=CHICAGO)
-    asyncio.run(fetch_peak_forecast_rto(FakeClient(), cfg, now_local))
+    asyncio.run(fetch_peak_forecast_rto(cast(PJMClient, FakeClient()), cfg, now_local))
 
     # "Today midnight EPT" = 2026-07-15T00:00:00; today end = today
     # 23:59:59 in EPT.

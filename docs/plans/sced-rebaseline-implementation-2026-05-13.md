@@ -17,7 +17,7 @@ experiment_start: 2026-06-01
 
 **Architecture:** Six phases. Phase 1 lands controller-side telemetry + arm-mode gating (foundation for everything). Phase 2 adds bill-canonical pricing infrastructure. Phase 3 rewrites the analysis pipeline around arm-period units with cost-matched exclusion + single validity gate. Phase 4 selects the NOAA-archived ASOS fallback station for Ecowitt-gap hours (NO historical baseline pull — spec §6 within-sample standardization eliminates the need for ERA5 / 2020-2025 historical data). Phase 5 freezes documentation. Phase 6 runs end-to-end shadow validation. Phase 2 + Phase 4 can run in parallel with Phase 3.
 
-**Tech Stack:** Python 3.11 + pytest, InfluxDB 2 + Flux, Docker Compose on Pi-lab, ComEd parse_comed_bill + PJM DataMiner2 + Ecowitt + Refoss EM16P + Eagle-3 HAN. Existing tooling in `tools/analysis/`, `deploy/energy-stack/hvac_scheduler/`, `deploy/energy-stack/pjm-dm2-poller/`.
+**Tech Stack:** Python 3.11 + pytest, InfluxDB 2 + Flux, Docker Compose on Pi-lab, ComEd parse_comed_bill + PJM DataMiner2 + Ecowitt + Refoss EM16P + Eagle-3 HAN. Existing tooling in `tools/analysis/`, `deploy/energy-stack/hvac_scheduler/`, `deploy/energy-stack/pjm_dm2_poller/`.
 
 **Spec source of truth:** [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](sced-rebaseline-spec-2026-05-13.md). Every task in this plan cites the spec section it implements.
 
@@ -48,7 +48,7 @@ experiment_start: 2026-06-01
 |---|---|
 | `deploy/energy-stack/hvac_scheduler/app.py` | Add arm-calendar reading, mode-gating around `execute_action`, mode/switch/feed-health telemetry writes |
 | `deploy/energy-stack/hvac_scheduler/precool.py` | Optional pre-freeze: upgrade DTOD base→resultant rates (controller-side, NOT mandated for OSF) |
-| `deploy/energy-stack/pjm-dm2-poller/app.py` | Add `rt_hrl_lmps` feed alongside existing `da_hrl_lmps` |
+| `deploy/energy-stack/pjm_dm2_poller/app.py` | Add `rt_hrl_lmps` feed alongside existing `da_hrl_lmps` |
 | `tools/analysis/pipeline.py` | Major: remove `$/CDD` outcomes, weekly Stage 3/5 framing, bootstrap/SCED randomization. Wire to new arm-period pipeline. |
 | `tools/analysis/replay/manifest.py` | Add `rt_hrl_lmps` to KNOWN_MEASUREMENTS |
 | `docs/HVAC_LOGIC.md` | Verify day-type schedule completeness; patch gaps |
@@ -1193,8 +1193,8 @@ git commit -m "feat(analysis): add rt_hrl_lmps Flux query + manifest entry (spec
 ### Task 2.2: Extend pjm-dm2-poller for rt_hrl_lmps
 
 **Files:**
-- Modify: `deploy/energy-stack/pjm-dm2-poller/app.py`
-- Test: `deploy/energy-stack/pjm-dm2-poller/test_app.py`
+- Modify: `deploy/energy-stack/pjm_dm2_poller/app.py`
+- Test: `deploy/energy-stack/pjm_dm2_poller/test_app.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1256,7 +1256,7 @@ Schedule `poll_rt_hrl_lmps(yesterday)` to run daily at 11:30am ET (after PJM pos
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/energy-stack/pjm-dm2-poller/app.py deploy/energy-stack/pjm-dm2-poller/test_app.py
+git add deploy/energy-stack/pjm_dm2_poller/app.py deploy/energy-stack/pjm_dm2_poller/test_app.py
 git commit -m "feat(pjm-dm2-poller): add rt_hrl_lmps daily polling (spec §11 #6)"
 ```
 
@@ -1265,7 +1265,7 @@ git commit -m "feat(pjm-dm2-poller): add rt_hrl_lmps daily polling (spec §11 #6
 ### Task 2.3: Backfill rt_hrl_lmps from 2026-01-01
 
 **Files:**
-- Create: `deploy/energy-stack/pjm-dm2-poller/backfill_rt_hrl_lmps.py`
+- Create: `deploy/energy-stack/pjm_dm2_poller/backfill_rt_hrl_lmps.py`
 
 - [ ] **Step 1: Write backfill script**
 
@@ -1297,7 +1297,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run once, verify InfluxDB has full coverage**
 
 ```bash
-ssh pi-lab 'docker exec pjm-dm2-poller python backfill_rt_hrl_lmps.py'
+ssh pi-lab 'docker exec pjm-dm2-poller python -m pjm_dm2_poller.backfill_rt_hrl_lmps'
 ssh pi-lab 'docker exec influxdb influx query --raw "
 from(bucket: \"energy\")
   |> range(start: 2026-01-01)
@@ -1311,7 +1311,7 @@ Expected: ~3000+ rows (≈130 days × 24 hours).
 - [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/energy-stack/pjm-dm2-poller/backfill_rt_hrl_lmps.py
+git add deploy/energy-stack/pjm_dm2_poller/backfill_rt_hrl_lmps.py
 git commit -m "chore(pjm-dm2-poller): rt_hrl_lmps backfill script (spec §8)"
 ```
 

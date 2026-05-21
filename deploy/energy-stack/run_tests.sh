@@ -27,7 +27,7 @@ services=(
     hvac_scheduler
     hvac-scheduler-watchdog
     nws-poller
-    pjm-dm2-poller
+    pjm_dm2_poller
     refoss-poller
     telegram-notifier
     thermostat-poller
