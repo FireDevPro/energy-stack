@@ -163,7 +163,7 @@ One point per fit run. Tagged `model_version = "step1.affine.v1"`.
 
 ### `/data/thermal_model.json` (on `pi-lab`)
 
-Latest ratified fit, materialized to disk so the scheduler doesn't query Influx on every decision tick. Same schema as the fields above. Pattern mirrors `/data/haven_token.json` (rotating refresh token persistence). The fit script writes both the Influx point and the JSON file atomically; the scheduler reads only the JSON file.
+Future scheduler-integrated design: latest ratified fit, materialized to disk so the scheduler doesn't query Influx on every decision tick. Same schema as the fields above. Pattern mirrors `/data/haven_token.json` (rotating refresh token persistence). A future fit script would write both the Influx point and the JSON file atomically; the scheduler would read only the JSON file.
 
 If the JSON file is missing or its `fit_window_end` is older than 60 days, the scheduler logs a warning and falls back to the existing fixed-rule constants. No setpoint logic ever runs against a stale fit silently.
 
@@ -192,9 +192,9 @@ deploy/energy-stack/
 └── (no new container — fit_thermal_model.py is a script, like parse_comed_bill.py)
 ```
 
-The fit job is a script, not a service. It runs once per night via a cron entry on `pi-lab` (`0 2 * * *`), reads the prior 30 days from InfluxDB, runs the OLS fit + validation, writes the Influx point and `/data/thermal_model.json`. ~5 seconds per run. Lives in the repo for the same reason `parse_comed_bill.py` does — future-Claude shouldn't have to recreate the masking rules from scratch.
+Future scheduler-integrated design: the fit job would be a script, not a service. It would run once per night via a cron entry on `pi-lab` (`0 2 * * *`), read the prior 30 days from InfluxDB, run the OLS fit + validation, and write the future Influx point plus `/data/thermal_model.json`. The current `thermal_observer` does not do this.
 
-A workstation alias `thermal-fit` invokes it on demand: `ssh pi-lab "cd ~/energy-stack && python scripts/fit_thermal_model.py [--window-days N] [--write|--dry-run]"`. Dry-run prints the fit + skill score without writing.
+A future workstation alias `thermal-fit` could invoke it on demand: `ssh pi-lab "cd ~/energy-stack && python scripts/fit_thermal_model.py [--window-days N] [--write|--dry-run]"`. The current observer prints the fit + skill score without writing.
 
 ## Sequencing
 
