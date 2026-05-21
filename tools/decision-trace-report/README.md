@@ -33,11 +33,11 @@ deliver the result via email through the Workspace MCP.
   render reason codes in plain English. The content of this file is a
   cleaned-up example from 2026-05-19; the date in its frontmatter is the
   creation date of the exemplar, not the date of the example.
-- **`reports/`** — local copies of generated daily reports written by
-  the scheduled task as a side effect of each run. Gitignored. Useful
-  for local grep and reference; not the source of truth (the canonical
-  delivery is the email, and each run re-derives its content from
-  Loki/Influx).
+- **`reports/`** — local archive of each day's generated report,
+  written by the scheduled task alongside the email delivery so past
+  days are easy to review and grep. Gitignored — clean out at whatever
+  cadence works. Each run re-derives its content from Loki/Influx, so
+  the saved file and the email are equivalent.
 
 ## Editing the report style
 
