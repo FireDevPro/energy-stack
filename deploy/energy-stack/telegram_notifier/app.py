@@ -375,8 +375,16 @@ from(bucket: "{bucket}")
   |> last()
   |> keep(columns: ["_time"])
 '''
+        # |> last() returns ONE row per series. Multi-series measurements
+        # like comed.prices (period_type=5min AND period_type=hourly_avg)
+        # yield N rows where N = distinct series count. Take the MAX
+        # `_time` across rows so a poller counts as "writing" if ANY of
+        # its series is recent. Picking rows[0] arbitrarily would catch
+        # a stale series like hourly_avg (written once per hour) and
+        # produce false "silent for 27 min" alerts.
         rows = fetch_one(query_api, flux)
-        out[name] = rows[0].get("_time") if rows else None
+        times = [t for t in (r.get("_time") for r in rows) if t is not None]
+        out[name] = max(times) if times else None
     return out
 
 
