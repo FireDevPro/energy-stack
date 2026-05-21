@@ -34,6 +34,7 @@ service_dirs=(
     refoss_poller
     thermostat_poller
     haven_ingest
+    ecowitt_ingest
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set
