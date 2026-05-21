@@ -52,7 +52,7 @@ Two upstream feeds need work before the Arm B logic itself can land. Neither was
 
 ### 0a. NWS poller migration to `forecastGridData`
 
-**Current:** [`deploy/energy-stack/nws-poller/app.py`](../deploy/energy-stack/nws-poller/app.py) uses the `forecastHourly` endpoint, which returns hourly period objects with `temperature` and `dewpoint` but does NOT include `apparentTemperature`.
+**Current:** [`deploy/energy-stack/nws_poller/app.py`](../deploy/energy-stack/nws_poller/app.py) uses the `forecastHourly` endpoint, which returns hourly period objects with `temperature` and `dewpoint` but does NOT include `apparentTemperature`.
 
 **Required change:** migrate to the `forecastGridData` endpoint, which returns gridded forecasts with apparent temperature as a first-class field plus several other useful variables.
 
@@ -86,7 +86,7 @@ Variables of interest:
 
 **Test fixtures:**
 
-- Real `forecastGridData` response sample committed to `nws-poller/tests/fixtures/`.
+- Real `forecastGridData` response sample committed to `nws_poller/tests/fixtures/`.
 - Expected daily aggregates for that sample (computed by hand, committed alongside).
 - Unit tests for: time-grid expansion, cross-variable alignment, daily roll-up, unit conversions.
 

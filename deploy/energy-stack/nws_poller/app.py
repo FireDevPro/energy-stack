@@ -42,19 +42,21 @@ import re
 import signal
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
+from types import FrameType
+from typing import Any, cast, overload
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
 def log(level: str, msg: str, **fields: object) -> None:
-    rec = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
+    rec: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     rec.update(fields)
     print(json.dumps(rec), flush=True)
 
@@ -100,11 +102,19 @@ class Config:
         )
 
 
-def c_to_f(c):
+@overload
+def c_to_f(c: None) -> None: ...
+@overload
+def c_to_f(c: float) -> float: ...
+def c_to_f(c: float | None) -> float | None:
     return None if c is None else c * 9 / 5 + 32
 
 
-def kmh_to_mph(kmh):
+@overload
+def kmh_to_mph(kmh: None) -> None: ...
+@overload
+def kmh_to_mph(kmh: float) -> float: ...
+def kmh_to_mph(kmh: float | None) -> float | None:
     return None if kmh is None else kmh * 0.621371
 
 
@@ -137,7 +147,7 @@ def parse_iso_duration_hours(s: str) -> float:
 # ---- Grid expansion: { validTime, value } -> per-hour UTC slots -----------
 
 
-def expand_grid_values(values: list[dict]) -> dict[datetime, float]:
+def expand_grid_values(values: list[dict[str, Any]]) -> dict[datetime, float]:
     """Expand a single gridded variable's ``values`` list into 1-hour UTC
     slots. Each ``{"validTime": "<start>/PT<n>H", "value": v}`` becomes ``n``
     UTC datetimes ``{start, start+1h, ... start+(n-1)h}``, all carrying the
@@ -173,7 +183,7 @@ def expand_grid_values(values: list[dict]) -> dict[datetime, float]:
     return out
 
 
-def _expand_var(grid_props: dict, name: str) -> dict[datetime, float]:
+def _expand_var(grid_props: dict[str, Any], name: str) -> dict[datetime, float]:
     """Pull ``grid_props[name].values`` and expand it into hourly slots.
     Returns an empty dict if the variable is absent or empty."""
     var = grid_props.get(name) or {}
@@ -183,7 +193,7 @@ def _expand_var(grid_props: dict, name: str) -> dict[datetime, float]:
 # ---- Daily roll-up ---------------------------------------------------------
 
 
-def summarize_grid_for_date(grid_props: dict, target_date, tz: ZoneInfo) -> dict:
+def summarize_grid_for_date(grid_props: dict[str, Any], target_date: date, tz: ZoneInfo) -> dict[str, int | float]:
     """Aggregate gridded forecast data for ``target_date`` in ``tz``.
 
     Reads the variables listed in the module docstring, expands each into
@@ -256,13 +266,13 @@ class NWSClient:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self._gridpoint_url: str | None = None
-        self._gridpoint_meta: dict = {}
+        self._gridpoint_meta: dict[str, Any] = {}
 
-    async def _get(self, session: aiohttp.ClientSession, url: str) -> dict:
+    async def _get(self, session: aiohttp.ClientSession, url: str) -> dict[str, Any]:
         async with session.get(url, headers={"User-Agent": self.cfg.user_agent},
                                 timeout=aiohttp.ClientTimeout(total=30)) as r:
             r.raise_for_status()
-            return await r.json()
+            return cast(dict[str, Any], await r.json())
 
     async def resolve_gridpoint(self, session: aiohttp.ClientSession) -> str:
         """Resolve the gridpoint -> forecastGridData URL for the configured
@@ -284,18 +294,18 @@ class NWSClient:
         log("info", "gridpoint_resolved", url=self._gridpoint_url, **self._gridpoint_meta)
         return self._gridpoint_url
 
-    async def fetch_grid_data(self, session: aiohttp.ClientSession) -> dict:
+    async def fetch_grid_data(self, session: aiohttp.ClientSession) -> dict[str, Any]:
         """Pull the full gridded forecast properties block. Each variable
         (``temperature``, ``apparentTemperature``, ...) lives under its own
         key with a ``values: [{validTime, value}, ...]`` list."""
         url = await self.resolve_gridpoint(session)
         data = await self._get(session, url)
-        return data["properties"]
+        return cast(dict[str, Any], data["properties"])
 
-    async def fetch_alerts(self, session: aiohttp.ClientSession) -> list[dict]:
+    async def fetch_alerts(self, session: aiohttp.ClientSession) -> list[dict[str, Any]]:
         url = f"https://api.weather.gov/alerts/active?point={self.cfg.lat},{self.cfg.lon}"
         data = await self._get(session, url)
-        return data.get("features", [])
+        return cast(list[dict[str, Any]], data.get("features", []))
 
 
 # ---- Alert handling (unchanged from forecastHourly era) -------------------
@@ -311,7 +321,7 @@ def is_heat_related(event_text: str) -> bool:
     return any(k in t for k in ("heat advisory", "excessive heat", "heat warning"))
 
 
-def alert_window(alert: dict) -> tuple[datetime | None, datetime | None]:
+def alert_window(alert: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
     """Return (start, end) datetimes for an alert's hazardous-conditions window.
 
     Per the NWS API, the actual hazard window is bounded by ``onset`` (or
@@ -327,7 +337,7 @@ def alert_window(alert: dict) -> tuple[datetime | None, datetime | None]:
     return start, end
 
 
-def heat_active_on_date(alerts: list[dict], target_date, tz: ZoneInfo) -> bool:
+def heat_active_on_date(alerts: list[dict[str, Any]], target_date: date, tz: ZoneInfo) -> bool:
     """True if any heat-related alert overlaps ``target_date`` in ``tz``.
 
     Each forecast period (today/tomorrow/day2) needs a per-day flag; a single
@@ -351,7 +361,7 @@ def heat_active_on_date(alerts: list[dict], target_date, tz: ZoneInfo) -> bool:
 # ---- InfluxDB point construction -------------------------------------------
 
 
-def build_forecast_points(grid_props: dict, alerts: list[dict], tz: ZoneInfo) -> list[Point]:
+def build_forecast_points(grid_props: dict[str, Any], alerts: list[dict[str, Any]], tz: ZoneInfo) -> list[Point]:
     """Build today / tomorrow / day2 snapshot points with alert overlay.
 
     Days are bucketed in ``tz`` (the user's wall-clock zone). Heat-advisory
@@ -372,25 +382,23 @@ def build_forecast_points(grid_props: dict, alerts: list[dict], tz: ZoneInfo) ->
         sorted({(a.get("properties") or {}).get("event", "") for a in alerts if a.get("properties")})
     )[:240]
 
-    points = []
+    points: list[Point] = []
     for period_label, target_date in days.items():
         agg = summarize_grid_for_date(grid_props, target_date, tz)
         heat_active = heat_active_on_date(alerts, target_date, tz)
-        p = (Point("nws.forecast")
+        p = (Point("nws.forecast")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
              .tag("for_period", period_label)
              .field("period_date", target_date.isoformat())
              .field("is_heat_advisory", 1 if heat_active else 0)
              .field("alert_summary", alert_summary or ""))
         for k, v in agg.items():
-            if v is None:
-                continue
             p = p.field(k, v if isinstance(v, (int, float)) else float(v))
         points.append(p)
     return points
 
 
-def build_alert_points(alerts: list[dict]) -> list[Point]:
-    out = []
+def build_alert_points(alerts: list[dict[str, Any]]) -> list[Point]:
+    out: list[Point] = []
     for a in alerts:
         props = a.get("properties") or {}
         event = props.get("event", "Unknown")
@@ -402,7 +410,7 @@ def build_alert_points(alerts: list[dict]) -> list[Point]:
         except Exception:
             expires_unix = 0
         out.append(
-            Point("nws.alerts")
+            Point("nws.alerts")  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
             .tag("event", event)
             .tag("severity", severity)
             .field("active", 1)
@@ -412,7 +420,7 @@ def build_alert_points(alerts: list[dict]) -> list[Point]:
     return out
 
 
-async def poll_once(client: NWSClient, write_api, cfg: Config) -> None:
+async def poll_once(client: NWSClient, write_api: Any, cfg: Config) -> None:
     async with aiohttp.ClientSession() as session:
         try:
             grid_props = await client.fetch_grid_data(session)
@@ -440,7 +448,7 @@ async def poll_once(client: NWSClient, write_api, cfg: Config) -> None:
         temperature_intervals=len(temp_values),
         forecast_points=len(forecast_points),
         active_alerts=len(alerts),
-        alert_events=sorted({(a.get("properties") or {}).get("event") for a in alerts}))
+        alert_events=sorted({(a.get("properties") or {}).get("event", "") for a in alerts}))
     HEALTH_MARKER.touch()
 
 
@@ -455,13 +463,13 @@ def main() -> int:
 
     stop = asyncio.Event()
 
-    def handle_stop(signum, _frame):
+    def handle_stop(signum: int, _frame: FrameType | None) -> None:
         log("info", "signal_received", signum=signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
 
-    async def run():
+    async def run() -> None:
         while not stop.is_set():
             try:
                 await poll_once(client, write_api, cfg)
@@ -476,7 +484,7 @@ def main() -> int:
         asyncio.run(run())
     finally:
         log("info", "shutdown")
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
     return 0
 
 

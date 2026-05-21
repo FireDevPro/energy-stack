@@ -97,7 +97,7 @@ Where sources conflict, the question is raised but no winner is picked. Operator
 - **docs/SERVICES.md:276, INFLUXDB_RETENTION.md:39, PJM_DM2_INTEGRATION.md:45:** Sundays 02:00 weekly.
 
 ### CQ-N — NWS poller forecast endpoint (resolved by DOC-003+PR3)
-- **Code (`nws-poller/app.py:7`):** `forecastGridData` (migrated).
+- **Code (`nws_poller/app.py:7`):** `forecastGridData` (migrated).
 - **docs/SERVICES.md:254, THERMAL_MODEL_DESIGN.md:104:** `forecastHourly`.
 
 ### CQ-O — Pre-season 5CP fallback constant (resolved by DOC-004+PR6)

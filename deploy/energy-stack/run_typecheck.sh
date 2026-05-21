@@ -29,6 +29,7 @@ service_dirs=(
     comed_poller
     pjm_dm2_poller
     hvac_scheduler_watchdog
+    nws_poller
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set

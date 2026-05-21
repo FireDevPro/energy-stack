@@ -115,7 +115,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   nws-poller:
-    build: ./nws-poller
+    build: ./nws_poller
     container_name: nws-poller
     restart: unless-stopped
     depends_on:

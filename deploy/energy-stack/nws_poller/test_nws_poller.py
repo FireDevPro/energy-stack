@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from app import (
+from .app import (
     alert_window,
     expand_grid_values,
     heat_active_on_date,
@@ -147,7 +148,7 @@ def test_expand_grid_values_skips_unparseable_validtime():
 # ---- summarize_grid_for_date ----------------------------------------------
 
 
-def _grid_props(**variables) -> dict:
+def _grid_props(**variables: list[dict[str, Any]]) -> dict[str, Any]:
     """Construct a minimal grid_props dict from {var_name: list_of_value_dicts}."""
     return {name: {"values": vals} for name, vals in variables.items()}
 
@@ -258,8 +259,8 @@ def test_alert_window_returns_none_for_missing_bounds():
 
 
 def _heat_alert(onset: str | None = None, ends: str | None = None,
-                event: str = "Heat Advisory") -> dict:
-    props: dict = {"event": event}
+                event: str = "Heat Advisory") -> dict[str, Any]:
+    props: dict[str, Any] = {"event": event}
     if onset is not None:
         props["onset"] = onset
     if ends is not None:
@@ -334,10 +335,10 @@ def test_alert_starting_after_target_day_does_not_match():
 # ---- Real-fixture integration --------------------------------------------
 
 
-def _load_fixture():
+def _load_fixture() -> dict[str, Any]:
     fixture_path = FIXTURES / "forecastGridData_LOT_57_60_2026-05-10.json"
     with fixture_path.open() as f:
-        return json.load(f)["properties"]
+        return dict(json.load(f)["properties"])
 
 
 def test_hours_covered_is_int_not_float():
