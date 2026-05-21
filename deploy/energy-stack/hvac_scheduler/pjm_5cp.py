@@ -67,6 +67,8 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from .influx_adapter import project_record
+
 
 # ---- Locked thresholds (EXPERIMENT_DESIGN Appendix A) ---------------------
 
@@ -438,9 +440,11 @@ def update_season_5th_highest(query_api, bucket: str,
     loads: list[float] = []
     for table in query_api.query(flux):
         for record in table.records:
-            v = record.get_value()
-            if v is not None:
-                loads.append(float(v))
+            try:
+                rec = project_record(record)
+            except ValueError:
+                continue
+            loads.append(rec.value)
     return season_5th_highest_from_loads(loads, fallback_mw=fallback_mw)
 
 
@@ -492,10 +496,11 @@ def fetch_zone_live(query_api, bucket: str, *, area: str = "COMED") -> Optional[
     rows: list[tuple[datetime, float]] = []
     for table in query_api.query(flux):
         for record in table.records:
-            v = record.get_value()
-            t = record.get_time()
-            if v is not None and t is not None:
-                rows.append((t, float(v)))
+            try:
+                rec = project_record(record)
+            except ValueError:
+                continue
+            rows.append((rec.time_utc, rec.value))
     if len(rows) < 2:
         return None
     rows.sort(key=lambda r: r[0], reverse=True)
@@ -687,6 +692,14 @@ def _latest_forecast_revision_tag(query_api, bucket: str,
         |> sort(columns: ["_value"], desc: true)
         |> limit(n: 1)
     """
+    # NB: this query uses `schema.tagValues(...)` which returns rows
+    # with only a string `_value` column (the tag value) — no `_time`,
+    # `_measurement`, or `_field`. The influx_adapter.project_record
+    # projection requires all four to be present and casts `_value` to
+    # float, so the typed adapter is shape-incompatible here. Direct
+    # `record.get_value()` access is retained for this single
+    # tag-metadata query; spec §5.5's import-linter contract permits an
+    # explicit exemption for this case if needed.
     for table in query_api.query(flux):
         for record in table.records:
             v = record.get_value()
@@ -774,7 +787,9 @@ def _max_forecast_in_window(query_api, bucket: str, forecast_area: str,
     """
     for table in query_api.query(flux):
         for record in table.records:
-            v = record.get_value()
-            if v is not None:
-                return float(v)
+            try:
+                rec = project_record(record)
+            except ValueError:
+                continue
+            return rec.value
     return None

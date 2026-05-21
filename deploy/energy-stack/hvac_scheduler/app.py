@@ -900,9 +900,11 @@ def fetch_rto_peak_forecast_today(query_api, bucket: str) -> float | None:
     """
     for table in query_api.query(flux):
         for record in table.records:
-            v = record.get_value()
-            if v is not None:
-                return float(v)
+            try:
+                rec = project_record(record)
+            except ValueError:
+                continue
+            return rec.value
     return None
 
 
@@ -1493,10 +1495,11 @@ def fetch_day_ahead_prices_for_date(
     prices_by_hour: dict[int, float] = {}
     for table in query_api.query(flux):
         for record in table.records:
-            v = record.get_value()
-            if v is None:
+            try:
+                rec = project_record(record)
+            except ValueError:
                 continue
-            time_ct = record.get_time().astimezone(tz)
+            time_ct = rec.time_utc.astimezone(tz)
             if time_ct.date().isoformat() != target_date_iso:
                 # Row landed in our UTC range but maps to a different
                 # CT calendar date (can happen if PJM EPT-hour 00:00
@@ -1504,7 +1507,7 @@ def fetch_day_ahead_prices_for_date(
                 # day). Skip; it belongs to a different precool
                 # decision.
                 continue
-            prices_by_hour[time_ct.hour] = float(v)
+            prices_by_hour[time_ct.hour] = rec.value
 
     if not prices_by_hour:
         return None

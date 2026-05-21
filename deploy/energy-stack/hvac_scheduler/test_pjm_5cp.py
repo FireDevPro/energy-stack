@@ -402,9 +402,15 @@ def test_fetch_zone_live_computes_per_hour_derivative():
 def _fake_query_api_with_responses(*responses):
     """Stub query_api that returns ``responses[i]`` from the i-th call to
     ``.query()``. Each response is a list-of-floats (each float becomes
-    one record's _value)."""
+    one record's _value). ``get_time`` is stubbed to a fixed real UTC
+    datetime so the influx_adapter.project_record projection (which now
+    fronts the value-query path) does not fail the
+    isinstance(time_raw, datetime) check. The revision-tag query
+    (_latest_forecast_revision_tag) reads only get_value() so the time
+    stub is inert for that call."""
     api = MagicMock()
     side_effect_tables: list = []
+    stub_time = datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc)
     for r in responses:
         if not r:
             side_effect_tables.append([])
@@ -414,6 +420,7 @@ def _fake_query_api_with_responses(*responses):
         for v in r:
             rec = MagicMock()
             rec.get_value.return_value = v
+            rec.get_time.return_value = stub_time
             records.append(rec)
         table.records = records
         side_effect_tables.append([table])
@@ -492,6 +499,9 @@ def test_fetch_forecast_peak_for_date_picks_latest_revision_not_max_across_revis
     value_table = MagicMock()
     rec_value = MagicMock()
     rec_value.get_value.return_value = 13500.0  # revised-down latest value
+    # get_time stub for the influx_adapter.project_record projection that
+    # now fronts _max_forecast_in_window.
+    rec_value.get_time.return_value = datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc)
     value_table.records = [rec_value]
     api.query.side_effect = [[rev_table], [value_table]]
     out = fetch_forecast_peak_for_date(api, "energy", "2026-07-15")
