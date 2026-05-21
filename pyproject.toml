@@ -89,6 +89,8 @@ module = [
     "haven_ingest.test_haven_ingest",
     # ecowitt-ingest test modules (added in PR 13)
     "ecowitt_ingest.test_ecowitt_ingest",
+    # telegram-notifier test modules (added in PR 14)
+    "telegram_notifier.test_telegram_notifier",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false

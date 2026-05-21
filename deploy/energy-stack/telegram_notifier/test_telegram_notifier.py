@@ -15,11 +15,14 @@ Run from this directory:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
-import app
-from app import (
+import pytest
+
+from . import app
+from .app import (
     Alert,
     PJM_FEED_SLAS,
     check_pjm_feed_failures,
@@ -32,14 +35,19 @@ from app import (
 # ---- check_poller_silence -------------------------------------------------
 
 
-def _last_writes(*, fresh_pollers=(), stale_minutes_ago=None, missing_pollers=()):
+def _last_writes(
+    *,
+    fresh_pollers: tuple[str, ...] | list[str] = (),
+    stale_minutes_ago: dict[str, int] | None = None,
+    missing_pollers: tuple[str, ...] | list[str] = (),
+) -> dict[str, datetime | None]:
     """Build a poller_last_writes-style dict.
 
     fresh_pollers: names that wrote a few seconds ago (well under any tolerance)
     stale_minutes_ago: dict of {poller_name: minutes_since_last_write}
     missing_pollers: names that have no write at all (last_ts=None)
     """
-    out = {}
+    out: dict[str, datetime | None] = {}
     now = datetime.now(timezone.utc)
     for p in fresh_pollers:
         out[p] = now - timedelta(seconds=10)
@@ -221,7 +229,11 @@ def test_check_price_spike_null_value_no_alert(monkeypatch):
 CHICAGO = ZoneInfo("America/Chicago")
 
 
-def _setup_pjm_clock(monkeypatch, when_local: datetime, **feeds_to_age_hours):
+def _setup_pjm_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    when_local: datetime,
+    **feeds_to_age_hours: float | None,
+) -> None:
     """Pin app.datetime.now() to `when_local` AND stub
     latest_pjm_feed_successes() to return success timestamps that are
     `hours_ago` behind that same pinned now. Combining both stubs in one

@@ -29,7 +29,7 @@ services=(
     nws_poller
     pjm_dm2_poller
     refoss_poller
-    telegram-notifier
+    telegram_notifier
     thermostat_poller
 )
 
