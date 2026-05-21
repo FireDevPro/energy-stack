@@ -375,7 +375,7 @@ deploy/energy-stack/
 ├── pytest.ini                                      # workaround docstring shrinks as services migrate
 ├── requirements-dev.txt                            # NEW or UPDATED: mypy, pydantic, import-linter
 ├── hvac_scheduler/                                 # renamed in PR 2 from hvac-scheduler/
-│   ├── app.py                                      # entrypoint unchanged: still `python app.py`
+│   ├── app.py                                      # entrypoint updated in PR 2: `python -m hvac_scheduler.app`
 │   ├── freshness.py                                # enforced after PR 1
 │   ├── influx_adapter.py                           # NEW (PR 3 — first typed adapter)
 │   ├── Dockerfile                                  # updated in PR 3: COPY line adds influx_adapter.py
@@ -383,9 +383,9 @@ deploy/energy-stack/
 │   └── ...
 ├── comed_poller/                                   # renamed in its PR
 └── ...
-tools/cockpit/backend/                              # no rename needed
+tools/cockpit/backend/                              # no rename needed (already a regular package)
 ├── freshness.py                                    # enforced after PR 1
-└── ...                                             # added to repo_targets in PR 3 (same PR as scheduler enforcement)
+└── ...                                             # added to repo_targets in PR 4 (cockpit enforcement)
 .github/workflows/
 ├── deploy.yml                                      # existing — unchanged
 ├── check-freshness-drift.yml                       # PATH FILTER UPDATED in PR 2 (hvac-scheduler → hvac_scheduler)
@@ -446,7 +446,7 @@ def project_record(record: object) -> TypedRecord:
     ...
 ```
 
-Code throughout the scheduler then imports `from influx_adapter import project_record, TypedRecord` rather than touching the untyped library directly. The adapter is the typed surface; the library is the untyped impl detail.
+Code throughout the scheduler imports `from .influx_adapter import project_record, TypedRecord` (relative form, from within the `hvac_scheduler` package) or `from hvac_scheduler.influx_adapter import project_record, TypedRecord` (absolute form). The adapter is the typed surface; the library is the untyped impl detail.
 
 **The adapter boundary is enforced, not conventional.** See §5.5 for the enforcement mechanism.
 
@@ -495,7 +495,7 @@ ignore_imports = [
 ]
 ```
 
-`run_typecheck.sh` invokes `python -m importlinter` after the mypy passes whenever any per-service target exists. A direct `from influxdb_client import ...` anywhere outside `influx_adapter.py` fails the check and blocks the PR. The rule applies even if mypy would have been happy with the import (since `ignore_missing_imports` makes the library invisible to mypy).
+`run_typecheck.sh` invokes `lint-imports --config pyproject.toml` (NOT `python -m importlinter` — the package has no `__main__`) after the mypy passes whenever any per-service target exists. A direct `from influxdb_client import ...` anywhere outside `influx_adapter.py` fails the check and blocks the PR. The rule applies even if mypy would have been happy with the import (since `ignore_missing_imports` makes the library invisible to mypy).
 
 As subsequent adapters are added (e.g., `pyControl4` adapter in a later service PR), each adapter PR adds its own contract block. `root_packages` grows with each new service in the enforced set.
 
@@ -503,14 +503,22 @@ As subsequent adapters are added (e.g., `pyControl4` adapter in a later service 
 
 ### 5.6 Test-file relaxation pattern
 
-Tests are in the enforced set, but with a targeted `[[tool.mypy.overrides]]` block on `test_*.py` and `conftest.py` files (shown in §4.1):
+Tests are in the enforced set, but with a targeted `[[tool.mypy.overrides]]` block on `test_*.py` and `conftest.py` files (shown in §4.1). Mypy override `module` patterns must be fully-qualified dotted module names (not filename globs). The block uses LITERAL per-service module names; each service PR appends its own entries:
 
 ```toml
 [[tool.mypy.overrides]]
-module = ["*.test_*", "*.conftest"]
+module = [
+    # populated per service as migrations land. Example after PR 3:
+    # "hvac_scheduler.test_hvac_scheduler",
+    # "hvac_scheduler.test_freshness",
+    # "hvac_scheduler.test_decision_trace",
+    # "hvac_scheduler.conftest",
+]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
 ```
+
+Mypy does NOT support `*.test_*` glob patterns in module overrides — `*` must be a full dotted component (e.g., `hvac_scheduler.*` is valid; `*.test_*` is silently invalid and the override does not apply).
 
 **What stays strict in tests:**
 - `disallow_any_generics` — catches `List` instead of `List[Foo]` in test signatures
@@ -533,20 +541,34 @@ Every service-rollout PR (PR 2 onwards) follows this template verbatim. Document
 
 1. **Rename:** `git mv deploy/energy-stack/<service>/ deploy/energy-stack/<service_underscored>/`
 2. **Add `__init__.py`** (empty file) in the renamed directory. The dir is now a regular Python package.
-3. **Convert sibling imports to package-relative form.** Inside the service directory, `sed` cross-file imports from script-style to relative form:
+3. **Convert sibling imports to package-relative form.** Inside the service directory, convert cross-file imports from script-style to relative form. Patterns to handle:
    - `from freshness import X` → `from .freshness import X`
    - `from price_overlay import X` → `from .price_overlay import X`
    - `import freshness` → `from . import freshness`
+   - `from app import X` (occurs in tests and supporting modules) → `from .app import X`
+   - Indented imports inside functions (some services use this for circular-import avoidance): same conversion, just indented.
+   - **Late module-level imports** (mid-file, often with `# noqa: E402` for circular-import workaround): the scheduler has one at the bottom of `app.py` — `from freshness import Freshness, classify, THRESHOLDS  # noqa: E402`. Convert these too; grep for `# noqa: E402` catches them.
+   - **`as` aliased imports**: `import app as app_mod` → `from . import app as app_mod`.
+   - **String module references** (in mocks and monkeypatch): `monkeypatch.setattr("app.fetch_latest_comed", ...)` → `monkeypatch.setattr("<service>.app.fetch_latest_comed", ...)`. Grep for `"<service>.app."` and `"app."` (in tests) to catch these.
+   - **Cross-test-file imports**: `from test_hvac_scheduler import some_fixture` (in `test_decision_trace.py`, etc.) → `from .test_hvac_scheduler import some_fixture`. These look like sibling imports but the source-pattern grep below might miss them since it filters on non-test names — handle explicitly.
    - Imports of standard library or external libraries (e.g., `from datetime import datetime`, `from influxdb_client import InfluxDBClient`) are unaffected.
-   - Test files (`test_*.py`, `conftest.py`) inside the service follow the same pattern.
-   - Verify the conversion with a quick grep: `grep -rn "^from [a-z_]* import\|^import [a-z_]*$" deploy/energy-stack/<service_underscored>/` — bare top-level imports of project modules (those that match other files in the service) need to be relative form.
+   - Verify the conversion with two greps:
+     - `grep -rn "^from [a-z_]* import\|^import [a-z_]*$\|    from [a-z_]* import" deploy/energy-stack/<service_underscored>/` — bare-name imports of project modules.
+     - `git grep -n "[\"']<service>\\.[a-z_]*\\." deploy/energy-stack/<service_underscored>/` — string-form module references in monkeypatch / mocks.
+     Both should show only properly-qualified imports after conversion.
 4. **Update docker-compose:** edit `deploy/energy-stack/docker-compose.yml`:
    - Change the service's `build.context:` path to the new underscore name.
    - **DO NOT** change the service name (the YAML key, e.g., `hvac-scheduler:` stays hyphenated).
 5. **Update Dockerfile:**
    - WORKDIR is set to `/app` (or similar parent of the service package); the COPY places the service package at `/app/<service_underscored>/`.
    - `ENV PYTHONPATH=/app` (or whichever parent makes the service package importable).
-   - CMD is `["python", "-m", "<service_underscored>.app"]` (or `.poller` for poller services). Replaces the existing `python app.py` invocation.
+   - CMD is `["python", "-m", "<service_underscored>.<entrypoint_module>"]`. Replaces the existing direct script invocation. The entrypoint module per service is:
+     - `hvac_scheduler.app` (scheduler)
+     - `hvac_scheduler_watchdog.check` (watchdog — NOT `app`, file is `check.py`)
+     - `comed_poller.poller`, `eagle_poller.poller`, `nws_poller.poller`, `pjm_dm2_poller.poller`, `refoss_poller.poller`, `thermostat_poller.poller` (pollers)
+     - `ecowitt_ingest.app`, `haven_ingest.app` (ingest services use `app.py`)
+     - `telegram_notifier.notifier` (or whatever its main module is — verify in the service PR)
+     - Verify the actual entrypoint module name by inspecting the existing Dockerfile's CMD line before updating.
    - If the Dockerfile has explicit `COPY <file>.py` lines listing source files (not just `COPY . .`), update them to include any new typed-adapter modules being added in this PR.
    - Verify with `docker compose build <service-name>` and `docker compose run --rm <service-name>` locally if possible — confirms the package import path resolves at runtime.
 6. **Update `run_tests.sh`:** in the `services=(...)` array near the top of the script, change this service's entry from hyphen to underscore.
@@ -759,7 +781,7 @@ Some libraries we use may have stubs published as separate `types-*` packages th
 ### 9.1 Per-PR gate (each service PR)
 
 - `mypy --strict` returns 0 errors on the service.
-- `python -m importlinter` returns 0 violations.
+- `lint-imports --config pyproject.toml` returns 0 violations.
 - Service tests pass.
 - Dual-review run; findings addressed or explicitly deferred with rationale.
 - Deploy.yml succeeds post-merge (verified by GitHub Actions run).
@@ -776,7 +798,7 @@ Some libraries we use may have stubs published as separate `types-*` packages th
 ### 9.3 Pre-OSF gate (minimum required before filing)
 
 - Scheduler is in `service_dirs` (`mypy --strict` + `import-linter` both pass).
-- Cockpit-backend is in `repo_targets` (added in PR 3 alongside scheduler enforcement).
+- Cockpit-backend is in `repo_targets` (added in PR 4; the bootstrap-pass guard in `run_typecheck.sh` keeps cockpit's `freshness.py` covered via the `files` list between PR 1 and PR 4).
 - PR 4 (cockpit-backend annotation + `price_is_stale` consumer fix) has merged.
 - `type-check` is a required status check on `main` (exact check name verified against the Actions UI emission).
 - All findings from those two services are either fixed or documented as accepted (with rationale in the PR).
@@ -790,4 +812,5 @@ Other services may complete post-OSF.
 | 2026-05-20 | draft | Initial spec. Captures decisions from brainstorming session 2026-05-20: scope (C — all scheduler-stack services + cockpit-backend, scripts/ deferred); tool (mypy --strict); rollout strategy (per-service greenfield, infrastructure-PR-first); hyphenated-dir resolution (rename per service while preserving operational identifier); external library strategy (option B — module-level ignore + targeted typed adapters tracked as backlog); pydantic plugin enabled; tests included with strict; PR 1 bootstrap with the two freshness modules. Open for first-pass dual-review (superpowers:requesting-code-review + codex adversarial-review). |
 | 2026-05-20 | draft (rev 2) | First-pass dual-review findings applied. Critical fixes: Python 3.13 (matches service Dockerfiles, not 3.11); `run_typecheck.sh` rewritten to handle cockpit-backend `repo_targets`, prevent dual-invocation of `files` list, and run import-linter; CI workflow installs ALL service requirements via loop (not hardcoded list); `.github/workflows/check-freshness-drift.yml` path-filter update added to migration template. Design decisions: package model is "hybrid" (rename + `__init__.py` for tooling; script entrypoints stay); adapter boundaries enforced via `import-linter` (not deferred to backlog); tests get targeted relaxation of annotation-completeness checks (specific codes tuned in PR 2b against scheduler suite). Phase 2 split into PR 2a (rename) + PR 2b (enforcement) as DEFAULT plan, not contingency. Pre-OSF gate now requires `Type Check` to be a GitHub-required status check, not just a workflow file. Influxdb-client stub-status verification + `mypy --install-types` discovery added to PR 1 acceptance. Aiohttp note added (ships typed stubs; surfaces in nws/pjm/telegram service PRs). Open for second-pass dual-review. |
 | 2026-05-20 | draft (rev 3) | Second-pass dual-review findings applied. Critical fixes: (1) cockpit coverage gap closed by bundling `tools/cockpit/backend` into `repo_targets` in PR 3 (Phase 2b) — same PR that adds scheduler to `service_dirs`. The cockpit-specific PR (now PR 4) is annotation + bug-fixes only. (2) Package model corrected from "hybrid" to "namespace packages, no `__init__.py`" — adding `__init__.py` while keeping script-style sibling imports created an internal contradiction (mypy would resolve `from freshness import X` as `hvac_scheduler.freshness`, breaking). Now: rename for tool-friendly identifier, no `__init__.py`, namespace packages, mypy/import-linter invoked from within service dir for correct `sys.path` behavior. (3) `run_typecheck.sh` invokes mypy from inside service dir with `--config-file`; import-linter invoked from `deploy/energy-stack/` with `PYTHONPATH` set. (4) `[tool.importlinter]` gets `include_external_packages = true` (required for `forbidden` contracts on third-party modules). (5) CI workflow/job both named `type-check` for predictable required-check string; operator copies the EXACT emitted name from Actions UI when configuring branch protection. (6) `--install-types` review guidance tightened (review each suggested stub before keeping). (7) §6.1 step 13 gains a NEGATIVE grep for stale filesystem paths in addition to the positive grep for operational identifiers. (8) PR numbering normalized across §4.4, §6.3, §7 (PR 1 = infra, PR 2 = scheduler rename, PR 3 = scheduler enforce + cockpit enforce, PR 4 = cockpit annotation, PR 5-13 = remaining services, PR 14 = cleanup). (9) Dropped `not_yet_enforced` array from `run_typecheck.sh` (silent-rot risk; tracking moved to plan doc). Open for third-pass dual-review if any remaining gaps surface; otherwise ready for plan/execute. |
-| 2026-05-20 | draft (rev 4) | Third-pass dual-review findings applied. **Major design pivot:** the rev 3 namespace-package model is incompatible with import-linter (grimp raises `NamespacePackageEncountered` for PEP 420 root packages). After three rounds of trying to minimize per-service blast radius via clever invocation patterns, the operator's call: "stop trying to work around things — what's the right way to do it." Switching to FULL PACKAGE MODEL: every renamed service gets `__init__.py`, every cross-file sibling import is converted from script-style (`from freshness import X`) to relative form (`from .freshness import X`), every Dockerfile WORKDIR + CMD is updated to use `python -m <service>.app` invocation. Per-service blast radius is larger but all tooling now works natively (mypy + import-linter + pytest, no special invocation paths). Other rev-4 fixes: (a) bootstrap mypy pass guarded by tomllib check that reads actual `files` list — skips when empty, preventing Phase 4 CI breakage; (b) test-relaxation override changed from invalid `*.test_*` glob to literal per-service module names; (c) `python -m importlinter` corrected to `lint-imports` (actual CLI); (d) cockpit-backend mypy invocation moved to repo root (preserves `tools.cockpit.backend.*` absolute imports); (e) PR 3/4 lifecycle reverted to cleaner shape (PR 3 = scheduler only, PR 4 = cockpit) — bootstrap guard prevents coverage gap; (f) remaining stale `Type Check` references updated to `type-check`. Ready for plan/execute. |
+| 2026-05-20 | draft (rev 4) | Third-pass dual-review findings applied. **Major design pivot:** the rev 3 namespace-package model is incompatible with import-linter (grimp raises `NamespacePackageEncountered` for PEP 420 root packages). After three rounds of trying to minimize per-service blast radius via clever invocation patterns, the operator's call: "stop trying to work around things — what's the right way to do it." Switching to FULL PACKAGE MODEL: every renamed service gets `__init__.py`, every cross-file sibling import is converted from script-style (`from freshness import X`) to relative form (`from .freshness import X`), every Dockerfile WORKDIR + CMD is updated to use `python -m <service>.app` invocation. Per-service blast radius is larger but all tooling now works natively (mypy + import-linter + pytest, no special invocation paths). Other rev-4 fixes: (a) bootstrap mypy pass guarded by tomllib check that reads actual `files` list — skips when empty, preventing Phase 4 CI breakage; (b) test-relaxation override changed from invalid `*.test_*` glob to literal per-service module names; (c) `python -m importlinter` corrected to `lint-imports` (actual CLI); (d) cockpit-backend mypy invocation moved to repo root (preserves `tools.cockpit.backend.*` absolute imports); (e) PR 3/4 lifecycle reverted to cleaner shape (PR 3 = scheduler only, PR 4 = cockpit) — bootstrap guard prevents coverage gap; (f) remaining stale `Type Check` references updated to `type-check`. Open for fourth-pass dual-review. |
+| 2026-05-20 | draft (rev 5) | Fourth-pass dual-review found no design issues — full package model architecture approved. Polish-pass fixes for stale prose left over from prior revisions: (1) §4.4 entrypoint annotation corrected from `python app.py` to `python -m hvac_scheduler.app`; (2) §5.6 test-override TOML block replaced the stale `["*.test_*", "*.conftest"]` glob with the literal per-service form (matching §4.1); (3) §5.5 and §9.1 stale `python -m importlinter` references corrected to `lint-imports --config pyproject.toml`; (4) §5.2 adapter example import corrected from script-style `from influx_adapter import` to relative `from .influx_adapter import`; (5) §9.3 and §4.4 stale "added in PR 3" references for cockpit `repo_targets` corrected to PR 4; (6) §6.1 step 3 expanded to cover indented imports, late module-level imports with `# noqa: E402`, `as` aliased imports, string module references in monkeypatch/mocks, and cross-test-file imports; (7) §6.1 step 5 entrypoint module name made explicit per service (e.g., `hvac_scheduler_watchdog.check`, not `<service>.app`). All architectural decisions stable; ready for plan/execute. |
