@@ -47,12 +47,11 @@ repo_targets=(
 failed=()
 
 # Bootstrap mypy pass: enforces files listed in pyproject.toml `files`.
-# PR 1 uses this for the two freshness modules. As each service migrates
-# in, its freshness.py entry is REMOVED from `files` and the per-service
-# invocation below covers it. The bootstrap pass is GUARDED so it only
-# runs when the files list is non-empty — once the rollout completes
-# and `files` is removed entirely, this guard skips the bootstrap and
-# run_typecheck.sh does not fail on mypy's "no targets" error (code 2).
+# The rollout that introduced this mechanism (PRs 0-14) is complete and
+# `files` is no longer set, so the guard below skips the pass — but the
+# infrastructure stays as forward-compat: if a future PR ever needs a
+# one-off single-file enforcement, adding `files = [...]` to
+# pyproject.toml re-engages the pass automatically.
 if (cd "$REPO_ROOT" && python -c "
 import tomllib, sys
 with open('pyproject.toml', 'rb') as f:
