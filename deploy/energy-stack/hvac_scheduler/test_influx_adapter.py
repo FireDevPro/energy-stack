@@ -1,6 +1,7 @@
 """Tests for influx_adapter.py — typed projection layer over influxdb_client records."""
 
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -89,21 +90,21 @@ class TestTypedRecord:
 class _FakePoint:
     """Test double for influxdb_client.Point that records all chain calls."""
 
-    def __init__(self, measurement):
+    def __init__(self, measurement: str) -> None:
         self.measurement = measurement
         self.tags: dict[str, str] = {}
         self.fields: dict[str, object] = {}
-        self.time_value = None
+        self.time_value: Any = None
 
-    def tag(self, k, v):
+    def tag(self, k: str, v: str) -> "_FakePoint":
         self.tags[k] = v
         return self
 
-    def field(self, k, v):
+    def field(self, k: str, v: object) -> "_FakePoint":
         self.fields[k] = v
         return self
 
-    def time(self, t):
+    def time(self, t: Any) -> "_FakePoint":
         self.time_value = t
         return self
 
@@ -144,11 +145,12 @@ class TestWritePoint:
     def test_writes_point_with_time(self, monkeypatch):
         """When `time` kwarg is provided, the Point has that timestamp."""
         captured: list[_FakePoint] = []
+        def _factory(name: str) -> _FakePoint:
+            p = _FakePoint(name)
+            captured.append(p)
+            return p
         from . import influx_adapter
-        monkeypatch.setattr(
-            influx_adapter, "Point",
-            lambda name: captured.append(_FakePoint(name)) or captured[-1],
-        )
+        monkeypatch.setattr(influx_adapter, "Point", _factory)
 
         write_api = MagicMock()
         ts = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
@@ -166,11 +168,12 @@ class TestWritePoint:
     def test_writes_point_without_time_uses_no_time(self, monkeypatch):
         """When `time` kwarg is omitted, Point.time() is never called."""
         captured: list[_FakePoint] = []
+        def _factory(name: str) -> _FakePoint:
+            p = _FakePoint(name)
+            captured.append(p)
+            return p
         from . import influx_adapter
-        monkeypatch.setattr(
-            influx_adapter, "Point",
-            lambda name: captured.append(_FakePoint(name)) or captured[-1],
-        )
+        monkeypatch.setattr(influx_adapter, "Point", _factory)
 
         write_api = MagicMock()
         write_point(
@@ -190,11 +193,12 @@ class TestWritePoint:
         a native boolean field — the ``hvac.input_feed_health`` measurement
         depends on ``healthy=true``/``healthy=false`` line protocol shape."""
         captured: list[_FakePoint] = []
+        def _factory(name: str) -> _FakePoint:
+            p = _FakePoint(name)
+            captured.append(p)
+            return p
         from . import influx_adapter
-        monkeypatch.setattr(
-            influx_adapter, "Point",
-            lambda name: captured.append(_FakePoint(name)) or captured[-1],
-        )
+        monkeypatch.setattr(influx_adapter, "Point", _factory)
 
         write_api = MagicMock()
         write_point(
