@@ -368,7 +368,7 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 
 ## hvac-scheduler-watchdog
 
-Build: `./hvac-scheduler-watchdog` · Cycle: `WATCHDOG_INTERVAL_SECONDS` (default 60)
+Build: `./hvac_scheduler_watchdog` · Cycle: `WATCHDOG_INTERVAL_SECONDS` (default 60)
 
 Out-of-band controller-liveness check. Single-purpose container so it cannot fail-with-the-controller. Runs an Influx query each cycle: if zero `hvac.arm_mode` rows appear in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10), writes `hvac.heartbeat controller_alive=false`. Otherwise writes nothing — **no-news-is-good-news**.
 
@@ -390,7 +390,7 @@ The canonical scheduler-liveness signal is recent `hvac.arm_mode` rows from the 
 
 **Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_latest_heartbeat`) for the header controller-alive light. Telegram-notifier alerts on the same signal.
 
-Source: [`deploy/energy-stack/hvac-scheduler-watchdog/check.py`](../deploy/energy-stack/hvac-scheduler-watchdog/check.py).
+Source: [`deploy/energy-stack/hvac_scheduler_watchdog/check.py`](../deploy/energy-stack/hvac_scheduler_watchdog/check.py).
 
 ---
 
