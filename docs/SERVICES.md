@@ -280,7 +280,7 @@ Polls `api.weather.gov` (no key, but a `User-Agent` header is required and ident
 
 ## pjm-dm2-poller
 
-Build: `./pjm-dm2-poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 300 s = 5 min, sourced from `.env` / `.env.example`. `docker-compose.yml`'s `${PJM_DM2_POLL_INTERVAL:-300}` substitution matches; the wake loop ticks every 5 min so sub-hourly feeds like `inst_load` fire on every tick and hourly feeds fire on the `:00` tick.)
+Build: `./pjm_dm2_poller` · Cycle: `PJM_DM2_POLL_INTERVAL` (default 300 s = 5 min, sourced from `.env` / `.env.example`. `docker-compose.yml`'s `${PJM_DM2_POLL_INTERVAL:-300}` substitution matches; the wake loop ticks every 5 min so sub-hourly feeds like `inst_load` fire on every tick and hourly feeds fire on the `:00` tick.)
 
 Hourly wake loop; each feed has its own `Schedule` and silently skips on cycles where it shouldn't fire. Auth header `Ocp-Apim-Subscription-Key: $PJM_DM2_API_KEY`. Non-Member tier (6 calls/min ceiling, 50,000 rows/call) is plenty for the steady-state load.
 

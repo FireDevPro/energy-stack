@@ -14,7 +14,7 @@ related:
 Verification pass against current code, math artifacts, and binding spec for every retained-content claim in the four half-superseded docs. Provides the evidence basis for D5's per-doc actions.
 
 **Ground-truth hierarchy (per operator-locked protocol):**
-1. Current code (`deploy/energy-stack/`, `tools/analysis/`, `deploy/energy-stack/pjm-dm2-poller/`)
+1. Current code (`deploy/energy-stack/`, `tools/analysis/`, `deploy/energy-stack/pjm_dm2_poller/`)
 2. Current math / analysis artifacts (`tools/comed_2025_analysis/`, `tools/o2_capacity_reconstruction/`)
 3. Binding spec or recorded decision (`docs/plans/sced-rebaseline-spec-2026-05-13.md`)
 4. Operator judgment (for ethics / procedural prose)
@@ -102,11 +102,11 @@ OSF_FILING.md pre-flight checklist is almost entirely superseded by spec §11 an
 | `hvac.arm_transitions` from scripts/log_arm_transition.py | ANALYSIS_PIPELINE.md:72 | `deploy/energy-stack/scripts/log_arm_transition.py:63` writes Point("hvac.arm_transitions") | matches | matches-truth |
 | `nws.forecast` fields including `apparent_max_f`, `rh_max_pct`, `sky_cover_avg_pct`, `wind_gust_max_mph` | ANALYSIS_PIPELINE.md:73 | `nws-poller/app.py:379-387` writes Point("nws.forecast") with field-loop over computed daily summary | likely matches (migration to forecastGridData per ARM_B §0a) | unique-unverified |
 | `ecowitt.weather` fields = `outdoor_temp_f, outdoor_dewpoint_f, outdoor_rh_pct, wind_mph, solar_wm2, pressure_inhg`, 5-min | ANALYSIS_PIPELINE.md:75 | `ecowitt-ingest/app.py:242-258` writes EXACTLY `outdoor_temp_f, outdoor_rh_pct, outdoor_dewpoint_f, ws90_temp_f, ws90_rh_pct, ws90_dewpoint_f, wind_mph, solar_wm2, pressure_inhg, indoor_temp_f, indoor_rh_pct, ch{N}_temp_f, ch{N}_rh_pct, ch{N}_dewpoint_f` for paired channels | Code DOES write `outdoor_*` (when shaded WN31 channel configured); ALSO writes `ch{N}_*` per channel. Binding spec §6 canonicalizes `ch1_*` for analysis (per OI-1 retraction at commit 4ad147e) | drift (doc lists outdoor_* as analysis source; spec §6 prefers ch1_*) |
-| `pjm.inst_load` cadence "~5-min" | ANALYSIS_PIPELINE.md:76 | `pjm-dm2-poller/app.py:200,205,206` FEED_SCHEDULE `inst_load` and `inst_load_rto` every 5-min | 5-min | matches-truth |
-| `pjm.metered_load` cadence "hourly" | ANALYSIS_PIPELINE.md:77 | `pjm-dm2-poller/app.py:203-204` `hrl_load_metered` + `hrl_load_metered_rto`: `Schedule(hours=tuple(range(0, 24)))` | hourly | matches-truth |
-| `pjm.peak_forecast_rto` cadence "daily 06:00 / 13:00" | ANALYSIS_PIPELINE.md:78 | `pjm-dm2-poller/app.py:207` `Schedule(hours=(6, 13), months=(6,7,8,9))` | 06:00 + 13:00, cooling-season only | drift (table omits cooling-season-only restriction) |
-| `pjm.lmp_da_hourly` cadence "daily 17:00" | ANALYSIS_PIPELINE.md:79 | `pjm-dm2-poller/app.py:201` `da_hrl_lmps: Schedule(hours=(17,))` | matches | matches-truth |
-| `pjm.poller_heartbeat` "per minute" | ANALYSIS_PIPELINE.md:83 | `pjm-dm2-poller/app.py:902` writes Point("pjm.poller_heartbeat") in main loop tick (~every 5 min, not per-minute) | likely 5-min not 1-min | unique-unverified |
+| `pjm.inst_load` cadence "~5-min" | ANALYSIS_PIPELINE.md:76 | `pjm_dm2_poller/app.py:200,205,206` FEED_SCHEDULE `inst_load` and `inst_load_rto` every 5-min | 5-min | matches-truth |
+| `pjm.metered_load` cadence "hourly" | ANALYSIS_PIPELINE.md:77 | `pjm_dm2_poller/app.py:203-204` `hrl_load_metered` + `hrl_load_metered_rto`: `Schedule(hours=tuple(range(0, 24)))` | hourly | matches-truth |
+| `pjm.peak_forecast_rto` cadence "daily 06:00 / 13:00" | ANALYSIS_PIPELINE.md:78 | `pjm_dm2_poller/app.py:207` `Schedule(hours=(6, 13), months=(6,7,8,9))` | 06:00 + 13:00, cooling-season only | drift (table omits cooling-season-only restriction) |
+| `pjm.lmp_da_hourly` cadence "daily 17:00" | ANALYSIS_PIPELINE.md:79 | `pjm_dm2_poller/app.py:201` `da_hrl_lmps: Schedule(hours=(17,))` | matches | matches-truth |
+| `pjm.poller_heartbeat` "per minute" | ANALYSIS_PIPELINE.md:83 | `pjm_dm2_poller/app.py:902` writes Point("pjm.poller_heartbeat") in main loop tick (~every 5 min, not per-minute) | likely 5-min not 1-min | unique-unverified |
 
 ### Doc-action recommendation: ANALYSIS_PIPELINE.md
 
@@ -169,7 +169,7 @@ Reference spec §11/§13 for the acceptance-criteria list (which is now binding 
 | Layer priority test cases | ARM_B_IMPLEMENTATION.md:531-538 | All testable against `resolve_layer_priority(...)`; e.g. schedule=73, scarcity override=85 → effective=85; schedule=68 pre-cool + elevated tier offset=+3 → effective=71 | matches | matches-truth |
 | §10 acceptance criteria for OSF filing | ARM_B_IMPLEMENTATION.md:746-759 | Same criteria list as OSF_FILING.md's stale checklist; explicitly superseded per banner | drift | drift — superseded by spec §11 (already dispositioned by banner) |
 | §0a NWS poller migration to forecastGridData | ARM_B_IMPLEMENTATION.md:36-80 | nws-poller writes Point("nws.forecast") today; migration completed | matches (describes the WHY) | historical-only (describes completed migration) |
-| §0b PJM hourly metered load polling | ARM_B_IMPLEMENTATION.md:82-117 | `pjm-dm2-poller/app.py:203-204` `Schedule(hours=tuple(range(0,24)))` exactly matches the sketch | matches (migration completed) | historical-only |
+| §0b PJM hourly metered load polling | ARM_B_IMPLEMENTATION.md:82-117 | `pjm_dm2_poller/app.py:203-204` `Schedule(hours=tuple(range(0,24)))` exactly matches the sketch | matches (migration completed) | historical-only |
 | §7 Pre-cool deepening rule `peak > season_5th × 1.05 AND temp ≥90` | ARM_B_IMPLEMENTATION.md:628-635 | `precool.py:35-36, 96-115` | matches | matches-truth |
 | §7 price-aware pre-cool sketch | ARM_B_IMPLEMENTATION.md:641-660 | `precool.py:184-294` implementation exists (plus DTOD-delivery aware ranking per P2.6) | matches (implementation is richer than sketch) | matches-truth (with additive code-side enhancement) |
 

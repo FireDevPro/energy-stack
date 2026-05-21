@@ -27,6 +27,7 @@ REPO_ROOT="$(cd "$STACK_DIR/../.." && pwd)"
 service_dirs=(
     hvac_scheduler
     comed_poller
+    pjm_dm2_poller
 )
 
 # Paths outside deploy/energy-stack/ in the enforced set

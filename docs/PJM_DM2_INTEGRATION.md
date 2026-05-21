@@ -172,7 +172,7 @@ Same secret-handling pattern as `EAGLE_INSTALL_CODE`, `CONTROL4_PASSWORD`, etc.
 deploy/energy-stack/
 ├── docker-compose.yml           # pjm-dm2-poller service entry (lines 139-155)
 ├── .env.example                 # PJM_DM2_API_KEY placeholder
-├── pjm-dm2-poller/
+├── pjm_dm2_poller/
 │   ├── Dockerfile
 │   ├── app.py                   # main service loop (FEED_SCHEDULE + dispatchers + point builders)
 │   ├── requirements.txt         # aiohttp, influxdb-client
@@ -186,7 +186,7 @@ The originally-planned `feeds.py` constants module collapsed into top-of-file co
 
 ## Testing
 
-`pytest` in `pjm-dm2-poller/test_pjm_dm2_poller.py` (matching the pattern in `nws-poller/test_nws_poller.py`):
+`pytest` in `pjm_dm2_poller/test_pjm_dm2_poller.py` (matching the pattern in `nws-poller/test_nws_poller.py`):
 
 - Mock httpx responses against canned JSON fixtures (one per measurement). Fixtures derived from real `/metadata` responses to keep schemas honest.
 - Test the timezone conversion (PJM ept → UTC) on DST boundaries.

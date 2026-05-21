@@ -55,11 +55,12 @@ import asyncio
 import sys
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta
+from typing import Any
 
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-from app import (
+from .app import (
     Config,
     PJMClient,
     fetch_rt_lmp_for_date,
@@ -115,7 +116,7 @@ COMPLETE_DAY_ROW_COUNTS: frozenset[int] = frozenset({23, 24, 25})
 
 async def backfill_range(
     client: PJMClient,
-    write_api,
+    write_api: Any,
     cfg: Config,
     *,
     start_date: date,
@@ -268,7 +269,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 if result.needs_followup() else "all dates covered"
             ))
     finally:
-        influx.close()
+        influx.close()  # type: ignore[no-untyped-call]  # influxdb_client stubs not annotated
     return 0
 
 

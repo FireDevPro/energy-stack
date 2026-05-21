@@ -206,7 +206,7 @@ PR #121 contains the fix + live verification.
 | [`deploy/energy-stack/hvac_scheduler/price_overlay.py`](../deploy/energy-stack/hvac_scheduler/price_overlay.py) | Tier state machine (normal / elevated / scarcity) with hysteresis + minimum hold |
 | [`deploy/energy-stack/hvac_scheduler/pjm_5cp.py`](../deploy/energy-stack/hvac_scheduler/pjm_5cp.py) | Dual-scope 5CP detector (ComEd zone + PJM RTO) |
 | [`deploy/energy-stack/hvac_scheduler/decision_codes.py`](../deploy/energy-stack/hvac_scheduler/decision_codes.py) | Append-only enums for all `reason_code` values |
-| [`deploy/energy-stack/pjm-dm2-poller/app.py`](../deploy/energy-stack/pjm-dm2-poller/app.py) | `fetch_da_lmp_for_tomorrow` + per-feed schedule |
+| [`deploy/energy-stack/pjm_dm2_poller/app.py`](../deploy/energy-stack/pjm_dm2_poller/app.py) | `fetch_da_lmp_for_tomorrow` + per-feed schedule |
 | [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) | Prose specification of day-type schedules, supervisor rules, ISU settings, fallback behavior |
 | [`docs/plans/archive/decision-trace-plan.md`](plans/archive/decision-trace-plan.md) | Phased plan that delivered the `decision_trace.*` event family (Phases 1-5, all merged; archived) |
 

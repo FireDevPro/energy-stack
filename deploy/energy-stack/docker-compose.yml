@@ -137,7 +137,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
   pjm-dm2-poller:
-    build: ./pjm-dm2-poller
+    build: ./pjm_dm2_poller
     container_name: pjm-dm2-poller
     restart: unless-stopped
     depends_on:
@@ -149,7 +149,7 @@ services:
       # only on its scheduled (hour, minute); hourly feeds still fire only
       # at :00 because their Schedule.minutes defaults to (0,). inst_load
       # has minutes=(0,5,10,...,55) so it fires every 5 min.
-      # See deploy/energy-stack/pjm-dm2-poller/app.py FEED_SCHEDULE.
+      # See deploy/energy-stack/pjm_dm2_poller/app.py FEED_SCHEDULE.
       PJM_DM2_POLL_INTERVAL: ${PJM_DM2_POLL_INTERVAL:-300}
       PJM_DM2_TZ: ${SCHEDULER_TZ:-America/Chicago}
       INFLUX_URL: http://influxdb:8086

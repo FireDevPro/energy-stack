@@ -98,7 +98,7 @@ Variables of interest:
 
 ### 0b. PJM hourly metered load polling cadence
 
-**Current:** [`deploy/energy-stack/pjm-dm2-poller/app.py:103`](../deploy/energy-stack/pjm-dm2-poller/app.py) polls the `hrl_load_metered` feed only on Sundays at 02:00 CT, pulling the last 7 days of zone="CE" hourly load.
+**Current:** [`deploy/energy-stack/pjm_dm2_poller/app.py:103`](../deploy/energy-stack/pjm_dm2_poller/app.py) polls the `hrl_load_metered` feed only on Sundays at 02:00 CT, pulling the last 7 days of zone="CE" hourly load.
 
 **Required change:** poll hourly instead of weekly, pulling only the last 2-3 hours of data per call to keep payloads small. InfluxDB deduplicates on identical timestamps, so re-pulling overlapping windows is safe.
 
