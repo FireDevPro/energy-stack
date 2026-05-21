@@ -15,6 +15,11 @@ node uses NOT-FIRED-THIS-TICK / last-fire / APPLIED / SHADOW semantics.
 """
 from __future__ import annotations
 
+# VERIFICATION (will revert before merge): deliberate type error so
+# the `type-check` required status check fails and proves the merge
+# is blocked by branch protection on `main`.
+_VERIFY_TYPECHECK_ENFORCEMENT: int = "this is a string, not an int"
+
 from dataclasses import dataclass
 from typing import Literal
 
