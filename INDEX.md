@@ -95,13 +95,6 @@ out to analysis.
 The science layer: what counts as evidence, how it's validated, the
 ethical posture.
 
-- [docs/THERMAL_COMMISSIONING.md](docs/THERMAL_COMMISSIONING.md) —
-  methodology for deriving and cross-validating this house's thermal
-  parameters (τ, UA) for the SCED scheduler; three-method
-  triangulation with literature citations
-- [docs/THERMAL_COMMISSIONING_CHECKLIST.md](docs/THERMAL_COMMISSIONING_CHECKLIST.md)
-  — operator playlist for running the planned passive decay night,
-  the continuous observer, and the bus-derived UA check
 - [docs/REPLAY_VALIDATION.md](docs/REPLAY_VALIDATION.md) — replay
   validation methodology and validation-bundle structure
 - [docs/DRY_RUN_VALIDATION.md](docs/DRY_RUN_VALIDATION.md) — dry-run
