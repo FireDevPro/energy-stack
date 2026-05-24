@@ -27,6 +27,7 @@ Thumbs.db
 *.log
 *.local
 *.bak
+.tmp_*/
 
 # Backup artifacts
 backup-*/
