@@ -1,4 +1,4 @@
-"""PJM 5CP-eligibility detector (Arm B layer 3).
+"""PJM 5CP-eligibility detector (Arm B planning/telemetry, post-§11 #14).
 
 The residential capacity-charge dollar exposure depends on TWO separate
 sets of 5 coincident peak hours per cooling season (see HVAC_LOGIC.md
@@ -9,9 +9,17 @@ sets of 5 coincident peak hours per cooling season (see HVAC_LOGIC.md
 
 ComEd's zone peaks can land earlier in the afternoon than the RTO peaks
 because metro-Chicago load shape differs from the broader RTO. Each kW
-shaved during *any* 5CP hour saves roughly the same dollar amount, so
-the detector triggers aggressive shutoff (cool setpoint = 85F) on
-likely-eligible hours from EITHER set. The scheduler runs the detector
+shaved during *any* 5CP hour saves roughly the same dollar amount.
+
+**Authority (binding spec §11 #14):** this module is PLANNING + TELEMETRY,
+not live setpoint authority. ``fivecp_active=True`` does NOT raise the
+effective cool setpoint — it is preserved on ``LayerResolution`` /
+``hvac.5cp_state`` / ``fivecp_eval`` for post-hoc analysis of when 5CP
+WOULD have fired, and consumed by the §7 day-ahead pre-cool deepening
+decision in ``decide_day_type`` (via ``precool.should_deepen_precool``)
+when sufficient current-season official metered-load history exists.
+Live shutoff (cool=85F) is driven exclusively by the §2 price overlay's
+scarcity tier (>= 20c/kWh override). The scheduler runs this detector
 twice (once per scope) and ORs the triggers; this module is the
 per-scope state machine.
 
@@ -284,11 +292,17 @@ def evaluate_5cp_risk(
     load_ratio_trigger: float = LOAD_RATIO_TRIGGER,
     load_ratio_release: float = LOAD_RATIO_RELEASE,
 ) -> tuple[bool, FiveCPState]:
-    """Decide whether the 5CP-shutoff layer is active this tick.
+    """Decide whether the 5CP risk-active state is set this tick.
 
-    Returns ``(is_active, new_state)``. ``is_active=True`` is the signal
-    the §4 layer-priority resolver consumes to clamp the effective cool
-    setpoint at COOL_SHUTOFF_F.
+    Returns ``(is_active, new_state)``. ``is_active=True`` is recorded on
+    ``LayerResolution.fivecp_active`` and emitted in ``hvac.5cp_state`` /
+    ``fivecp_eval`` telemetry. Post-binding-spec §11 #14, the §4 layer
+    resolver does NOT use this signal to raise ``effective_cool_f`` —
+    live shutoff comes from the §2 price overlay scarcity tier. The
+    state-machine semantics are preserved unchanged so the telemetry
+    accurately reflects when 5CP WOULD have fired under the previous
+    live-authority design (useful for post-hoc detector-accuracy
+    analysis per O2_CAPACITY_RECONSTRUCTION.md).
 
     Implementation walks two paths:
 

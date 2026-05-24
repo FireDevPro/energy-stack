@@ -26,7 +26,7 @@ Starting summer 2026, the same instrumentation runs a pre-registered single-case
 What this means for the project shape:
 
 - **Pre-registration is binding**. Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules are locked at a frozen commit hash. Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md).
-- **Both arms are owned in this repo**. Arm A is the CTK04AE thermostat's internal programmed schedule (documented in [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)). Arm B is the active `hvac-scheduler` controller (day-type classification + price overlays + capacity-risk overlays + precool deepening + safety supervisor; see [`docs/HVAC_LOGIC.md`](docs/HVAC_LOGIC.md) and binding spec §3).
+- **Both arms are owned in this repo**. Arm A is the CTK04AE thermostat's internal programmed schedule (documented in [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)). Arm B is an RTP/DTOD live price-responsive HVAC controller (`hvac-scheduler`) with weather/day-type scheduling, price-aware pre-cool, 5CP capacity-risk planning/telemetry, and safety supervision. Live setpoint authority is the RTP/DTOD price overlay; 5CP risk informs day-ahead pre-cool/day-type planning but does NOT independently force live setpoint changes (binding spec §11 #14). See [`docs/HVAC_LOGIC.md`](docs/HVAC_LOGIC.md) and binding spec §3.
 - **Open data and open code at submission time**. Telemetry published as Apache Parquet on Zenodo (CC BY 4.0), with [Brick Schema](https://brickschema.org/) JSON-LD metadata. Repo will be tagged at the OSF-filing commit hash (target 2026-05-30); Zenodo will issue a citable code DOI.
 - **The study is descriptive (discovery framing per spec §9.5)**. No statistical decision rule, no binary "Arm B wins / Arm A wins" verdict. The deliverable is the per-pair table and a fixed set of pre-registered summary breakdowns; readers draw their own conclusions. Negative or null results are equally publishable by construction — there is no confirmatory outcome to gate on.
 - **N=1, single-occupant household, IECC climate zone 5A**. Generalization claims are bounded; the contribution is methodological as much as substantive.
@@ -225,7 +225,7 @@ Plus two scripts: `backfill_pjm.py` for one-shot 5-year history (`scripts/`), an
 ### Phase 10 — HVAC Scheduler Safety Supervisor ✅ (May 2026)
 New `safety_supervisor.py` module gates every setpoint push the scheduler proposes. Three decision kinds (`approved` / `clamped` / `emergency`):
 - **Clamp** — cool to `[65, 86]°F`, heat to `[55, 75]°F`. Catches a controller bug producing e.g. cool=55 or cool=95.
-- **Emergency** — if thermostat snapshot reports indoor ≥ 86°F, override cool to 74°F regardless of what the schedule says. Catches `HOT_5CP_SHUTOFF` overshoots in real heat-wave conditions.
+- **Emergency** — if thermostat snapshot reports indoor ≥ 86°F, override cool to 74°F regardless of what the schedule says. Catches scarcity-tier price-overlay shutoff (85°F) overshoots in real heat-wave conditions.
 - **Approved** — proposed values pass through.
 Decision logged to `hvac.actions` for audit. The supervisor is shared infrastructure that gates every controller variant (current scheduler and any future variants) on the same write path.
 

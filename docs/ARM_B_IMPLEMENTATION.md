@@ -510,15 +510,15 @@ async def execute_action(c4, action, ...):
     else:
         price_cool = schedule_cool
 
-    # 3. 5CP shutoff (warmer wins)
+    # 3. 5CP evaluation (planning/telemetry only -- NOT in the max
+    #    per binding spec §11 #14; preserved on LayerResolution so
+    #    post-hoc analysis can reconstruct when 5CP would have fired)
     is_5cp_active, _ = evaluate_5cp_risk(...)
-    if is_5cp_active:
-        fivecp_cool = COOL_SHUTOFF_F
-    else:
-        fivecp_cool = price_cool
+    fivecp_cool = COOL_SHUTOFF_F if is_5cp_active else price_cool  # telemetry
 
-    # 4. Final effective setpoint (warmer wins across all layers)
-    effective_cool = max(schedule_cool, price_cool, fivecp_cool)
+    # 4. Final effective setpoint (warmer wins, schedule + price only)
+    #    5CP excluded -- live shutoff comes from price-overlay scarcity
+    effective_cool = max(schedule_cool, price_cool)
 
     # 5. Safety supervisor (clamps to [65, 86])
     decision = safety_supervisor.validate_setpoints(

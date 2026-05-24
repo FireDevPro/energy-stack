@@ -101,7 +101,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 |---|---|---|---|
 | `MILD` | High < 75°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 75-85°F max (and apparent < 90°F) | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
-| `HOT_5CP_RISK` (spec name: `HOT`) | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay and 5CP-detector layers drive shutoff per the locked logic below; there is no fixed shutoff clock on HOT days. |
+| `HOT_5CP_RISK` (spec name: `HOT`) | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay layer drives shutoff (scarcity tier ≥ 20¢/kWh → 85°F effective) per the locked logic below. 5CP is planning/telemetry only and does NOT drive live shutoff (binding spec §11 #14). No fixed shutoff clock on HOT days. |
 | `HOT_STREAK_DAY1` | HOT today AND day-after also HOT, OR single-day HOT with forecast 5CP-risk escalation (PJM tomorrow-peak forecast > season-5th-highest × 1.05 AND tomorrow's high ≥ 90°F per `precool.should_deepen_precool`) | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool. Day 2 of a multi-day streak runs the regular `HOT_SCHEDULE` (the mass is already there). The §7 single-day forecast 5CP-risk path catches grid-stress days that aren't multi-day heat events. See `decide_day_type` in `deploy/energy-stack/hvac_scheduler/app.py` (both escalation paths return `HOT_STREAK_DAY1`). |
 
 ---

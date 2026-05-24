@@ -50,11 +50,13 @@ Recalibration captures 54% of historical price-spike days and 71% of scarcity da
 | Scarcity release | 18¢/kWh | 2¢ hysteresis |
 | Minimum hold | 30 min | Prevent thrashing on borderline prices / single-tick spikes |
 | Elevated offset | +3°F to active cool setpoint | Meaningful pull-back without abandoning comfort |
-| Scarcity setpoint | 85°F (effective shutoff) | Equipment-safe upper bound below the safety supervisor's 86°F ceiling; carries the shutoff role now that the fixed-window HOT_5CP_SHUTOFF schedule action is dropped |
+| Scarcity setpoint | 85°F (effective shutoff) | Equipment-safe upper bound below the safety supervisor's 86°F ceiling. **Sole live shutoff authority** after binding spec §11 #14 (5CP demoted to planning/telemetry only). |
 
-## PJM 5CP-eligibility detection (dual-scope)
+## PJM 5CP-eligibility detection (dual-scope, planning/telemetry only)
 
-Two scopes run in parallel; effective shutoff trigger is the OR of their per-scope decisions. Each scope reads its own pair of PJM Data Miner 2 feeds; the locked decision rule (load ratio, derivative, time window, forecast gate, hold semantics) is identical per scope but parameterized over (`area`, `zone`, `pre_season_fallback_5th_mw`).
+Two scopes run in parallel; their OR-combined `fivecp_active` flag is emitted in `hvac.5cp_state` / `fivecp_eval` telemetry for post-hoc detector-accuracy analysis (see `O2_CAPACITY_RECONSTRUCTION.md`). Per binding spec §11 #14, this signal does NOT raise the effective cool setpoint — live shutoff is driven by the price-overlay scarcity tier. The day-ahead pre-cool deepening path (§7 of HVAC_LOGIC.md) consumes `season_5th_mw` to inform tomorrow's day-type when the baseline is sufficient (>= 168 distinct current-season official hourly observations).
+
+Each scope reads its own pair of PJM Data Miner 2 feeds; the locked decision rule (load ratio, derivative, time window, forecast gate, hold semantics) is identical per scope but parameterized over (`area`, `zone`, `pre_season_fallback_5th_mw`). The `pre_season_fallback_5th_mw` field is retained for scope-mismatch detection in log telemetry only; **it is NOT used as a control-or-planning fallback** (binding spec §11 #14 — when current-season official metered-load history is insufficient, the baseline is unavailable, not substituted).
 
 **Data lineage per scope** (per PJM DM2 OpenAPI spec):
 
@@ -80,10 +82,11 @@ The `inst_load` feed is described in the PJM spec as "approximate, NOT official 
 
 ```
 effective = max(schedule + humid_override,
-                schedule + price_overlay,
-                5cp_shutoff_setpoint)
+                schedule + price_overlay)
 effective = clamp(effective, 65, 86)
 ```
+
+5CP is excluded from the max per binding spec §11 #14 (`fivecp_active=True` does not raise `effective_cool_f`). The `fivecp_cool_f` field on `LayerResolution` is preserved as telemetry recording what 5CP WOULD have proposed.
 
 ## Day-of-week awareness
 
