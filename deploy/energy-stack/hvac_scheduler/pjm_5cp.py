@@ -108,31 +108,24 @@ RTO_PRE_SEASON_FALLBACK_5TH_MW = 151525.0
 
 MIN_OBSERVATIONS_FOR_5TH = 5
 
-# Sparse-data threshold: below this number of in-window hourly observations,
-# the season-5th is statistically unreliable (the bucket likely has only
-# the first few days of season data, OR a multi-day publish gap left
-# coverage thin). The detector falls back to the prior-year published 5th
-# instead of trusting a tiny sample.
+# Minimum distinct current-season official hourly observations required
+# before the season-5th-highest baseline is considered usable for
+# planning/control. Below this threshold the baseline is unavailable
+# and callers receive None — there is NO prior-year fallback for control
+# or planning decisions (binding spec §11 #14).
 #
-# Pinned at 200 hours (~8 days of cooling-season coverage). After 8 days
-# the bucket holds enough representative range that the current-year
-# 5th-highest is a meaningful baseline -- even if 2026 turns out cooler
-# than 2025, the detector should adapt to current conditions, not stay
-# anchored to last year's hot days (which a permanent floor would force).
-#
-# Sized for:
-#   - Comfortably above the 24-hour span of a single hot day (so one
-#     anomalously hot June 2 can't be the only observation driving the
-#     baseline)
-#   - Well below a half-month (~360 hours), so the floor releases before
-#     mid-June
-#   - Compatible with PJM's ~1-2 day publish lag for hrl_load_metered
-#     (a healthy bucket reaches 200 hours by June 9-10)
-#
-# Larger N = more cold-start safety, longer suppression of current-year
-# detection. Smaller N = floor releases earlier, more vulnerable to a
-# sparse-then-gap pattern.
-SPARSE_DATA_THRESHOLD = 200
+# Pinned at 168 hours (= 7 full days × 24 hours). Rationale:
+#   - One week of current-season official metered-load data is the
+#     minimum defensible window for an in-season baseline.
+#   - Weather, demand growth, and grid behavior change year to year;
+#     "require one week of current-season data" is more defensible
+#     than anchoring to last year's distribution.
+#   - PJM publishes hrl_load_metered with ~1-2 day lag, so 168 distinct
+#     hours typically lands in current-year Influx by June 8-9.
+#   - Before this threshold is reached, 5CP planning logic records
+#     `insufficient_current_season_history` in reasoning rather than
+#     pretending the prior year is authoritative.
+MIN_DISTINCT_HOURS_FOR_BASELINE = 168
 
 CHICAGO = ZoneInfo("America/Chicago")
 
@@ -351,39 +344,35 @@ def evaluate_5cp_risk(
 # ---- Season 5th-highest computation ---------------------------------------
 
 
-def season_5th_highest_from_loads(loads_mw: list[float], *,
-                                   fallback_mw: float,
-                                   sparse_threshold: int = SPARSE_DATA_THRESHOLD,
-                                   ) -> float:
-    """Return the season-to-date 5th-highest hourly load, with a
-    sparse-data fallback that releases as the current-year sample grows.
+def season_5th_highest_from_loads(
+    loads_mw: list[float],
+    *,
+    min_distinct_hours: int = MIN_DISTINCT_HOURS_FOR_BASELINE,
+) -> Optional[float]:
+    """Return the current-season 5th-highest hourly load, or None when
+    insufficient current-season official metered-load history exists.
 
-    Sparse-data path (fallback ACTIVE):
-      - ``len(loads_mw) < sparse_threshold``: return ``fallback_mw``.
-        Covers the first ~8 days of a fresh cooling season, multi-day
-        publish gaps, ingest-in-progress conditions, and off-season
-        ticks against thin prior-year archives.
+    Per binding spec §11 #14: NO prior-year fallback for control or
+    planning decisions. Callers receive None and record
+    `insufficient_current_season_history` in reasoning/logs.
 
-    Sufficient-data path (fallback RELEASES):
-      - ``len(loads_mw) >= sparse_threshold``: return the actual
-        5th-highest from the data. The detector adapts to current-year
-        conditions, including cooler-than-prior-year summers where the
-        real 5th-highest legitimately lands below the prior-year value.
+    Sufficient-data path:
+      - ``len(loads_mw) >= min_distinct_hours``: return the actual
+        current-season 5th-highest from the data.
 
-    A *permanent* ``max(5th, fallback)`` floor would suppress real
-    current-year 5CP detection in any season cooler than the prior
-    year. If 2026's real ComEd 5th lands at 18,500 MW and current load
-    reaches 17,800 MW, the true ratio is 0.962 (trigger) but a
-    permanent 20,375 MW floor would force ratio to 0.874 (no trigger)
-    -- a real-money miss. The sparse-threshold pattern keeps the
-    cold-start safety without baking 2025 into 2026.
+    Insufficient-data path:
+      - ``len(loads_mw) < min_distinct_hours``: return None. The
+        detector adapts to current-year conditions or is unavailable;
+        it does not anchor to last year's hot days.
 
-    ``fallback_mw`` must be scoped to the detector (ComEd-zone vs PJM
-    RTO) -- mixing scales here is the bug that left the ComEd detector
-    inert pre-season before 2026-05.
+    ``loads_mw`` MUST be the deduplicated set of distinct hourly
+    observations within the current cooling-season window for one scope
+    (ComEd zone or PJM RTO). The caller is responsible for dedup
+    (the Flux query in ``update_season_5th_highest`` uses
+    ``aggregateWindow(every: 1h, fn: max)`` for this).
     """
-    if len(loads_mw) < sparse_threshold:
-        return fallback_mw
+    if len(loads_mw) < min_distinct_hours:
+        return None
     sorted_desc = sorted(loads_mw, reverse=True)
     return float(sorted_desc[MIN_OBSERVATIONS_FOR_5TH - 1])
 
@@ -392,14 +381,18 @@ def update_season_5th_highest(query_api: Any, bucket: str,
                               season_start_utc: datetime,
                               season_end_utc: datetime,
                               *, zone: str = "CE",
-                              fallback_mw: float = COMED_PRE_SEASON_FALLBACK_5TH_MW
-                              ) -> float:
-    """Query InfluxDB for hourly-average ``pjm.metered_load`` values
+                              ) -> Optional[float]:
+    """Query InfluxDB for distinct hourly ``pjm.metered_load`` values
     inside the half-open window ``[season_start_utc, season_end_utc)``
-    and return the 5th-highest. Falls back to ``fallback_mw`` (scoped
-    to the requested ``zone``) when fewer than
-    ``MIN_OBSERVATIONS_FOR_5TH`` hourly observations exist (pre-season
-    cold start or sparse-ingest condition).
+    and return the current-season 5th-highest, or None when fewer than
+    ``MIN_DISTINCT_HOURS_FOR_BASELINE`` (168 = 7 days) distinct hourly
+    observations exist.
+
+    Returning None signals "insufficient current-season official
+    metered-load history" — callers MUST treat this as
+    `5CP planning/control unavailable` per binding spec §11 #14. There
+    is NO prior-year fallback for control or planning decisions; the
+    function intentionally provides no `fallback_mw` parameter.
 
     The window MUST be a cooling-season window (Jun 1 - Sep 30 per
     PJM Manual 19 / ComEd Attachment M-2). Including off-season rows
@@ -413,7 +406,9 @@ def update_season_5th_highest(query_api: Any, bucket: str,
     as a tag (set by the poller). When PJM corrects a row from
     unverified -> verified, Influx stores it as a separate series at
     the same timestamp. The ``group()`` flatten pulls all is_verified
-    series for a given hour into one table.
+    series for a given hour into one table; ``aggregateWindow(every: 1h,
+    fn: max)`` then yields one row per distinct hour. Distinct-hour
+    count drives the threshold check, not raw-row count.
 
     Aggregation choice: ``fn: max`` (not ``mean``) so the corrected
     (verified) value is preferred over the initial estimate. PJM's
@@ -424,6 +419,15 @@ def update_season_5th_highest(query_api: Any, bucket: str,
     PJM hasn't shipped a correction yet. ``mean`` averaged the two
     and produced a value lower than the verified actual, biasing the
     season-5th baseline downward for hours that had been corrected.
+
+    Prior-bug context (binding spec §11 #14): an earlier version of
+    this query terminated the pipeline with ``|> limit(n: 5)`` and
+    then required >= 200 rows before trusting the result. The query
+    could return at most 5 rows so the row-count check ALWAYS failed
+    and the function effectively returned the prior-year fallback
+    forever. The fix removes the Flux ``limit`` and changes the
+    threshold check to distinct-hour count, with no fallback for
+    control.
     """
     flux = f"""
         from(bucket: "{bucket}")
@@ -434,8 +438,6 @@ def update_season_5th_highest(query_api: Any, bucket: str,
                                 and r._field == "mw")
           |> group()
           |> aggregateWindow(every: 1h, fn: max, createEmpty: false)
-          |> sort(columns: ["_value"], desc: true)
-          |> limit(n: {MIN_OBSERVATIONS_FOR_5TH})
     """
     loads: list[float] = []
     for table in query_api.query(flux):
@@ -445,7 +447,7 @@ def update_season_5th_highest(query_api: Any, bucket: str,
             except ValueError:
                 continue
             loads.append(rec.value)
-    return season_5th_highest_from_loads(loads, fallback_mw=fallback_mw)
+    return season_5th_highest_from_loads(loads)
 
 
 # ---- Live load + derivative ------------------------------------------------
@@ -530,7 +532,7 @@ class ScopeEvaluation:
     """
     is_active: bool
     new_state: FiveCPState
-    season_5th_mw: float
+    season_5th_mw: Optional[float]   # None = insufficient current-season official metered-load history
     snapshot: Optional[ZoneLoadSnapshot]
     log_fields: dict[str, Any]
 
@@ -595,11 +597,11 @@ def evaluate_for_scope(
 
     if not in_cooling_season(now_local):
         log_fields["data_status"] = "off_season"
-        log_fields["season_5th_mw"] = scope.pre_season_fallback_5th_mw
+        log_fields["season_5th_mw"] = None
         return ScopeEvaluation(
             is_active=False,
             new_state=FiveCPState(),
-            season_5th_mw=scope.pre_season_fallback_5th_mw,
+            season_5th_mw=None,
             snapshot=None,
             log_fields=log_fields,
         )
@@ -607,11 +609,23 @@ def evaluate_for_scope(
     season_5th_mw = update_season_5th_highest(
         query_api, bucket, season_start_utc, season_end_utc,
         zone=scope.metered_load_zone,
-        fallback_mw=scope.pre_season_fallback_5th_mw,
     )
     snapshot = fetch_zone_live(query_api, bucket, area=scope.inst_load_area)
 
     log_fields["season_5th_mw"] = season_5th_mw
+
+    # Insufficient current-season history (binding spec §11 #14): no
+    # prior-year fallback for control/planning. Detector cannot evaluate
+    # this tick; record reason and stay inactive.
+    if season_5th_mw is None:
+        log_fields["data_status"] = "insufficient_current_season_history"
+        return ScopeEvaluation(
+            is_active=False,
+            new_state=FiveCPState(),
+            season_5th_mw=None,
+            snapshot=snapshot,
+            log_fields=log_fields,
+        )
 
     if snapshot is None or forecast_peak_today_mw is None:
         log_fields["data_status"] = (

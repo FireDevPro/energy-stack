@@ -95,7 +95,7 @@ def dtod_delivery_rates_24h() -> list[float]:
 
 def should_deepen_precool(
     forecast_tomorrow: dict[str, Any],
-    season_5th_mw: float,
+    season_5th_mw: Optional[float],
 ) -> bool:
     """True when tomorrow's forecast warrants the HOT_STREAK_DAY1 deeper
     pre-cool schedule (03:00 start at 66F) even without a multi-day heat
@@ -105,8 +105,15 @@ def should_deepen_precool(
       forecast_tomorrow["max_temp_f"] -- NWS forecast high for tomorrow.
       forecast_tomorrow["peak_load_mw"] -- PJM load forecast peak for
                                             tomorrow (from pjm.load_forecast).
-      season_5th_mw -- Current season-to-date 5th-highest hourly load.
+      season_5th_mw -- Current season-to-date 5th-highest hourly load,
+                      or None when insufficient current-season official
+                      metered-load history exists (< 168 distinct hourly
+                      observations). When None, returns False (no
+                      deepening); the caller's day-type decision falls
+                      back to weather/price logic per binding spec §11 #14.
     """
+    if season_5th_mw is None:
+        return False
     peak_mw = forecast_tomorrow.get("peak_load_mw") or 0
     max_temp = forecast_tomorrow.get("max_temp_f") or 0
     return (

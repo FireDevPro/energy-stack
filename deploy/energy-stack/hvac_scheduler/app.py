@@ -402,45 +402,36 @@ def _classify_layer_resolution(
 ) -> tuple[LayerResolutionCode, str]:
     """Return (reason_code, winning_layer) from a LayerResolution.
 
-    "Warmer wins" — schedule, price overlay, and 5CP each propose a cool
+    "Warmer wins" — schedule and price overlay each propose a cool
     setpoint; effective is `max` across them. A layer contributes when its
     own proposal matches effective AND it is actually active:
-      * 5CP contributes when `fivecp_active=True` AND `fivecp_cool_f`
-        equals effective. (When inactive, `fivecp_cool_f` falls back to
-        `price_cool_f` per resolve_layer_priority's implementation — that
-        match is not a real contribution.)
       * Price overlay contributes when the tier is non-normal AND
         `price_cool_f` equals effective.
       * Schedule contributes when `schedule_cool_f` equals effective.
 
-    If more than one non-schedule layer ties at the warmest, returns
-    `TIE_WARMER_WINS` (operator can inspect the per-layer fields on the
-    trace line to see which agreed). If only schedule's value matches
-    effective, returns `SCHEDULE_WINS`. The `winning_layer` string is a
-    coarser 4-value categorical for filtering.
+    **5CP is excluded from this classification** (binding spec §11 #14):
+    5CP no longer contributes to ``effective_cool_f`` so it cannot be a
+    `winning_layer`. The ``LayerResolutionCode.FIVECP_WINS`` and
+    ``TIE_WARMER_WINS`` enum values are preserved for back-compat with
+    existing dashboards / archived trace rows but are no longer emitted.
+    Post-hoc analysis of when 5CP WOULD have fired uses the preserved
+    ``fivecp_active`` / ``fivecp_cool_f`` fields on the trace row, plus
+    ``hvac.5cp_state`` and ``fivecp_eval`` telemetry.
     """
     eff = lr.effective_cool_f
-    contributors: list[str] = []
-    if lr.fivecp_active and lr.fivecp_cool_f == eff:
-        contributors.append("5cp")
-    if lr.price_overlay_tier != NORMAL_TIER_NAME and lr.price_cool_f == eff:
-        contributors.append("price_overlay")
+    price_overlay_contributes = (
+        lr.price_overlay_tier != NORMAL_TIER_NAME
+        and lr.price_cool_f == eff
+    )
     schedule_matches = lr.schedule_cool_f == eff
 
-    if len(contributors) > 1:
-        return LayerResolutionCode.TIE_WARMER_WINS, "tie"
-    if contributors == ["5cp"]:
-        return LayerResolutionCode.FIVECP_WINS, "5cp"
-    if contributors == ["price_overlay"]:
+    if price_overlay_contributes:
         return LayerResolutionCode.PRICE_OVERLAY_WINS, "price_overlay"
-    # Either schedule matches effective (no other contributor) OR — by
-    # the "warmer wins" max — effective equals schedule_cool_f. Either
-    # way schedule wins this resolution.
     if schedule_matches:
         return LayerResolutionCode.SCHEDULE_WINS, "schedule"
     # Defense in depth: should be unreachable since effective = max of
-    # the three. Fall back to SCHEDULE_WINS rather than raise from a
-    # diagnostic helper.
+    # schedule and price. Fall back to SCHEDULE_WINS rather than raise
+    # from a diagnostic helper.
     return LayerResolutionCode.SCHEDULE_WINS, "schedule"
 
 
@@ -1206,17 +1197,22 @@ class LayerResolution:
     scheduler tick. Fields populate hvac.actions so the operator can replay
     why the effective setpoint differs from the schedule baseline.
 
-    The resolution rule is "warmer wins": the schedule baseline, the
-    price-overlay layer, and the 5CP-shutoff layer each propose a cool
-    setpoint, and the effective setpoint is the max of those proposals
-    (capped later by the safety supervisor's 86F upper bound).
+    The resolution rule is "warmer wins": the schedule baseline and the
+    price-overlay layer each propose a cool setpoint, and the effective
+    setpoint is the max of those proposals (capped later by the safety
+    supervisor's 86F upper bound).
+
+    5CP is preserved as telemetry (``fivecp_active``, ``fivecp_cool_f``)
+    so post-hoc analysis can reconstruct when 5CP would have fired, but
+    per binding spec §11 #14 it is NOT included in the ``effective_cool_f``
+    max — 5CP does not independently force live setpoint changes.
     """
     schedule_cool_f: int
     price_overlay_tier: str           # "normal" | "elevated" | "scarcity"
     price_cool_f: int                 # Schedule baseline if no tier active
-    fivecp_active: bool
-    fivecp_cool_f: int                # COOL_SHUTOFF_F if active else price_cool_f
-    effective_cool_f: int             # max(schedule, price, fivecp)
+    fivecp_active: bool               # Telemetry only; not part of effective_cool_f
+    fivecp_cool_f: int                # Telemetry only: what 5CP WOULD have proposed
+    effective_cool_f: int             # max(schedule, price) -- 5CP excluded
 
 
 def resolve_layer_priority(
@@ -1228,7 +1224,7 @@ def resolve_layer_priority(
     fivecp_active: bool = False,
     fivecp_shutoff_f: int = COOL_SHUTOFF_F,
 ) -> LayerResolution:
-    """Resolve the effective cool setpoint across schedule / price / 5CP layers.
+    """Resolve the effective cool setpoint across schedule / price layers.
 
     Layers (warmer-wins; safety supervisor enforces the 65-86F floor/ceiling
     after this function returns):
@@ -1239,20 +1235,28 @@ def resolve_layer_priority(
          the schedule baseline; scarcity tier replaces it with
          ``price_override_f``. ``price_overlay_tier="normal"`` means no
          overlay is active.
-      3. **5CP shutoff** (§3) -- when ``fivecp_active`` the 5CP layer
-         proposes ``fivecp_shutoff_f`` (default 85F).
+
+    **5CP is NOT a live layer** (binding spec §11 #14): ``fivecp_active`` and
+    ``fivecp_cool_f`` are preserved on the returned ``LayerResolution`` for
+    telemetry / post-hoc analysis of when 5CP would have fired, but they
+    do not contribute to ``effective_cool_f``. A bare ``fivecp_active=True``
+    with normal prices does not change the effective cool setpoint. Severe
+    price events still drive shutoff via the price overlay (scarcity tier
+    override to 85F).
 
     The function is a pure transform; it doesn't read any global state. §2
-    and §3 evaluate their respective conditions and pass the resulting
-    arguments in.
+    evaluates its condition and passes the resulting arguments in;
+    ``fivecp_active``/``fivecp_shutoff_f`` are accepted for telemetry only.
     """
     if price_override_f is not None:
         price_cool_f = price_override_f
     else:
         price_cool_f = schedule_cool_f + price_offset_f
 
+    # 5CP is telemetry-only: compute what it WOULD have proposed, but
+    # exclude it from the effective_cool_f max. (Binding spec §11 #14.)
     fivecp_cool_f = fivecp_shutoff_f if fivecp_active else price_cool_f
-    effective_cool_f = max(schedule_cool_f, price_cool_f, fivecp_cool_f)
+    effective_cool_f = max(schedule_cool_f, price_cool_f)
 
     return LayerResolution(
         schedule_cool_f=schedule_cool_f,
@@ -1679,7 +1683,7 @@ def precool_window_action(window: dict[str, int]) -> ScheduleAction:
 
 def _fetch_pjm_inputs_for_target_date(
     query_api: Any, bucket: str, target_date_iso: str, tz: ZoneInfo,
-) -> tuple[float | None, float]:
+) -> tuple[float | None, float | None]:
     """Fetch ``(target_date_peak_load_mw, season_5th_highest_mw)`` so the
     §7 forecast 5CP-risk pre-cool deepening trigger can fire at 21:00 the
     night before (or at the 06:00/11:00 revisit). The function exists so
@@ -1695,9 +1699,14 @@ def _fetch_pjm_inputs_for_target_date(
 
     Returns ``(None, season_5th_mw)`` when PJM's forecast for the target
     date hasn't published yet (e.g., 21:00 fired before tomorrow's load
-    forecast was posted). decide_day_type's §7 path gates on both inputs
-    being non-None, so a None peak silently falls back to the multi-day
-    HOT_STREAK_DAY1 path.
+    forecast was posted). Returns ``(target_peak_mw, None)`` when the
+    current-season official metered-load history is insufficient for a
+    defensible baseline (< 168 distinct hourly observations per binding
+    spec §11 #14 — no prior-year fallback for control/planning).
+    decide_day_type's §7 path gates on both inputs being non-None and
+    records ``insufficient_current_season_history`` in reasoning when the
+    baseline is unavailable, so missing data silently falls back to the
+    weather/price logic without down-classifying to B-fallback.
     """
     # §7 pre-cool deepening uses ComEd-zone forecast peak vs ComEd-zone
     # season-5th; consistent scale. The dual-scope OR (§3) lives in the
@@ -1715,7 +1724,6 @@ def _fetch_pjm_inputs_for_target_date(
     season_5th_mw = update_season_5th_highest(
         query_api, bucket, season_start_utc, capped_end_utc,
         zone=COMED_SCOPE.metered_load_zone,
-        fallback_mw=COMED_SCOPE.pre_season_fallback_5th_mw,
     )
     target_peak_mw = fetch_forecast_peak_for_date(
         query_api, bucket, target_date_iso, tz=tz,
@@ -1875,21 +1883,28 @@ def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
                                   weather_ok: bool,
                                   pjm_capacity_risk_ok: bool) -> dict[str, bool]:
     """Return the dict of input-feed health flags REQUIRED for B-active
-    classification at ``when_ct`` (spec §5 + §5.1).
+    classification at ``when_ct`` (spec §5 + §5.1, revised by §11 #14).
 
-    Price + weather are always required during Arm B. PJM
-    capacity-risk inputs are only required inside the locked
-    capacity-risk operating window; their absence outside the window
-    must NOT down-classify the hour to B-fallback.
+    Price + weather are always required during Arm B. PJM capacity-risk
+    inputs are NOT required for B-active classification (binding spec
+    §11 #14): 5CP was demoted from live-setpoint authority to
+    planning/telemetry only, so missing or insufficient PJM/5CP data
+    does not down-classify ordinary afternoon ticks to B-fallback.
+    Live control depends on price + weather only.
 
-    The full feed-health audit (every feed, regardless of required-
-    status) is written separately by ``write_input_feed_health``.
+    The full feed-health audit (every feed, including PJM capacity-risk
+    health) is written separately by ``write_input_feed_health`` so the
+    operator still sees PJM feed status in telemetry. The
+    ``pjm_capacity_risk_ok`` argument is accepted here for signature
+    stability with existing callers; it is intentionally unused.
+
+    ``when_ct`` and ``CAPACITY_RISK_WINDOW_*`` are preserved in the
+    signature for back-compat and potential future re-introduction of
+    window-scoped required feeds; currently they are unused.
     """
-    when_naive = when_ct.replace(tzinfo=None) if when_ct.tzinfo else when_ct
-    feeds = {"price": price_feed_healthy, "weather": weather_ok}
-    if CAPACITY_RISK_WINDOW_START_CT <= when_naive < CAPACITY_RISK_WINDOW_END_CT:
-        feeds["pjm_capacity_risk"] = pjm_capacity_risk_ok
-    return feeds
+    _ = when_ct  # reserved
+    _ = pjm_capacity_risk_ok  # 5CP demoted (spec §11 #14): no longer drives B-active
+    return {"price": price_feed_healthy, "weather": weather_ok}
 
 
 def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
@@ -2757,7 +2772,12 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         if comed_eval.snapshot is not None else 0.0
     )
     fivecp_forecast_peak = comed_forecast_peak if comed_forecast_peak is not None else 0.0
-    season_5th_mw = comed_eval.season_5th_mw
+    # comed_eval.season_5th_mw can be None when current-season official
+    # metered-load history is insufficient (binding spec §11 #14). The
+    # LayerInputs field is `float`; default to 0.0 so dashboards / dry-run
+    # paths get a stable value. `fivecp_data_available` is the right gate
+    # for "is the 5CP baseline real?" downstream.
+    season_5th_mw = comed_eval.season_5th_mw if comed_eval.season_5th_mw is not None else 0.0
 
     # ---- Audit writes ----
     new_tier = firing.price_overlay_state.current_tier
@@ -2791,7 +2811,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         for scope, ev in (
             (COMED_SCOPE, comed_eval), (RTO_SCOPE, rto_eval),
         ):
-            if ev.log_fields.get("data_status") != "ok":
+            if ev.log_fields.get("data_status") != "ok" or ev.season_5th_mw is None:
                 continue
             write_5cp_state(
                 write_api, cfg.influx_bucket,
