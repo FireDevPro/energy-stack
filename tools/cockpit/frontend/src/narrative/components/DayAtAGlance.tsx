@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { usePolling } from '../../lib/usePolling'
 import { useSize } from '../../lib/useSize'
 import { fetchDayAtAGlance } from '../lib/api'
@@ -46,11 +46,12 @@ export function DayAtAGlance() {
     ? summerNormalDayAtAGlance
     : polling.data ?? null
 
-  // ref on the chart-wrap (not the section) so the measurement
-  // matches the SVG's actual drawable area, independent of any
-  // header / legend / footer siblings inside the section.
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const { w: measuredW, h: measuredH } = useSize(wrapRef)
+  // Callback ref so the ResizeObserver attaches whenever the chart-wrap
+  // mounts — including after a loading → data render transition. A
+  // useRef+useLayoutEffect pair would silently skip the install if the
+  // wrap wasn't in the tree on first render (the loading branch returns
+  // a different <section> with no ref). See Cockpit Scaling Audit #00.
+  const [chartRef, { w: measuredW, h: measuredH }] = useSize()
   const chartHeight = Math.max(CHART_MIN_HEIGHT, Math.floor(measuredH))
   const chartWidth = Math.floor(measuredW)
 
@@ -79,7 +80,7 @@ export function DayAtAGlance() {
           hourly avg)
         </div>
       </header>
-      <div ref={wrapRef} className="narrative-da-chart-wrap">
+      <div ref={chartRef} className="narrative-da-chart-wrap">
         {chartWidth > 0 && (
           <Chart data={data} width={chartWidth} height={chartHeight} />
         )}
