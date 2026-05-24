@@ -105,3 +105,82 @@
   color: var(--ink-4);
   letter-spacing: 0.04em;
 }
+
+/* Chart wrap is the positioning context for the bar hover tooltip. */
+.narrative-da-chart-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.narrative-da-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--bg-base) 92%, transparent);
+  border: 1px solid var(--line-soft);
+  box-shadow:
+    0 8px 24px -8px color-mix(in oklab, #000 70%, transparent),
+    0 0 0 1px color-mix(in oklab, var(--line-soft) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+
+.narrative-da-tooltip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line-soft) 70%, transparent);
+}
+
+.narrative-da-tooltip-hour {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.narrative-da-tooltip-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink-4);
+  background: color-mix(in oklab, var(--line) 30%, transparent);
+}
+.narrative-da-tooltip-status.status-current {
+  color: var(--live);
+  background: color-mix(in oklab, var(--live) 14%, transparent);
+}
+.narrative-da-tooltip-status.status-past {
+  color: var(--ink-3);
+}
+.narrative-da-tooltip-status.status-future {
+  color: var(--ink-4);
+}
+
+.narrative-da-tooltip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.4;
+}
+.narrative-da-tooltip-row .k {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-4);
+}
+.narrative-da-tooltip-row .v {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  font-size: 12px;
+}

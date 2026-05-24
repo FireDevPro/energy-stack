@@ -1,4 +1,10 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { usePolling } from '../../lib/usePolling'
 import { fetchDayAtAGlance } from '../lib/api'
 import { summerNormalDayAtAGlance } from '../fixtures/day_at_a_glance'
@@ -86,6 +92,15 @@ export function DayAtAGlance() {
   )
 }
 
+interface HoverState {
+  hour: number
+  x: number
+  y: number
+  forecast: number | null
+  realized: number | null
+  status: 'past' | 'current' | 'future'
+}
+
 function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
   const chartW = Math.max(360, width - LEFT_PAD - RIGHT_PAD)
   const chartH = CHART_HEIGHT - TOP_PAD - BOTTOM_PAD
@@ -157,31 +172,54 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
 
   const nowX = xForFracHour(nowFracHour)
 
+  const [hover, setHover] = useState<HoverState | null>(null)
+
   return (
+    <div className="narrative-da-chart-wrap">
     <svg
       width={width}
       height={CHART_HEIGHT}
       viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
       role="img"
       aria-label="Day at a glance — indoor temperature, setpoints, and price bars"
+      onMouseLeave={() => setHover(null)}
     >
       <YAxisTemp yForTemp={yForTemp} chartW={chartW} />
       <YAxisCents yForCents={yForCents} chartW={chartW} width={width} />
       <XAxisHours xForHour={xForHour} yBaseline={yBaseline} chartW={chartW} />
 
       <g data-testid="da-bars">
-        {data.bars.map((bar) => (
-          <Bar
-            key={bar.hour}
-            bar={bar}
-            isPast={bar.hour < Math.floor(nowFracHour)}
-            isCurrent={bar.hour === Math.floor(nowFracHour)}
-            x={xForHour(bar.hour) - barWidth / 2}
-            yBaseline={yBaseline}
-            yForCents={yForCents}
-            barWidth={barWidth}
-          />
-        ))}
+        {data.bars.map((bar) => {
+          const isPast = bar.hour < Math.floor(nowFracHour)
+          const isCurrent = bar.hour === Math.floor(nowFracHour)
+          const status: HoverState['status'] = isCurrent
+            ? 'current'
+            : isPast
+              ? 'past'
+              : 'future'
+          return (
+            <Bar
+              key={bar.hour}
+              bar={bar}
+              isPast={isPast}
+              isCurrent={isCurrent}
+              x={xForHour(bar.hour) - barWidth / 2}
+              yBaseline={yBaseline}
+              yForCents={yForCents}
+              barWidth={barWidth}
+              onEnter={() =>
+                setHover({
+                  hour: bar.hour,
+                  x: xForHour(bar.hour),
+                  y: yForCents(bar.forecast_cents ?? 0),
+                  forecast: bar.forecast_cents ?? null,
+                  realized: bar.realized_cents ?? null,
+                  status,
+                })
+              }
+            />
+          )
+        })}
       </g>
 
       {setpointPastPath && (
@@ -236,7 +274,71 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
         NOW
       </text>
     </svg>
+    {hover && (
+      <BarTooltip hover={hover} chartWidth={width} chartHeight={CHART_HEIGHT} />
+    )}
+    </div>
   )
+}
+
+function BarTooltip({
+  hover,
+  chartWidth,
+  chartHeight,
+}: {
+  hover: HoverState
+  chartWidth: number
+  chartHeight: number
+}) {
+  // Anchor the tooltip just above the bar tip. Keep it inside the
+  // chart wrap by flipping left/right when too close to an edge.
+  const TOOLTIP_W = 168
+  const VERTICAL_OFFSET = 10
+  let left = hover.x - TOOLTIP_W / 2
+  if (left < 4) left = 4
+  if (left + TOOLTIP_W > chartWidth - 4) left = chartWidth - TOOLTIP_W - 4
+  const top = Math.max(0, hover.y - VERTICAL_OFFSET - 64)
+  const statusLabel =
+    hover.status === 'current'
+      ? 'in progress'
+      : hover.status === 'past'
+        ? 'past'
+        : 'forecast'
+  return (
+    <div
+      className="narrative-da-tooltip"
+      style={{ left, top, width: TOOLTIP_W }}
+      role="tooltip"
+      data-testid={`da-tooltip-${hover.hour}`}
+    >
+      <div className="narrative-da-tooltip-head">
+        <span className="narrative-da-tooltip-hour">{hourLabel(hover.hour)}</span>
+        <span className={`narrative-da-tooltip-status status-${hover.status}`}>
+          {statusLabel}
+        </span>
+      </div>
+      <div className="narrative-da-tooltip-row">
+        <span className="k">forecast</span>
+        <span className="v">{fmtCents(hover.forecast)}</span>
+      </div>
+      {hover.status !== 'future' && (
+        <div className="narrative-da-tooltip-row">
+          <span className="k">
+            {hover.status === 'current' ? 'so far' : 'actual'}
+          </span>
+          <span className="v">{fmtCents(hover.realized)}</span>
+        </div>
+      )}
+      {/* keep chartHeight referenced so future positioning logic that needs the
+          baseline doesn't need a refactor; no-op visually */}
+      <span style={{ display: 'none' }}>{chartHeight}</span>
+    </div>
+  )
+}
+
+function fmtCents(c: number | null): string {
+  if (c === null || c === undefined) return '—'
+  return `${c.toFixed(c < 10 ? 2 : 1)}¢`
 }
 
 function Bar({
@@ -247,6 +349,7 @@ function Bar({
   yBaseline,
   yForCents,
   barWidth,
+  onEnter,
 }: {
   bar: HourlyBar
   isPast: boolean
@@ -255,6 +358,7 @@ function Bar({
   yBaseline: number
   yForCents: (c: number) => number
   barWidth: number
+  onEnter: () => void
 }) {
   const forecast = bar.forecast_cents ?? 0
   const realized = bar.realized_cents
@@ -283,7 +387,11 @@ function Bar({
   }
 
   return (
-    <g data-testid={`da-bar-${bar.hour}`} data-tier={tier}>
+    <g
+      data-testid={`da-bar-${bar.hour}`}
+      data-tier={tier}
+      onMouseEnter={onEnter}
+    >
       {barH > 0 && (
         <rect
           x={x}
@@ -297,6 +405,16 @@ function Bar({
           rx={1.5}
         />
       )}
+      {/* Invisible full-height hit target so hover works above empty
+          space too (a thin forecast bar still gets hovered the whole
+          column). */}
+      <rect
+        x={x}
+        y={0}
+        width={barWidth}
+        height={yBaseline}
+        fill="transparent"
+      />
     </g>
   )
 }
