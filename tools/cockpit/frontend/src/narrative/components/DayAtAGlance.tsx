@@ -586,70 +586,69 @@ function hourLabel(h: number): string {
 }
 
 function Legend({ xRight }: { xRight: number }) {
-  // Top-right inside the chart area. Three rows: indoor / setpoint
-  // (actual, dotted) / setpoint (planned, dashed) — stroke patterns
-  // match the actual line treatments below so they read as keys.
-  const x = xRight - 132
-  const y = TOP_PAD - 16
-  const swatchW = 18
-  const labelDx = 22
-  const rowH = 11
+  // Top-right inside the chart area. Three rows stacked vertically:
+  //   indoor          (orange, solid)
+  //   setpoint actual (cyan, dotted)
+  //   setpoint plan   (cyan, dashed)
+  // Stroke patterns match the actual line treatments below so they
+  // read as keys without needing a separate visual register.
+  const fontSize = 12
+  const swatchW = 30
+  const labelDx = 38
+  const rowH = 17
+  const legendW = 170
+  const x = xRight - legendW
+  const y = TOP_PAD - 4
+  const rows: Array<{
+    label: string
+    stroke: string
+    width: number
+    dash?: string
+    cap?: 'round' | 'butt'
+  }> = [
+    { label: 'indoor', stroke: 'var(--ember)', width: 2.4 },
+    {
+      label: 'setpoint (actual)',
+      stroke: 'var(--ice)',
+      width: 2,
+      dash: '1 4',
+      cap: 'round',
+    },
+    {
+      label: 'setpoint (planned)',
+      stroke: 'var(--ice)',
+      width: 2,
+      dash: '4 4',
+    },
+  ]
   return (
     <g aria-hidden="true" data-testid="da-legend">
-      <line
-        x1={x}
-        x2={x + swatchW}
-        y1={y}
-        y2={y}
-        stroke="var(--ember)"
-        strokeWidth={2.4}
-      />
-      <text
-        x={x + labelDx}
-        y={y + 3}
-        fill="var(--ink-3)"
-        fontFamily="var(--font-mono)"
-        fontSize={9}
-      >
-        indoor
-      </text>
-      <line
-        x1={x + 60}
-        x2={x + 60 + swatchW}
-        y1={y}
-        y2={y}
-        stroke="var(--ice)"
-        strokeWidth={2}
-        strokeDasharray="1 4"
-        strokeLinecap="round"
-      />
-      <text
-        x={x + 60 + labelDx}
-        y={y + 3}
-        fill="var(--ink-3)"
-        fontFamily="var(--font-mono)"
-        fontSize={9}
-      >
-        setpoint (actual)
-      </text>
-      <line
-        x1={x}
-        x2={x + swatchW}
-        y1={y + rowH}
-        y2={y + rowH}
-        stroke="var(--ice)"
-        strokeWidth={2}
-        strokeDasharray="4 4"
-      />
-      <text
-        x={x + labelDx}
-        y={y + rowH + 3}
-        fill="var(--ink-3)"
-        fontFamily="var(--font-mono)"
-        fontSize={9}
-      >
-        setpoint (planned)
-      </text>
+      {rows.map((r, i) => {
+        const cy = y + i * rowH
+        return (
+          <g key={r.label}>
+            <line
+              x1={x}
+              x2={x + swatchW}
+              y1={cy}
+              y2={cy}
+              stroke={r.stroke}
+              strokeWidth={r.width}
+              strokeDasharray={r.dash}
+              strokeLinecap={r.cap ?? 'butt'}
+            />
+            <text
+              x={x + labelDx}
+              y={cy + fontSize * 0.34}
+              fill="var(--ink-3)"
+              fontFamily="var(--font-mono)"
+              fontSize={fontSize}
+            >
+              {r.label}
+            </text>
+          </g>
+        )
+      })}
     </g>
   )
 }
