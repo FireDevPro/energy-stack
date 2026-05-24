@@ -106,10 +106,19 @@
   letter-spacing: 0.04em;
 }
 
+/* Host fills available column space; chart-wrap fills the host so the
+   SVG observes both width AND height and re-renders to fit. */
+.narrative-da-chart-host {
+  flex: 1;
+  min-height: 320px;
+  width: 100%;
+}
+
 /* Chart wrap is the positioning context for the bar hover tooltip. */
 .narrative-da-chart-wrap {
   position: relative;
   width: 100%;
+  height: 100%;
 }
 
 .narrative-da-tooltip {
@@ -186,10 +195,12 @@
 }
 
 /* === Action log (vertical list) === */
+/* flex: 0 0 auto so the action log only claims its content height,
+   leaving the chart above free to grow into available column space. */
 .narrative-action-log {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 0 0 auto;
   padding: 14px 18px;
   min-width: 0;
 }
