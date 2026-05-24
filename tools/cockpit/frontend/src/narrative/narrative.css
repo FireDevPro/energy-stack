@@ -106,19 +106,10 @@
   letter-spacing: 0.04em;
 }
 
-/* Host fills available column space; chart-wrap fills the host so the
-   SVG observes both width AND height and re-renders to fit. */
-.narrative-da-chart-host {
-  flex: 1;
-  min-height: 320px;
-  width: 100%;
-}
-
 /* Chart wrap is the positioning context for the bar hover tooltip. */
 .narrative-da-chart-wrap {
   position: relative;
   width: 100%;
-  height: 100%;
 }
 
 .narrative-da-tooltip {

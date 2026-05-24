@@ -12,8 +12,7 @@ import type { DayAtAGlance as DayAtAGlanceData, HourlyBar } from '../types'
 
 const POLL_INTERVAL_MS = 60_000
 
-const CHART_MIN_HEIGHT = 320
-const CHART_MAX_HEIGHT = 560
+const CHART_HEIGHT = 480
 const TOP_PAD = 28
 const BOTTOM_PAD = 36
 const LEFT_PAD = 44
@@ -51,17 +50,12 @@ export function DayAtAGlance() {
     : polling.data ?? null
 
   const wrapRef = useRef<HTMLDivElement>(null)
-  const [size, setSize] = useState({ width: 800, height: CHART_MIN_HEIGHT })
+  const [width, setWidth] = useState(800)
 
   useLayoutEffect(() => {
     if (!wrapRef.current) return
     const ro = new ResizeObserver(([e]) => {
-      const w = Math.max(360, Math.floor(e.contentRect.width))
-      const h = Math.max(
-        CHART_MIN_HEIGHT,
-        Math.min(CHART_MAX_HEIGHT, Math.floor(e.contentRect.height)),
-      )
-      setSize({ width: w, height: h })
+      setWidth(Math.max(360, Math.floor(e.contentRect.width)))
     })
     ro.observe(wrapRef.current)
     return () => ro.disconnect()
@@ -81,6 +75,7 @@ export function DayAtAGlance() {
 
   return (
     <section
+      ref={wrapRef}
       className="narrative-day-at-a-glance"
       data-testid="narrative-day-at-a-glance"
       data-day-type={data.day_type}
@@ -92,9 +87,7 @@ export function DayAtAGlance() {
           hourly avg)
         </div>
       </header>
-      <div ref={wrapRef} className="narrative-da-chart-host">
-        <Chart data={data} width={size.width} height={size.height} />
-      </div>
+      <Chart data={data} width={width} height={CHART_HEIGHT} />
     </section>
   )
 }
