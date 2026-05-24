@@ -33,3 +33,19 @@ export interface DayAtAGlance {
   setpoint_planned: PlannedSetpoint[]
   bars: HourlyBar[]
 }
+
+export type ActionStatus = 'past' | 'current' | 'future'
+
+export interface TodayActionItem {
+  hour: number
+  minute: number
+  label: string
+  cool_setpoint_f: number | null
+  status: ActionStatus
+}
+
+export interface TodayActions {
+  now: string
+  day_type: string
+  actions: TodayActionItem[]
+}

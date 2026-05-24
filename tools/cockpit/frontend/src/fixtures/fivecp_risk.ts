@@ -152,17 +152,21 @@ export const fivecpRisk: Snapshot = {
       },
     },
     winner: {
+      // 5CP-risk day type, but per binding spec §11 #14 the 5CP layer
+      // never wins live setpoint authority — schedule remains the
+      // winner here. The 5CP node above still shows armed/firing as
+      // planning telemetry.
       role_state: 'winning',
       freshness: 'fresh',
       freshness_label: '30s ago',
       title: 'Winner',
-      subtitle: '5CP',
+      subtitle: 'Schedule',
       details: {
-        winning_layer: 'fivecp',
-        effective_cool_f: 85,
+        winning_layer: 'schedule',
+        effective_cool_f: 80,
         prev_effective_cool_f: 76,
         changed: true,
-        reason_code: 'LAYER_RESOLUTION_5CP_WINS',
+        reason_code: 'LAYER_RESOLUTION_SCHEDULE_WINS',
       },
       source: {
         event: 'decision_trace.layer_resolution',

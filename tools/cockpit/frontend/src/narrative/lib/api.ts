@@ -1,4 +1,4 @@
-import type { DayAtAGlance } from '../types'
+import type { DayAtAGlance, TodayActions } from '../types'
 
 /** Fetch the narrative cockpit's day-at-a-glance payload from the
  * FastAPI backend. Throws on non-2xx; caller's polling hook handles
@@ -13,4 +13,18 @@ export async function fetchDayAtAGlance(
     )
   }
   return (await res.json()) as DayAtAGlance
+}
+
+/** Fetch today's planned ScheduleActions + per-item status. Powers
+ * the ActionLog panel. */
+export async function fetchTodayActions(
+  signal?: AbortSignal,
+): Promise<TodayActions> {
+  const res = await fetch('/api/today_actions', { signal })
+  if (!res.ok) {
+    throw new Error(
+      `today_actions fetch failed: ${res.status} ${res.statusText}`,
+    )
+  }
+  return (await res.json()) as TodayActions
 }
