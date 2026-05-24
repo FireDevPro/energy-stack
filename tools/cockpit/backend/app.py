@@ -27,6 +27,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from tools.cockpit.backend.day_ahead import (
+    build_day_ahead_canned,
+    build_day_ahead_live,
+)
 from tools.cockpit.backend.day_at_a_glance import (
     build_day_at_a_glance_canned,
     build_day_at_a_glance_live,
@@ -179,6 +183,66 @@ def _live_snapshot() -> dict[str, Any]:
         outdoor=outdoor,
         scheduler_mode=scheduler_mode,
         now=now,
+    )
+
+
+@app.get("/api/day_ahead")
+def day_ahead() -> dict[str, Any]:
+    """Return tomorrow's day-type decision (from hvac.decisions, written
+    at 21:00 the night before) + §7 pre-cool window if selected (from
+    hvac.precool_window). Powers the narrative cockpit Day-Ahead +
+    Pre-Cool cards."""
+    mode = _mode()
+    if mode == "canned":
+        return build_day_ahead_canned()
+    if mode == "live":
+        return _live_day_ahead()
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"COCKPIT_BACKEND_MODE={mode!r} is not recognized. "
+            "Valid: 'canned' (default), 'live'."
+        ),
+    )
+
+
+def _live_day_ahead() -> dict[str, Any]:
+    try:
+        from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # noqa: PLC0415  # stubs lack __all__
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "live mode requires `influxdb-client` — install via "
+                "`pip install -r tools/cockpit/backend/requirements.txt`"
+            ),
+        ) from e
+
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    from tools.cockpit.backend import influx  # noqa: PLC0415
+
+    url = _require_env("INFLUXDB_URL")
+    token = _require_env("INFLUXDB_TOKEN")
+    org = _require_env("INFLUXDB_ORG")
+    bucket = _require_env("INFLUXDB_BUCKET")
+
+    influx_client = InfluxDBClient(url=url, token=token, org=org)
+    query_api = influx_client.query_api()
+
+    ct = ZoneInfo("America/Chicago")
+    now = datetime.now(timezone.utc)
+    tomorrow_ct = (now.astimezone(ct) + timedelta(days=1)).date().isoformat()
+
+    day_type_row = influx.query_day_type_decision(
+        query_api, bucket=bucket, target_date_iso=tomorrow_ct
+    )
+    precool_row = influx.query_precool_window(
+        query_api, bucket=bucket, target_date_iso=tomorrow_ct
+    )
+
+    return build_day_ahead_live(
+        now=now, day_type_row=day_type_row, precool_row=precool_row
     )
 
 

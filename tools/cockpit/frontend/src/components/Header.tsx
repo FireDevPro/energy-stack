@@ -9,8 +9,8 @@ export function Header({ snapshot }: { snapshot: Snapshot }) {
         <div className="brand-mark" aria-hidden="true" />
         <div>
           <div className="brand-name">
-            Reticule
-            <span className="brand-sub">cockpit · v3</span>
+            Sentinel
+            <span className="brand-sub">v4</span>
           </div>
         </div>
       </div>

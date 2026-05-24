@@ -9,6 +9,7 @@ import { HeroPanel } from './components/HeroPanel'
 import { DayAtAGlance } from './components/DayAtAGlance'
 import { ActionLog } from './components/ActionLog'
 import { WhyThisDecision } from './components/WhyThisDecision'
+import { DayAheadPanel } from './components/DayAheadPanel'
 import { DecisionPipeline } from './components/DecisionPipeline'
 import './narrative.css'
 
@@ -106,11 +107,12 @@ export default function NarrativeCockpit() {
           </div>
           <div className="narrative-right">
             <WhyThisDecision snapshot={snapshot} />
+            <DayAheadPanel />
           </div>
         </main>
 
         <div className="narrative-ribbon">
-          <DecisionPipeline />
+          <DecisionPipeline snapshot={snapshot} />
         </div>
       </div>
     </>

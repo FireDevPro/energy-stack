@@ -1,18 +1,15 @@
-import {
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { usePolling } from '../../lib/usePolling'
+import { useSize } from '../../lib/useSize'
 import { fetchDayAtAGlance } from '../lib/api'
 import { summerNormalDayAtAGlance } from '../fixtures/day_at_a_glance'
 import type { DayAtAGlance as DayAtAGlanceData, HourlyBar } from '../types'
 
 const POLL_INTERVAL_MS = 60_000
 
-const CHART_HEIGHT = 320
+// Minimum chart height so the bars + lines stay legible even when the
+// section collapses (e.g. action log grew tall enough to crowd the chart).
+const CHART_MIN_HEIGHT = 320
 const TOP_PAD = 28
 const BOTTOM_PAD = 36
 const LEFT_PAD = 44
@@ -23,11 +20,18 @@ const TEMP_MAX = 90
 
 // ¢/kWh tier thresholds — matches deploy/energy-stack/hvac_scheduler/
 // price_overlay.py PRICE_TIERS (elevated=10c trigger, scarcity=20c
-// trigger). The chart's chosen visual cap is generous (24c) so a
-// 20c scarcity bar still has headroom and doesn't get clipped.
+// trigger).
 const PRICE_GREEN = 10
 const PRICE_RED = 20
-const PRICE_AXIS_MAX = 24
+
+// Log-scale Y-axis spans 1c..100c. Cents are roughly log-normal:
+// calm summer hours run 3-12c, scarcity events spike to 50-200c+. A
+// linear axis would crush the bottom range; log preserves resolution
+// at 5/10/20c (where decisions happen) while still showing 50/100c
+// spikes proportionally. Values <1 are clipped to 1c for display.
+const PRICE_AXIS_MIN = 1
+const PRICE_AXIS_MAX = 100
+const Y_AXIS_TICKS = [1, 2, 5, 10, 20, 50, 100]
 
 function shouldUseFixture(): boolean {
   return new URLSearchParams(window.location.search).has('fixture')
@@ -49,17 +53,14 @@ export function DayAtAGlance() {
     ? summerNormalDayAtAGlance
     : polling.data ?? null
 
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(800)
-
-  useLayoutEffect(() => {
-    if (!wrapRef.current) return
-    const ro = new ResizeObserver(([e]) => {
-      setWidth(Math.max(360, Math.floor(e.contentRect.width)))
-    })
-    ro.observe(wrapRef.current)
-    return () => ro.disconnect()
-  }, [])
+  // Callback ref so the ResizeObserver attaches whenever the chart-wrap
+  // mounts — including after a loading → data render transition. A
+  // useRef+useLayoutEffect pair would silently skip the install if the
+  // wrap wasn't in the tree on first render (the loading branch returns
+  // a different <section> with no ref). See Cockpit Scaling Audit #00.
+  const [chartRef, { w: measuredW, h: measuredH }] = useSize()
+  const chartHeight = Math.max(CHART_MIN_HEIGHT, Math.floor(measuredH))
+  const chartWidth = Math.floor(measuredW)
 
   if (!data) {
     return (
@@ -75,7 +76,6 @@ export function DayAtAGlance() {
 
   return (
     <section
-      ref={wrapRef}
       className="narrative-day-at-a-glance"
       data-testid="narrative-day-at-a-glance"
       data-day-type={data.day_type}
@@ -87,7 +87,11 @@ export function DayAtAGlance() {
           hourly avg)
         </div>
       </header>
-      <Chart data={data} width={width} />
+      <div ref={chartRef} className="narrative-da-chart-wrap">
+        {chartWidth > 0 && (
+          <Chart data={data} width={chartWidth} height={chartHeight} />
+        )}
+      </div>
     </section>
   )
 }
@@ -101,9 +105,20 @@ interface HoverState {
   status: 'past' | 'current' | 'future'
 }
 
-function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
-  const chartW = Math.max(360, width - LEFT_PAD - RIGHT_PAD)
-  const chartH = CHART_HEIGHT - TOP_PAD - BOTTOM_PAD
+function Chart({
+  data,
+  width,
+  height,
+}: {
+  data: DayAtAGlanceData
+  width: number
+  height: number
+}) {
+  // Floor at 0 to keep the math safe; the narrative-center column has
+  // its own min-width so the chart never actually has to render that
+  // narrow.
+  const chartW = Math.max(0, width - LEFT_PAD - RIGHT_PAD)
+  const chartH = Math.max(0, height - TOP_PAD - BOTTOM_PAD)
   const barSlot = chartW / 24
   const barWidth = Math.max(6, barSlot - 4)
 
@@ -119,9 +134,13 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
     const clamped = Math.max(TEMP_MIN, Math.min(TEMP_MAX, f))
     return TOP_PAD + chartH * (1 - (clamped - TEMP_MIN) / (TEMP_MAX - TEMP_MIN))
   }
+  // Log mapping: log10(PRICE_AXIS_MIN) -> baseline, log10(PRICE_AXIS_MAX) -> top.
+  const logMin = Math.log10(PRICE_AXIS_MIN)
+  const logMax = Math.log10(PRICE_AXIS_MAX)
   const yForCents = (c: number) => {
-    const clamped = Math.max(0, Math.min(PRICE_AXIS_MAX, c))
-    return TOP_PAD + chartH * (1 - clamped / PRICE_AXIS_MAX)
+    const clamped = Math.max(PRICE_AXIS_MIN, Math.min(PRICE_AXIS_MAX, c))
+    const frac = (Math.log10(clamped) - logMin) / (logMax - logMin)
+    return TOP_PAD + chartH * (1 - frac)
   }
   const yBaseline = TOP_PAD + chartH
 
@@ -175,11 +194,11 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
   const [hover, setHover] = useState<HoverState | null>(null)
 
   return (
-    <div className="narrative-da-chart-wrap">
+    <>
     <svg
       width={width}
-      height={CHART_HEIGHT}
-      viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label="Day at a glance — indoor temperature, setpoints, and price bars"
       onMouseLeave={() => setHover(null)}
@@ -222,16 +241,9 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
         })}
       </g>
 
-      {setpointPastPath && (
-        <path
-          d={setpointPastPath}
-          stroke="var(--ice)"
-          strokeWidth={2}
-          fill="none"
-          opacity={0.9}
-          data-testid="da-setpoint-past"
-        />
-      )}
+      {/* Render order matters: indoor first, past-actual setpoint on
+          top with a dotted stroke so it's visible even when coincident
+          with indoor (common in shadow mode when AC pins to setpoint). */}
       <path
         d={setpointFuturePath}
         stroke="var(--ice)"
@@ -251,6 +263,23 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
           data-testid="da-indoor"
         />
       )}
+      {/* Past-actual setpoint on TOP of indoor (solid cyan).
+          Visually clean against the dashed planned-future line. When
+          AC pins indoor at the setpoint the two lines are coincident
+          — that's accurate; one line is correct. They visibly diverge
+          when the price overlay fires or the supervisor clamps. */}
+      {setpointPastPath && (
+        <path
+          d={setpointPastPath}
+          stroke="var(--ice)"
+          strokeWidth={2}
+          fill="none"
+          opacity={0.95}
+          data-testid="da-setpoint-past"
+        />
+      )}
+
+      <Legend xRight={LEFT_PAD + chartW} />
 
       <line
         x1={nowX}
@@ -275,9 +304,9 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
       </text>
     </svg>
     {hover && (
-      <BarTooltip hover={hover} chartWidth={width} chartHeight={CHART_HEIGHT} />
+      <BarTooltip hover={hover} chartWidth={width} chartHeight={height} />
     )}
-    </div>
+    </>
   )
 }
 
@@ -495,21 +524,55 @@ function YAxisCents({
   chartW: number
   width: number
 }) {
-  const ticks = [0, 5, 10, 15, 20]
   return (
     <g aria-hidden="true">
-      {ticks.map((t) => (
-        <text
-          key={t}
-          x={LEFT_PAD + chartW + 6}
-          y={yForCents(t) + 3}
-          fill="var(--ink-4)"
-          fontFamily="var(--font-mono)"
-          fontSize={9}
-        >
-          {t}¢
-        </text>
+      {/* Log-scale gridlines + labels at 1, 2, 5, 10, 20, 50, 100¢. */}
+      {Y_AXIS_TICKS.map((t) => (
+        <g key={t}>
+          <line
+            x1={LEFT_PAD}
+            x2={LEFT_PAD + chartW}
+            y1={yForCents(t)}
+            y2={yForCents(t)}
+            stroke="var(--line)"
+            strokeOpacity={0.12}
+            strokeDasharray="1 5"
+          />
+          <text
+            x={LEFT_PAD + chartW + 6}
+            y={yForCents(t) + 3}
+            fill="var(--ink-4)"
+            fontFamily="var(--font-mono)"
+            fontSize={9}
+          >
+            {t}¢
+          </text>
+        </g>
       ))}
+      {/* Tier-threshold guidelines — colored hairlines at the
+          green→yellow (10¢) and yellow→red (20¢) boundaries so the
+          operator can see at a glance how today sits vs the
+          scheduler's bands. */}
+      <line
+        x1={LEFT_PAD}
+        x2={LEFT_PAD + chartW}
+        y1={yForCents(PRICE_GREEN)}
+        y2={yForCents(PRICE_GREEN)}
+        stroke="var(--warn)"
+        strokeWidth={1}
+        strokeOpacity={0.35}
+        strokeDasharray="2 4"
+      />
+      <line
+        x1={LEFT_PAD}
+        x2={LEFT_PAD + chartW}
+        y1={yForCents(PRICE_RED)}
+        y2={yForCents(PRICE_RED)}
+        stroke="var(--danger)"
+        strokeWidth={1}
+        strokeOpacity={0.35}
+        strokeDasharray="2 4"
+      />
       <text
         x={width - 4}
         y={TOP_PAD - 8}
@@ -518,7 +581,7 @@ function YAxisCents({
         fontSize={9}
         textAnchor="end"
       >
-        ¢/kWh
+        ¢/kWh · log
       </text>
     </g>
   )
@@ -565,4 +628,66 @@ function hourLabel(h: number): string {
   if (h === 0) return '12a'
   if (h === 12) return '12p'
   return h < 12 ? `${h}a` : `${h - 12}p`
+}
+
+function Legend({ xRight }: { xRight: number }) {
+  // Top-right inside the chart area. Three rows stacked vertically:
+  //   indoor          (orange, solid)
+  //   setpoint actual (cyan, dotted)
+  //   setpoint plan   (cyan, dashed)
+  // Stroke patterns match the actual line treatments below so they
+  // read as keys without needing a separate visual register.
+  const fontSize = 12
+  const swatchW = 30
+  const labelDx = 38
+  const rowH = 17
+  const legendW = 170
+  const x = xRight - legendW
+  const y = TOP_PAD - 4
+  const rows: Array<{
+    label: string
+    stroke: string
+    width: number
+    dash?: string
+    cap?: 'round' | 'butt'
+  }> = [
+    { label: 'indoor', stroke: 'var(--ember)', width: 2.4 },
+    { label: 'setpoint (actual)', stroke: 'var(--ice)', width: 2 },
+    {
+      label: 'setpoint (planned)',
+      stroke: 'var(--ice)',
+      width: 2,
+      dash: '4 4',
+    },
+  ]
+  return (
+    <g aria-hidden="true" data-testid="da-legend">
+      {rows.map((r, i) => {
+        const cy = y + i * rowH
+        return (
+          <g key={r.label}>
+            <line
+              x1={x}
+              x2={x + swatchW}
+              y1={cy}
+              y2={cy}
+              stroke={r.stroke}
+              strokeWidth={r.width}
+              strokeDasharray={r.dash}
+              strokeLinecap={r.cap ?? 'butt'}
+            />
+            <text
+              x={x + labelDx}
+              y={cy + fontSize * 0.34}
+              fill="var(--ink-3)"
+              fontFamily="var(--font-mono)"
+              fontSize={fontSize}
+            >
+              {r.label}
+            </text>
+          </g>
+        )
+      })}
+    </g>
+  )
 }

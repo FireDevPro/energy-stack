@@ -21,7 +21,10 @@ function ThermostatHero({ snapshot }: { snapshot: Snapshot }) {
   useLayoutEffect(() => {
     if (!wrapRef.current) return
     const ro = new ResizeObserver(([e]) => {
-      const w = Math.min(e.contentRect.width, 480)
+      // Subtract 32px so the ring's stroke + glow doesn't crowd the
+      // hero's padding; cap at 520 to match the (now bumped) hero
+      // column max width.
+      const w = Math.min(e.contentRect.width - 32, 520)
       setSize(Math.max(240, w))
     })
     ro.observe(wrapRef.current)
@@ -93,8 +96,16 @@ function ThermostatHero({ snapshot }: { snapshot: Snapshot }) {
 function HeroContext({ snapshot }: { snapshot: Snapshot }) {
   const w = snapshot.flow.weather.details
   const d = snapshot.flow.day_type.details
+  const t = snapshot.thermostat
+  const sup = snapshot.flow.supervisor.details
   return (
     <div className="hero-context" data-testid="narrative-hero-context">
+      <div className="hero-context-row">
+        <span className="k">hvac</span>
+        <span>
+          {t.hvac_mode} · {t.fan_mode} fan
+        </span>
+      </div>
       <div className="hero-context-row">
         <span className="k">outdoor</span>
         <span>
@@ -105,6 +116,10 @@ function HeroContext({ snapshot }: { snapshot: Snapshot }) {
       <div className="hero-context-row">
         <span className="k">day type</span>
         <span>{d.winning_day_type}</span>
+      </div>
+      <div className="hero-context-row">
+        <span className="k">supervisor</span>
+        <span>{sup.decision ?? 'pending'}</span>
       </div>
       <div className="hero-context-row">
         <span className="k">tick</span>
