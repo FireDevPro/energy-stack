@@ -16,8 +16,8 @@ from .pjm_5cp import (
     COOL_SHUTOFF_F,
     LOAD_RATIO_RELEASE,
     LOAD_RATIO_TRIGGER,
+    MIN_DISTINCT_HOURS_FOR_BASELINE,
     MIN_OBSERVATIONS_FOR_5TH,
-    SPARSE_DATA_THRESHOLD,
     DetectorScope,
     FiveCPState,
     ScopeEvaluation,
@@ -64,97 +64,56 @@ def test_comed_pre_season_fallback_is_zone_scaled():
 # ---- season_5th_highest_from_loads ---------------------------------------
 
 
-def test_sparse_threshold_locked_at_200_hours():
-    """Sparse-data threshold pins the cold-start window to ~8 days of
-    cooling-season coverage. See pjm_5cp.SPARSE_DATA_THRESHOLD comment
-    for the sizing rationale. Pinned here so a quiet bump can't drift
-    the cold-start behaviour without an explicit test update."""
-    assert SPARSE_DATA_THRESHOLD == 200
+def test_min_distinct_hours_for_baseline_locked_at_168():
+    """Binding spec §11 #14: 5CP planning requires at least 168 distinct
+    current-season official hourly observations (= 7 full days). Pinned
+    here so a quiet bump can't drift the baseline-availability threshold
+    without an explicit test update."""
+    assert MIN_DISTINCT_HOURS_FOR_BASELINE == 168
 
 
-def test_sparse_data_returns_fallback_under_threshold():
-    """Below the sparse threshold the detector falls back to the
-    scope's prior-year value rather than trusting an unreliable
-    handful of observations. Covers the first ~8 days of season as
-    well as multi-day publish gaps later in the season."""
-    assert season_5th_highest_from_loads(
-        [], fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
-    # Just below the threshold: still fall back.
-    almost_enough = [20000.0] * (SPARSE_DATA_THRESHOLD - 1)
-    assert season_5th_highest_from_loads(
-        almost_enough, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == COMED_PRE_SEASON_FALLBACK_5TH_MW
+def test_season_5th_unavailable_below_168_distinct_hours():
+    """Acceptance test for §11 #14: below 168 distinct hourly
+    observations, season_5th_highest_from_loads returns None
+    (insufficient current-season official metered-load history).
+    No prior-year fallback is used for control/planning decisions.
 
-
-def test_sparse_data_fallback_respects_caller_scope():
-    """An RTO-scoped caller passing a 151,525 MW fallback gets it back
-    when data is sparse, not the ComEd 20,375. Prevents the 2026-05
-    scale-confusion regression."""
-    assert season_5th_highest_from_loads([], fallback_mw=151525.0) == 151525.0
-    assert season_5th_highest_from_loads(
-        [10.0, 20.0, 30.0], fallback_mw=151525.0,
-    ) == 151525.0
-
-
-def test_sufficient_data_uses_actual_5th_above_fallback():
-    """At or above the sparse threshold, return the actual 5th-highest
-    from the data. When the data's 5th exceeds the fallback (a normal
-    or hot summer), the fallback is inert."""
-    # 200 values, mostly at 18,000 MW, with 6 hotter hours: 25,000,
-    # 24,500, 23,800, 23,200, 22,900 (top 5), and 22,000 (6th).
-    # 5th-highest = 22,900.
-    loads = [18000.0] * 194 + [22000.0, 22900.0, 23200.0, 23800.0, 24500.0, 25000.0]
-    assert len(loads) == SPARSE_DATA_THRESHOLD
-    assert season_5th_highest_from_loads(
-        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == 22900.0
-
-
-def test_sufficient_data_uses_actual_5th_even_when_below_fallback():
-    """The critical invariant that distinguishes this design from a
-    permanent floor: when the current-year 5th-highest legitimately
-    lands BELOW the prior-year fallback (a cooler-than-prior summer),
-    the function returns the lower current-year value, NOT the
-    fallback. This lets the detector adapt to current conditions.
-
-    Concretely: 2026 cool-summer scenario with real ComEd-zone 5th of
-    18,500 MW vs 2025 fallback of 20,375 MW. A permanent floor would
-    suppress real 2026 5CP detection (ratio against 20,375 stays below
-    0.95 for real loads of 17,800+); the sparse-threshold design
-    returns 18,500 and lets the detector trigger correctly."""
-    # 200 values: 195 baseline at 16,000 + 5 hotter values whose smallest
-    # is 18,500. The 5th-highest is the 5th-from-top = 18,500.
-    loads = [16000.0] * 195 + [18500.0, 18800.0, 19000.0, 19200.0, 19500.0]
-    assert len(loads) == SPARSE_DATA_THRESHOLD
-    result = season_5th_highest_from_loads(
-        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    )
-    assert result == 18500.0
-    assert result < COMED_PRE_SEASON_FALLBACK_5TH_MW
+    At or above the threshold, returns the actual current-season
+    5th-highest from the data, regardless of how it compares to any
+    prior-year value (a cooler 2026 summer's real 5th-highest stays
+    authoritative — there is no max() with a prior-year floor)."""
+    # Empty: None
+    assert season_5th_highest_from_loads([]) is None
+    # Just below threshold: None
+    almost_enough = [20000.0] * (MIN_DISTINCT_HOURS_FOR_BASELINE - 1)
+    assert season_5th_highest_from_loads(almost_enough) is None
+    # Just AT threshold: actual current-season 5th-highest, no fallback
+    # 168 values: 163 baseline at 18,000 + 5 hotter values; 5th-highest
+    # (sorted desc, index 4) = 22,900 because the top 5 are
+    # [25000, 24500, 23800, 23200, 22900].
+    loads = [18000.0] * 163 + [22900.0, 23200.0, 23800.0, 24500.0, 25000.0]
+    assert len(loads) == MIN_DISTINCT_HOURS_FOR_BASELINE
+    assert season_5th_highest_from_loads(loads) == 22900.0
 
 
 def test_sufficient_data_picks_correct_5th_in_unsorted_input():
     """Sort happens internally; caller doesn't need to sort first.
-    Sized at the sparse threshold so the data path is exercised."""
-    # 200 values: 195 baseline + 5 distinct top values in random order.
-    loads = [18000.0] * 195 + [24500.0, 22200.0, 24000.0, 23800.0, 24300.0]
+    Sized at the distinct-hours threshold so the data path is exercised."""
+    # 168 values: 163 baseline + 5 distinct top values in random order.
+    loads = [18000.0] * 163 + [24500.0, 22200.0, 24000.0, 23800.0, 24300.0]
     # Top 5 (desc): 24500, 24300, 24000, 23800, 22200 -> 5th = 22200
-    assert season_5th_highest_from_loads(
-        loads, fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-    ) == 22200.0
+    assert season_5th_highest_from_loads(loads) == 22200.0
 
 
-def test_sparse_threshold_override_for_testing():
-    """``sparse_threshold`` is a kwarg with a default; tests that need
+def test_min_distinct_hours_override_for_testing():
+    """``min_distinct_hours`` is a kwarg with a default; tests that need
     to exercise the sufficient-data path with small fixtures can
     override it. Production code should always use the locked default."""
     # 5 observations below the production threshold but above the
     # override -- exercise the actual-data path with a small fixture.
     assert season_5th_highest_from_loads(
         [21000.0, 22000.0, 23000.0, 24000.0, 25000.0],
-        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
-        sparse_threshold=5,
+        min_distinct_hours=5,
     ) == 21000.0
 
 
@@ -645,7 +604,7 @@ def _scope_evaluation_fixture(*,
     monkeypatch.setattr(pjm_5cp, "fetch_zone_live",
                         lambda q, b, *, area: snapshot)
     monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
-                        lambda q, b, s, e, *, zone, fallback_mw: season_5th_mw)
+                        lambda q, b, s, e, *, zone: season_5th_mw)
     season_start = datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc)
     season_end = datetime(2026, 10, 1, 5, 0, tzinfo=timezone.utc)
     return evaluate_for_scope(
@@ -913,7 +872,7 @@ def test_evaluate_for_scope_skips_off_season(monkeypatch):
     def _spy_fetch_zone_live(q, b, *, area):
         called["fetch_zone_live"] = True
         return ZoneLoadSnapshot(99999.0, 0.0, T_AT_1430_CT)
-    def _spy_update_season(q, b, s, e, *, zone, fallback_mw):
+    def _spy_update_season(q, b, s, e, *, zone):
         called["update_season"] = True
         return 90244.0  # the bogus 2026-05-11 value
     monkeypatch.setattr(pjm_5cp, "fetch_zone_live", _spy_fetch_zone_live)
@@ -938,7 +897,12 @@ def test_evaluate_for_scope_skips_off_season(monkeypatch):
     assert ev.is_active is False
     assert ev.new_state == FiveCPState()  # reset, not the prior active hold
     assert ev.log_fields["data_status"] == "off_season"
-    assert ev.log_fields["season_5th_mw"] == RTO_PRE_SEASON_FALLBACK_5TH_MW
+    # Off-season: season_5th_mw is None (no prior-year fallback for
+    # control/planning per binding spec §11 #14). The off-season
+    # path is purely a short-circuit; no Flux is issued and the
+    # detector cannot fire.
+    assert ev.log_fields["season_5th_mw"] is None
+    assert ev.season_5th_mw is None
     assert called["fetch_zone_live"] is False  # no Flux issued
     assert called["update_season"] is False    # no Flux issued
 
@@ -1033,7 +997,6 @@ def test_update_season_5th_flux_query_flattens_is_verified_with_group():
         datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
         datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
         zone="CE",
-        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
     )
     assert "|> group()" in q.last_flux
 
@@ -1050,7 +1013,6 @@ def test_update_season_5th_flux_group_appears_before_aggregate_window():
         datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
         datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
         zone="CE",
-        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
     )
     flux = q.last_flux
     group_pos = flux.index("|> group()")
@@ -1076,7 +1038,6 @@ def test_update_season_5th_flux_uses_max_to_prefer_verified():
         datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc),
         datetime(2026, 7, 1, 5, 0, tzinfo=timezone.utc),
         zone="CE",
-        fallback_mw=COMED_PRE_SEASON_FALLBACK_5TH_MW,
     )
     flux = q.last_flux
     assert "fn: max" in flux

@@ -118,19 +118,32 @@ def test_resolve_layer_priority_scarcity_override_replaces_schedule():
     assert r.price_cool_f == 85
 
 
-def test_resolve_layer_priority_5cp_active_uses_shutoff_setpoint():
-    """Spec §4 case 4: schedule 80°F, 5CP active -> effective 85°F."""
+def test_fivecp_active_does_not_change_effective_cool_f():
+    """Binding spec §11 #14: 5CP is demoted from live-setpoint authority
+    to planning/telemetry only. A bare ``fivecp_active=True`` with normal
+    prices does NOT raise the effective cool setpoint above the schedule
+    baseline — that's the core behavior change. Telemetry fields
+    (``fivecp_active``, ``fivecp_cool_f``) are preserved on the
+    LayerResolution so post-hoc analysis can reconstruct when 5CP would
+    have fired."""
     r = resolve_layer_priority(
         schedule_cool_f=80,
         fivecp_active=True,
     )
-    assert r.effective_cool_f == COOL_SHUTOFF_F
+    # Effective stays at schedule baseline; 5CP does NOT push to 85F.
+    assert r.effective_cool_f == 80
+    # Telemetry preserved: fivecp_active is still True, fivecp_cool_f
+    # records what 5CP WOULD have proposed (85F) — but it didn't win.
+    assert r.fivecp_active is True
     assert r.fivecp_cool_f == COOL_SHUTOFF_F
 
 
-def test_resolve_layer_priority_5cp_and_scarcity_overlap_no_double_up():
-    """Spec §4 case 5: schedule 80°F, scarcity AND 5CP both active --
-    both want 85°F; effective is still 85°F, not 90°F or any double-up."""
+def test_scarcity_still_overrides_when_fivecp_active():
+    """Severe price events still drive shutoff after the §11 #14 demotion:
+    scarcity tier (>= 20¢/kWh) overrides to 85°F via the price overlay,
+    independent of 5CP. With both scarcity and 5CP active, effective is
+    85°F from the PRICE overlay (the only live-authority layer at the
+    warm end); 5CP does not contribute."""
     r = resolve_layer_priority(
         schedule_cool_f=80,
         price_overlay_tier="scarcity",
@@ -138,6 +151,7 @@ def test_resolve_layer_priority_5cp_and_scarcity_overlap_no_double_up():
         fivecp_active=True,
     )
     assert r.effective_cool_f == 85
+    assert r.price_cool_f == 85  # price overlay is the one that pushed it
 
 
 def test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85():
@@ -293,6 +307,61 @@ def test_decide_day_type_no_streak_when_pjm_inputs_absent():
         season_5th_highest_mw=130000,
     )
     assert day_type == DAYTYPE_HOT
+
+
+def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_forecast():
+    """Binding spec §11 #14: when the §7 forecast 5CP-risk path falls
+    back, the evaluation_tape must record WHY — distinguishing the
+    'insufficient_current_season_history' case from 'missing_pjm_forecast'
+    so the audit trail explains the non-fire reason without spelunking."""
+    # season_5th=None (baseline insufficient) -> status records that
+    _, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=145000,
+        season_5th_highest_mw=None,
+    )
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["fired"] is False
+    assert risk_entry["status"] == "insufficient_current_season_history"
+
+    # tomorrow_peak=None (forecast missing) -> different status
+    _, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=None,
+        season_5th_highest_mw=130000,
+    )
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["fired"] is False
+    assert risk_entry["status"] == "missing_pjm_forecast"
+
+    # Both inputs present -> status="ok". HOT base_type so the §7
+    # branch actually runs and produces a streak_5cp_risk tape entry.
+    _, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=145000,
+        season_5th_highest_mw=130000,
+    )
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["status"] == "ok"
+
+
+# NB: P1 fix (cooling-season gate on _fetch_pjm_inputs_for_target_date)
+# is not unit-tested here because the module-level autouse fixture
+# `_stub_pjm_inputs` replaces that function for every test in this file,
+# making direct calls return the stub's fixed value rather than exercising
+# the real gate. `in_cooling_season()` already has full unit-test coverage
+# in test_pjm_5cp.py, and the in-place gate is a one-liner visible in the
+# diff. Adding a class-scoped fixture override here for one test would be
+# more ceremony than the change warrants.
 
 
 def test_decide_day_type_multi_day_streak_path_still_works():
@@ -1228,7 +1297,7 @@ def _stub_layer_eval_io(monkeypatch: Any, *,
     def _fetch_zone_live_stub(q, b, *, area="COMED"):
         return snapshots[area]
 
-    def _update_season_5th_highest_stub(q, b, s, e, *, zone="CE", fallback_mw=None):
+    def _update_season_5th_highest_stub(q, b, s, e, *, zone="CE"):
         return fallback_seasons[zone]
 
     # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also
@@ -2567,22 +2636,22 @@ def test_write_arm_mode_accepts_tz_aware_datetime(monkeypatch):
 # ---- Required-feeds-for-arm-mode helper (spec §5 + §5.1) ------------------
 
 
-def test_required_feeds_includes_pjm_inside_capacity_risk_window():
-    """Inside the pre-registered capacity-risk operating window
-    (2026-06-01 .. 2026-09-30 inclusive), pjm_capacity_risk is required."""
+def test_required_feeds_never_includes_pjm_after_5cp_demotion():
+    """Binding spec §11 #14: 5CP demoted from live-setpoint authority,
+    so PJM capacity-risk health is no longer a required input for B-active
+    classification — at ANY date, inside or outside the cooling-season
+    window. Live control depends on price + weather only. PJM health is
+    still logged in the FULL feed-health audit (write_input_feed_health),
+    just not used to down-classify B-active."""
+    # Inside the (former) capacity-risk window: still not required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
-    assert feeds == {"price": True, "weather": True, "pjm_capacity_risk": True}
-
-
-def test_required_feeds_excludes_pjm_outside_capacity_risk_window():
-    """Outside the capacity-risk operating window (e.g., October arms),
-    pjm_capacity_risk staleness must NOT classify the hour as B-fallback
-    per spec §5.1. The feed is therefore omitted from the required set."""
+    assert feeds == {"price": True, "weather": True}
+    # Outside the window: still not required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 15, 13, 0),
         price_feed_healthy=True,
@@ -2590,22 +2659,15 @@ def test_required_feeds_excludes_pjm_outside_capacity_risk_window():
         pjm_capacity_risk_ok=False,
     )
     assert feeds == {"price": True, "weather": True}
-
-
-def test_required_feeds_window_boundary_inclusive_of_september():
-    """Spec §5.1 locks the window as 2026-06-01 00:00 CT through
-    2026-09-30 23:59 CT. September 30 must still require pjm_capacity_risk."""
+    # September 30 boundary: still not required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 9, 30, 23, 59),
         price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=False,
     )
-    assert "pjm_capacity_risk" in feeds
-    assert feeds["pjm_capacity_risk"] is False
-
-
-def test_required_feeds_window_boundary_excludes_october_first():
+    assert "pjm_capacity_risk" not in feeds
+    # October 1 boundary: still not required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 1, 0, 0),
         price_feed_healthy=True,
@@ -2616,13 +2678,16 @@ def test_required_feeds_window_boundary_excludes_october_first():
 
 
 def test_required_feeds_propagates_unhealthy_flags():
+    """Unhealthy price/weather flags propagate through to the feed dict
+    used for B-active classification (PJM no longer in the dict per
+    §11 #14)."""
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=False,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
-    assert feeds == {"price": False, "weather": True, "pjm_capacity_risk": True}
+    assert feeds == {"price": False, "weather": True}
 
 
 # ---- hvac.switch_event boundary logging (spec §11 #3) ---------------------

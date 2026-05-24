@@ -101,7 +101,7 @@ Each minute ─► day_type = fetch_today_decision(today) (or override)
 |---|---|---|---|
 | `MILD` | High < 75°F | `MILD_RELEASE_HOLD` at 00:05 | Single action: clear any permanent hold left over from yesterday so the CTK04AE baseline schedule resumes for the day. No active scheduling beyond that. |
 | `NORMAL` | 75-85°F max (and apparent < 90°F) | `NORMAL_SCHEDULE` | Standard pre-cool / coast / recover / sleep |
-| `HOT_5CP_RISK` (spec name: `HOT`) | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay and 5CP-detector layers drive shutoff per the locked logic below; there is no fixed shutoff clock on HOT days. |
+| `HOT_5CP_RISK` (spec name: `HOT`) | ≥ 85°F max OR apparent ≥ 90°F OR heat advisory | `HOT_SCHEDULE` | Aggressive pre-cool. Shutoff timing is dynamic: the real-time price-overlay layer drives shutoff (scarcity tier ≥ 20¢/kWh → 85°F effective) per the locked logic below. 5CP is planning/telemetry only and does NOT drive live shutoff (binding spec §11 #14). No fixed shutoff clock on HOT days. |
 | `HOT_STREAK_DAY1` | HOT today AND day-after also HOT, OR single-day HOT with forecast 5CP-risk escalation (PJM tomorrow-peak forecast > season-5th-highest × 1.05 AND tomorrow's high ≥ 90°F per `precool.should_deepen_precool`) | `HOT_STREAK_DAY1_SCHEDULE` | Even deeper / earlier pre-cool. Day 2 of a multi-day streak runs the regular `HOT_SCHEDULE` (the mass is already there). The §7 single-day forecast 5CP-risk path catches grid-stress days that aren't multi-day heat events. See `decide_day_type` in `deploy/energy-stack/hvac_scheduler/app.py` (both escalation paths return `HOT_STREAK_DAY1`). |
 
 ---
@@ -134,7 +134,7 @@ All schedules express `(hour, minute, label, cool_setpoint_f, heat_setpoint_f=65
 | 19:00 | HOT_RECOVER | 75 | Auto | Transition out of coast |
 | 21:00 | SLEEP | 73 | (unchanged) | Same as NORMAL |
 
-**Shutoff timing is dynamic, not scheduled.** Per EXPERIMENT_DESIGN.md §3 (Arm B), the fixed 14:00-18:00 CT shutoff window from the original scheduler is dropped. The §2 real-time RTP price-spike reactivity (scarcity tier ≥ 20¢ → 85°F effective shutoff) and §3 dual-scope 5CP detector (ComEd-zone + PJM-RTO, OR'd) drive 85°F shutoff timing per-tick during the 13:00-20:00 CT eligibility window. "Warmer wins" layer priority lets these dynamic layers push the effective cool above the schedule's coast baseline when conditions warrant.
+**Shutoff timing is dynamic, not scheduled.** Per EXPERIMENT_DESIGN.md §3 (Arm B), the fixed 14:00-18:00 CT shutoff window from the original scheduler is dropped. **Live setpoint authority is RTP/DTOD price only**: the §2 real-time RTP price-spike reactivity drives 85°F effective shutoff via scarcity tier (≥ 20¢/kWh override) and +3°F via elevated tier (≥ 10¢/kWh offset). The §3 5CP detector is planning/telemetry only and does NOT independently force live setpoint changes (pre-OSF revision per binding spec §11 #14). "Warmer wins" layer priority across {schedule, price overlay} is what lets the price overlay push the effective cool above the schedule's coast baseline when conditions warrant.
 
 ### HOT_STREAK_DAY1 — HOT today AND HOT tomorrow forecast, OR single-day HOT with forecast 5CP-risk escalation
 
@@ -345,10 +345,10 @@ The scheduler doesn't need to predict WHICH days are 5CP days (neither PJM nor C
 | Time | Schedule baseline | Dynamic shutoff (Arm B) | PJM 5CP coverage | ComEd 5CP coverage |
 |------|-------------------|--------------------------|------------------|---------------------|
 | 12:00-13:00 | `HOT_COAST` 80°F | inactive (outside 13-20 CT eligibility window) | low risk (1/5 historical) | **partial** — 80°F limits compressor calls |
-| 13:00-19:00 | `HOT_COAST` 80°F | §2 scarcity tier (≥20¢) and §3 5CP detector can push to 85°F per-tick | high risk (4/5 historical RTO; back half of ComEd window) | high risk |
-| 19:00+ | `HOT_RECOVER` 75°F | inactive (outside 13-20 CT eligibility window) | post-window recovery | post-window recovery |
+| 13:00-19:00 | `HOT_COAST` 80°F | §2 scarcity tier (≥20¢) can push to 85°F per-tick | high risk (4/5 historical RTO; back half of ComEd window) | high risk |
+| 19:00+ | `HOT_RECOVER` 75°F | (5CP planning telemetry only) | post-window recovery | post-window recovery |
 
-Post-prereg (Arm B): the **schedule baseline** is HOT_COAST 80°F through the afternoon. The 85°F shutoff timing comes from dynamic layers (real-time price-spike reactivity + dual-scope 5CP detector), not a hard-coded clock window. The dynamic layers track actual price/load conditions instead of historical-cluster assumptions, which the 2025 RTO peak hour (18:00 CT, not 14-17 as the old fixed window assumed) made visible.
+Post-prereg (Arm B): the **schedule baseline** is HOT_COAST 80°F through the afternoon. The 85°F shutoff timing comes from the RTP price-overlay layer (real-time price-spike reactivity), not a hard-coded clock window. **5CP is NOT a live shutoff layer** (pre-OSF revision per binding spec §11 #14); it informs day-ahead pre-cool/day-type planning at the 21:00 daily decision when current-season official metered-load history is sufficient, and `hvac.5cp_state` / `fivecp_eval` telemetry are preserved for post-hoc analysis of when 5CP would have fired. The price-driven approach tracks actual price conditions instead of historical-cluster assumptions, which the 2025 RTO peak hour (18:00 CT, not 14-17 as the old fixed window assumed) made visible.
 
 ---
 

@@ -226,7 +226,10 @@ class TestPhase2LayerResolution:
 
           1. price=normal, 5cp=inactive -> schedule wins
           2. price=elevated tier (+3F), 5cp=inactive -> price overlay wins
-          3. price=normal, 5cp=active (85F shutoff) -> 5cp wins
+          3. price=elevated tier (+3F), 5cp=active -> price overlay STILL
+             wins (5CP demoted per binding spec §11 #14; it does not
+             contribute to effective_cool_f, but its telemetry fields
+             are preserved on the trace line).
         """
         from .app import FiringState, LayerInputs, _push_layer_change_mid_period
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
@@ -270,10 +273,14 @@ class TestPhase2LayerResolution:
             now_local=now_local + timedelta(minutes=1), tick_id="tick_2",
         )
 
-        # 3: 5cp wins (active, 85F shutoff override)
+        # 3: price overlay still wins; 5cp active does NOT raise effective
+        # (binding spec §11 #14 — 5CP is telemetry-only, never controls).
+        # Keeping price_overlay_tier=elevated so a transition occurs and
+        # a trace is emitted; the assertion is that 5CP being newly
+        # active doesn't change winning_layer or effective_cool_f.
         li_5cp = LayerInputs(
-            price_tier_name="normal", price_offset_f=0, price_override_f=None,
-            price_prev_tier="normal", current_price_cents=5.0,
+            price_tier_name="elevated", price_offset_f=3, price_override_f=None,
+            price_prev_tier="elevated", current_price_cents=12.0,
             fivecp_active=True, fivecp_scopes_fired=("comed_zone",),
             fivecp_load_mw=20000.0, fivecp_derivative=0.5,
             fivecp_forecast_peak=21000.0, fivecp_season_5th_mw=20375.0,
@@ -286,6 +293,10 @@ class TestPhase2LayerResolution:
         )
 
         traces = _parse_trace_lines(capsys.readouterr().out, LAYER_RESOLUTION_EVENT)
+        # All three calls emit a layer-resolution trace (trace is
+        # written BEFORE the no-push short-circuit). Tick 3 emits a
+        # trace but does NOT call execute_action — verified below via
+        # firing.last_pushed_effective_cool_f staying at 78.
         assert len(traces) == 3, f"expected 3 traces, got {len(traces)}: {traces}"
         t1, t2, t3 = traces
 
@@ -310,24 +321,33 @@ class TestPhase2LayerResolution:
         assert t2["level"] == "info"
         assert t2["prev_effective_cool_f"] == 75
 
-        # 5CP wins
-        assert t3["winning_layer"] == "5cp"
-        assert t3["reason_code"] == "LAYER_RESOLUTION_5CP_WINS"
-        assert t3["fivecp_active"] is True
-        assert t3["fivecp_cool_f"] == 85
-        assert t3["effective_cool_f"] == 85
+        # Tick 3: 5CP became active, but price overlay STILL wins.
+        # 5CP demoted per binding spec §11 #14 — it never appears in
+        # winning_layer. Telemetry fields preserved on the trace.
+        assert t3["winning_layer"] == "price_overlay"
+        assert t3["reason_code"] == "LAYER_RESOLUTION_PRICE_OVERLAY_WINS"
+        assert t3["effective_cool_f"] == 78    # unchanged from t2
+        assert t3["fivecp_active"] is True      # telemetry preserved
+        assert t3["fivecp_cool_f"] == 85        # what 5CP WOULD have proposed
         assert t3["fivecp_scopes_fired"] == ["comed_zone"]
         assert t3["tick_id"] == "tick_3"
-        assert t3["level"] == "info"
+
+        # ACCEPTANCE: 5CP-only transition does not call execute_action.
+        # last_pushed_effective_cool_f is updated only by a successful
+        # push; it stayed at 78 from tick 2, so no mid-period push fired
+        # for tick 3 (binding spec §11 #14).
+        assert firing.last_pushed_effective_cool_f == 78
 
     @pytest.mark.asyncio
-    async def test_layer_resolution_tie_warmer_wins(self, capsys, monkeypatch):
-        """When both the price overlay (scarcity-tier override 85F) AND
-        5CP (active, 85F shutoff) propose the same effective setpoint,
-        `winning_layer` must be `"tie"` and `reason_code` must be
-        `LAYER_RESOLUTION_TIE_WARMER_WINS`. Preserves the forensic
-        distinction between "schedule won alone" and "schedule matched
-        by a non-schedule layer at the warmest." """
+    async def test_scarcity_with_fivecp_active_price_overlay_wins(self, capsys, monkeypatch):
+        """Binding spec §11 #14: when scarcity tier (price overlay
+        override to 85F) AND 5CP are both active, the price overlay
+        wins outright — 5CP is no longer a live-control layer and
+        cannot tie. ``winning_layer`` MUST be ``"price_overlay"``,
+        never ``"tie"`` or ``"5cp"``. The 5CP telemetry fields
+        (``fivecp_active``, ``fivecp_cool_f``) are preserved on the
+        trace so post-hoc analysis can reconstruct when 5CP would have
+        fired."""
         from .app import FiringState, LayerInputs, _push_layer_change_mid_period
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
         cfg = _make_schedule_check_cfg()
@@ -338,8 +358,9 @@ class TestPhase2LayerResolution:
             last_action_label="COAST",
             last_pushed_effective_cool_f=None,
         )
-        # Scarcity tier (override=85F) + 5CP active (85F shutoff). Both
-        # contribute at 85F effective.
+        # Scarcity tier (override=85F) + 5CP active. Pre-§11 #14 these
+        # would have tied at 85F; post-fix only the price overlay
+        # contributes to effective_cool_f.
         layer_inputs = LayerInputs(
             price_tier_name="scarcity", price_offset_f=0, price_override_f=85,
             price_prev_tier="scarcity", current_price_cents=22.0,
@@ -353,19 +374,22 @@ class TestPhase2LayerResolution:
         await _push_layer_change_mid_period(
             cfg, c4, write_api, firing, "HOT_5CP_RISK", layer_inputs,
             today_dewpoint_f=70.0, override_note="",
-            now_local=now_local, tick_id="tick_tie",
+            now_local=now_local, tick_id="tick_price_alone",
         )
 
         traces = _parse_trace_lines(capsys.readouterr().out, LAYER_RESOLUTION_EVENT)
         assert len(traces) == 1, f"expected 1 trace, got {len(traces)}: {traces}"
         t = traces[0]
-        assert t["winning_layer"] == "tie"
-        assert t["reason_code"] == "LAYER_RESOLUTION_TIE_WARMER_WINS"
+        # Price overlay alone wins; no tie, no 5cp.
+        assert t["winning_layer"] == "price_overlay"
+        assert t["reason_code"] == "LAYER_RESOLUTION_PRICE_OVERLAY_WINS"
         assert t["effective_cool_f"] == 85
         assert t["price_cool_f"] == 85
+        # Telemetry preserved: 5CP would have proposed 85F if it were
+        # a live layer, but it isn't.
         assert t["fivecp_cool_f"] == 85
         assert t["fivecp_active"] is True
-        # schedule_cool_f stays 75 (the baseline); only the warmer layers tied.
+        # schedule_cool_f stays 75 (the baseline).
         assert t["schedule_cool_f"] == 75
         # Both scopes contributed to fivecp_active in this fixture.
         assert set(t["fivecp_scopes_fired"]) == {"comed_zone", "rto"}
