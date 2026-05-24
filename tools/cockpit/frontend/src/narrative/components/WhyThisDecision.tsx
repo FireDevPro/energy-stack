@@ -1,5 +1,6 @@
 import type {
   Snapshot,
+  ActionDetails,
   PriceOverlayDetails,
   ScheduleDetails,
   SupervisorDetails,
@@ -27,8 +28,87 @@ export function WhyThisDecision({ snapshot }: { snapshot: Snapshot }) {
         <WinnerCard details={snapshot.flow.winner.details} />
         <SupervisorCard details={snapshot.flow.supervisor.details} />
       </div>
+      <ActionSentFooter
+        details={snapshot.flow.action.details}
+        arm={snapshot.arm_mode.arm}
+      />
     </section>
   )
+}
+
+function ActionSentFooter({
+  details,
+  arm,
+}: {
+  details: ActionDetails
+  arm: 'A' | 'B' | null
+}) {
+  const label = details.action_label ?? details.last_fire?.action_label
+  const fireTs = details.fire_ts ?? details.last_fire?.fire_ts ?? null
+  const applied =
+    details.applied ?? details.last_fire?.applied ?? null
+  const coolF = details.cool_setpoint_f ?? details.last_fire?.cool_setpoint_f
+  const heatF = details.heat_setpoint_f
+  const fanMode = details.fan_mode
+  if (!label) {
+    return (
+      <footer
+        className="narrative-action-sent"
+        data-testid="narrative-action-sent"
+        data-applied="false"
+      >
+        <div className="narrative-action-sent-head">ACTION SENT</div>
+        <div className="narrative-why-row">
+          <span className="k">status</span>
+          <span className="v dim">no action fired yet today</span>
+        </div>
+      </footer>
+    )
+  }
+  return (
+    <footer
+      className="narrative-action-sent"
+      data-testid="narrative-action-sent"
+      data-applied={String(applied)}
+    >
+      <div className="narrative-action-sent-head">ACTION SENT</div>
+      <div className="narrative-action-sent-row">
+        <span className="action-name">{label}</span>
+        <span
+          className={`action-status ${applied ? 'applied' : 'dry-run'}`}
+        >
+          {applied ? 'applied' : 'dry-run'}
+        </span>
+        {fireTs && (
+          <span className="action-time">{formatFireTs(fireTs)}</span>
+        )}
+      </div>
+      <div className="narrative-action-sent-meta">
+        {coolF !== null && coolF !== undefined && (
+          <span>
+            cool <span className="cool">{coolF}°F</span>
+          </span>
+        )}
+        {heatF !== null && heatF !== undefined && (
+          <span>
+            heat <span className="ember">{heatF}°F</span>
+          </span>
+        )}
+        {fanMode && <span>fan {fanMode}</span>}
+        {arm && <span>arm {arm}</span>}
+      </div>
+    </footer>
+  )
+}
+
+function formatFireTs(iso: string): string {
+  const d = new Date(iso)
+  return d.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
 function ScheduleCard({ details }: { details: ScheduleDetails }) {

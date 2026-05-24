@@ -1,16 +1,23 @@
 import type { Snapshot } from '../types'
 import { armTone, modeTone, formatClock, formatDate } from '../lib/tone'
 
-export function Header({ snapshot }: { snapshot: Snapshot }) {
+export function Header({
+  snapshot,
+  variant = 'cockpit',
+}: {
+  snapshot: Snapshot
+  variant?: 'cockpit' | 'narrative'
+}) {
   const arm = snapshot.arm_mode
+  const brandSub = variant === 'narrative' ? 'narrative · v4' : 'cockpit · v3'
   return (
     <header className="cockpit-header">
       <div className="brand">
         <div className="brand-mark" aria-hidden="true" />
         <div>
           <div className="brand-name">
-            Reticule
-            <span className="brand-sub">cockpit · v3</span>
+            Sentinel
+            <span className="brand-sub">{brandSub}</span>
           </div>
         </div>
       </div>

@@ -222,16 +222,9 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
         })}
       </g>
 
-      {setpointPastPath && (
-        <path
-          d={setpointPastPath}
-          stroke="var(--ice)"
-          strokeWidth={2}
-          fill="none"
-          opacity={0.9}
-          data-testid="da-setpoint-past"
-        />
-      )}
+      {/* Render order matters: indoor first, past-actual setpoint on
+          top with a dotted stroke so it's visible even when coincident
+          with indoor (common in shadow mode when AC pins to setpoint). */}
       <path
         d={setpointFuturePath}
         stroke="var(--ice)"
@@ -251,6 +244,23 @@ function Chart({ data, width }: { data: DayAtAGlanceData; width: number }) {
           data-testid="da-indoor"
         />
       )}
+      {/* Past-actual setpoint on TOP of indoor, dotted, so it remains
+          visible even when the AC pins indoor at setpoint (coincident
+          y-coordinate). */}
+      {setpointPastPath && (
+        <path
+          d={setpointPastPath}
+          stroke="var(--ice)"
+          strokeWidth={2}
+          fill="none"
+          strokeDasharray="1 4"
+          opacity={0.95}
+          strokeLinecap="round"
+          data-testid="da-setpoint-past"
+        />
+      )}
+
+      <Legend xRight={LEFT_PAD + chartW} />
 
       <line
         x1={nowX}
@@ -565,4 +575,73 @@ function hourLabel(h: number): string {
   if (h === 0) return '12a'
   if (h === 12) return '12p'
   return h < 12 ? `${h}a` : `${h - 12}p`
+}
+
+function Legend({ xRight }: { xRight: number }) {
+  // Top-right inside the chart area. Three rows: indoor / setpoint
+  // (actual, dotted) / setpoint (planned, dashed) — stroke patterns
+  // match the actual line treatments below so they read as keys.
+  const x = xRight - 132
+  const y = TOP_PAD - 16
+  const swatchW = 18
+  const labelDx = 22
+  const rowH = 11
+  return (
+    <g aria-hidden="true" data-testid="da-legend">
+      <line
+        x1={x}
+        x2={x + swatchW}
+        y1={y}
+        y2={y}
+        stroke="var(--ember)"
+        strokeWidth={2.4}
+      />
+      <text
+        x={x + labelDx}
+        y={y + 3}
+        fill="var(--ink-3)"
+        fontFamily="var(--font-mono)"
+        fontSize={9}
+      >
+        indoor
+      </text>
+      <line
+        x1={x + 60}
+        x2={x + 60 + swatchW}
+        y1={y}
+        y2={y}
+        stroke="var(--ice)"
+        strokeWidth={2}
+        strokeDasharray="1 4"
+        strokeLinecap="round"
+      />
+      <text
+        x={x + 60 + labelDx}
+        y={y + 3}
+        fill="var(--ink-3)"
+        fontFamily="var(--font-mono)"
+        fontSize={9}
+      >
+        setpoint (actual)
+      </text>
+      <line
+        x1={x}
+        x2={x + swatchW}
+        y1={y + rowH}
+        y2={y + rowH}
+        stroke="var(--ice)"
+        strokeWidth={2}
+        strokeDasharray="4 4"
+      />
+      <text
+        x={x + labelDx}
+        y={y + rowH + 3}
+        fill="var(--ink-3)"
+        fontFamily="var(--font-mono)"
+        fontSize={9}
+      >
+        setpoint (planned)
+      </text>
+    </g>
+  )
 }

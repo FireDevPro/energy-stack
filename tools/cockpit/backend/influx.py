@@ -418,6 +418,74 @@ from(bucket: "{bucket}")
     return out
 
 
+def query_day_type_decision(
+    client: QueryApi,
+    *,
+    bucket: str,
+    target_date_iso: str,
+) -> dict[str, Any] | None:
+    """Read the latest hvac.decisions row for ``target_date_iso``.
+
+    Returns dict {day_type, high_f, max_dewpoint_f, is_heat_advisory,
+    alert_summary, reason, comed_price_at_decision, source_ts} or None
+    if no decision row exists for that date in the last 36 hours
+    (covers the 21:00-the-night-before write window).
+    """
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: -36h)
+  |> filter(fn: (r) => r._measurement == "hvac.decisions"
+                   and r.decision_for_date == "{target_date_iso}")
+  |> last()
+  |> pivot(rowKey: ["_time", "decision_for_date", "day_type"],
+           columnKey: ["_field"], valueColumn: "_value")
+"""
+    row = _first_row(client.query(flux))
+    if row is None:
+        return None
+    return {
+        "day_type": row.get("day_type"),
+        "high_f": row.get("high_f"),
+        "max_dewpoint_f": row.get("max_dewpoint_f"),
+        "is_heat_advisory": bool(row.get("is_heat_advisory")),
+        "alert_summary": row.get("alert_summary") or "",
+        "reason": row.get("reason") or "",
+        "comed_price_at_decision": row.get("comed_price_at_decision"),
+        "source_ts": _to_iso(row.get("_time")),
+    }
+
+
+def query_precool_window(
+    client: QueryApi,
+    *,
+    bucket: str,
+    target_date_iso: str,
+) -> dict[str, Any] | None:
+    """Read the latest hvac.precool_window row for ``target_date_iso``.
+
+    Returns {hour_ct, depth_f, source_ts} or None when no §7 pre-cool
+    window was selected (rejection branch — common for mild forecast
+    days with no qualifying cheap+spike pattern).
+    """
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: -36h)
+  |> filter(fn: (r) => r._measurement == "hvac.precool_window"
+                   and r.target_date == "{target_date_iso}")
+  |> last()
+  |> pivot(rowKey: ["_time", "target_date"],
+           columnKey: ["_field"], valueColumn: "_value")
+"""
+    row = _first_row(client.query(flux))
+    if row is None:
+        return None
+    return {
+        "hour_ct": int(row.get("hour_ct") or 0),
+        "depth_f": int(row.get("depth_f") or 0),
+        "source_ts": _to_iso(row.get("_time")),
+    }
+
+
 def query_feed_last_ts(
     client: QueryApi,
     *,

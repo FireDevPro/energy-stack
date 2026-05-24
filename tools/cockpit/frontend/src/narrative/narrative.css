@@ -394,3 +394,150 @@
 .narrative-why-row .v.warn { color: var(--warn); }
 .narrative-why-row .v.dim { color: var(--ink-4); }
 .narrative-why-row .v.small { font-size: 10px; }
+
+/* === Action Sent footer (under Why-this-decision cards) === */
+.narrative-action-sent {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.narrative-action-sent-head {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+}
+.narrative-action-sent-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.narrative-action-sent-row .action-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.narrative-action-sent-row .action-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.narrative-action-sent-row .action-status.applied {
+  color: var(--live);
+  background: color-mix(in oklab, var(--live) 14%, transparent);
+}
+.narrative-action-sent-row .action-status.dry-run {
+  color: var(--ink-4);
+  background: color-mix(in oklab, var(--line) 30%, transparent);
+}
+.narrative-action-sent-row .action-time {
+  color: var(--ink-3);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.narrative-action-sent-meta {
+  display: flex;
+  gap: 14px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.narrative-action-sent-meta .cool { color: var(--ice); }
+.narrative-action-sent-meta .ember { color: var(--ember); }
+
+/* === Decision pipeline ribbon === */
+.narrative-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.narrative-pipeline-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+}
+.narrative-pipeline-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+.narrative-pipeline-tick {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.narrative-pipeline-rail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+.narrative-pipeline-cell {
+  position: relative;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--bg-base) 92%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.narrative-pipeline-cell.role-winning {
+  border-color: color-mix(in oklab, var(--live) 55%, transparent);
+  background: color-mix(in oklab, var(--live) 6%, var(--bg-base));
+}
+.narrative-pipeline-cell.role-clamped {
+  border-color: color-mix(in oklab, var(--warn) 60%, transparent);
+  background: color-mix(in oklab, var(--warn) 6%, var(--bg-base));
+}
+.narrative-pipeline-cell.role-dimmed { opacity: 0.6; }
+.narrative-pipeline-cell.role-missing,
+.narrative-pipeline-cell.role-stale {
+  border-color: color-mix(in oklab, var(--danger) 50%, transparent);
+}
+.pipeline-cell-title {
+  color: var(--ink-4);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.pipeline-cell-value {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.pipeline-cell-sub {
+  color: var(--ink-3);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.pipeline-arrow {
+  position: absolute;
+  right: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-5);
+  font-size: 12px;
+  z-index: 1;
+  background: var(--bg-base);
+  padding: 0 2px;
+}
