@@ -1122,8 +1122,19 @@ def decide_day_type(forecast: dict[str, Any] | None,
                 {"max_temp_f": high_f, "peak_load_mw": tomorrow_peak_load_mw},
                 season_5th_highest_mw,
             )
+            risk_status = "ok"
         else:
             risk_fired = False
+            # Distinguish the two non-fired causes in the tape so a
+            # future debugger doesn't have to spelunk to figure out
+            # WHY a hot day didn't escalate to HOT_STREAK_DAY1.
+            # Binding spec §11 #14 commits to recording
+            # "insufficient_current_season_history" when the §7 path
+            # falls back due to baseline unavailability.
+            if season_5th_highest_mw is None:
+                risk_status = "insufficient_current_season_history"
+            else:  # tomorrow_peak_load_mw is None
+                risk_status = "missing_pjm_forecast"
         evaluation_tape.append({
             "rule": "streak_5cp_risk",
             "threshold": "should_deepen_precool",
@@ -1133,6 +1144,7 @@ def decide_day_type(forecast: dict[str, Any] | None,
             } if risk_inputs_present else None,
             "fired": risk_fired,
             "reason_code": DayTypeCode.HOT_STREAK_5CP_RISK.value,
+            "status": risk_status,
         })
         if risk_fired:
             reasons["reason"] = "forecast_5cp_risk_single_day"
@@ -1715,12 +1727,20 @@ def _fetch_pjm_inputs_for_target_date(
     # RTO/ComEd scales here (which was the latent bug fixed in the
     # prior commit).
     target_dt = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
+    # Binding spec §5.1: "Outside this window: the controller's
+    # capacity-risk planning/telemetry is inactive by design." For an
+    # October target_date_iso, `cooling_season_window_utc()` returns
+    # the just-completed Jun-Sep window — leaving the gate open would
+    # let a hot October day escalate to HOT_STREAK_DAY1 via 5CP-risk
+    # using the prior summer's metered_load baseline. Gate it here so
+    # the §7 forecast 5CP-risk path is genuinely inactive off-season.
+    if not in_cooling_season(target_dt):
+        return None, None
     season_start_utc, season_end_utc = cooling_season_window_utc(target_dt, tz=tz)
     # Cap end at the target date itself so "season-to-date" semantics
-    # are honored for in-season targets. Off-season targets get the
-    # last completed season's full Jun-Sep window.
+    # are honored for in-season targets.
     target_utc = target_dt.astimezone(timezone.utc)
-    capped_end_utc = min(season_end_utc, target_utc) if in_cooling_season(target_dt) else season_end_utc
+    capped_end_utc = min(season_end_utc, target_utc)
     season_5th_mw = update_season_5th_highest(
         query_api, bucket, season_start_utc, capped_end_utc,
         zone=COMED_SCOPE.metered_load_zone,

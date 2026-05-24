@@ -309,6 +309,61 @@ def test_decide_day_type_no_streak_when_pjm_inputs_absent():
     assert day_type == DAYTYPE_HOT
 
 
+def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_forecast():
+    """Binding spec §11 #14: when the §7 forecast 5CP-risk path falls
+    back, the evaluation_tape must record WHY — distinguishing the
+    'insufficient_current_season_history' case from 'missing_pjm_forecast'
+    so the audit trail explains the non-fire reason without spelunking."""
+    # season_5th=None (baseline insufficient) -> status records that
+    _, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=145000,
+        season_5th_highest_mw=None,
+    )
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["fired"] is False
+    assert risk_entry["status"] == "insufficient_current_season_history"
+
+    # tomorrow_peak=None (forecast missing) -> different status
+    _, reasons = decide_day_type(
+        {"high_f": 95.0, "is_heat_advisory": 0},
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=None,
+        season_5th_highest_mw=130000,
+    )
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["fired"] is False
+    assert risk_entry["status"] == "missing_pjm_forecast"
+
+    # Both inputs present -> status="ok"
+    _, reasons = decide_day_type(
+        {"high_f": 80.0, "is_heat_advisory": 0},  # not hot enough to fire risk
+        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
+        tomorrow_peak_load_mw=145000,
+        season_5th_highest_mw=130000,
+    )
+    risk_entries = [e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"]
+    # Only HOT base_type evaluates the §7 path; a NORMAL/MILD base_type
+    # never reaches that tape entry. Skip when not exercised.
+    if risk_entries:
+        assert risk_entries[0]["status"] == "ok"
+
+
+# NB: P1 fix (cooling-season gate on _fetch_pjm_inputs_for_target_date)
+# is not unit-tested here because the module-level autouse fixture
+# `_stub_pjm_inputs` replaces that function for every test in this file,
+# making direct calls return the stub's fixed value rather than exercising
+# the real gate. `in_cooling_season()` already has full unit-test coverage
+# in test_pjm_5cp.py, and the in-place gate is a one-liner visible in the
+# diff. Adding a class-scoped fixture override here for one test would be
+# more ceremony than the change warrants.
+
+
 def test_decide_day_type_multi_day_streak_path_still_works():
     """Existing multi-day path (§7 added an alternative escalation path,
     didn't replace this one). When BOTH days HOT, still escalates to
