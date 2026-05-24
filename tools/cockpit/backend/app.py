@@ -35,6 +35,10 @@ from tools.cockpit.backend.snapshot import (
     build_snapshot_canned,
     build_snapshot_live,
 )
+from tools.cockpit.backend.today_actions import (
+    build_today_actions_canned,
+    build_today_actions_live,
+)
 
 
 app = FastAPI(
@@ -176,6 +180,44 @@ def _live_snapshot() -> dict[str, Any]:
         scheduler_mode=scheduler_mode,
         now=now,
     )
+
+
+@app.get("/api/today_actions")
+def today_actions() -> dict[str, Any]:
+    """Return today's planned ScheduleActions for the current day_type
+    with per-item status (past / current / future). Powers the
+    narrative cockpit ActionLog component."""
+    mode = _mode()
+    if mode == "canned":
+        return build_today_actions_canned()
+    if mode == "live":
+        return _live_today_actions()
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"COCKPIT_BACKEND_MODE={mode!r} is not recognized. "
+            "Valid: 'canned' (default), 'live'."
+        ),
+    )
+
+
+def _live_today_actions() -> dict[str, Any]:
+    """Resolve today's day_type from the latest scheduler trace and
+    build the action list. Reuses the day_at_a_glance loki-fetch
+    pattern; day_type lookup is the only external dep."""
+    from tools.cockpit.backend import loki  # noqa: PLC0415
+
+    loki_url = _require_env("LOKI_URL")
+    container = os.environ.get("LOKI_CONTAINER", "hvac-scheduler")
+    loki_client = _HttpxLokiClient(loki_url)
+
+    now = datetime.now(timezone.utc)
+    now_ns = int(now.timestamp() * 1_000_000_000)
+    traces = loki.fetch_latest_tick_traces(
+        loki_client, container=container, now_ns=now_ns
+    )
+    day_type = (traces.get("day_type_decision") or {}).get("winning_day_type")
+    return build_today_actions_live(now=now, day_type=day_type)
 
 
 def _live_day_at_a_glance() -> dict[str, Any]:

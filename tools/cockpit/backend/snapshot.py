@@ -347,7 +347,11 @@ def _build_fivecp_node(
     else:
         role, subtitle = "dimmed", "no risk"
     return {
-        "role_state": "winning" if layer.get("winning_layer") == "fivecp" else role,
+        # 5CP is demoted out of live setpoint authority per binding
+        # spec §11 #14 — it never wins the layer resolution anymore.
+        # Render as winning only when actively firing as a planning /
+        # telemetry overlay (no setpoint change attached).
+        "role_state": role,
         "freshness": "fresh",
         "freshness_label": "this tick",
         "title": "5CP Risk",
@@ -376,14 +380,15 @@ def _build_winner_node(
         or 0
     )
     prev = _i(layer.get("prev_effective_cool_f")) or effective
+    # Post binding-spec §11 #14, layer resolution only emits schedule
+    # or price_overlay. Defensive narrowing in case a stale Loki trace
+    # surfaces an older value during a rolling deploy.
     winning_layer = layer.get("winning_layer") or "schedule"
-    if winning_layer not in {"schedule", "price_overlay", "fivecp", "tie"}:
+    if winning_layer not in {"schedule", "price_overlay"}:
         winning_layer = "schedule"
     layer_display = {
         "schedule": "Schedule",
         "price_overlay": "RTP Spike",
-        "fivecp": "5CP Risk",
-        "tie": "Tie",
     }[winning_layer]
     return {
         "role_state": "winning",

@@ -45,10 +45,9 @@ export function writesAllowed(snapshot: Snapshot): boolean {
 export function winningLanes(
   layer: WinnerDetails['winning_layer'],
 ): Set<string> {
-  if (layer === 'tie')
-    return new Set(['schedule', 'price_overlay', 'fivecp'])
+  // Per binding spec §11 #14, 5CP no longer wins layer resolution and
+  // "tie" is no longer emitted. Only schedule / price_overlay remain.
   if (layer === 'price_overlay') return new Set(['price_overlay'])
-  if (layer === 'fivecp') return new Set(['fivecp'])
   return new Set(['schedule'])
 }
 

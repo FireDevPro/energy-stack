@@ -105,7 +105,7 @@ export default function NarrativeCockpit() {
             <ActionLog />
           </div>
           <div className="narrative-right">
-            <WhyThisDecision />
+            <WhyThisDecision snapshot={snapshot} />
           </div>
         </main>
 

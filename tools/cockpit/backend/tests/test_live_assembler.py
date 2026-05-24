@@ -224,7 +224,13 @@ class TestBuildSnapshotLive:
         assert flow["winner"]["details"]["winning_layer"] == "price_overlay"
         assert flow["winner"]["details"]["effective_cool_f"] == 85
 
-    def test_fivecp_wins(self):
+    def test_fivecp_active_does_not_win_layer_resolution(self):
+        """Post binding spec §11 #14, the 5CP layer is planning /
+        telemetry only and never wins live setpoint authority. Even
+        when the upstream layer_resolution trace surfaces a stale
+        winning_layer="fivecp" value (rolling deploys, replayed
+        traces), the cockpit narrows it back to "schedule" so the UI
+        contract holds."""
         snap = build_snapshot_live(
             thermostat=_thermostat(),
             arm_mode=_arm_mode(),
@@ -251,7 +257,7 @@ class TestBuildSnapshotLive:
         flow = snap["flow"]
         assert flow["fivecp"]["details"]["fivecp_active"] is True
         assert flow["fivecp"]["details"]["fivecp_scopes_fired"] == ["COMED"]
-        assert flow["winner"]["details"]["winning_layer"] == "fivecp"
+        assert flow["winner"]["details"]["winning_layer"] == "schedule"
 
     def test_supervisor_clamped_changes_role_to_clamped(self):
         snap = build_snapshot_live(
