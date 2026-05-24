@@ -25,9 +25,8 @@ export function DayAheadPanel() {
   if (!data) {
     return (
       <section
-        className="narrative-why"
+        className="narrative-why narrative-day-ahead"
         data-testid="narrative-day-ahead"
-        style={{ paddingTop: 0 }}
       >
         <header className="narrative-da-header">
           <div className="narrative-da-title">Day ahead</div>

@@ -397,6 +397,11 @@ body {
   background:
     radial-gradient(120% 60% at 50% -10%, color-mix(in oklab, var(--ember) 10%, transparent) 0%, transparent 60%),
     var(--bg-base);
+  /* Container query anchor: hero typography below uses `cqi` (1% of
+     hero's inline size) instead of `vw` so font sizes track the
+     hero column, not the viewport. Past ~2000px viewport the column
+     stops growing (capped) but vw kept climbing — caused drift. */
+  container-type: inline-size;
 }
 
 .hero-ring-wrap {
@@ -428,7 +433,7 @@ body {
 .indoor-temp {
   font-family: var(--font-display);
   font-weight: 300;
-  font-size: clamp(80px, 5.6vw, 132px);
+  font-size: clamp(72px, 26cqi, 132px);
   line-height: 0.95;
   letter-spacing: -0.04em;
   color: var(--ink);
@@ -490,7 +495,7 @@ body {
 .sp-tile .sp-val {
   font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(24px, 1.7vw, 38px);
+  font-size: clamp(24px, 8cqi, 38px);
   line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -565,7 +570,7 @@ body {
 .price-tile .price-val {
   font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(36px, 2.5vw, 56px);
+  font-size: clamp(36px, 11cqi, 56px);
   line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;

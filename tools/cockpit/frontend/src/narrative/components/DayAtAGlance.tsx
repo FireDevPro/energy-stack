@@ -1,18 +1,15 @@
-import {
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { usePolling } from '../../lib/usePolling'
+import { useSize } from '../../lib/useSize'
 import { fetchDayAtAGlance } from '../lib/api'
 import { summerNormalDayAtAGlance } from '../fixtures/day_at_a_glance'
 import type { DayAtAGlance as DayAtAGlanceData, HourlyBar } from '../types'
 
 const POLL_INTERVAL_MS = 60_000
 
-const CHART_HEIGHT = 480
+// Minimum chart height so the bars + lines stay legible even when the
+// section collapses (e.g. action log grew tall enough to crowd the chart).
+const CHART_MIN_HEIGHT = 320
 const TOP_PAD = 28
 const BOTTOM_PAD = 36
 const LEFT_PAD = 44
@@ -49,17 +46,13 @@ export function DayAtAGlance() {
     ? summerNormalDayAtAGlance
     : polling.data ?? null
 
+  // ref on the chart-wrap (not the section) so the measurement
+  // matches the SVG's actual drawable area, independent of any
+  // header / legend / footer siblings inside the section.
   const wrapRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(800)
-
-  useLayoutEffect(() => {
-    if (!wrapRef.current) return
-    const ro = new ResizeObserver(([e]) => {
-      setWidth(Math.max(360, Math.floor(e.contentRect.width)))
-    })
-    ro.observe(wrapRef.current)
-    return () => ro.disconnect()
-  }, [])
+  const { w: measuredW, h: measuredH } = useSize(wrapRef)
+  const chartHeight = Math.max(CHART_MIN_HEIGHT, Math.floor(measuredH))
+  const chartWidth = Math.floor(measuredW)
 
   if (!data) {
     return (
@@ -75,7 +68,6 @@ export function DayAtAGlance() {
 
   return (
     <section
-      ref={wrapRef}
       className="narrative-day-at-a-glance"
       data-testid="narrative-day-at-a-glance"
       data-day-type={data.day_type}
@@ -87,7 +79,11 @@ export function DayAtAGlance() {
           hourly avg)
         </div>
       </header>
-      <Chart data={data} width={width} height={CHART_HEIGHT} />
+      <div ref={wrapRef} className="narrative-da-chart-wrap">
+        {chartWidth > 0 && (
+          <Chart data={data} width={chartWidth} height={chartHeight} />
+        )}
+      </div>
     </section>
   )
 }
@@ -110,8 +106,11 @@ function Chart({
   width: number
   height: number
 }) {
-  const chartW = Math.max(360, width - LEFT_PAD - RIGHT_PAD)
-  const chartH = height - TOP_PAD - BOTTOM_PAD
+  // Floor at 0 to keep the math safe; the narrative-center column has
+  // its own min-width so the chart never actually has to render that
+  // narrow.
+  const chartW = Math.max(0, width - LEFT_PAD - RIGHT_PAD)
+  const chartH = Math.max(0, height - TOP_PAD - BOTTOM_PAD)
   const barSlot = chartW / 24
   const barWidth = Math.max(6, barSlot - 4)
 
@@ -183,7 +182,7 @@ function Chart({
   const [hover, setHover] = useState<HoverState | null>(null)
 
   return (
-    <div className="narrative-da-chart-wrap">
+    <>
     <svg
       width={width}
       height={height}
@@ -295,7 +294,7 @@ function Chart({
     {hover && (
       <BarTooltip hover={hover} chartWidth={width} chartHeight={height} />
     )}
-    </div>
+    </>
   )
 }
 

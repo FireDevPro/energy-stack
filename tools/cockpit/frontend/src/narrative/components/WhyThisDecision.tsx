@@ -10,7 +10,7 @@ import type {
 export function WhyThisDecision({ snapshot }: { snapshot: Snapshot }) {
   return (
     <section
-      className="narrative-why"
+      className="narrative-why narrative-why-this"
       data-testid="narrative-why-this-decision"
     >
       <header className="narrative-da-header">

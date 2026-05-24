@@ -21,7 +21,10 @@ function ThermostatHero({ snapshot }: { snapshot: Snapshot }) {
   useLayoutEffect(() => {
     if (!wrapRef.current) return
     const ro = new ResizeObserver(([e]) => {
-      const w = Math.min(e.contentRect.width, 480)
+      // Subtract 32px so the ring's stroke + glow doesn't crowd the
+      // hero's padding; cap at 520 to match the (now bumped) hero
+      // column max width.
+      const w = Math.min(e.contentRect.width - 32, 520)
       setSize(Math.max(240, w))
     })
     ro.observe(wrapRef.current)
