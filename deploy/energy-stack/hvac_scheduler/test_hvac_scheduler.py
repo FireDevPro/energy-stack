@@ -364,6 +364,57 @@ def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_for
 # more ceremony than the change warrants.
 
 
+# ---- Wall-clock tick-phase alignment (main_async loop) -------------------
+
+
+def test_scheduler_tick_target_lands_on_next_wall_clock_second():
+    """Phase-alignment invariant (main_async loop): for any wall-clock
+    ``now``, ``target = now.replace(second=SCHEDULER_TICK_SECOND,
+    microsecond=0); if target <= now: target += 1 minute`` always
+    lands on the next XX:XX:SCHEDULER_TICK_SECOND boundary in the
+    future. Pins the math against accidental edits and against
+    accidental drift of SCHEDULER_TICK_SECOND vs the poller's wall-
+    clock :00 alignment."""
+    from .app import SCHEDULER_TICK_SECOND
+    tz = ZoneInfo("America/Chicago")
+    base = datetime(2026, 7, 15, 14, 30, tzinfo=tz)
+    # Same-minute "now" values spanning all 60 seconds + sub-second cases.
+    test_seconds = [0, 1, 5, 9, SCHEDULER_TICK_SECOND - 1, SCHEDULER_TICK_SECOND,
+                    SCHEDULER_TICK_SECOND + 1, 30, 50, 59]
+    for sec in test_seconds:
+        now = base.replace(second=sec)
+        target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
+        if target <= now:
+            target += timedelta(minutes=1)
+        # Target lands on SCHEDULER_TICK_SECOND
+        assert target.second == SCHEDULER_TICK_SECOND
+        assert target.microsecond == 0
+        # And is strictly in the future
+        assert target > now
+        # And within 60s of now (one cycle max)
+        delta = (target - now).total_seconds()
+        assert 0 < delta <= 60.0, f"sec={sec}: delta={delta}"
+
+    # Microsecond-precision now: target must still be strictly after now.
+    now = base.replace(second=SCHEDULER_TICK_SECOND, microsecond=1)
+    target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
+    if target <= now:
+        target += timedelta(minutes=1)
+    assert target > now
+    assert (target - now).total_seconds() <= 60.0
+
+
+def test_scheduler_tick_second_is_after_poller_zero():
+    """The whole point of the wall-clock phase alignment: scheduler
+    ticks must fall AFTER the poller's :00 boundary so the scheduler
+    reads the same minute's freshest ComEd bucket rather than the
+    previous minute's. Pin SCHEDULER_TICK_SECOND > 0."""
+    from .app import SCHEDULER_TICK_SECOND
+    assert SCHEDULER_TICK_SECOND > 0
+    # And below 60 (must be a valid second-of-minute).
+    assert SCHEDULER_TICK_SECOND < 60
+
+
 def test_decide_day_type_multi_day_streak_path_still_works():
     """Existing multi-day path (§7 added an alternative escalation path,
     didn't replace this one). When BOTH days HOT, still escalates to

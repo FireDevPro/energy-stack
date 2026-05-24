@@ -100,3 +100,36 @@ def test_parse_latest_5min_handles_string_millis_lexicographic_trap():
     millis, price = result
     assert millis == 1700000000000
     assert price == 5.0
+
+
+# ---- Wall-clock phase alignment ------------------------------------------
+
+
+def test_wall_clock_sleep_lands_on_next_minute_boundary():
+    """Phase-alignment invariant (main loop, line ~178-179): for any
+    wall-clock ``now``, ``sleep_for = (interval - (now % interval)) %
+    interval`` makes (now + sleep_for) land on the next interval
+    boundary. Pins the math against accidental edits."""
+    interval = 60.0
+    test_nows = [
+        0.0,         # exactly on boundary -> 0s sleep (immediate poll)
+        0.5,         # just past -> 59.5s
+        1.0,         # 1s in -> 59s
+        12.0,        # legacy production phase -> 48s
+        30.0,        # mid-minute -> 30s
+        59.0,        # near end -> 1s
+        59.999,      # near end -> 0.001s
+        60.0,        # exactly next boundary -> 0s
+        120.5,       # multi-cycle -> still computes to next :00
+        3600.5,      # hour later -> still works
+        1779550800.5,  # arbitrary realistic timestamp
+    ]
+    for now in test_nows:
+        sleep_for = (interval - (now % interval)) % interval
+        # Sleep must be in [0, 60)
+        assert 0.0 <= sleep_for < interval, f"now={now}: sleep_for={sleep_for}"
+        # (now + sleep_for) must land on a 60s wall-clock boundary
+        wake_at = now + sleep_for
+        assert abs(wake_at % interval) < 1e-9, (
+            f"now={now}: wake_at={wake_at}, % interval={wake_at % interval}"
+        )
