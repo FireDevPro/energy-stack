@@ -19,3 +19,15 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     })),
   })
 }
+
+// jsdom (vitest 4 + jsdom 29) doesn't implement ResizeObserver. ThermostatRing
+// (and the narrative HeroPanel) use ResizeObserver to size the SVG against
+// container width. Stub it so component mounts don't throw.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class StubResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+}
