@@ -1,15 +1,8 @@
 import type { Snapshot } from '../types'
 import { armTone, modeTone, formatClock, formatDate } from '../lib/tone'
 
-export function Header({
-  snapshot,
-  variant = 'cockpit',
-}: {
-  snapshot: Snapshot
-  variant?: 'cockpit' | 'narrative'
-}) {
+export function Header({ snapshot }: { snapshot: Snapshot }) {
   const arm = snapshot.arm_mode
-  const brandSub = variant === 'narrative' ? 'narrative · v4' : 'cockpit · v3'
   return (
     <header className="cockpit-header">
       <div className="brand">
@@ -17,7 +10,7 @@ export function Header({
         <div>
           <div className="brand-name">
             Sentinel
-            <span className="brand-sub">{brandSub}</span>
+            <span className="brand-sub">v4</span>
           </div>
         </div>
       </div>

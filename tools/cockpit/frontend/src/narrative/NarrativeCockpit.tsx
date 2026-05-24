@@ -69,7 +69,7 @@ export default function NarrativeCockpit() {
     <>
       <div className="ambient" aria-hidden="true" />
       <div className="narrative" data-testid="narrative-cockpit">
-        <Header snapshot={snapshot} variant="narrative" />
+        <Header snapshot={snapshot} />
 
         {!useFixture && polling.error && (
           <div
