@@ -340,18 +340,18 @@ def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_for
     assert risk_entry["fired"] is False
     assert risk_entry["status"] == "missing_pjm_forecast"
 
-    # Both inputs present -> status="ok"
+    # Both inputs present -> status="ok". HOT base_type so the §7
+    # branch actually runs and produces a streak_5cp_risk tape entry.
     _, reasons = decide_day_type(
-        {"high_f": 80.0, "is_heat_advisory": 0},  # not hot enough to fire risk
+        {"high_f": 95.0, "is_heat_advisory": 0},
         day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
         tomorrow_peak_load_mw=145000,
         season_5th_highest_mw=130000,
     )
-    risk_entries = [e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"]
-    # Only HOT base_type evaluates the §7 path; a NORMAL/MILD base_type
-    # never reaches that tape entry. Skip when not exercised.
-    if risk_entries:
-        assert risk_entries[0]["status"] == "ok"
+    risk_entry = next(
+        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
+    )
+    assert risk_entry["status"] == "ok"
 
 
 # NB: P1 fix (cooling-season gate on _fetch_pjm_inputs_for_target_date)
