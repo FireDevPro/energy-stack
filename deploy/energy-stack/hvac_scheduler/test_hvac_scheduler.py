@@ -415,6 +415,38 @@ def test_scheduler_tick_second_is_after_poller_zero():
     assert SCHEDULER_TICK_SECOND < 60
 
 
+def test_decision_and_revisit_guards_dont_require_minute_zero():
+    """Regression guard for the startup-after-HH:00:SCHEDULER_TICK_SECOND
+    edge case: with the wall-clock :10 tick phase, a container starting
+    at 21:00:30 has its first tick at 21:01:10. The decision_hour /
+    revisit_hours guards MUST NOT require `now_local.minute == 0` —
+    otherwise the day-ahead decision would be silently lost whenever
+    the container starts between :10 and :59 of the decision hour.
+
+    Source-inspection test (matches the existing pattern at
+    test_health_marker_only_touched_when_tick_succeeds): asserts the
+    `minute == 0` substring is absent from the decision/revisit
+    branches AND that the guards themselves (`last_decision_date`,
+    `fired_revisits`) are still referenced so once-per-day semantics
+    remain intact."""
+    import inspect
+    main_src = inspect.getsource(app.main_async)
+    # The decision branch must reference decision_hour and the
+    # last_decision_date guard, but NOT the strict-minute check.
+    decision_idx = main_src.index("cfg.decision_hour")
+    decision_block_end = main_src.index("decision_failed")
+    decision_branch = main_src[decision_idx:decision_block_end]
+    assert "now_local.minute == 0" not in decision_branch
+    assert "last_decision_date" in decision_branch
+
+    # Same for the revisit branch.
+    revisit_idx = main_src.index("cfg.revisit_hours")
+    revisit_block_end = main_src.index("revisit_failed")
+    revisit_branch = main_src[revisit_idx:revisit_block_end]
+    assert "now_local.minute == 0" not in revisit_branch
+    assert "fired_revisits" in revisit_branch
+
+
 def test_decide_day_type_multi_day_streak_path_still_works():
     """Existing multi-day path (§7 added an alternative escalation path,
     didn't replace this one). When BOTH days HOT, still escalates to

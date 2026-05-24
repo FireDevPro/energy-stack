@@ -3358,18 +3358,27 @@ async def main_async(cfg: Config) -> int:
 
         now_local = datetime.now(tz)
 
-        # Daily decision at decision_hour:00
-        if (now_local.hour == cfg.decision_hour and now_local.minute == 0
+        # Daily decision during decision_hour. Drops the prior
+        # `minute == 0` check (was redundant with the
+        # `last_decision_date` guard and would have silently lost the
+        # 21:00 window on any container start during 21:00:10-21:59:59
+        # under the new wall-clock :10 tick phase). Once-per-day-per-
+        # target enforcement remains via `last_decision_date`.
+        if (now_local.hour == cfg.decision_hour
                 and firing.last_decision_date != (now_local.date() + timedelta(days=1)).isoformat()):
             try:
                 await run_decision(cfg, c4, query_api, write_api, tz, firing)
             except Exception as exc:
                 log("error", "decision_failed", error=str(exc), error_type=type(exc).__name__)
 
-        # Intra-day forecast revisit at each cfg.revisit_hours[*]:00
+        # Intra-day forecast revisit during each cfg.revisit_hours[*].
+        # Same rationale as the daily-decision condition above: drop
+        # `minute == 0` so the new wall-clock :10 tick phase doesn't
+        # lose the window on startup; `fired_revisits` enforces
+        # once-per-(date, hour).
         today_iso = now_local.date().isoformat()
         revisit_key = (today_iso, now_local.hour)
-        if (now_local.hour in cfg.revisit_hours and now_local.minute == 0
+        if (now_local.hour in cfg.revisit_hours
                 and revisit_key not in firing.fired_revisits):
             firing.fired_revisits.add(revisit_key)
             try:
