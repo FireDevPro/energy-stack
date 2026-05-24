@@ -21,12 +21,16 @@ Run (only supported invocation form, from repo root):
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from tools.cockpit.backend.day_at_a_glance import (
+    build_day_at_a_glance_canned,
+    build_day_at_a_glance_live,
+)
 from tools.cockpit.backend.snapshot import (
     build_snapshot_canned,
     build_snapshot_live,
@@ -79,6 +83,26 @@ def snapshot() -> dict[str, Any]:
         return build_snapshot_canned()
     if mode == "live":
         return _live_snapshot()
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"COCKPIT_BACKEND_MODE={mode!r} is not recognized. "
+            "Valid: 'canned' (default), 'live'."
+        ),
+    )
+
+
+@app.get("/api/day_at_a_glance")
+def day_at_a_glance() -> dict[str, Any]:
+    """Return today's day-at-a-glance payload for the narrative cockpit
+    chart: 24 hourly price bars (PJM DA forecast + ComEd realized
+    overlay), indoor + setpoint history, and the planned future
+    ScheduleAction list for today's day_type."""
+    mode = _mode()
+    if mode == "canned":
+        return build_day_at_a_glance_canned()
+    if mode == "live":
+        return _live_day_at_a_glance()
     raise HTTPException(
         status_code=503,
         detail=(
@@ -151,6 +175,79 @@ def _live_snapshot() -> dict[str, Any]:
         outdoor=outdoor,
         scheduler_mode=scheduler_mode,
         now=now,
+    )
+
+
+def _live_day_at_a_glance() -> dict[str, Any]:
+    """Assemble today's day-at-a-glance payload from live Influx
+    queries. Mirrors the lazy-import + env-var pattern from
+    _live_snapshot()."""
+    try:
+        from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # noqa: PLC0415  # stubs lack __all__
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "live mode requires `influxdb-client` — install via "
+                "`pip install -r tools/cockpit/backend/requirements.txt`"
+            ),
+        ) from e
+
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    from tools.cockpit.backend import influx, loki  # noqa: PLC0415
+
+    url = _require_env("INFLUXDB_URL")
+    token = _require_env("INFLUXDB_TOKEN")
+    org = _require_env("INFLUXDB_ORG")
+    bucket = _require_env("INFLUXDB_BUCKET")
+    loki_url = _require_env("LOKI_URL")
+    container = os.environ.get("LOKI_CONTAINER", "hvac-scheduler")
+
+    influx_client = InfluxDBClient(url=url, token=token, org=org)
+    query_api = influx_client.query_api()
+
+    ct = ZoneInfo("America/Chicago")
+    now = datetime.now(timezone.utc)
+    now_ct = now.astimezone(ct)
+    today_start_ct = now_ct.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end_ct = today_start_ct + timedelta(days=1)
+    history_start_ct = today_start_ct - timedelta(hours=24)
+
+    thermo_hist = influx.query_thermostat_history(
+        query_api,
+        bucket=bucket,
+        start_utc=history_start_ct.astimezone(timezone.utc),
+        end_utc=now.astimezone(timezone.utc),
+    )
+    realized = influx.query_hourly_avg_prices(
+        query_api,
+        bucket=bucket,
+        start_utc=today_start_ct.astimezone(timezone.utc),
+        end_utc=today_end_ct.astimezone(timezone.utc),
+    )
+    forecast = influx.query_da_lmp_forecast(
+        query_api,
+        bucket=bucket,
+        start_utc=today_start_ct.astimezone(timezone.utc),
+        end_utc=today_end_ct.astimezone(timezone.utc),
+    )
+
+    # day_type comes from the scheduler trace, same source the snapshot
+    # endpoint uses. Reuse loki to fetch the latest tick's traces.
+    loki_client = _HttpxLokiClient(loki_url)
+    now_ns = int(now.timestamp() * 1_000_000_000)
+    traces = loki.fetch_latest_tick_traces(
+        loki_client, container=container, now_ns=now_ns
+    )
+    day_type = (traces.get("day_type_decision") or {}).get("winning_day_type")
+
+    return build_day_at_a_glance_live(
+        now=now,
+        day_type=day_type,
+        thermostat_history=thermo_hist,
+        realized_hourly=realized,
+        da_forecast=forecast,
     )
 
 

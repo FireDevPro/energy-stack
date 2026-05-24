@@ -293,6 +293,131 @@ FEED_DEFINITIONS: list[tuple[str, str, str, dict[str, str] | None]] = [
 ]
 
 
+def _series_rows(tables: Iterable[_Table]) -> list[dict[str, Any]]:
+    """Materialize every row across every table into a list of dicts.
+
+    Used by the day_at_a_glance series queries which read time-ordered
+    point streams rather than a single latest-row pivot.
+    """
+    out: list[dict[str, Any]] = []
+    for table in tables:
+        for record in table.records:
+            out.append(dict(record.values))
+    return out
+
+
+def query_thermostat_history(
+    client: QueryApi,
+    *,
+    bucket: str,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[dict[str, Any]]:
+    """Read indoor_temp_f + cool_setpoint_f + heat_setpoint_f from
+    hvac.thermostat over [start_utc, end_utc).
+
+    Returns list of {ts: ISO-8601, indoor_temp_f, cool_setpoint_f,
+    heat_setpoint_f} ordered by time ascending. Drops rows missing all
+    three fields. Cadence in production is ~6 min, so a 24h window
+    yields ~240 rows.
+    """
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: {start_utc.isoformat()}, stop: {end_utc.isoformat()})
+  |> filter(fn: (r) => r._measurement == "hvac.thermostat")
+  |> filter(fn: (r) => r._field == "indoor_temp_f"
+                   or r._field == "cool_setpoint_f"
+                   or r._field == "heat_setpoint_f")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+"""
+    out: list[dict[str, Any]] = []
+    for row in _series_rows(client.query(flux)):
+        ts = row.get("_time")
+        indoor = row.get("indoor_temp_f")
+        cool = row.get("cool_setpoint_f")
+        heat = row.get("heat_setpoint_f")
+        if indoor is None and cool is None and heat is None:
+            continue
+        out.append(
+            {
+                "ts": _to_iso(ts),
+                "indoor_temp_f": indoor,
+                "cool_setpoint_f": cool,
+                "heat_setpoint_f": heat,
+            }
+        )
+    return out
+
+
+def query_hourly_avg_prices(
+    client: QueryApi,
+    *,
+    bucket: str,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[dict[str, Any]]:
+    """Realized comed.prices hourly_avg rows over [start_utc, end_utc).
+
+    Each row: {ts: ISO-8601 (hour-bucket UTC), cents_per_kwh}. The
+    comed_poller upserts the same hour-bucket as the in-progress hour
+    accumulates samples; the latest value for each hour is its final
+    realized average. Sorted ascending.
+    """
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: {start_utc.isoformat()}, stop: {end_utc.isoformat()})
+  |> filter(fn: (r) => r._measurement == "comed.prices"
+                   and r.period_type == "hourly_avg"
+                   and r._field == "price_cents_per_kwh")
+  |> sort(columns: ["_time"])
+"""
+    out: list[dict[str, Any]] = []
+    for row in _series_rows(client.query(flux)):
+        ts = row.get("_time")
+        val = row.get("_value")
+        if ts is None or val is None:
+            continue
+        out.append({"ts": _to_iso(ts), "cents_per_kwh": float(val)})
+    return out
+
+
+def query_da_lmp_forecast(
+    client: QueryApi,
+    *,
+    bucket: str,
+    start_utc: datetime,
+    end_utc: datetime,
+    zone: str = "COMED",
+) -> list[dict[str, Any]]:
+    """24 hourly PJM day-ahead LMP rows for the COMED zone over
+    [start_utc, end_utc).
+
+    Each row: {ts: ISO-8601 (hour-bucket UTC), cents_per_kwh}.
+    PJM publishes total_lmp_da in $/MWh; cockpit converts to ¢/kWh
+    (÷10) so the chart shares units with comed.prices. Sorted
+    ascending. Returns up to 24 rows when the range spans a full
+    PJM-published day; fewer if the publish hadn't landed at query
+    time.
+    """
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: {start_utc.isoformat()}, stop: {end_utc.isoformat()})
+  |> filter(fn: (r) => r._measurement == "pjm.lmp_da_hourly"
+                   and r.zone == "{zone}"
+                   and r._field == "total_lmp_da")
+  |> sort(columns: ["_time"])
+"""
+    out: list[dict[str, Any]] = []
+    for row in _series_rows(client.query(flux)):
+        ts = row.get("_time")
+        val = row.get("_value")
+        if ts is None or val is None:
+            continue
+        out.append({"ts": _to_iso(ts), "cents_per_kwh": float(val) / 10.0})
+    return out
+
+
 def query_feed_last_ts(
     client: QueryApi,
     *,
