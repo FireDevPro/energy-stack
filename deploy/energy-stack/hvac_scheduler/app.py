@@ -3287,6 +3287,15 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
 
 # ---- Main loop -------------------------------------------------------------
 
+# Wall-clock second-of-minute at which the scheduler tick fires. Chosen
+# to fall after the comed-poller's wall-clock :00 poll-write so the
+# scheduler reads the same minute's freshest ComEd bucket rather than
+# the previous minute's. 10s gives ~9s of headroom for poll fetch+write
+# work (typically 1-3s, occasional spikes to 5s). Bumping later is
+# trivial if empirical cycle_elapsed proves it's needed.
+SCHEDULER_TICK_SECOND = 10
+
+
 async def main_async(cfg: Config) -> int:
     tz = ZoneInfo(cfg.tz_name)
     log("info", "startup",
@@ -3329,63 +3338,80 @@ async def main_async(cfg: Config) -> int:
     signal.signal(signal.SIGINT, handle_stop)
 
     health_marker = Path("/tmp/last_tick_ok")
-    last_minute_seen = -1
     while not stop.is_set():
-        now_local = datetime.now(tz)
-        # Tick once per minute boundary
-        if now_local.minute != last_minute_seen:
-            last_minute_seen = now_local.minute
-
-            # Daily decision at decision_hour:00
-            if (now_local.hour == cfg.decision_hour and now_local.minute == 0
-                    and firing.last_decision_date != (now_local.date() + timedelta(days=1)).isoformat()):
-                try:
-                    await run_decision(cfg, c4, query_api, write_api, tz, firing)
-                except Exception as exc:
-                    log("error", "decision_failed", error=str(exc), error_type=type(exc).__name__)
-
-            # Intra-day forecast revisit at each cfg.revisit_hours[*]:00
-            today_iso = now_local.date().isoformat()
-            revisit_key = (today_iso, now_local.hour)
-            if (now_local.hour in cfg.revisit_hours and now_local.minute == 0
-                    and revisit_key not in firing.fired_revisits):
-                firing.fired_revisits.add(revisit_key)
-                try:
-                    run_decision_revisit(cfg, query_api, write_api, today_iso)
-                except Exception as exc:
-                    log("error", "revisit_failed", error=str(exc), error_type=type(exc).__name__)
-
-            # Schedule actions. P2.3 (reviewer-flagged 2026-05-11): the
-            # health marker MUST be gated on tick success. Pre-fix the
-            # marker was touched unconditionally, so a repeated
-            # ``schedule_check_failed`` was visible in logs but
-            # invisible to Docker's HEALTHCHECK + any deadman alert
-            # built on top of it -- the container stayed "healthy"
-            # while the control loop was broken (e.g., the 2026-05-11
-            # incident).
-            tick_ok = True
-            try:
-                await run_schedule_check(cfg, c4, query_api, write_api, tz, now_local, firing)
-            except Exception as exc:
-                tick_ok = False
-                log("error", "schedule_check_failed",
-                    error=str(exc), error_type=type(exc).__name__)
-
-            # Heartbeat for Docker healthcheck. Touched ONLY when the
-            # schedule_check completed without raising; a sustained
-            # failure age past the HEALTHCHECK staleness window
-            # (5 min) flips the container unhealthy and triggers
-            # whatever restart / alert path the operator has wired.
-            if tick_ok:
-                try:
-                    health_marker.touch()
-                except Exception:
-                    pass
-
+        # Wall-clock phase alignment: each tick fires at the next
+        # XX:XX:SCHEDULER_TICK_SECOND boundary. Deterministic across
+        # restarts (container boot no longer dictates tick phase).
+        # `asyncio.wait_for(stop.wait(), timeout=sleep_for)` drops
+        # promptly on SIGTERM since stop.set() resolves the future.
+        now = datetime.now(tz)
+        target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
+        if target <= now:
+            target += timedelta(minutes=1)
+        sleep_for = (target - now).total_seconds()
         try:
-            await asyncio.wait_for(stop.wait(), timeout=10)
+            await asyncio.wait_for(stop.wait(), timeout=sleep_for)
         except asyncio.TimeoutError:
             pass
+        if stop.is_set():
+            break
+
+        now_local = datetime.now(tz)
+
+        # Daily decision during decision_hour. Drops the prior
+        # `minute == 0` check (was redundant with the
+        # `last_decision_date` guard and would have silently lost the
+        # 21:00 window on any container start during 21:00:10-21:59:59
+        # under the new wall-clock :10 tick phase). Once-per-day-per-
+        # target enforcement remains via `last_decision_date`.
+        if (now_local.hour == cfg.decision_hour
+                and firing.last_decision_date != (now_local.date() + timedelta(days=1)).isoformat()):
+            try:
+                await run_decision(cfg, c4, query_api, write_api, tz, firing)
+            except Exception as exc:
+                log("error", "decision_failed", error=str(exc), error_type=type(exc).__name__)
+
+        # Intra-day forecast revisit during each cfg.revisit_hours[*].
+        # Same rationale as the daily-decision condition above: drop
+        # `minute == 0` so the new wall-clock :10 tick phase doesn't
+        # lose the window on startup; `fired_revisits` enforces
+        # once-per-(date, hour).
+        today_iso = now_local.date().isoformat()
+        revisit_key = (today_iso, now_local.hour)
+        if (now_local.hour in cfg.revisit_hours
+                and revisit_key not in firing.fired_revisits):
+            firing.fired_revisits.add(revisit_key)
+            try:
+                run_decision_revisit(cfg, query_api, write_api, today_iso)
+            except Exception as exc:
+                log("error", "revisit_failed", error=str(exc), error_type=type(exc).__name__)
+
+        # Schedule actions. P2.3 (reviewer-flagged 2026-05-11): the
+        # health marker MUST be gated on tick success. Pre-fix the
+        # marker was touched unconditionally, so a repeated
+        # ``schedule_check_failed`` was visible in logs but
+        # invisible to Docker's HEALTHCHECK + any deadman alert
+        # built on top of it -- the container stayed "healthy"
+        # while the control loop was broken (e.g., the 2026-05-11
+        # incident).
+        tick_ok = True
+        try:
+            await run_schedule_check(cfg, c4, query_api, write_api, tz, now_local, firing)
+        except Exception as exc:
+            tick_ok = False
+            log("error", "schedule_check_failed",
+                error=str(exc), error_type=type(exc).__name__)
+
+        # Heartbeat for Docker healthcheck. Touched ONLY when the
+        # schedule_check completed without raising; a sustained
+        # failure age past the HEALTHCHECK staleness window
+        # (5 min) flips the container unhealthy and triggers
+        # whatever restart / alert path the operator has wired.
+        if tick_ok:
+            try:
+                health_marker.touch()
+            except Exception:
+                pass
 
     log("info", "shutdown")
     influx.close()  # type: ignore[no-untyped-call]  # influxdb_client.InfluxDBClient.close lacks stubs

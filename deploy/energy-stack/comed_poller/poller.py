@@ -170,6 +170,22 @@ def main() -> int:
 
     try:
         while not stop_requested:
+            # Wall-clock phase alignment: each cycle starts at the next
+            # XX:XX:00 boundary. Makes the poll/scheduler timing
+            # deterministic across restarts (container boot time no
+            # longer dictates poll phase). Preserved interruptible-sleep
+            # loop so SIGTERM still drops the wait within ~1s.
+            now = time.time()
+            sleep_for = (cfg.poll_interval - (now % cfg.poll_interval)) % cfg.poll_interval
+            deadline = time.monotonic() + sleep_for
+            while not stop_requested and time.monotonic() < deadline:
+                time.sleep(min(1.0, deadline - time.monotonic()))
+            # SIGTERM during the wall-clock-aligned sleep: skip the work
+            # and let the outer-while condition exit. mypy can't track
+            # the signal-handler-set `stop_requested`, hence the ignore.
+            if stop_requested:
+                break  # type: ignore[unreachable]
+
             cycle_start = time.monotonic()
             hourly_avg = None
             five_min = None
@@ -199,12 +215,6 @@ def main() -> int:
                     points_written=written,
                 )
                 HEALTH_MARKER.touch()
-
-            elapsed = time.monotonic() - cycle_start
-            sleep_for = max(0.0, cfg.poll_interval - elapsed)
-            deadline = time.monotonic() + sleep_for
-            while not stop_requested and time.monotonic() < deadline:
-                time.sleep(min(1.0, deadline - time.monotonic()))
     finally:
         log("info", "shutdown")
         influx.close()  # type: ignore[no-untyped-call]

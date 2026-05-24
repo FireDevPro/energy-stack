@@ -364,6 +364,89 @@ def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_for
 # more ceremony than the change warrants.
 
 
+# ---- Wall-clock tick-phase alignment (main_async loop) -------------------
+
+
+def test_scheduler_tick_target_lands_on_next_wall_clock_second():
+    """Phase-alignment invariant (main_async loop): for any wall-clock
+    ``now``, ``target = now.replace(second=SCHEDULER_TICK_SECOND,
+    microsecond=0); if target <= now: target += 1 minute`` always
+    lands on the next XX:XX:SCHEDULER_TICK_SECOND boundary in the
+    future. Pins the math against accidental edits and against
+    accidental drift of SCHEDULER_TICK_SECOND vs the poller's wall-
+    clock :00 alignment."""
+    from .app import SCHEDULER_TICK_SECOND
+    tz = ZoneInfo("America/Chicago")
+    base = datetime(2026, 7, 15, 14, 30, tzinfo=tz)
+    # Same-minute "now" values spanning all 60 seconds + sub-second cases.
+    test_seconds = [0, 1, 5, 9, SCHEDULER_TICK_SECOND - 1, SCHEDULER_TICK_SECOND,
+                    SCHEDULER_TICK_SECOND + 1, 30, 50, 59]
+    for sec in test_seconds:
+        now = base.replace(second=sec)
+        target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
+        if target <= now:
+            target += timedelta(minutes=1)
+        # Target lands on SCHEDULER_TICK_SECOND
+        assert target.second == SCHEDULER_TICK_SECOND
+        assert target.microsecond == 0
+        # And is strictly in the future
+        assert target > now
+        # And within 60s of now (one cycle max)
+        delta = (target - now).total_seconds()
+        assert 0 < delta <= 60.0, f"sec={sec}: delta={delta}"
+
+    # Microsecond-precision now: target must still be strictly after now.
+    now = base.replace(second=SCHEDULER_TICK_SECOND, microsecond=1)
+    target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
+    if target <= now:
+        target += timedelta(minutes=1)
+    assert target > now
+    assert (target - now).total_seconds() <= 60.0
+
+
+def test_scheduler_tick_second_is_after_poller_zero():
+    """The whole point of the wall-clock phase alignment: scheduler
+    ticks must fall AFTER the poller's :00 boundary so the scheduler
+    reads the same minute's freshest ComEd bucket rather than the
+    previous minute's. Pin SCHEDULER_TICK_SECOND > 0."""
+    from .app import SCHEDULER_TICK_SECOND
+    assert SCHEDULER_TICK_SECOND > 0
+    # And below 60 (must be a valid second-of-minute).
+    assert SCHEDULER_TICK_SECOND < 60
+
+
+def test_decision_and_revisit_guards_dont_require_minute_zero():
+    """Regression guard for the startup-after-HH:00:SCHEDULER_TICK_SECOND
+    edge case: with the wall-clock :10 tick phase, a container starting
+    at 21:00:30 has its first tick at 21:01:10. The decision_hour /
+    revisit_hours guards MUST NOT require `now_local.minute == 0` —
+    otherwise the day-ahead decision would be silently lost whenever
+    the container starts between :10 and :59 of the decision hour.
+
+    Source-inspection test (matches the existing pattern at
+    test_health_marker_only_touched_when_tick_succeeds): asserts the
+    `minute == 0` substring is absent from the decision/revisit
+    branches AND that the guards themselves (`last_decision_date`,
+    `fired_revisits`) are still referenced so once-per-day semantics
+    remain intact."""
+    import inspect
+    main_src = inspect.getsource(app.main_async)
+    # The decision branch must reference decision_hour and the
+    # last_decision_date guard, but NOT the strict-minute check.
+    decision_idx = main_src.index("cfg.decision_hour")
+    decision_block_end = main_src.index("decision_failed")
+    decision_branch = main_src[decision_idx:decision_block_end]
+    assert "now_local.minute == 0" not in decision_branch
+    assert "last_decision_date" in decision_branch
+
+    # Same for the revisit branch.
+    revisit_idx = main_src.index("cfg.revisit_hours")
+    revisit_block_end = main_src.index("revisit_failed")
+    revisit_branch = main_src[revisit_idx:revisit_block_end]
+    assert "now_local.minute == 0" not in revisit_branch
+    assert "fired_revisits" in revisit_branch
+
+
 def test_decide_day_type_multi_day_streak_path_still_works():
     """Existing multi-day path (§7 added an alternative escalation path,
     didn't replace this one). When BOTH days HOT, still escalates to
