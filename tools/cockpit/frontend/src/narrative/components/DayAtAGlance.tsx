@@ -20,11 +20,18 @@ const TEMP_MAX = 90
 
 // ¢/kWh tier thresholds — matches deploy/energy-stack/hvac_scheduler/
 // price_overlay.py PRICE_TIERS (elevated=10c trigger, scarcity=20c
-// trigger). The chart's chosen visual cap is generous (24c) so a
-// 20c scarcity bar still has headroom and doesn't get clipped.
+// trigger).
 const PRICE_GREEN = 10
 const PRICE_RED = 20
-const PRICE_AXIS_MAX = 24
+
+// Log-scale Y-axis spans 1c..100c. Cents are roughly log-normal:
+// calm summer hours run 3-12c, scarcity events spike to 50-200c+. A
+// linear axis would crush the bottom range; log preserves resolution
+// at 5/10/20c (where decisions happen) while still showing 50/100c
+// spikes proportionally. Values <1 are clipped to 1c for display.
+const PRICE_AXIS_MIN = 1
+const PRICE_AXIS_MAX = 100
+const Y_AXIS_TICKS = [1, 2, 5, 10, 20, 50, 100]
 
 function shouldUseFixture(): boolean {
   return new URLSearchParams(window.location.search).has('fixture')
@@ -127,9 +134,13 @@ function Chart({
     const clamped = Math.max(TEMP_MIN, Math.min(TEMP_MAX, f))
     return TOP_PAD + chartH * (1 - (clamped - TEMP_MIN) / (TEMP_MAX - TEMP_MIN))
   }
+  // Log mapping: log10(PRICE_AXIS_MIN) -> baseline, log10(PRICE_AXIS_MAX) -> top.
+  const logMin = Math.log10(PRICE_AXIS_MIN)
+  const logMax = Math.log10(PRICE_AXIS_MAX)
   const yForCents = (c: number) => {
-    const clamped = Math.max(0, Math.min(PRICE_AXIS_MAX, c))
-    return TOP_PAD + chartH * (1 - clamped / PRICE_AXIS_MAX)
+    const clamped = Math.max(PRICE_AXIS_MIN, Math.min(PRICE_AXIS_MAX, c))
+    const frac = (Math.log10(clamped) - logMin) / (logMax - logMin)
+    return TOP_PAD + chartH * (1 - frac)
   }
   const yBaseline = TOP_PAD + chartH
 
@@ -513,21 +524,55 @@ function YAxisCents({
   chartW: number
   width: number
 }) {
-  const ticks = [0, 5, 10, 15, 20]
   return (
     <g aria-hidden="true">
-      {ticks.map((t) => (
-        <text
-          key={t}
-          x={LEFT_PAD + chartW + 6}
-          y={yForCents(t) + 3}
-          fill="var(--ink-4)"
-          fontFamily="var(--font-mono)"
-          fontSize={9}
-        >
-          {t}¢
-        </text>
+      {/* Log-scale gridlines + labels at 1, 2, 5, 10, 20, 50, 100¢. */}
+      {Y_AXIS_TICKS.map((t) => (
+        <g key={t}>
+          <line
+            x1={LEFT_PAD}
+            x2={LEFT_PAD + chartW}
+            y1={yForCents(t)}
+            y2={yForCents(t)}
+            stroke="var(--line)"
+            strokeOpacity={0.12}
+            strokeDasharray="1 5"
+          />
+          <text
+            x={LEFT_PAD + chartW + 6}
+            y={yForCents(t) + 3}
+            fill="var(--ink-4)"
+            fontFamily="var(--font-mono)"
+            fontSize={9}
+          >
+            {t}¢
+          </text>
+        </g>
       ))}
+      {/* Tier-threshold guidelines — colored hairlines at the
+          green→yellow (10¢) and yellow→red (20¢) boundaries so the
+          operator can see at a glance how today sits vs the
+          scheduler's bands. */}
+      <line
+        x1={LEFT_PAD}
+        x2={LEFT_PAD + chartW}
+        y1={yForCents(PRICE_GREEN)}
+        y2={yForCents(PRICE_GREEN)}
+        stroke="var(--warn)"
+        strokeWidth={1}
+        strokeOpacity={0.35}
+        strokeDasharray="2 4"
+      />
+      <line
+        x1={LEFT_PAD}
+        x2={LEFT_PAD + chartW}
+        y1={yForCents(PRICE_RED)}
+        y2={yForCents(PRICE_RED)}
+        stroke="var(--danger)"
+        strokeWidth={1}
+        strokeOpacity={0.35}
+        strokeDasharray="2 4"
+      />
       <text
         x={width - 4}
         y={TOP_PAD - 8}
@@ -536,7 +581,7 @@ function YAxisCents({
         fontSize={9}
         textAnchor="end"
       >
-        ¢/kWh
+        ¢/kWh · log
       </text>
     </g>
   )
