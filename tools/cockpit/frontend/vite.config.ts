@@ -7,11 +7,11 @@ export default defineConfig({
   server: {
     proxy: {
       // Forward /api/* to the FastAPI backend during dev. Backend port
-      // is pinned to 8000 to match start-cockpit.ps1 — keep them in sync
+      // is pinned to 8765 to match start-cockpit.ps1 — keep them in sync
       // if either ever moves. Production build is workstation-local;
       // reverse-proxy would serve both /api/* and / from the same origin.
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8765',
         changeOrigin: false,
       },
     },

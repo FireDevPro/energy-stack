@@ -16,7 +16,7 @@ Modes (via COCKPIT_BACKEND_MODE env var):
   tools/cockpit/.env.local for these values.
 
 Run (only supported invocation form, from repo root):
-    PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8000
+    PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8765
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 # Controller Cockpit one-click launcher.
 #
 # Sources .env.local, kills any prior cockpit backend/frontend bound to
-# :8000 / :5173, then spawns uvicorn (live mode) + Vite in two visible
+# :8765 / :5173, then spawns uvicorn (live mode) + Vite in two visible
 # pwsh windows and opens the cockpit in the default browser.
 #
 # First-time setup:
@@ -17,7 +17,7 @@ $ScriptDir    = $PSScriptRoot
 $RepoRoot     = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
 $FrontendDir  = Join-Path $ScriptDir 'frontend'
 $LogDir       = Join-Path $ScriptDir 'logs'
-$BackendPort  = 8000
+$BackendPort  = 8765
 $FrontendPort = 5173
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
