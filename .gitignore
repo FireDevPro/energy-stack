@@ -61,3 +61,11 @@ reference-original.png
 # findings.md (human-curated) is the canonical narrative.
 docs/replay-validation/**/validation_results.json
 docs/replay-validation/**/findings_draft.md
+
+# Understand-Anything knowledge graph:
+# Commit knowledge-graph.json + fingerprints.json + meta.json + config.json +
+# .understandignore (teammates skip the pipeline, auto-update stays incremental).
+# Exclude per-run scratch only.
+.understand-anything/intermediate/
+.understand-anything/tmp/
+.understand-anything/diff-overlay.json
