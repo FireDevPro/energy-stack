@@ -50,25 +50,10 @@ OSF filing. The binding spec is the source of truth.
 
 ## Architecture
 
-```
-Inputs                                  Storage              Decision & output
-─────────────────────────────────────   ─────────────────    ──────────────────────────
-EAGLE-3 (smart meter, billing-grade) ┐                       hvac-scheduler ──► Control4
-ComEd Hourly Pricing (5-min + hourly)├─►                     │  (Arm B: day-type @ 21:00,
-PJM Data Miner 2 (DA LMP, load,      │                       │   price overlay, 5CP
-  metered, peak, NSPL)               │                       │   planning, safety
-NWS forecast + alerts (30-min)       ├─► InfluxDB 2.7 ──►    │   supervisor on every
-Refoss EM16P (per-circuit, 30 s)     │   (energy +           │   setpoint push)
-Ecowitt GW1200 + WS90 + WN31 ch1     │    energy-longterm)   │
-  (canonical outdoor + sun comparator│                       │  Grafana (dashboards)
-  + indoor characterization)         │                       │  telegram-notifier
-CTK04AE thermostat state (10-min)    ┘                       │  Loki + Promtail (logs)
-                                                             │
-                                                       ──► CTK04AE thermostat
-                                                           (Amana ASXC160481BE 2-stage AC
-                                                            + AMVM971005CN modulating
-                                                            furnace + ECM blower)
-```
+![Architecture: inputs (EAGLE-3, ComEd Hourly Pricing, PJM Data Miner 2, NWS, Refoss EM16P, Ecowitt, CTK04AE state) flow into InfluxDB 2.7, which feeds the hvac-scheduler Arm B controller (with safety supervisor), Grafana dashboards, Loki + Promtail logs, and the telegram-notifier; the scheduler pushes setpoints to the CTK04AE thermostat driving a 2-stage Amana AC and modulating furnace.](docs/diagrams/architecture.png)
+
+> Diagram source: [`docs/diagrams/architecture.mmd`](docs/diagrams/architecture.mmd) (Mermaid).
+> Re-render with `npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd -o docs/diagrams/architecture.png -t neutral -b white -w 1600 -H 1400` (SVG is also committed at the same path).
 
 Stack runs as a single Docker Compose project. Deployment is automated: merging to
 `main` triggers a GitHub Actions workflow that joins the operator's tailnet as an
