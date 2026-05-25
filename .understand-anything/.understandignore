@@ -1,0 +1,55 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+#
+# Built-in defaults (always excluded unless negated):
+#   node_modules/, .git/, .venv/, vendor/, dist/, build/, obj/, *.lock,
+#   *.png/*.jpg/*.pdf, *.min.js, *.log, LICENSE, .gitignore, etc.
+
+# --- Cache / transient / tool-internal (energy-proxy specific) ---
+.codex/
+.firecrawl/
+.playwright-mcp/
+.import_linter_cache/
+.mypy_cache/
+.pytest_cache/
+.tmp_*/
+.tmp_dashboard/
+.claude/
+.venv/
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.creds
+*.token
+*.pem
+*.key
+secrets/*.env
+!secrets/*.sops.env
+
+# --- Personal data / runtime artifacts ---
+deploy/energy-stack/inbox/
+analysis/exports/
+docs/test-reports/*.md
+!docs/test-reports/README.md
+docs/replay-validation/**/validation_results.json
+docs/replay-validation/**/findings_draft.md
+
+# --- Local-only dev assets ---
+*.local
+*.bak
+backup-*/
+restore/
+reticule-*.png
+reference-original.png
+.vite/
+frontend.zip
+
+# --- Python compiled ---
+*.pyc
+*.pyo
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
