@@ -25,7 +25,7 @@ pwsh tools/cockpit/install-shortcut.ps1   # creates Cockpit.lnk on desktop
 Then double-click the Cockpit desktop icon. The launcher:
 
 - sources `tools/cockpit/.env.local` (gitignored)
-- kills any prior cockpit backend on `:8000` / Vite on `:5173`
+- kills any prior cockpit backend on `:8765` / Vite on `:5173`
   (only if the bound process command line matches the cockpit — leaves
   unrelated python/node alone)
 - spawns uvicorn (live mode) and Vite as hidden background processes; logs at `tools/cockpit/logs/backend.log` and `tools/cockpit/logs/frontend.log`
@@ -33,7 +33,7 @@ Then double-click the Cockpit desktop icon. The launcher:
 
 To stop the cockpit, re-run `start-cockpit.ps1` (its first action is killing any prior bound process), or kill the uvicorn/Vite processes manually via Task Manager.
 
-Backend port `:8000` is pinned in `vite.config.ts` (proxy target) and
+Backend port `:8765` is pinned in `vite.config.ts` (proxy target) and
 in `start-cockpit.ps1` (`$BackendPort`). Frontend port `:5173` is
 Vite's default and is pinned in `start-cockpit.ps1` (`$FrontendPort`,
 passed as `--port`). Change all three call sites together if either
@@ -90,7 +90,7 @@ Shipped state:
 
 - **Phase 1** — mock fixtures, full UI rendering, no backend.
 - **Phase 2** — 9 fixtures total covering normal operation + edge cases.
-- **Phase 3** — `tools/cockpit/backend/` FastAPI proxy at `:8000` serving
+- **Phase 3** — `tools/cockpit/backend/` FastAPI proxy at `:8765` serving
   the `Snapshot` JSON shape. Frontend polls every 5s with fixture
   fallback on network errors and explicit fixture mode via `?fixture=`.
   Backend tests assert the snapshot contract.

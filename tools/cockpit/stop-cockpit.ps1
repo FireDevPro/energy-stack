@@ -1,5 +1,5 @@
 #requires -Version 7.0
-# Stops the Cockpit backend on :8000 and Vite on :5173 plus their hidden
+# Stops the Cockpit backend on :8765 and Vite on :5173 plus their hidden
 # pwsh wrappers. Targeted: only kills processes whose command line matches
 # the cockpit pattern. Unrelated python/node on those ports are left alone.
 
@@ -23,7 +23,7 @@ function Stop-CockpitOnPort {
   }
 }
 
-Stop-CockpitOnPort -Port 8000 -Pattern 'tools\.cockpit\.backend\.app|tools[\\/]+cockpit[\\/]+backend' -Label 'backend'
+Stop-CockpitOnPort -Port 8765 -Pattern 'tools\.cockpit\.backend\.app|tools[\\/]+cockpit[\\/]+backend' -Label 'backend'
 Stop-CockpitOnPort -Port 5173 -Pattern 'vite|tools[\\/]+cockpit[\\/]+frontend' -Label 'frontend'
 
 # Reap any orphaned pwsh wrappers (hidden launcher children that
