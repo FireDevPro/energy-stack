@@ -259,7 +259,7 @@ Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). Fas
 | Path | Purpose |
 |---|---|
 | `PROJECT.md` | This document — decisions, architecture, roadmap |
-| `README.md` | Top-level entry point pointing at the live system |
+| `README.md` | Public landing page — study framing, what's in the repo, reading path. The archived pre-OSF operator-flavored README is preserved at `README-LEGACY.md` for provenance. |
 | `Test-Eagle.ps1` | Ad-hoc EAGLE-3 Local API probe (kept for manual debugging) |
 | `deploy/energy-stack/` | The live system — InfluxDB + Grafana + 19 service containers (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
 | `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
