@@ -21,7 +21,7 @@ This slice is intentionally non-control and non-persistent:
 
 The observer only reads existing InfluxDB fields:
 
-- `hvac.thermostat`: `indoor_temp_f`, `cool_setpoint_f`
+- `hvac.thermostat`: `indoor_temp_f_hires` (fractional, ~0.18°F resolution, preferred for the fit) or `indoor_temp_f` (whole-degree, fallback for data predating the field's addition); `cool_setpoint_f`
 - `hvac.comfortnet`: `cool_actual_pct`, `heat_actual_pct`
 - Configured local weather measurement, default `ecowitt.outdoor`:
   `outdoor_temp_f`, `solar_radiation_w_m2`

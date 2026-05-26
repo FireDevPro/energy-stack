@@ -5,8 +5,14 @@ Reads thermostat state every THERMOSTAT_POLL_INTERVAL seconds (default 600 s =
 
   Measurement `hvac.thermostat`:
     Tags:   thermostat_id (str)
-    Fields: indoor_temp_f, humidity_pct, cool_setpoint_f, heat_setpoint_f,
-            hvac_mode (str), hvac_state (str), fan_mode (str), hold_mode (str)
+    Fields: indoor_temp_f, indoor_temp_f_hires, humidity_pct, cool_setpoint_f,
+            heat_setpoint_f, hvac_mode (str), hvac_state (str), fan_mode (str),
+            hold_mode (str)
+
+    indoor_temp_f_hires is derived from the Director's TEMPERATURE_C variable
+    (0.1°C resolution = ~0.18°F effective) vs indoor_temp_f's whole-degree
+    quantization from TEMPERATURE_F. Same underlying CTK04AE sensor. See
+    docs/THERMAL_ROUGH_CUT_2026-05-26.md for why both fields exist.
 
   Measurement `hvac.overrides` (only when manual override detected):
     Tags:   thermostat_id, source ("manual_override")

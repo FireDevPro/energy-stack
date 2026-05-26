@@ -406,7 +406,7 @@ Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-schedu
 
    | Tag | Field | Notes |
    |---|---|---|
-   | `thermostat_id` | `indoor_temp_f`, `humidity_pct`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` (running/idle), `fan_mode`, `hold_mode` | Continuous time-series of full thermostat state. Use for Grafana panels, calibration vs. Haven, anomaly detection. |
+   | `thermostat_id` | `indoor_temp_f`, `indoor_temp_f_hires`, `humidity_pct`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` (running/idle), `fan_mode`, `hold_mode` | Continuous time-series of full thermostat state. Use for Grafana panels, calibration vs. Haven, anomaly detection. `indoor_temp_f` is whole-degree (from Director `TEMPERATURE_F`); `indoor_temp_f_hires` is fractional ~0.18°F resolution (derived from Director `TEMPERATURE_C`). Same underlying CTK04AE sensor; prefer the hires field for thermal characterization and stage-cooling-rate work. See [docs/THERMAL_ROUGH_CUT_2026-05-26.md](THERMAL_ROUGH_CUT_2026-05-26.md). |
 
 2. **`hvac.overrides`** — only when current setpoints differ from the last `hvac.actions` row by ≥ 0.5°F AND the last action was > `OVERRIDE_GRACE_MIN` ago (default 5 min):
 
