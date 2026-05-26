@@ -1,5 +1,5 @@
 ---
-date: 2026-05-18
+date: 2026-05-26
 owner: chris
 status: locked
 role-label: spec
@@ -20,7 +20,7 @@ The schedule documented here is the same 4-event daily program applied to all se
 | Wake | 5:00 AM | 68 | 73 | Automatic | 5°F |
 | Leave | 1:00 PM | 66 | 78 | Circulate | 12°F |
 | Return | 7:00 PM | 68 | 75 | Automatic | 7°F |
-| Sleep | 10:00 PM | 65 | 74 | Automatic | 9°F |
+| Sleep | 10:00 PM | 65 | 73 | Automatic | 9°F |
 
 **Deadband check.** The CTK04AE enforces a minimum 5°F separation between heat and cool setpoints in Auto Changeover mode (CTK04 ISU 3000). Every entry in the schedule above satisfies that constraint; Wake is at the floor at exactly 5°F.
 
@@ -59,10 +59,11 @@ The scheduler does run in shadow mode during Arm A periods and writes mode telem
 ## Provenance
 
 - **Source:** TCC (Total Connect Comfort) web user interface, "THERMOSTAT Menu → SCHEDULE" tab. Account-protected, accessed via the operator's TCC login.
-- **Pull date:** 2026-05-18.
+- **Pull date:** 2026-05-26 (re-pulled after pre-OSF Sleep cool refinement; see 2026-05-26 entry below).
 - **Pull method:** Manual transcription from the TCC web UI. There is no read-only API path to the programmed schedule. The pyControl4 `C4Climate` driver used by `deploy/energy-stack/thermostat_poller/poller.py` exposes only the current-state fields (setpoints, mode, fan, hold) — not the embedded weekly schedule, which lives in the VisionPRO 8000 firmware behind the CTK04AE OEM relabel and is reachable only through the TCC web UI or the on-device installer menu.
-- **Evidence artifact:** `docs/THERMOSTAT_ARM_A_TCC_SCREENSHOT_2026-05-18.png` — the TCC web UI screenshot taken at the pull date, showing all seven days with identical 4-event schedules. The transcription in the daily-schedule table above matches the screenshot cell-for-cell.
+- **Evidence artifact:** `docs/THERMOSTAT_ARM_A_TCC_SCREENSHOT_2026-05-26.png` — the TCC web UI screenshot taken at the pull date, showing all seven days with identical 4-event schedules. The transcription in the daily-schedule table above matches the screenshot cell-for-cell.
 - **Discrepancies surfaced and corrected:** the prior transcription embedded in `docs/HVAC_LOGIC.md` "Thermostat fallback" table and the cited Wake cool setpoint in `docs/EXPERIMENT_DESIGN.md` had two cells out of sync with the actual TCC schedule (Wake cool was documented at 74°F instead of 73°F; Leave heat was documented at 68°F instead of 66°F). Both are corrected in the same Phase 5 PR that introduces this document. The freeze cited in this document is the corrected, screenshot-verified version.
+- **Pre-OSF design refinement (2026-05-26):** Sleep cool setpoint adjusted from 74°F to 73°F to match Arm B's Sleep cool temperature (`hvac_scheduler.NORMAL_SCHEDULE` SLEEP), eliminating a 1°F comfort confound between the two arms. Sleep time remains 22:00 CT — Arm B's 21:00 Sleep start is a separate intentional treatment lever (captures the first hour of the 21:00-06:00 DTOD off-peak window at ~$0.02984/kWh per `docs/HVAC_LOGIC.md`). Pre-OSF refinements are permitted under the freeze; post-OSF this would be a protocol deviation.
 - **Verifier:** Chris (operator, sole household occupant).
 - **OSF commit hash:** filled at OSF filing. Currently shown in the YAML frontmatter as `pending-osf-filing`; will be replaced with the commit SHA at the OSF deposit moment.
 

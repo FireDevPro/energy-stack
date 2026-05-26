@@ -21,9 +21,9 @@ Arm A is the thermostat's autonomous 4-event daily schedule. Identical Mon–Sun
 | Wake   | 5:00 AM  | 68 | 73 | Automatic |
 | Leave  | 1:00 PM  | 66 | 78 | Circulate |
 | Return | 7:00 PM  | 68 | 75 | Automatic |
-| Sleep  | 10:00 PM | 65 | 74 | Automatic |
+| Sleep  | 10:00 PM | 65 | 73 | Automatic |
 
-Source of truth: [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md) + the TCC screenshot it cites. The locked spec doc is canonical — these values are reproduced here for at-a-glance reference only. **Sleep cool 74°F may change to 73°F in a pending pre-OSF Arm A refinement; check the locked spec doc before relying on this row.**
+Source of truth: [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md) + the TCC screenshot it cites. The locked spec doc is canonical — these values are reproduced here for at-a-glance reference only.
 
 ## §2 — Arm B scheduler inputs
 
