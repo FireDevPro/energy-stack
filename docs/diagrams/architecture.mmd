@@ -18,6 +18,7 @@ flowchart LR
     R["Refoss EM16P<br/>per-circuit"]:::input
     W["Ecowitt<br/>outdoor + indoor"]:::input
     T["CTK04AE state<br/>(10-min reads)"]:::input
+    CN["ComfortNet<br/>(CT-485 bus &rarr; MQTT)"]:::input
   end
 
   DB[("InfluxDB 2.7<br/>energy +<br/>energy-longterm")]:::store
@@ -39,6 +40,7 @@ flowchart LR
   R --> DB
   W --> DB
   T --> DB
+  CN --> DB
   DB --> H
   DB --> G
   DB --> M
