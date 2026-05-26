@@ -51,9 +51,12 @@ most controls until after the flip. Two features remain gated:
 - **CodeQL default setup** requires the GitHub Code Security add-on
   (separate paid product, ~$48/repo/month, NOT included in Pro). Defer
   to post-public-flip when CodeQL is free for public repos.
-- **Private vulnerability reporting** API endpoint returns 404 on the
-  private Pro repo; reachable via the Security tab UI toggle. Enable
-  manually pre-flip or post-flip.
+- **Private vulnerability reporting** is a public-repos-only feature
+  per GitHub's docs ([configuring PVR for a repository](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/configuring-private-vulnerability-reporting-for-a-repository)).
+  The REST API endpoint (`PUT /repos/{owner}/{repo}/private-vulnerability-reporting`)
+  returns 404 on private repos, and the UI row in Settings → Advanced
+  Security is hidden until visibility flips to public. **Cannot be
+  enabled pre-flip.** Move to Phase B (at-flip) below.
 
 ## Status legend
 
@@ -145,16 +148,16 @@ Two items remain gated (see "Account context" above).
   secrets are tested against the originating provider to confirm
   they're still active.
 
-### 5b. Manual / deferred
+### 5b. At-flip (deferred until public)
 
-- [ ] **TODO-MANUAL: Private vulnerability reporting.** API returns
-  404 on the private Pro repo; reachable via Security tab UI:
-  Settings → Code security → "Private vulnerability reporting" →
+- [⏸] **AT-FLIP: Private vulnerability reporting.** Public-repos-only
+  per GitHub docs (see "Account context" above). At flip time:
+  Settings → Advanced Security → "Private vulnerability reporting" →
   Enable. One click.
 - [⏸] **AT-FLIP: CodeQL default setup.** Requires the GitHub Code
   Security add-on on private repos (separate ~$48/repo/month cost).
-  Free for public repos after flip. At flip time: Settings → Code
-  security → "Code scanning" → "Set up" → "Default" → Python +
+  Free for public repos after flip. At flip time: Settings → Advanced
+  Security → "Code scanning" → "Set up" → "Default" → Python +
   JavaScript/TypeScript.
 
 **Why it matters.** Layered defense. Secret scanning catches historical
@@ -245,12 +248,9 @@ gh-api). The remaining work is:
 
 ### Phase A — Pre-flip (any time before 2026-05-30)
 
-1. **§5b: Enable private vulnerability reporting via Security tab UI**
-   (one click).
-2. Merge this PR so the URL renames and updated checklist reach
-   `main`.
-3. Any additional content / spec / impl PRs that need to land before
-   the OSF freeze tag (per `OSF_FILING_MECHANICS.md` pre-flight).
+1. Merge any additional content / spec / impl PRs that need to land
+   before the OSF freeze tag (per `OSF_FILING_MECHANICS.md`
+   pre-flight).
 
 ### Phase B — At the visibility flip (~5 min)
 
@@ -258,8 +258,10 @@ gh-api). The remaining work is:
    Public. Confirm the typed-name modal.
 2. **§4: Set fork-PR workflow approval to strictest** via Settings →
    Actions → General.
-3. **§5b: Enable CodeQL default setup** via Settings → Code security
-   → Code scanning → "Set up" → "Default" → Python +
+3. **§5b: Enable private vulnerability reporting** via Settings →
+   Advanced Security → "Private vulnerability reporting" → Enable.
+4. **§5b: Enable CodeQL default setup** via Settings → Advanced
+   Security → "Code scanning" → "Set up" → "Default" → Python +
    JavaScript/TypeScript.
 
 ### Phase C — OSF freeze tag push (immediately after Phase B)
