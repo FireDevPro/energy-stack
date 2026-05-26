@@ -5,6 +5,10 @@ status: active
 role-label: chris
 ---
 
+<p align="center">
+  <img src="docs/assets/hero.png" alt="Stylized cutaway of a house with sensor inputs (smart meter, thermostat, AC condenser, weather, water heater, breaker panel) on the left flowing into a central 'energy-proxy' hub, which connects to five output panels on the right: optimized HVAC schedule, comfort guardrails, price-aware decisions, analytics and insights, and peak-risk avoidance." width="900">
+</p>
+
 # energy-proxy
 
 Code, telemetry pipeline, and analysis pipeline for a pre-registered single-case
