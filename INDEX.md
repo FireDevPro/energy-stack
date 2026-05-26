@@ -107,6 +107,11 @@ ethical posture.
   — ComEd Attachment M-2 capacity reconstruction methodology
 - [docs/ETHICS_FRAMING.md](docs/ETHICS_FRAMING.md) — single-occupant
   household research ethics, consent posture, data minimization
+- [docs/THERMAL_ROUGH_CUT_2026-05-26.md](docs/THERMAL_ROUGH_CUT_2026-05-26.md)
+  — pre-OSF empirical fit (AC-off drift) sanity-checking the
+  scheduler's hand-tuned constants. Disposition: no parameter
+  changes; surfaced the wrong-variable choice in pyControl4 that
+  motivated the `indoor_temp_f_hires` telemetry field
 
 ## OSF / Zenodo deposit and security
 
