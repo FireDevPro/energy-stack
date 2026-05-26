@@ -52,6 +52,19 @@ Out of scope:
   prior to becoming public; historical commits visible in any prior
   private snapshot are out of scope for the public-facing repository.
 
+## A note on LAN addresses in the codebase
+
+This repository documents the as-built apparatus of a single-household
+field study, including the LAN addresses of the Pi, the smart meter,
+the per-circuit energy monitor, and the thermostat controller. All such
+addresses are [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918)
+private-network addresses (`192.168.x.x`) and are not reachable from
+the public Internet. They appear in this repository because as-deployed
+instrumentation is a first-class reproducibility artifact for N-of-1
+field studies per the FAIR4RS principles ([Chue Hong et al., 2022, *Scientific Data*](https://doi.org/10.1038/s41597-022-01710-x))
+and building-science reproducibility guidance. Their presence is
+intentional documentation, not a configuration error.
+
 ## Acknowledgements
 
 Reporters who identify valid issues will be credited in the
