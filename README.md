@@ -50,7 +50,7 @@ OSF filing. The binding spec is the source of truth.
 
 ## Architecture
 
-![Architecture: inputs (EAGLE-3, ComEd Hourly Pricing, PJM Data Miner 2, NWS, Refoss EM16P, Ecowitt, CTK04AE state) flow into InfluxDB 2.7, which feeds the hvac-scheduler Arm B controller (with safety supervisor), Grafana dashboards, Loki + Promtail logs, and the telegram-notifier; the scheduler pushes setpoints to the CTK04AE thermostat driving a 2-stage Amana AC and modulating furnace.](docs/diagrams/architecture.png)
+![Architecture: inputs (EAGLE-3, ComEd Hourly Pricing, PJM Data Miner 2, NWS, Refoss EM16P, Ecowitt, CTK04AE state, ComfortNet CT-485 bus via MQTT) flow into InfluxDB 2.7, which feeds the hvac-scheduler Arm B controller (with safety supervisor), Grafana dashboards, Loki + Promtail logs, and the telegram-notifier; the scheduler pushes setpoints to the CTK04AE thermostat driving a 2-stage Amana AC and modulating furnace.](docs/diagrams/architecture.png)
 
 > Diagram source: [`docs/diagrams/architecture.mmd`](docs/diagrams/architecture.mmd) (Mermaid).
 > Re-render with `npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd -o docs/diagrams/architecture.png -t neutral -b white -w 1600 -H 1400` (SVG is also committed at the same path).
