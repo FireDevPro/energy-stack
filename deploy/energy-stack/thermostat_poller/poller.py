@@ -194,6 +194,10 @@ async def read_snapshot(c4: C4Client) -> dict[str, Any]:
     climate = await c4.get_climate()
     snap: dict[str, Any] = {}
     snap["indoor_temp_f"] = await c4.call_with_reauth(climate.get_current_temperature_f)
+    # The Director's TEMPERATURE_C variable carries 0.1°C resolution (~0.18°F
+    # effective) vs TEMPERATURE_F's whole-degree quantization. See
+    # docs/THERMAL_ROUGH_CUT_2026-05-26.md for why this matters.
+    snap["indoor_temp_c"] = await c4.call_with_reauth(climate.get_current_temperature_c)
     snap["cool_setpoint_f"] = await c4.call_with_reauth(climate.get_cool_setpoint_f)
     snap["heat_setpoint_f"] = await c4.call_with_reauth(climate.get_heat_setpoint_f)
     snap["hvac_mode"] = await c4.call_with_reauth(climate.get_hvac_mode)
@@ -207,10 +211,15 @@ async def read_snapshot(c4: C4Client) -> dict[str, Any]:
 def write_snapshot(write_api: Any, cfg: Config, snap: dict[str, Any]) -> None:
     # `p: Any` lets the Point()/.tag()/.field() chain (untyped in
     # influxdb_client stubs) flow through without per-call ignores.
+    indoor_c = snap.get("indoor_temp_c")
+    indoor_f_hires = (float(indoor_c) * 9.0 / 5.0 + 32.0
+                      if indoor_c is not None
+                      else float(snap.get("indoor_temp_f") or 0))
     p: Any = (
         Point("hvac.thermostat")  # type: ignore[no-untyped-call]
         .tag("thermostat_id", str(cfg.thermostat_id))
         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
+        .field("indoor_temp_f_hires", indoor_f_hires)
         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
         .field("cool_setpoint_f", float(snap.get("cool_setpoint_f") or 0))
         .field("heat_setpoint_f", float(snap.get("heat_setpoint_f") or 0))
