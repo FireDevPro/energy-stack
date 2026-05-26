@@ -81,6 +81,10 @@ out to analysis.
 
 - [docs/SERVICES.md](docs/SERVICES.md) — per-service detail for every
   container in the deploy stack
+- [docs/DEBUG_TELEMETRY.md](docs/DEBUG_TELEMETRY.md) — quick-reference
+  catalog: Arm A schedule at a glance, Arm B scheduler inputs, and
+  per-measurement consumption status (FULL / PARTIAL / NONE) for every
+  Influx measurement in the `energy` bucket
 - [docs/INFLUXDB_RETENTION.md](docs/INFLUXDB_RETENTION.md) — bucket
   policies, downsampling rules, retention windows
 - [docs/PJM_DM2_FEEDS.md](docs/PJM_DM2_FEEDS.md) — PJM Data Miner 2
