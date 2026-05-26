@@ -6,7 +6,17 @@ role-label: chris
 ---
 
 <p align="center">
-  <img src="docs/assets/hero.png" alt="Stylized cutaway of a house with sensor inputs (smart meter, thermostat, AC condenser, weather, water heater, breaker panel) on the left flowing into a central 'energy-proxy' hub, which connects to five output panels on the right: optimized HVAC schedule, comfort guardrails, price-aware decisions, analytics and insights, and peak-risk avoidance." width="900">
+  <img src="docs/assets/hero.jpg" alt="Stylized cutaway of a house with sensor inputs (smart meter, thermostat, AC condenser, weather, water heater, breaker panel) on the left flowing into a central 'energy-proxy' hub, which connects to five output panels on the right: optimized HVAC schedule, comfort guardrails, price-aware decisions, analytics and insights, and peak-risk avoidance." width="900">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href=".python-version"><img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13"></a>
+  <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/typecheck.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/typecheck.yml?branch=main&label=type-check" alt="Type-check status"></a>
+  <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/shadow-validation.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/shadow-validation.yml?branch=main&label=shadow-validation" alt="Shadow-validation status"></a>
+  <a href="docs/OSF_FILING_MECHANICS.md"><img src="https://img.shields.io/badge/OSF-pending%202026--05--30-orange" alt="OSF: pending 2026-05-30"></a>
+  <a href="docs/OSF_FILING_MECHANICS.md"><img src="https://img.shields.io/badge/Zenodo%20DOI-pending-orange" alt="Zenodo DOI: pending"></a>
+  <img src="https://img.shields.io/github/last-commit/FireDevPro/energy-stack" alt="Last commit">
 </p>
 
 # energy-proxy
