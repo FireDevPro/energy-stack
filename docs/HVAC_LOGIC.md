@@ -267,7 +267,7 @@ The schedule programmed directly into the CTK04AE (via TCC web UI, applies same 
 | Wake | 5:00 AM | 68 | 73 | Auto | Light pre-cool window, off-peak pricing |
 | Leave | 1:00 PM | 66 | 78 | Circulate | **Peak avoidance** — coast through 1-7pm with circulate fan for perceived comfort. The critical setpoint. |
 | Return | 7:00 PM | 68 | 75 | Auto | Off-peak begins, recover to evening comfort |
-| Sleep | 10:00 PM | 65 | 74 | Auto | Cool sleep, all off-peak |
+| Sleep | 10:00 PM | 65 | 73 | Auto | Cool sleep, all off-peak; matches Arm B Sleep cool to eliminate comfort confound |
 
 **Deadbands** (Honeywell requires 5°F minimum in Auto): Wake 5°✓, Leave 12°✓, Return 7°✓, Sleep 9°✓.
 
