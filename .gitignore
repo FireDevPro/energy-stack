@@ -39,6 +39,11 @@ deploy/energy-stack/inbox/
 # Local pipeline exports (per-run, large, gitignored)
 analysis/exports/
 
+# AI operating preferences (Chris's local conventions for Claude Code / Codex CLI).
+# Not project documentation; kept on the operator's workstation only.
+/AGENTS.md
+/CLAUDE.md
+
 # Firecrawl tool cache (reference PDFs etc; local-only)
 .firecrawl/
 
