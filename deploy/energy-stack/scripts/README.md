@@ -383,10 +383,6 @@ window. There's no audit history kept of the prior amounts.
 
 The parser refuses to write if any of these fail (PDF stays in inbox,
 non-zero exit code):
-- `account_no != EXPECTED_ACCOUNT` (guards against feeding someone
-  else's bill). `EXPECTED_ACCOUNT` is read from `COMED_EXPECTED_ACCOUNT`
-  in the Pi-lab `.env`; the in-repo default matches the public test
-  fixtures so the test suite runs unconfigured.
 - Required fields missing (kWh, total due, rate plan, etc.)
 - `supply + delivery + taxes + misc != total_due` (within $0.01)
 - `service_days` doesn't match calendar diff by more than 1 day
