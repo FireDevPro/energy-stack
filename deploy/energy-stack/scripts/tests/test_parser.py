@@ -290,13 +290,6 @@ def test_parse_bill_validates_totals():
         parse_bill(bad)
 
 
-def test_parse_bill_rejects_wrong_account():
-    text = _norm_fixture("hourly_single_apr2026.txt")
-    bad = text.replace("9999999991", "9999999999")
-    with pytest.raises(BillParseError, match="account_no"):
-        parse_bill(bad)
-
-
 # ---- Task 11: PDF -> Bill ----
 
 

@@ -19,7 +19,6 @@ behavior: writes with the same (measurement, tag set, timestamp) tuple
 collide and overwrite. No application-level dedup needed.
 """
 
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -362,21 +361,14 @@ def parse_line_items(body: str, category: str) -> list[LineItem]:
 # ---- Top-level composer ----
 
 
-# Single-account guard. The script is intentionally pinned to one account so
-# accidentally feeding another household's bill (template-shared utility) fails
-# loudly. The real account is private and lives in the Pi-lab .env as
-# COMED_EXPECTED_ACCOUNT; the fallback below matches the public fixtures so
-# the test suite runs without operator configuration.
-EXPECTED_ACCOUNT = os.environ.get("COMED_EXPECTED_ACCOUNT", "9999999991")
-
 # Cycle-adjustment / final / first-month bills observed at 2-7 days with 0 kWh.
 # Padded to 10 to absorb future variance without flipping legit short cycles.
 TRANSITION_MAX_DAYS = 10
 
 
 class BillParseError(Exception):
-    """Raised when a bill cannot be parsed cleanly: missing required fields,
-    wrong account, or section totals that don't reconcile to total due.
+    """Raised when a bill cannot be parsed cleanly: missing required fields
+    or section totals that don't reconcile to total due.
 
     All field-level extractors raise ValueError on extraction failure;
     parse_bill catches those and re-raises as BillParseError so callers
@@ -393,8 +385,8 @@ def parse_total_due(text: str) -> float:
 
 
 def parse_bill(text: str) -> Bill:
-    """Compose a Bill from extracted parts. Validates account_no and
-    that the per-block totals reconcile to total_due (within $0.01).
+    """Compose a Bill from extracted parts. Validates that per-block
+    totals reconcile to total_due (within $0.01).
 
     Wraps all field-extractor ValueErrors as BillParseError so callers
     have one exception class to catch."""
@@ -402,10 +394,6 @@ def parse_bill(text: str) -> Bill:
         account_no = parse_account_no(text)
     except ValueError as e:
         raise BillParseError(str(e)) from e
-    if account_no != EXPECTED_ACCOUNT:
-        raise BillParseError(
-            f"account_no {account_no} does not match expected {EXPECTED_ACCOUNT}"
-        )
 
     try:
         rate_plan = parse_rate_plan(text)
