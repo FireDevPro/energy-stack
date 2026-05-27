@@ -77,7 +77,7 @@ ephemeral CI node and updates the stack in place. No public ingress.
 
 Start here:
 
-1. [`PROJECT.md`](PROJECT.md) — project narrative, decisions, phase history, hardware inventory.
+1. [`docs/PROJECT.md`](docs/PROJECT.md) — project narrative, decisions, phase history, hardware inventory.
 2. [`INDEX.md`](INDEX.md) — canonical document map (every active doc, grouped by intent).
 3. [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md) — the binding spec. Read this if you want to know what the experiment actually is.
 4. [`docs/HVAC_LOGIC.md`](docs/HVAC_LOGIC.md) — Arm B controller logic (overlays, day-types, 5CP, safety supervisor).

@@ -1,11 +1,16 @@
 ---
 date: 2026-05-19
 owner: chris
-status: open-for-investigation
+status: superseded
+archived_at: 2026-05-27
 role-label: chris
+superseded_by: docs/plans/comed-freshness-plan.md
 ---
 
-# Stale ComEd Data — Handoff Document
+> [!WARNING]
+> **SUPERSEDED 2026-05-27.** The stale-ComEd-data bug described in this handoff was fully resolved by the recency-gate work tracked in [`docs/plans/comed-freshness-plan.md`](../plans/comed-freshness-plan.md). Retained here as historical context only — do NOT act on this document.
+
+# Stale ComEd Data — Handoff Document (SUPERSEDED)
 
 A bug was observed in the hvac-scheduler controller on 2026-05-19. This document captures the findings as facts, not solutions. The next agent should read this, investigate the code thoroughly, and propose a refactor.
 

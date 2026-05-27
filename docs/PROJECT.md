@@ -25,8 +25,8 @@ Starting summer 2026, the same instrumentation runs a pre-registered single-case
 
 What this means for the project shape:
 
-- **Pre-registration is binding**. Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules are locked at a frozen commit hash. Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md).
-- **Both arms are owned in this repo**. Arm A is the CTK04AE thermostat's internal programmed schedule (documented in [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)). Arm B is an RTP/DTOD live price-responsive HVAC controller (`hvac-scheduler`) with weather/day-type scheduling, price-aware pre-cool, 5CP capacity-risk planning/telemetry, and safety supervision. Live setpoint authority is the RTP/DTOD price overlay; 5CP risk informs day-ahead pre-cool/day-type planning but does NOT independently force live setpoint changes (binding spec §11 #14). See [`docs/HVAC_LOGIC.md`](docs/HVAC_LOGIC.md) and binding spec §3.
+- **Pre-registration is binding**. Once filed to OSF, hypotheses, arm definitions, arm calendar, metric definitions, statistical analysis plan, and decision rules are locked at a frozen commit hash. Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md).
+- **Both arms are owned in this repo**. Arm A is the CTK04AE thermostat's internal programmed schedule (documented in [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md)). Arm B is an RTP/DTOD live price-responsive HVAC controller (`hvac-scheduler`) with weather/day-type scheduling, price-aware pre-cool, 5CP capacity-risk planning/telemetry, and safety supervision. Live setpoint authority is the RTP/DTOD price overlay; 5CP risk informs day-ahead pre-cool/day-type planning but does NOT independently force live setpoint changes (binding spec §11 #14). See [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md) and binding spec §3.
 - **Open data and open code at submission time**. Telemetry published as Apache Parquet on Zenodo (CC BY 4.0), with [Brick Schema](https://brickschema.org/) JSON-LD metadata. Repo will be tagged at the OSF-filing commit hash (target 2026-05-30); Zenodo will issue a citable code DOI.
 - **The study is descriptive (discovery framing per spec §9.5)**. No statistical decision rule, no binary "Arm B wins / Arm A wins" verdict. The deliverable is the per-pair table and a fixed set of pre-registered summary breakdowns; readers draw their own conclusions. Negative or null results are equally publishable by construction — there is no confirmatory outcome to gate on.
 - **N=1, single-occupant household, IECC climate zone 5A**. Generalization claims are bounded; the contribution is methodological as much as substantive.
@@ -87,7 +87,7 @@ Ecowitt GW1200 (push, ~60s) ────────┤    ecowitt / thermostat 
 Control4 → CTK04AE (10min) ─────────┘    hvac-scheduler + watchdog)
 ```
 
-Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. The workstation-local **Controller Cockpit** (`tools/cockpit/`) reads from this stack but is not deployed via compose. Per-service detail in [`docs/SERVICES.md`](docs/SERVICES.md); 24-hour activity timeline in [`docs/SCHEDULER_TIMING.md`](docs/SCHEDULER_TIMING.md).
+Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. The workstation-local **Controller Cockpit** (`tools/cockpit/`) reads from this stack but is not deployed via compose. Per-service detail in [`docs/SERVICES.md`](SERVICES.md); 24-hour activity timeline in [`docs/SCHEDULER_TIMING.md`](SCHEDULER_TIMING.md).
 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
@@ -157,7 +157,7 @@ downsampled history.
 
 ## Target Architecture
 
-The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, Phase 9 PJM DM2 poller, and Phase 10 safety supervisor all landed by May 2026 (see Development Roadmap below). Active follow-on work: spec §11 pre-OSF deliverables for the SCED rebaseline (Arm B is the existing scheduler; no new controller variant needed). ComfortNet pipeline (broker + telegraf + Pi-3B publisher) is live as of 2026-05-06 and `hvac.comfortnet` is flowing — see [`docs/COMFORTNET_USE_CASES.md`](docs/COMFORTNET_USE_CASES.md) for downstream consumption and [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for the live implementation.
+The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, Phase 9 PJM DM2 poller, and Phase 10 safety supervisor all landed by May 2026 (see Development Roadmap below). Active follow-on work: spec §11 pre-OSF deliverables for the SCED rebaseline (Arm B is the existing scheduler; no new controller variant needed). ComfortNet pipeline (broker + telegraf + Pi-3B publisher) is live as of 2026-05-06 and `hvac.comfortnet` is flowing — see [`docs/COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) for downstream consumption and [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for the live implementation.
 
 **Grafana dashboards will provide:**
 - Real-time "right now" view (10-30s auto-refresh): current demand, current rate, current cost/hour, top circuits by power
@@ -183,7 +183,7 @@ was deleted in Phase 5 cleanup. The `sense-poller` itself was retired in
 Phase 5 when the Sense hardware was removed.
 
 ### Phase 3.3 — EAGLE-3 Poller ✅ (April 2026)
-Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Operational details in [`docs/SERVICES.md`](docs/SERVICES.md#eagle-poller); historical design in [`docs/archive/phase-3.3-eagle-poller-design.md`](docs/archive/phase-3.3-eagle-poller-design.md).
+Containerized `eagle-poller` polls the Rainforest EAGLE-3 Local API every 30 s and writes instantaneous demand + cumulative summation to `eagle.meter` (billing-grade ground truth). Operational details in [`docs/SERVICES.md`](SERVICES.md#eagle-poller); historical design in [`docs/archive/phase-3.3-eagle-poller-design.md`](archive/phase-3.3-eagle-poller-design.md).
 
 ### Phase 3.4 — Grafana Dashboards ✅ (May 2026)
 Five dashboards provisioned at `deploy/energy-stack/grafana/dashboards/`:
@@ -220,7 +220,7 @@ Non-Member API access provisioned via PJM tech-support (the path the May 2026 Kn
 - `hrl_load_metered` (`zone=CE`) Sundays 02:00 CT — last 7 days of metered load, kept fresh for the 5CP-probability training set.
 - `ops_sum_frcst_peak_rto` at 06:00 + 13:00 CT in Jun–Sep — RTO peak-day signal for cross-checking the day-type classifier.
 - `annual_zonal_nspl` (`zone=COMED`) Dec 1 03:00 CT — yearly NSPL snapshot.
-Plus two scripts: `backfill_pjm.py` for one-shot 5-year history (`scripts/`), and `scrape_pjm_5cp_pdf.py` to parse the official PJM 5CP PDF each November. Design + schema in [`docs/PJM_DM2_INTEGRATION.md`](docs/PJM_DM2_INTEGRATION.md); feed catalog in [`docs/PJM_DM2_FEEDS.md`](docs/PJM_DM2_FEEDS.md).
+Plus two scripts: `backfill_pjm.py` for one-shot 5-year history (`scripts/`), and `scrape_pjm_5cp_pdf.py` to parse the official PJM 5CP PDF each November. Design + schema in [`docs/PJM_DM2_INTEGRATION.md`](PJM_DM2_INTEGRATION.md); feed catalog in [`docs/PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md).
 
 ### Phase 10 — HVAC Scheduler Safety Supervisor ✅ (May 2026)
 New `safety_supervisor.py` module gates every setpoint push the scheduler proposes. Three decision kinds (`approved` / `clamped` / `emergency`):
@@ -232,25 +232,25 @@ Decision logged to `hvac.actions` for audit. The supervisor is shared infrastruc
 Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose container (so it cannot fail-with-the-controller) that writes `hvac.heartbeat controller_alive=false` whenever no `hvac.arm_mode` row appears in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10). No-news-is-good-news: the absence of recent `hvac.heartbeat` rows tells you nothing on its own; the canonical liveness signal is recent `hvac.arm_mode` from the scheduler itself. Consumed by the Controller Cockpit's `controller.alive` field.
 
 ### Phase 11 — Field Study Pre-Registration (drafted May 2026, filing pending 2026-05-30)
-SCED **deterministic-alternation** field study (rebaselined 2026-05-13) comparing the CTK04AE programmed schedule (Arm A) against the active hvac-scheduler (Arm B: RTP/DTOD/5CP-risk-aware RBC + safety supervisor), 14-day arm-level alternation, 2026-06-01 → 2026-11-16 (12 arms total, 6 Arm A + 6 Arm B). Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md). Implementation plan: [`docs/plans/sced-rebaseline-implementation-2026-05-13.md`](docs/plans/sced-rebaseline-implementation-2026-05-13.md). Canonical arm calendar in [`tools/analysis/arm_calendar.py`](tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](deploy/energy-stack/hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). Exclusion-rule mechanics: spec §5 + §5.1 (5-mode hour-level classification, single ≥259-fully-valid-hours validity gate, cost-matched symmetric exclusion within each pair). The original [`docs/archive/EXPERIMENT_DESIGN.md`](docs/archive/EXPERIMENT_DESIGN.md), `randomize_arms.py`, `experiment-assignments-summer-2026.csv`, the `20260601` seed, and the bootstrap CI / SCED-randomization-test framework are explicitly superseded for OSF-binding content (retained for historical context per spec §0). Appendix A controller constants extracted to [`docs/CONTROLLER_CONSTANTS.md`](docs/CONTROLLER_CONSTANTS.md); §O2 capacity reconstruction to [`docs/O2_CAPACITY_RECONSTRUCTION.md`](docs/O2_CAPACITY_RECONSTRUCTION.md); §11 ethics framing to [`docs/ETHICS_FRAMING.md`](docs/ETHICS_FRAMING.md). Capacity-risk operating window remains 2026-06-01 → 2026-09-30 per PJM Manual 19; arms 10-12 (October-November) extend the experiment for arm-vs-arm sample size beyond the 5CP-eligibility window.
+SCED **deterministic-alternation** field study (rebaselined 2026-05-13) comparing the CTK04AE programmed schedule (Arm A) against the active hvac-scheduler (Arm B: RTP/DTOD/5CP-risk-aware RBC + safety supervisor), 14-day arm-level alternation, 2026-06-01 → 2026-11-16 (12 arms total, 6 Arm A + 6 Arm B). Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md). Implementation plan: [`docs/plans/sced-rebaseline-implementation-2026-05-13.md`](plans/sced-rebaseline-implementation-2026-05-13.md). Canonical arm calendar in [`tools/analysis/arm_calendar.py`](../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../deploy/energy-stack/hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). Exclusion-rule mechanics: spec §5 + §5.1 (5-mode hour-level classification, single ≥259-fully-valid-hours validity gate, cost-matched symmetric exclusion within each pair). The original [`docs/archive/EXPERIMENT_DESIGN.md`](archive/EXPERIMENT_DESIGN.md), `randomize_arms.py`, `experiment-assignments-summer-2026.csv`, the `20260601` seed, and the bootstrap CI / SCED-randomization-test framework are explicitly superseded for OSF-binding content (retained for historical context per spec §0). Appendix A controller constants extracted to [`docs/CONTROLLER_CONSTANTS.md`](CONTROLLER_CONSTANTS.md); §O2 capacity reconstruction to [`docs/O2_CAPACITY_RECONSTRUCTION.md`](O2_CAPACITY_RECONSTRUCTION.md); §11 ethics framing to [`docs/ETHICS_FRAMING.md`](ETHICS_FRAMING.md). Capacity-risk operating window remains 2026-06-01 → 2026-09-30 per PJM Manual 19; arms 10-12 (October-November) extend the experiment for arm-vs-arm sample size beyond the 5CP-eligibility window.
 
 ### Controller Cockpit ✅ (May 2026)
-Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). FastAPI backend on `:8000` proxies live Pi-lab InfluxDB + Loki; Vite/React frontend on `:5173` polls every 5 s. Renders the same `decision_trace.*` events the scheduler emits as a real-time flow board: Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action. Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the seven upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). One-click launcher (`start-cockpit.ps1`) + targeted process cleanup + desktop shortcut installer. Read-only by design — no setpoint writes back to the scheduler. Companion to the daily Telegram commissioning report (live-tape vs end-of-day-tape).
+Workstation-local read-only dashboard at [`tools/cockpit/`](../tools/cockpit/). FastAPI backend on `:8000` proxies live Pi-lab InfluxDB + Loki; Vite/React frontend on `:5173` polls every 5 s. Renders the same `decision_trace.*` events the scheduler emits as a real-time flow board: Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action. Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the seven upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). One-click launcher (`start-cockpit.ps1`) + targeted process cleanup + desktop shortcut installer. Read-only by design — no setpoint writes back to the scheduler. Companion to the daily Telegram commissioning report (live-tape vs end-of-day-tape).
 
 ---
 
 ## Known Follow-ups
 
-- **Pre-OSF spec §11 deliverables**: critical path for the 2026-05-30 OSF filing and 2026-06-01 experiment start. The 13 binding-spec §11 items cover arm-calendar + mode-gating in hvac-scheduler (`SCHEDULER_MODE=experiment` reads locked [`arm_calendar.py`](tools/analysis/arm_calendar.py); writes Arm B periods only), mode telemetry (`hvac.arm_mode` every 5-min decision cycle), switch-event logging, input-feed health telemetry, controller heartbeat / watchdog, `rt_hrl_lmps` poller, DTOD analysis-rate table, CTK04AE Arm A schedule freeze ([`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](docs/THERMOSTAT_ARM_A_SCHEDULE.md)), dry-run guard audit, analysis pipeline rewrite, NOAA fallback station selection, day-type schedule completeness verification, and the shadow validation run. Audit progress in [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](docs/plans/pre-osf-doc-audit-execution-2026-05-18.md).
-- **OSF pre-registration filing**: binding spec [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](docs/plans/sced-rebaseline-spec-2026-05-13.md) must be frozen (status: frozen + `frozen_at_commit: <SHA>`) at the OSF-filing commit hash before 2026-06-01. Filing uses the OSF open-ended template with the spec attached via Zenodo DOI; mechanics in [`docs/OSF_FILING_MECHANICS.md`](docs/OSF_FILING_MECHANICS.md).
-- **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](docs/archive/COMFORTNET_PIPELINE.md).
+- **Pre-OSF spec §11 deliverables**: critical path for the 2026-05-30 OSF filing and 2026-06-01 experiment start. The 13 binding-spec §11 items cover arm-calendar + mode-gating in hvac-scheduler (`SCHEDULER_MODE=experiment` reads locked [`arm_calendar.py`](../tools/analysis/arm_calendar.py); writes Arm B periods only), mode telemetry (`hvac.arm_mode` every 5-min decision cycle), switch-event logging, input-feed health telemetry, controller heartbeat / watchdog, `rt_hrl_lmps` poller, DTOD analysis-rate table, CTK04AE Arm A schedule freeze ([`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md)), dry-run guard audit, analysis pipeline rewrite, NOAA fallback station selection, day-type schedule completeness verification, and the shadow validation run. Audit progress in [`docs/plans/pre-osf-doc-audit-execution-2026-05-18.md`](plans/pre-osf-doc-audit-execution-2026-05-18.md).
+- **OSF pre-registration filing**: binding spec [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) must be frozen (status: frozen + `frozen_at_commit: <SHA>`) at the OSF-filing commit hash before 2026-06-01. Filing uses the OSF open-ended template with the spec attached via Zenodo DOI; mechanics in [`docs/OSF_FILING_MECHANICS.md`](OSF_FILING_MECHANICS.md).
+- **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md).
 - **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel input to the day-type classifier.
 - **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Observation source live (`ecowitt-ingest`, shaded WN31 on N/E wall — May 2026); only the bias-fit work remains pending.
 - **Phase 8 forward-projection panel**: bill-vs-projected stub exists in `comed-bill-reconciliation.json`; full formula (supply-so-far + delivery + capacity + taxes + extrapolation) lands after a few cycles of bill data accumulate.
 - **Pre-cool depth A/B test**: research review (May 2026) suggests softening `HOT_PRE_COOL` from 68°F starting 4am to 71–72°F starting 3am for ~90% of peak shift at materially less off-peak kWh. Hits the comfort-aware-scheduling research's recommendation set. May inform a post-experiment retune; mid-experiment variant changes would be protocol deviations.
 - **Fridge anomaly detection upgrade**: current univariate threshold; Merlion (Salesforce, BSD-3) is multivariate and a better fit for the 18-channel Refoss surface.
 - **SOPS encryption** (complete, April 2026): `.env` is mirrored as age-encrypted `deploy/energy-stack/secrets/env.sops.env`, committed to the repo. Recipients: Windows workstation + Pi-lab. Rotation workflow documented in `deploy/energy-stack/README.md`. Both age private keys must be stored in 1Password (single-host loss is recoverable; both-host loss is not).
-- **InfluxDB downsampling** (complete, May 2026): `influx-init` container provisions the `energy-longterm` bucket and a 1-minute downsample Flux task on every `compose up -d`. Per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) keep raw 90 d → mean+max longterm; event measurements (`hvac.actions`, `hvac.overrides`) write directly to longterm. See [`docs/INFLUXDB_RETENTION.md`](docs/INFLUXDB_RETENTION.md).
+- **InfluxDB downsampling** (complete, May 2026): `influx-init` container provisions the `energy-longterm` bucket and a 1-minute downsample Flux task on every `compose up -d`. Per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) keep raw 90 d → mean+max longterm; event measurements (`hvac.actions`, `hvac.overrides`) write directly to longterm. See [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
 
 ---
 
@@ -259,11 +259,11 @@ Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). Fas
 | Path | Purpose |
 |---|---|
 | `PROJECT.md` | This document — decisions, architecture, roadmap |
-| `README.md` | Public landing page — study framing, what's in the repo, reading path. The archived pre-OSF operator-flavored README is preserved at `README-LEGACY.md` for provenance. |
+| `README.md` | Public landing page — study framing, what's in the repo, reading path. The archived pre-OSF operator-flavored README is preserved at `docs/archive/README-LEGACY.md` for provenance. |
 | `Test-Eagle.ps1` | Ad-hoc EAGLE-3 Local API probe (kept for manual debugging) |
 | `deploy/energy-stack/` | The live system — InfluxDB + Grafana + 19 service containers (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) as a Docker compose project, deployed to Pi-lab via GitHub Actions self-hosted runner |
 | `deploy/energy-stack/backup/RESTORE.md` | Pi rebuild procedure from B2 backups |
-| `tools/cockpit/` | Workstation-local read-only Controller Cockpit dashboard (FastAPI :8000 + Vite/React :5173). Not deployed via compose — runs on operator's Windows workstation against Pi-lab Influx + Loki over the homelab VLAN. One-click launcher at `tools/cockpit/start-cockpit.ps1`; see [`tools/cockpit/README.md`](tools/cockpit/README.md). |
+| `tools/cockpit/` | Workstation-local read-only Controller Cockpit dashboard (FastAPI :8000 + Vite/React :5173). Not deployed via compose — runs on operator's Windows workstation against Pi-lab Influx + Loki over the homelab VLAN. One-click launcher at `tools/cockpit/start-cockpit.ps1`; see [`tools/cockpit/README.md`](../tools/cockpit/README.md). |
 | `docs/SERVICES.md` | Per-service reference (env vars, fields written, healthchecks) |
 | `docs/HVAC_LOGIC.md` | HVAC scheduler logic, schedules, fallback, ISU settings, safety supervisor, equipment |
 | `docs/SCHEDULER_TIMING.md` | Mermaid timing + decision diagrams; companion to HVAC_LOGIC.md |
@@ -277,7 +277,7 @@ Workstation-local read-only dashboard at [`tools/cockpit/`](tools/cockpit/). Fas
 | `docs/PJM_DM2_FEEDS.md` | Feed catalog with filterable columns and ComEd-specific constants |
 | `docs/INFLUXDB_RETENTION.md` | Retention/downsampling design (`energy` raw + `energy-longterm` aggregates) |
 | `docs/COMFORTNET_USE_CASES.md` | What we do with ComfortNet bus data (active reference). Pipeline implementation lives in [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) |
-| `docs/archive/` | Historical design and planning docs for shipped features (see [`docs/archive/README.md`](docs/archive/README.md) for index) |
+| `docs/archive/` | Historical design and planning docs for shipped features (see [`docs/archive/README.md`](archive/README.md) for index) |
 
 ---
 
@@ -364,7 +364,7 @@ Honeywell's "Adaptive Intelligent Recovery" starts the AC 30-60 min BEFORE a sch
 2. Makes the Pi's setpoint pushes unpredictable — "set 78 at 13:00" should mean exactly that, not "AR starts cooling at 12:30 to hit 78 by 13:00"
 3. Fights the dynamic re-evaluation when the scheduler updates today's behavior from overrides
 
-Documented in [HVAC_LOGIC.md ISU table](docs/HVAC_LOGIC.md#honeywell-isu-settings-the-set-once-stuff). Verify after any thermostat factory reset.
+Documented in [HVAC_LOGIC.md ISU table](HVAC_LOGIC.md#honeywell-isu-settings-the-set-once-stuff). Verify after any thermostat factory reset.
 
 ### ComEd public API does NOT expose day-ahead forecast
 
@@ -393,7 +393,7 @@ Research review (May 2026, three agents, sources include NREL/Davis Energy Group
 - Coast on stage 1 with slightly lower setpoint (78-79°F) in humid weather rather than free-coasting to 80+ — leverages the 2-stage compressor for dehumidification
 - Humid override threshold could tighten 65→62°F per ASHRAE 55-2020 (humidity ratio 0.012 kg/kg)
 
-Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. Logged in [HVAC_LOGIC.md](docs/HVAC_LOGIC.md) as a known re-tune opportunity, not yet applied.
+Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. Logged in [HVAC_LOGIC.md](HVAC_LOGIC.md) as a known re-tune opportunity, not yet applied.
 
 ### Haven IAQ ingest + thermostat-poller (May 2026)
 
@@ -425,7 +425,7 @@ Why this matters for the existing scheduler: the return-air mix is a **fundament
 - **OpenADR 3.x** — ComEd doesn't currently expose a residential VTN; revisit if/when they do
 - **Override logging** ✅ shipped May 2026 via `thermostat-poller` automatic override detection: writes `hvac.overrides` rows whenever current thermostat setpoints diverge ≥ 0.5°F from the last `hvac.actions` row by more than `OVERRIDE_GRACE_MIN` (default 5 min). Foundational training data for future ML/MPC layers.
 
-Full research output: agent reports retained in session transcripts; key findings summarized in [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md) and the open-questions section above.
+Full research output: agent reports retained in session transcripts; key findings summarized in [docs/HVAC_LOGIC.md](HVAC_LOGIC.md) and the open-questions section above.
 
 ---
 
@@ -439,7 +439,7 @@ Full research output: agent reports retained in session transcripts; key finding
 | Amana ASXC160481BE | Outdoor AC condenser, 16 SEER 2-stage 4-ton | (HVAC) | Active; 2-stage capability is what makes pre-cool strategy viable |
 | Amana AMVM971005CN | Modulating gas furnace + variable-speed ECM blower | (HVAC) | Active; ECM blower enables Circulate-fan during coast at low W |
 | Control4 EA-5 controller | HA-style automation hub bridging to TCC | LAN, 192.168.1.30 | Active; pyControl4 token persisted in `hvac_scheduler_data` volume |
-| Ecowitt GW1200B + WS90 + WN31 | Outdoor weather (push to `ecowitt-ingest`): WS90 7-in-1 on pergola (sun-exposed comparator); WN31 on shaded N/E wall as canonical outdoor temp/RH/dewpoint (analysis-canonical fields `ch1_temp_f` / `ch1_dewpoint_f` per binding spec §6); GW1200B indoor for `tempinf`/`humidityin`/`baromrelin`. Schema documented in [`docs/SERVICES.md#ecowitt-ingest`](docs/SERVICES.md#ecowitt-ingest). | LAN, push to Pi-lab `ecowitt-ingest` | Active (May 2026) |
+| Ecowitt GW1200B + WS90 + WN31 | Outdoor weather (push to `ecowitt-ingest`): WS90 7-in-1 on pergola (sun-exposed comparator); WN31 on shaded N/E wall as canonical outdoor temp/RH/dewpoint (analysis-canonical fields `ch1_temp_f` / `ch1_dewpoint_f` per binding spec §6); GW1200B indoor for `tempinf`/`humidityin`/`baromrelin`. Schema documented in [`docs/SERVICES.md#ecowitt-ingest`](SERVICES.md#ecowitt-ingest). | LAN, push to Pi-lab `ecowitt-ingest` | Active (May 2026) |
 | ComEd Smart Meter | Utility meter | Via EAGLE-3 Zigbee HAN | Connected |
 | ~~Sense Energy Monitor~~ | ~~Whole-home power + device detection~~ | — | Removed April 2026 (replaced by Refoss EM16P) |
 
