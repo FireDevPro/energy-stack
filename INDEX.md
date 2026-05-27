@@ -5,8 +5,7 @@ status: active
 role-label: doc-index
 name: INDEX
 related:
-  - AGENTS.md
-  - PROJECT.md
+  - docs/PROJECT.md
 ---
 
 # Canonical doc index
@@ -15,10 +14,6 @@ Curated map of active documentation in this repository, grouped by
 intent. For agents: this is the authoritative starting point — every
 doc listed here is current and load-bearing. For humans: this is the
 table of contents.
-
-**Project rules for agents live in [`AGENTS.md`](AGENTS.md).** This
-file is the WHAT (content map). AGENTS.md is the HOW (behavior
-contract).
 
 What's NOT in this index is documented in the [Excluded](#excluded-from-this-index)
 section at the bottom — primarily archived docs, per-event findings,
@@ -32,15 +27,8 @@ Read these first if you're new to the repo.
 
 - [README.md](README.md) — public landing page; project summary and
   pointers to the OSF deposit
-- [PROJECT.md](PROJECT.md) — project narrative, current status, study
-  trajectory, phase plan
-- [AGENTS.md](AGENTS.md) — standing behavior rules for AI agents
-  working in this repo (tone, coding rules, branching policy, skill
-  protocol)
-- [CLAUDE.md](CLAUDE.md) — Claude-specific pointer that defers to
-  AGENTS.md for project rules
-- [HANDOFF.md](HANDOFF.md) — session-handoff template for continuity
-  across operator sessions
+- [docs/PROJECT.md](docs/PROJECT.md) — project narrative, current
+  status, study trajectory, phase plan
 
 ## Binding pre-registration (OSF freeze)
 
