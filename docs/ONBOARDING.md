@@ -151,7 +151,7 @@ A 10-step walkthrough generated from the graph. Each step picks 2-5 nodes that, 
 Start with `README.md` to learn what energy-proxy is. Then `INDEX.md` (canonical doc map by intent). Then `AGENTS.md` (standing rules every contributor follows, including the binding pre-registration constraint).
 
 ### Step 2 — The Binding Pre-Registration Spec
-**Nodes:** [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) · [`PROJECT.md`](../PROJECT.md)
+**Nodes:** [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) · [`PROJECT.md`](PROJECT.md)
 
 Every architectural decision downstream traces back to this single document. Once filed to OSF, hypotheses + arm definitions + arm calendar + metric definitions + statistical analysis plan + decision rules freeze at a commit hash. PROJECT.md provides the historical narrative — how the project evolved through 11 phases.
 
@@ -248,7 +248,7 @@ Files marked **complex** at the file level. Approach these carefully — many ar
 | See blast radius of a PR before merging | `/understand-anything:understand-diff` |
 | Continue exploring interactively | `/understand-anything:understand-chat <question>` |
 
-The full doc map is at [`INDEX.md`](../INDEX.md). The handoff for the next agent session is at [`HANDOFF.md`](../HANDOFF.md).
+The full doc map is at [`INDEX.md`](../INDEX.md).
 
 ---
 

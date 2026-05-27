@@ -152,7 +152,7 @@ Two escalation paths produce `HOT_STREAK_DAY1` (both return the same schedule be
 
 Same dynamic-shutoff semantics as HOT_5CP_RISK above.
 
-> **Open re-tune:** post-research review (May 2026) suggests softening pre-cool depth from 68→71-72°F starting at 3am instead of 4am @ 68°F captures 90%+ of peak shift at materially less off-peak kWh in low-mass wood-frame homes. Per NREL/Davis Energy Group field studies. Worth A/B testing in summer 2026. See [PROJECT.md decision log](../PROJECT.md).
+> **Open re-tune:** post-research review (May 2026) suggests softening pre-cool depth from 68→71-72°F starting at 3am instead of 4am @ 68°F captures 90%+ of peak shift at materially less off-peak kWh in low-mass wood-frame homes. Per NREL/Davis Energy Group field studies. Worth A/B testing in summer 2026. See [PROJECT.md decision log](PROJECT.md).
 
 ---
 
@@ -164,7 +164,7 @@ If the latest `nws.forecast` for today reports `max_dewpoint_f > 65°F`, the sch
 
 **Why 65°F:** historical guidance ASHRAE 55-2017 set the indoor dewpoint comfort cap at 62°F. Above 62-65°F outdoor dewpoint, holding a high coast setpoint without running the AC for latent removal pushes indoor dewpoint past the comfort envelope and creates a brutal latent recovery load when AC restarts. Running stage 1 longer at a slightly lower setpoint keeps the coil dehumidifying.
 
-**Open re-tune** (post-research, May 2026): more rigorous answer per ASHRAE 55-2020 humidity ratio cap (0.012 kg/kg ≈ 62°F dewpoint) is to drop the threshold from 65→62°F. See [PROJECT.md decision log](../PROJECT.md).
+**Open re-tune** (post-research, May 2026): more rigorous answer per ASHRAE 55-2020 humidity ratio cap (0.012 kg/kg ≈ 62°F dewpoint) is to drop the threshold from 65→62°F. See [PROJECT.md decision log](PROJECT.md).
 
 ---
 

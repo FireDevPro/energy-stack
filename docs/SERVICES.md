@@ -204,7 +204,7 @@ Polls the public ComEd Hourly Pricing API (`hourlypricing.comed.com/api`). Two e
 | `period_type=5min` | Latest 5-min interval | `millisUTC` from API |
 | `period_type=hourly_avg` | Current hour average | Hour-truncated UTC (idempotent — repeated polls upsert) |
 
-> **Note:** ComEd does NOT publicly expose day-ahead forecast prices. The undocumented `?type=daynexttoday` endpoint returns today's *settled* day-ahead prices (not tomorrow's). PJM DataMiner2 is the upstream source but requires an API key gated by member status. See [PROJECT.md decision log](../PROJECT.md). For day-ahead LMP, the `pjm-dm2-poller` writes `pjm.lmp_da_hourly` from `da_hrl_lmps` at 17:00 CT daily — see [pjm-dm2-poller](#pjm-dm2-poller) below.
+> **Note:** ComEd does NOT publicly expose day-ahead forecast prices. The undocumented `?type=daynexttoday` endpoint returns today's *settled* day-ahead prices (not tomorrow's). PJM DataMiner2 is the upstream source but requires an API key gated by member status. See [PROJECT.md decision log](PROJECT.md). For day-ahead LMP, the `pjm-dm2-poller` writes `pjm.lmp_da_hourly` from `da_hrl_lmps` at 17:00 CT daily — see [pjm-dm2-poller](#pjm-dm2-poller) below.
 
 **Healthcheck:** `/tmp/last_poll_ok` marker, same pattern as eagle-poller.
 

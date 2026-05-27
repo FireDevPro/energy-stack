@@ -301,7 +301,7 @@ The broker stays up across `compose up -d` runs. To stop: `docker compose --prof
 ## Related
 
 - Top-level project: [`../../README.md`](../../README.md)
-- Project history & decisions: [`../../PROJECT.md`](../../PROJECT.md)
+- Project history & decisions: [`../../docs/PROJECT.md`](../../docs/PROJECT.md)
 - Per-service detail: [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
 - HVAC scheduler logic: [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
 - Backup/restore: [`backup/RESTORE.md`](backup/RESTORE.md)
