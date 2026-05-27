@@ -387,11 +387,6 @@ non-zero exit code):
 - `supply + delivery + taxes + misc != total_due` (within $0.01)
 - `service_days` doesn't match calendar diff by more than 1 day
 
-The parser does NOT guard against ingesting bills from a different
-account — the operator (sole household occupant) downloads each bill
-manually from their account portal and verifies it before ingest, so
-the wrong-account threat model is functionally impossible.
-
 ### Exit codes
 
 | Code | Meaning                                          |
