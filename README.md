@@ -14,7 +14,7 @@ role-label: chris
   <a href=".python-version"><img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13"></a>
   <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/typecheck.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/typecheck.yml?branch=main&label=type-check" alt="Type-check status"></a>
   <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/shadow-validation.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/shadow-validation.yml?branch=main&label=shadow-validation" alt="Shadow-validation status"></a>
-  <a href="docs/OSF_FILING_MECHANICS.md"><img src="https://img.shields.io/badge/OSF-pending%202026--05--30-orange" alt="OSF: pending 2026-05-30"></a>
+  <a href="docs/OSF_FILING_MECHANICS.md"><img src="https://img.shields.io/badge/OSF-pending%202026--05--31-orange" alt="OSF: pending 2026-05-31"></a>
   <a href="docs/OSF_FILING_MECHANICS.md"><img src="https://img.shields.io/badge/Zenodo%20DOI-pending-orange" alt="Zenodo DOI: pending"></a>
   <img src="https://img.shields.io/github/last-commit/FireDevPro/energy-stack" alt="Last commit">
 </p>

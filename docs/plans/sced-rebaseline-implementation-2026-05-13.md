@@ -2,7 +2,7 @@
 name: sced-rebaseline-implementation
 date: 2026-05-13
 owner: chris
-status: in-progress
+status: phases-1-6-complete
 role-label: chris
 companion-spec: docs/plans/sced-rebaseline-spec-2026-05-13.md
 osf_filing_target: 2026-05-30

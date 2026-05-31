@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software or data, please cite it using these metadata."
+title: "energy-proxy: pre-registered single-case field study of an RTP/DTOD/5CP-aware HVAC controller"
+abstract: >-
+  Code, telemetry pipeline, and analysis pipeline for a pre-registered single-case
+  experimental-design (SCED) field study comparing an RTP/DTOD/5CP-risk-aware HVAC
+  controller against a household's existing programmable-thermostat schedule, run as a
+  24-week A/B/A/B alternation (summer through fall 2026) in a single ComEd Hourly Pricing
+  household. The binding pre-registration is the SCED rebaseline spec, frozen at the OSF
+  filing commit.
+type: software
+authors:
+  - given-names: Chris
+    family-names: dePaola
+repository-code: "https://github.com/FireDevPro/energy-stack"
+license: MIT
+version: "osf-prereg-2026-05-31"
+date-released: "2026-05-31"
+keywords:
+  - HVAC
+  - demand response
+  - real-time pricing
+  - single-case experimental design
+  - n-of-1
+  - ComEd Hourly Pricing
+  - PJM 5CP
