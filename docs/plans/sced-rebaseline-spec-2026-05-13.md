@@ -2,7 +2,8 @@
 name: sced-rebaseline-spec
 date: 2026-05-13
 owner: chris
-status: draft
+status: frozen
+frozen_at_commit: pending-recorded-in-freeze-tag-commit
 role-label: spec
 supersedes: docs/plans/archive/analysis-rebaseline-plan-2026-05-13.md, docs/EXPERIMENT_DESIGN.md (analysis portions)
 osf_filing_target: 2026-05-30
