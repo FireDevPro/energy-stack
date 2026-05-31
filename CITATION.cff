@@ -16,6 +16,11 @@ repository-code: "https://github.com/FireDevPro/energy-stack"
 license: MIT
 version: "osf-prereg-2026-05-31"
 date-released: "2026-05-31"
+doi: 10.5281/zenodo.20477728
+identifiers:
+  - type: url
+    value: "https://osf.io/w52kq/"
+    description: "OSF pre-registration (Open-Ended Registration)"
 keywords:
   - HVAC
   - demand response
