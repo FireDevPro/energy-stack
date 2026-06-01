@@ -316,10 +316,74 @@ the scheduled time** (e.g. heat comes on before a 6:00 AM Wake so it's 70 °F *a
 
 ## Temperature resolution, display & calibration
 
-- **Internal sensing is finer than the display.** The control reasons on
-  finer-than-1° data but **displays whole °F** by default (some firmware shows 0.5°);
-  Celsius mode steps in 0.5 °C. `[medium — model/firmware dependent; no single
-  authoritative "internal = 0.1 °F" statement located]`
+**Headline: the panel shows whole °F, but the thermostat senses and *controls* on a
+finer ~0.1 °C value.** Three distinct resolutions, don't conflate them:
+
+| Layer | Resolution | Confidence |
+|---|---|---|
+| Front-panel display | whole °F (0.5 °C in Celsius mode) | high |
+| Sensed / represented temperature | native **0.1 °C (~0.18 °F)** | **high — proven on our unit** |
+| Control decision (cool on/off) | uses the fine value, not the rounded display | **high (mechanism + behavior)** |
+
+### Proven on our own hardware (the decisive evidence)
+
+`THERMAL_ROUGH_CUT_2026-05-26.md` captured the Director exposing, simultaneously,
+`TEMPERATURE_F = 78` and `TEMPERATURE_C = 25.5`. The arithmetic settles it:
+
+- `25.5 °C → 77.9 °F` exactly.
+- `78 °F → 25.56 °C`, which at 0.1° resolution would round to **25.6**, not 25.5.
+
+So if the device only *knew* "78 °F" and converted for the API, it would emit 25.6.
+It emitted **25.5** — i.e. the **native value is 77.9 °F (= 25.5 °C)** and the panel's
+"78" is the rounded-up whole-degree *display*. The CTK04's actual sensed/reported
+temperature carries tenths-of-°C; the whole number is cosmetic. Our
+`indoor_temp_f_hires` field is exactly that native value surfaced. `[high]`
+
+### Why the control loop uses the fine value, not the rounded display
+
+1. **The algorithm is mathematically continuous.** Honeywell's documented control is
+   **proportional-plus-integral (P+I)**: proportional error = (sensed temp − setpoint),
+   plus an integral-over-time term, with a proprietary droop-elimination correction. A
+   P+I / CPH anticipator loop **cannot** run on whole-degree-quantized input — it needs
+   the sub-degree error. Honeywell's own phrasing: *"even though the unit is displaying
+   temperature in whole numbers, it is calculating its algorithm in tenths or
+   hundredths."* `[high]`
+2. **Observed switching is sub-degree** — field reports have this platform regulating
+   to windows *"as narrow as 0.25 °F"* while the display never leaves the whole number.
+   `[medium]`
+3. **Official Honeywell statement:** *"Honeywell thermostats round in the display to the
+   nearest whole number (half number in Celsius)… the actual temperature did fall to 71
+   or up to 73 and that is what turned on the heating or cooling, but the display will
+   stay at 72."* The *actual* (fine) temperature drives the equipment; the display is
+   deliberately damped to avoid flicker. `[high]`
+
+This also explains the rough-cut's "mechanical zero slope" on `indoor_temp_f` during
+AC-on windows: the control holds the *fine* temp near setpoint, so the whole-degree
+display simply doesn't move — which is why `indoor_temp_f_hires` was added.
+
+### Caveats so we don't over-claim
+
+- **The fineness is on the *measured* side.** In **°F mode the setpoint is still
+  whole-degree** (78, not 78.5); the loop is `error = sensed(0.1 °C) − setpoint(whole
+  °F)`. Switch the panel to **°C** and the setpoint also gets 0.5 ° steps. Either way
+  the *measured* temperature is resolved to tenths.
+- **Quantization is ~0.1 °C (≈0.18 °F), not true 0.1 °F.** The °F-tenths in
+  `indoor_temp_f_hires` are a conversion of the 0.1 °C native step, so they arrive in
+  ~0.18 °F increments.
+- **We control off the RedLINK C7189R remote**, so the relevant value is the remote's
+  reading as the thermostat represents it — which telemetry shows arriving at 0.1 °C.
+  The C7189R's raw RF payload resolution isn't separately published, but the exposed
+  control temperature is unambiguously at tenths-of-°C. `[med-high]`
+
+### Making it first-hand definitive (on-device probes)
+
+1. **Director probe over a cooling cycle** — log `TEMPERATURE_C` each poll and watch it
+   step in 0.1 °C increments while `TEMPERATURE_F` holds; correlate compressor on/off
+   (`hvac.comfortnet`) with sub-whole-degree setpoint crossings.
+2. **Flip the panel to °C for a day** — the home screen shows 0.5 °C steps, visually
+   proving sub-1 °F resolution, then flip back.
+
+### Other display/calibration facts
 - **Sensor accuracy ≈ ±1.5 °F at 70 °F** (±0.75 °C at 21 °C). `[high]` (Note: this is
   per-sensor; with multiple averaged control sensors the errors partially average
   out.)
