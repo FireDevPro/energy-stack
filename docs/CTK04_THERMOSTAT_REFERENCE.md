@@ -402,33 +402,42 @@ display simply doesn't move — which is why `indoor_temp_f_hires` was added.
 
 ## Surfacing & sanity-checking the control temperature
 
-### Surfacing the granular value the thermostat acts on — four tiers
+### Surfacing the granular value the thermostat acts on
 
-| Tier | Source | Resolution | Status |
-|---|---|---|---|
-| 1 | Control4 Director `TEMPERATURE_C` → `indoor_temp_f_hires` | 0.1 °C (~0.18 °F); **time**-limited to 600 s poll | **already logged** |
-| 2 | CT-485 ComfortNet (ClimateTalk) bus, via the `comfortnet` sniffer | bus-native, sub-minute, scaled-integer temp | tap exists; temp/setpoint **not yet decoded** |
-| 3 | On-device installer/test screens; flip panel to °C | 0.5 °C visible | manual |
-| 4 | Raw thermistor ADC / C7189R RF payload | — | **not exposed** (ceiling) |
+> **Correction (the control temperature is NOT on the CT-485 bus).** An earlier draft
+> of this doc claimed the ComfortNet/ClimateTalk bus carries the room/control
+> temperature and setpoints and that extending the `comfortnet` decoder would surface
+> them. **That was wrong.** Per `COMFORTNET_USE_CASES.md`: *"The CTK04 thermostat
+> itself does not publish live state on CT-485 (returns a static fingerprint to
+> coordinator polls). Room temp / setpoints / humidity continue to come from the
+> existing `thermostat-poller` (Control4)."* The thermostat does its comfort math
+> locally and only emits **demand %** to the equipment — the furnace/AC never need the
+> room temperature, so it is never broadcast. The bus is a **dead end** for the control
+> temperature.
 
-- **Tier 1 is the control-sensor temperature.** `indoor_temp_f_hires` *is* the value
-  the setpoint comparison runs against. Its only limit is **time** resolution (10-min
-  TCC floor), not temperature resolution. Local Director reads aren't necessarily bound
+| Source | What it gives | Carries the **control temp**? |
+|---|---|---|
+| Control4 Director `TEMPERATURE_C` → `indoor_temp_f_hires` | 0.1 °C (~0.18 °F) control temp | **YES — and it's the only programmatic source** |
+| CT-485 ComfortNet bus (`comfortnet` sniffer) | furnace supply/return air temp (`0x87`), AC outdoor-cabinet temp, demand/actual %, CFM | **NO** — thermostat returns a static fingerprint |
+| On-device display | whole °F (0.5 °C in C mode) | viewing only |
+| Raw thermistor ADC / C7189R RF payload | — | **not exposed** (hard ceiling) |
+
+- **The Control4/cloud path is THE source.** `indoor_temp_f_hires` *is* the control
+  temperature, and at 0.1 °C it's the **finest value obtainable programmatically** —
+  there is no bus path to anything finer. Its only limit is **time** resolution (10-min
+  TCC floor), not temperature resolution; local Director reads aren't necessarily bound
   by the TCC cloud rate limit, so a short high-cadence burst is feasible for a
   calibration session (watch the switching live).
-- **Tier 2 is the highest-fidelity path and the tap already exists.** The
-  `Promithius-DR/comfortnet` sniffer already decodes `*_actual_pct` / `*_demand_pct` /
-  `blower_cfm` / `0xC1` user-menu, but **not** the thermostat's indoor/control
-  temperature and active setpoints — those ride the ClimateTalk status frames and are
-  unparsed. Extending the decoder surfaces the control temperature straight off the
-  wire: cloud-independent, sub-minute cadence, and likely finer than the 0.1 °C cloud
-  value. **Confirm the exact temp scaling empirically when decoding** (ClimateTalk
-  encodes temperatures as scaled integers; the per-equipment scale should be verified,
-  not assumed).
-- **`cool_demand_pct` is already a direct "what the thermostat decided" signal.**
-  Cross-referencing demand-% transitions against `(indoor_temp_f_hires −
-  cool_setpoint_f)` measures the **effective switching differential empirically** and
-  shows sub-degree action with zero new instrumentation.
+- **The temps that ARE on the bus are equipment sensors, not the control temp.**
+  Furnace supply/return air (`0x87`, 16-bit packed °F) and the AC outdoor-cabinet temp
+  (`0x87 tag=0`, which `COMFORTNET_USE_CASES.md` explicitly relegates to
+  "equipment-state context only, *not* an ambient reference"). Useful for system
+  health (coil ΔT), **not** for the control temperature.
+- **`cool_demand_pct` (on the bus) is still a direct "what the thermostat decided"
+  signal.** Cross-referencing bus demand-% transitions against the cloud-sourced
+  `(indoor_temp_f_hires − cool_setpoint_f)` measures the **effective switching
+  differential empirically** and shows sub-degree action — combining the two sources,
+  since the temperature only lives on the cloud path.
 
 ### How a tech calibrates / sanity-checks (and our in-stack equivalent)
 
