@@ -400,6 +400,68 @@ display simply doesn't move — which is why `indoor_temp_f_hires` was added.
 
 ---
 
+## Surfacing & sanity-checking the control temperature
+
+### Surfacing the granular value the thermostat acts on — four tiers
+
+| Tier | Source | Resolution | Status |
+|---|---|---|---|
+| 1 | Control4 Director `TEMPERATURE_C` → `indoor_temp_f_hires` | 0.1 °C (~0.18 °F); **time**-limited to 600 s poll | **already logged** |
+| 2 | CT-485 ComfortNet (ClimateTalk) bus, via the `comfortnet` sniffer | bus-native, sub-minute, scaled-integer temp | tap exists; temp/setpoint **not yet decoded** |
+| 3 | On-device installer/test screens; flip panel to °C | 0.5 °C visible | manual |
+| 4 | Raw thermistor ADC / C7189R RF payload | — | **not exposed** (ceiling) |
+
+- **Tier 1 is the control-sensor temperature.** `indoor_temp_f_hires` *is* the value
+  the setpoint comparison runs against. Its only limit is **time** resolution (10-min
+  TCC floor), not temperature resolution. Local Director reads aren't necessarily bound
+  by the TCC cloud rate limit, so a short high-cadence burst is feasible for a
+  calibration session (watch the switching live).
+- **Tier 2 is the highest-fidelity path and the tap already exists.** The
+  `Promithius-DR/comfortnet` sniffer already decodes `*_actual_pct` / `*_demand_pct` /
+  `blower_cfm` / `0xC1` user-menu, but **not** the thermostat's indoor/control
+  temperature and active setpoints — those ride the ClimateTalk status frames and are
+  unparsed. Extending the decoder surfaces the control temperature straight off the
+  wire: cloud-independent, sub-minute cadence, and likely finer than the 0.1 °C cloud
+  value. **Confirm the exact temp scaling empirically when decoding** (ClimateTalk
+  encodes temperatures as scaled integers; the per-equipment scale should be verified,
+  not assumed).
+- **`cool_demand_pct` is already a direct "what the thermostat decided" signal.**
+  Cross-referencing demand-% transitions against `(indoor_temp_f_hires −
+  cool_setpoint_f)` measures the **effective switching differential empirically** and
+  shows sub-degree action with zero new instrumentation.
+
+### How a tech calibrates / sanity-checks (and our in-stack equivalent)
+
+On-device calibration is the **Temperature Display Offset (±3 °F)** — and on this
+platform it shifts **both the display and the control point**, so it genuinely
+re-calibrates control. Procedure:
+
+1. **Reference instrument** beside the *controlling* sensor — for us the **RedLINK
+   C7189R**, not the wall stat. Calibrated digital probe (Fluke-class) or good glass
+   thermometer.
+2. **Placement & stabilize:** near the sensor, not touching the wall, shielded from
+   sun / supply registers / drafts / body heat; equalize **15–20+ min**, area
+   undisturbed.
+3. **Compare against the ±1.5 °F-@-70 °F spec.** Within ~1.5–2 °F = fine; beyond that,
+   apply the offset to match the reference.
+4. **Calibrate the sensor set for *control*** — each wireless sensor has its own offset.
+5. **Account for self-heating:** wall stats read ~1–2 °F high from their own
+   electronics + wall conduction — a prime reason controlling off a remote sensor (as
+   we do) is more accurate.
+
+Cross-check the **system**, not just the number:
+
+- **Coil ΔT** (supply − return air), ~16–22 °F in cooling, confirms the equipment is
+  performing regardless of the displayed temp. (Same future supply-air instrumentation
+  `SERVICES.md` flags for delivered-BTU work.)
+- **Cross-sensor agreement — our built-in reference check:** the co-located **Ecowitt
+  WN31** channels and **HAVEN return-air** sensor. The `IAQ Comparison` dashboard
+  already pits HAVEN return-air vs the thermostat wall reading; comparing
+  `indoor_temp_f_hires` against a co-located Ecowitt channel over a stable window **is**
+  the engineer's reference-thermometer test.
+
+---
+
 ## Humidity & dehumidification
 
 - The CTK04 has a **built-in humidity sensor**; current RH can be shown on the home
