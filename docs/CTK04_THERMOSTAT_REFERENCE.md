@@ -439,6 +439,46 @@ display simply doesn't move — which is why `indoor_temp_f_hires` was added.
   differential empirically** and shows sub-degree action — combining the two sources,
   since the temperature only lives on the cloud path.
 
+### The USB port and on-device Data Logs
+
+The CTK04 has a USB slot on the bottom of the stat. It's a **provisioning +
+maintenance** port, **not a telemetry stream** — a manual, physical-access pull
+(insert stick → menu → load/save), not automatable and not a poller substitute.
+
+Confirmed CTK04 functions:
+
+1. **Config clone / backup-restore** — save & load Installer Setup, Holiday/Event
+   Scheduler, Custom Reminders, and dealer/company info across thermostats. `[high]`
+2. **Firmware/software update** — load a firmware file from the stick. `[high]`
+3. **Export the on-device Data Logs** (MENU → INSTALLER OPTIONS → DATA LOGS):
+   - **Alerts Log** — last **25** alerts (date/time/status/diagnostics). `[high]`
+   - **User Interactions Log** — last **250** setting changes, *including
+     setpoint/temperature changes*, searchable by date/time/function. `[high]`
+
+**Not a granular control-temperature source.** These are **event logs** (alerts +
+setting changes), not a temperature time series. The USB does not surface the
+tenths-resolution control value — the Control4 0.1 °C poll remains the finest
+real-time source.
+
+**Prestige-vs-CTK04 caveat (not assumed).** The full Honeywell Prestige IAQ adds
+**Performance Logs** to its USB export (Min/Max Delta-T, Min/Max discharge/return
+temp, **Min/Max Indoor Temp/Humidity**, Min/Max outdoor temp/humidity, Run Time). I
+did **not** find these documented for the CTK04 — its DATA LOGS menu surfaces only
+Alerts + User Interactions. Either the relabel drops it or it's undocumented —
+**verify on the unit.** Even where present, it's **min/max aggregates**, not a
+continuous fine-resolution series. `[CTK04 Performance Logs: unconfirmed — open item]`
+
+**Two things worth grabbing anyway:**
+
+- The **User Interactions Log (250 setting changes)** is an independent on-device
+  audit trail of every setpoint change — a direct cross-check against our
+  `hvac.overrides` manual-override detection, and the device's own record of whether
+  the stat was touched during an Arm A no-override period.
+- **MENU → COMFORTNET USER MENU → Sensors / Status** shows the *equipment* sensor data
+  on-screen (furnace supply/return + outdoor-cabinet temps and status that ride the
+  bus) — consistent with the correction above: equipment sensors, not the room control
+  temp.
+
 ### How a tech calibrates / sanity-checks (and our in-stack equivalent)
 
 On-device calibration is the **Temperature Display Offset (±3 °F)** — and on this
@@ -602,6 +642,10 @@ to reach high confidence:
 6. **Built-in humidity sensor accuracy (±%RH)** and the **AMVM97 dehum CFM-reduction %.**
 7. Whether the **CTK04 exposes a "Reheat"** dehum option (documented on the Prestige
    platform; not separately confirmed for CTK04).
+8. **Whether the CTK04 has the Prestige IAQ "Performance Logs"** (Min/Max indoor temp,
+   Delta-T, discharge/return temp, run time) on its USB export. Only Alerts (25) +
+   User Interactions (250) confirmed on CTK04 — verify MENU → INSTALLER OPTIONS →
+   DATA LOGS on the unit. Even if present, it's min/max aggregates, not a series.
 
 PDF fetch was blocked in-environment; resolving these needs a direct download of
 69-2688 / 69-2490 (or an authenticated fetch) — straightforward as a follow-up.
