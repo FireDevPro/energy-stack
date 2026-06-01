@@ -1042,3 +1042,32 @@ def test_update_season_5th_flux_uses_max_to_prefer_verified():
     flux = q.last_flux
     assert "fn: max" in flux
     assert "fn: mean" not in flux
+
+
+def test_update_season_5th_returns_none_on_zero_width_window_without_querying():
+    """Season-onset guard: on the first calendar day of the cooling season
+    the caller caps the window end at the target date's midnight, which
+    equals season_start (both = Jun 1 00:00 CT = 2026-06-01T05:00:00Z in
+    CDT). A Flux ``range(start: X, stop: X)`` is rejected by InfluxDB with
+    HTTP 400 "cannot query an empty range".
+
+    The function must short-circuit to None (a zero-width window holds zero
+    distinct hours, far under the 168-hour baseline floor, so None is the
+    same answer the query would yield if it could run) WITHOUT issuing the
+    degenerate query."""
+    q = _mock_metered_query_api([21000.0, 22000.0, 23000.0, 24000.0, 25000.0])
+    same = datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc)
+    result = update_season_5th_highest(q, "energy", same, same, zone="CE")
+    assert result is None
+    assert q.last_flux is None  # guard short-circuits before any Flux is issued
+
+
+def test_update_season_5th_returns_none_on_negative_width_window_without_querying():
+    """Defense in depth: an inverted window (end < start) is also degenerate
+    and must short-circuit rather than emit an invalid Flux range."""
+    q = _mock_metered_query_api([21000.0])
+    start = datetime(2026, 6, 2, 5, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 1, 5, 0, tzinfo=timezone.utc)
+    result = update_season_5th_highest(q, "energy", start, end, zone="CE")
+    assert result is None
+    assert q.last_flux is None
