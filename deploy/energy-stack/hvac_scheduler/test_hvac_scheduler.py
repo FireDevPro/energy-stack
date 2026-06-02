@@ -1876,7 +1876,13 @@ def test_already_fired_action_does_not_refire_within_window(monkeypatch):
     """Once an action has succeeded and been marked done, ticks within
     the make-up window must NOT refire it (the fired_actions set is
     the de-duplication guard)."""
-    firing = FiringState(fired_actions={("2026-07-15", 6, 0)})
+    # baseline_initialized=True: models a mid-session tick (the 6:00 action
+    # already fired in this session, so the startup hook already ran and the
+    # mid-period guard was set by the prior tick's push).
+    firing = FiringState(fired_actions={("2026-07-15", 6, 0)},
+                         baseline_initialized=True,
+                         last_schedule_cool_f=70,
+                         last_pushed_effective_cool_f=70)
     base = datetime(2026, 7, 15, 6, 2, tzinfo=ZoneInfo("America/Chicago"))
 
     _, _, _ = _drive_run_schedule_check(
@@ -4076,3 +4082,40 @@ def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
     )
 
     assert firing.last_pushed_effective_cool_f is None
+
+
+# ---- Task 5: one-shot hook wiring in run_schedule_check -------------------
+
+
+def test_run_schedule_check_sets_baseline_initialized_and_reconstructs(monkeypatch):
+    """First tick with fresh FiringState (baseline_initialized=False,
+    last_schedule_cool_f=None) at a daytime hour where a NORMAL schedule
+    action is in effect: hook runs, baseline_initialized becomes True,
+    and last_schedule_cool_f is populated (not None)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    # 14:00 on a NORMAL day -> COAST action in effect (setpoint 79)
+    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
+    )
+    assert firing.baseline_initialized is True
+    assert firing.last_schedule_cool_f is not None
+
+
+def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick(monkeypatch):
+    """Idempotence: with baseline_initialized=True, the hook must NOT
+    call reconstruct_startup_baseline even when last_schedule_cool_f is
+    None (e.g. after a release_hold). The None baseline must remain None."""
+    reconstruct_called = []
+
+    def _fake_reconstruct(*args, **kwargs):
+        reconstruct_called.append(True)
+
+    monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
+    firing = FiringState(baseline_initialized=True, last_schedule_cool_f=None)
+    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
+    )
+    assert not reconstruct_called, "reconstruct must not run after baseline_initialized=True"
