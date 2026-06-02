@@ -3986,3 +3986,93 @@ def test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_n
     )
 
     assert result == []
+
+
+# ---- reconstruct_startup_baseline (Task 4) ------------------------------------
+
+CT = ZoneInfo("America/Chicago")
+
+
+def test_reconstruct_startup_baseline_daytime_coast_normal(monkeypatch):
+    """Daytime restart mid-COAST on a NORMAL day -> baseline 79 (COAST), label COAST."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f == 79
+    assert firing.last_action_label == "COAST"
+
+
+def test_reconstruct_startup_baseline_overnight_yesterday_normal(monkeypatch):
+    """Overnight (03:00), today NORMAL (no action <= 03:00), yesterday NORMAL ->
+    yesterday's last action is SLEEP (73)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    # NORMAL_SCHEDULE's last action by minute is SLEEP at 21:00 -> 73
+    assert firing.last_schedule_cool_f == 73
+    assert firing.last_action_label == "SLEEP"
+
+
+def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
+    """Overnight (03:00), yesterday MILD -> yesterday's last action is
+    MILD_RELEASE_HOLD (release_hold=True) -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+    assert firing.last_action_label == "MILD_RELEASE_HOLD"
+
+
+def test_reconstruct_startup_baseline_mild_today_after_release(monkeypatch):
+    """Restart during a MILD day at 10:00 (after the 00:05 release_hold) ->
+    today's action in effect is MILD_RELEASE_HOLD -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, MILD_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+
+
+def test_reconstruct_startup_baseline_overnight_no_yesterday_decision(monkeypatch):
+    """Overnight (03:00), yesterday has no stored decision -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+
+
+def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
+    """After daytime reconstruction, last_pushed_effective_cool_f is still None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_pushed_effective_cool_f is None

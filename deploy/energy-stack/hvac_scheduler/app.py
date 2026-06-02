@@ -2450,6 +2450,39 @@ def resolve_schedule_for_date_readonly(
     return schedule_for(stored)
 
 
+def reconstruct_startup_baseline(
+    firing: FiringState,
+    today_schedule: list[ScheduleAction],
+    now_local: datetime,
+    today_dewpoint_f: float | None,
+    query_api: Any,
+    bucket: str,
+    overrides: list[Override],
+) -> None:
+    """One-shot startup repair of last_schedule_cool_f after a restart between
+    schedule boundaries. Sets the baseline the un-restarted controller would
+    hold, reusing locked schedule/setpoint logic. Leaves
+    last_pushed_effective_cool_f = None so the first mid-period tick re-asserts
+    (runs the supervisor and pushes the intended effective once)."""
+    now_min = now_local.hour * 60 + now_local.minute
+    act = action_in_effect_at(today_schedule, now_min)
+    if act is None:
+        # Overnight, before today's first action: carry over yesterday's last.
+        yesterday_iso = (now_local.date() - timedelta(days=1)).isoformat()
+        y_schedule = resolve_schedule_for_date_readonly(
+            yesterday_iso, query_api, bucket, overrides
+        )
+        act = action_in_effect_at(y_schedule, 24 * 60 - 1) if y_schedule else None
+    if act is None or act.release_hold:
+        firing.last_schedule_cool_f = None
+        if act is not None:
+            firing.last_action_label = act.label
+        return
+    cool, _reason = resolve_cool_setpoint(act, today_dewpoint_f)
+    firing.last_schedule_cool_f = cool
+    firing.last_action_label = act.label
+
+
 def vacation_schedule(override: Override) -> list[ScheduleAction]:
     """Synthesize a schedule from a vacation override -- one re-affirm action
     every VACATION_PING_INTERVAL_HOURS to keep the setpoint pinned (in case
