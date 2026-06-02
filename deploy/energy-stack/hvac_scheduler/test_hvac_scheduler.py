@@ -46,6 +46,7 @@ from .app import (
     execute_action,
     fetch_day_ahead_prices_for_date,
     fetch_today_decision,
+    action_in_effect_at,
     merge_same_hour_actions_deepest_wins,
     precool_window_action,
     resolve_cool_setpoint,
@@ -3911,3 +3912,24 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
     )
     assert firing.price_overlay_state.current_tier == "scarcity"
     assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+# ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
+
+def test_action_in_effect_returns_latest_action_at_or_before_minute():
+    # NORMAL: PRE_COOL 06:00, COAST 13:00, RECOVER 19:00, SLEEP 21:00
+    assert action_in_effect_at(NORMAL_SCHEDULE, 14 * 60).label == "COAST"
+
+
+def test_action_in_effect_none_before_first_action():
+    assert action_in_effect_at(NORMAL_SCHEDULE, 3 * 60) is None  # 03:00, first is 06:00
+
+
+def test_action_in_effect_returns_last_action_at_end_of_day():
+    assert action_in_effect_at(NORMAL_SCHEDULE, 24 * 60 - 1).label == "SLEEP"
+
+
+def test_action_in_effect_returns_release_hold_when_it_is_latest():
+    # MILD: only MILD_RELEASE_HOLD at 00:05
+    act = action_in_effect_at(MILD_SCHEDULE, 12 * 60)
+    assert act.label == "MILD_RELEASE_HOLD" and act.release_hold is True

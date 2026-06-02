@@ -1196,6 +1196,23 @@ def schedule_for(day_type: str) -> list[ScheduleAction]:
     }.get(day_type, NORMAL_SCHEDULE)
 
 
+def action_in_effect_at(
+    schedule: list[ScheduleAction], minutes_since_midnight: int
+) -> ScheduleAction | None:
+    """The schedule action in effect at the given minute-of-day: the latest
+    action whose start (hour*60+minute) is <= minutes_since_midnight. None if
+    no action starts at or before that minute. The caller derives the baseline
+    (release_hold -> None; otherwise resolve_cool_setpoint)."""
+    in_effect: ScheduleAction | None = None
+    for a in schedule:
+        start = a.hour * 60 + a.minute
+        if start <= minutes_since_midnight and (
+            in_effect is None or start > in_effect.hour * 60 + in_effect.minute
+        ):
+            in_effect = a
+    return in_effect
+
+
 # Locked per EXPERIMENT_DESIGN.md Appendix A. Effective cool setpoint applied
 # during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
 # enough to functionally shut the AC off while staying inside the safety
