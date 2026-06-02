@@ -1414,14 +1414,18 @@ class FiringState:
     fivecp_state_rto: FiveCPState = field(default_factory=FiveCPState)
     # Mid-period re-push tracking (§4 / Critical #2). The most recently
     # fired non-release-hold action's schedule-baseline setpoint and the
-    # last effective cool setpoint pushed to the thermostat. When a per-
-    # tick layer evaluation produces a different effective cool setpoint,
-    # run_schedule_check re-pushes mid-period without waiting for the
-    # next scheduled action. Reset to None on release_hold actions and on
-    # day boundaries.
+    # last effective cool setpoint pushed to the thermostat. Reset to None
+    # on release_hold actions. (It persists across midnight in normal
+    # operation -- there is no day-boundary reset -- so a restart is the
+    # only source of a mid-stream None; startup reconstruction repairs it.)
     last_schedule_cool_f: int | None = None
     last_action_label: str = ""
     last_pushed_effective_cool_f: int | None = None
+    # One-shot guard for startup baseline reconstruction. False only on a
+    # fresh process. Flipped True on the first run_schedule_check tick; after
+    # that the normal action-fire / release-hold flow owns the baseline
+    # (including its legitimate Nones, which must NOT be reconstructed).
+    baseline_initialized: bool = False
     # Phase 2 decision-trace: the effective cool setpoint computed at the
     # last layer-resolution evaluation. Distinct from
     # ``last_pushed_effective_cool_f`` (post-supervisor + actually-pushed) —
