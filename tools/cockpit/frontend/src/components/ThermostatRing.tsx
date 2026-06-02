@@ -39,9 +39,13 @@ export function ThermostatRing({
 
   const indoorFrac = tempToFrac(indoor_f)
   const indoorEnd = polar(cx, cy, r, a(indoorFrac))
-  const indoorPath = `M ${trackStart.x} ${trackStart.y} A ${r} ${r} 0 ${
-    indoorFrac > 0.5 ? 1 : 0
-  } 1 ${indoorEnd.x} ${indoorEnd.y}`
+  // large-arc-flag must track the actual swept angle (indoorFrac * sweep),
+  // not indoorFrac itself. With sweep-flag=1, flipping large-arc-flag on a
+  // <180° span moves the arc onto the other circle of radius r (same radius,
+  // shifted center), so it bulges off the track. Threshold is the swept
+  // angle crossing 180°.
+  const indoorLargeArc = indoorFrac * sweep > 180 ? 1 : 0
+  const indoorPath = `M ${trackStart.x} ${trackStart.y} A ${r} ${r} 0 ${indoorLargeArc} 1 ${indoorEnd.x} ${indoorEnd.y}`
 
   const coolPt = polar(cx, cy, r, a(tempToFrac(cool_f)))
   const heatPt = polar(cx, cy, r, a(tempToFrac(heat_f)))

@@ -1,4 +1,4 @@
-"""Honeywell VisionPRO 8000 → InfluxDB poller via Control4 EA-5.
+"""CTK04 Thermostat → InfluxDB poller via Control4 EA-5.
 
 Reads thermostat state every THERMOSTAT_POLL_INTERVAL seconds (default 600 s =
 10 min, the TCC rate-limit floor) and writes:
