@@ -141,7 +141,10 @@ flowchart TD
     E4 -.->|every 5 min throttled| W2[(hvac.5cp_state row)]
 
     Tick --> DT[Lookup today day_type + Section 7 precool injection]
-    DT --> Branch{Action firing<br/>this minute?<br/>5-min makeup window}
+    DT --> Recon{baseline_initialized?<br/>one-shot startup guard}
+    Recon -->|no, first tick| RC[reconstruct_startup_baseline<br/>action in effect now, else<br/>yesterday last action read-only<br/>sets last_schedule_cool_f]
+    Recon -->|yes| Branch{Action firing<br/>this minute?<br/>5-min makeup window}
+    RC --> Branch
 
     Branch -->|yes| AF[Action-fire path]
     Branch -->|no| MP[_push_layer_change_mid_period]
@@ -154,7 +157,7 @@ flowchart TD
     X1 --> WA1[(write hvac.actions)]
 
     MP --> Pre{firing.last_schedule_cool_f<br/>set yet?}
-    Pre -->|no| Skip[Early return - no baseline]
+    Pre -->|no| Skip[Early return - no baseline<br/>legitimate None: released hold or MILD]
     Pre -->|yes| R2[resolve_layer_priority]
     R2 -.-> T4[/decision_trace.layer_resolution<br/>info on change debug on no-change/]
     R2 --> SC{Effective cool<br/>changed since last push?}
@@ -164,6 +167,8 @@ flowchart TD
     V2 --> X2[execute_action - SCHEDULER_MODE gated]
     X2 --> WA2[(write hvac.actions repush row)]
 ```
+
+**Startup baseline reconstruction (post-restart self-heal):** A restart that lands between schedule boundaries leaves `last_schedule_cool_f` at `None`, which would short-circuit the `_push_layer_change_mid_period` path (the `→ no → Early return` branch) — silencing the §2 price-overlay re-push and the P1.2 overheat supervisor until the next action fires (up to ~7h on a HOT-day schedule). The one-shot `Recon` step re-derives the baseline on the first tick (today's in-effect action, or — overnight, before today's first action — the prior day's last action resolved read-only), so the supervisor and mid-period reactivity arm immediately and the first audit row carries the real baseline. The `Early return - no baseline` branch now represents only the legitimate-`None` cases (a released hold / MILD day), not a post-restart gap. 5CP is telemetry-only (not a live shutoff layer) per binding spec §11 #14. See [`EXPERIMENT_CHANGE_LOG.md`](EXPERIMENT_CHANGE_LOG.md) entry #2 and [`plans/restart-baseline-reconstruction-design.md`](plans/restart-baseline-reconstruction-design.md).
 
 **Trace emission cadence by event type:**
 
