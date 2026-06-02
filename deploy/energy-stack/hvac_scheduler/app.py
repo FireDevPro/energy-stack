@@ -132,7 +132,7 @@ DAYTYPE_HOT_STREAK_DAY1 = "HOT_STREAK_DAY1"  # tomorrow + day-after both HOT -> 
 
 # Heat setpoint floor for Auto mode. 65F is a comfortable winter "don't freeze"
 # target that gives a 15F deadband against typical cool setpoints (70-80F),
-# well above the ASHRAE 90.1 5F minimum (and safely above the VisionPRO 8000
+# well above the ASHRAE 90.1 5F minimum (and safely above the CTK04
 # ISU 300 default of 3F which is below code).
 HEAT_SETPOINT_FLOOR_F = 65
 
