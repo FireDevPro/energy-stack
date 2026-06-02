@@ -93,6 +93,19 @@ No emergency safety overrides fired. No supervisor clamping fired. No 5CP layer 
 
 ---
 
+## Equipment behavior
+
+> Include this section only when something notable was flagged. Omit entirely
+> on unremarkable days. Example content below — replace with actual findings.
+
+**Stage 2 extended run — 10:05 PM to 1:50 AM CT (3h 45m)**
+
+The compressor ran at Stage 2 (100% capacity) from ~10:05 PM CT through 1:50 AM CT. Indoor temperature reached the 73°F cool setpoint around 11:00 PM CT; Stage 2 continued for roughly 2.75 hours after setpoint was achieved, with outdoor temperature falling from 67°F to 62°F during that window. At that outdoor delta (73°F inside vs 62°F outside), Stage 1 or normal cycling should be sufficient to hold setpoint.
+
+Most likely cause: PID integral accumulation from the earlier Return-period pulldown. The CTK04 uses a PID controller (not a simple deadband), and integral buildup during the 7–10 PM work period can hold the output at full capacity well past setpoint. Watch the next several nights for recurrence — a single event is consistent with normal PID behavior at cooling-season start; a recurring pattern on mild nights warrants a service check.
+
+---
+
 ## Appendix
 
 **Note on the 2:15 PM spike and the audit row sequence:** The 2:15 PM spike entry shows three audit rows in its forward window — a normal-to-elevated at 2:23 PM, an elevated-to-normal at 2:18 PM, and an elevated-to-scarcity at 2:27 PM. The 2:18 PM row predates the 2:23 PM row in wall-clock time; this is because the forward window for the 2:15 PM spike starts at 2:15 PM and captures all rows through 2:30 PM. The sequence is: elevated to normal at 2:18 PM (brief price drop to 2.5¢), then normal to elevated at 2:23 PM (price back up to 14.8¢), then elevated to scarcity at 2:27 PM (price at 30.1¢). The trace stream corroborates this ordering exactly.
