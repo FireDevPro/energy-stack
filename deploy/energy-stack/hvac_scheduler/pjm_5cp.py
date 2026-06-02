@@ -442,7 +442,19 @@ def update_season_5th_highest(query_api: Any, bucket: str,
     forever. The fix removes the Flux ``limit`` and changes the
     threshold check to distinct-hour count, with no fallback for
     control.
+
+    Empty-window guard: when ``season_end_utc <= season_start_utc`` the
+    window has zero (or negative) width. This happens on the first
+    calendar day of the cooling season, where callers cap the end at the
+    target date's midnight and that equals ``season_start_utc`` (both =
+    Jun 1 00:00 local). A Flux ``range(start: X, stop: X)`` is rejected by
+    InfluxDB with HTTP 400 "cannot query an empty range". A zero-width
+    window also holds zero distinct hours -- insufficient history by
+    definition -- so None is the same answer the query would return if it
+    could run. Short-circuit before issuing the degenerate query.
     """
+    if season_end_utc <= season_start_utc:
+        return None
     flux = f"""
         from(bucket: "{bucket}")
           |> range(start: {season_start_utc.isoformat()},
