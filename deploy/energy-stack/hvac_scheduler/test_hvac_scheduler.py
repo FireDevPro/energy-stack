@@ -3933,3 +3933,56 @@ def test_action_in_effect_returns_release_hold_when_it_is_latest():
     # MILD: only MILD_RELEASE_HOLD at 00:05
     act = action_in_effect_at(MILD_SCHEDULE, 12 * 60)
     assert act.label == "MILD_RELEASE_HOLD" and act.release_hold is True
+
+
+# ---- resolve_schedule_for_date_readonly (Task 3: restart baseline reconstruction) --
+
+
+def test_resolve_schedule_for_date_readonly_uses_stored_decision(monkeypatch):
+    """No active override -> falls through to _read_stored_decision; returns
+    the schedule for the stored day-type."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_HOT)
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == app.HOT_SCHEDULE
+
+
+def test_resolve_schedule_for_date_readonly_vacation_override_wins(monkeypatch):
+    """A vacation override takes precedence over any stored decision."""
+    # _read_stored_decision must NOT be called when vacation wins.
+    monkeypatch.setattr(
+        app, "_read_stored_decision",
+        lambda q, b, d: (_ for _ in ()).throw(
+            AssertionError("_read_stored_decision must not be called for vacation override"))
+    )
+    vac_override = app.Override(
+        from_date="2026-07-14",
+        to_date="2026-07-16",
+        cool_setpoint_f=82,
+        heat_setpoint_f=60,
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", [vac_override]
+    )
+
+    # vacation_schedule returns ScheduleAction instances with VACATION_AFFIRM label
+    assert len(result) > 0
+    assert all(a.label == "VACATION_AFFIRM" for a in result)
+
+
+def test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_no_decision(
+    monkeypatch,
+):
+    """No override AND no stored decision -> returns [] (caller treats as no baseline)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == []

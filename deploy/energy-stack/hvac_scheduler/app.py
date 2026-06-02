@@ -2430,6 +2430,26 @@ def fetch_today_decision(query_api: Any, write_api: Any, bucket: str, today_iso:
     return day_type
 
 
+def resolve_schedule_for_date_readonly(
+    date_iso: str, query_api: Any, bucket: str, overrides: list[Override]
+) -> list[ScheduleAction]:
+    """Resolve the schedule that governed `date_iso`, mirroring the live
+    override order (vacation -> day_type override -> stored decision) but
+    READ-ONLY: uses _read_stored_decision, never fetch_today_decision (which is
+    today-coupled and persists a recompute on a miss). Returns [] when no
+    override is active and no decision was stored. Used to source the overnight
+    carry-over baseline from yesterday's last action."""
+    override = find_active_override(overrides, date_iso)
+    if override and override.is_vacation():
+        return vacation_schedule(override)
+    if override and override.is_day_type_override():
+        return schedule_for(override.day_type or DAYTYPE_NORMAL)
+    stored = _read_stored_decision(query_api, bucket, date_iso)
+    if stored is None:
+        return []
+    return schedule_for(stored)
+
+
 def vacation_schedule(override: Override) -> list[ScheduleAction]:
     """Synthesize a schedule from a vacation override -- one re-affirm action
     every VACATION_PING_INTERVAL_HOURS to keep the setpoint pinned (in case
