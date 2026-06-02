@@ -21,9 +21,15 @@ May 19 was a NORMAL day (high 77°F, apparent max 77°F, max dewpoint 65–68°F
 
 ## What needs attention
 
-- **The `haven.indoor` feed has no data** (last write null, no readings present). This is the only feed reporting no data. If this feed is expected to be active, it needs investigation. The scheduler continued to operate without an indoor temperature reading for a single tick at 6:01 AM CT and with the reading available for the rest of the day, so the gap appears brief, but the feed's current state is worth checking.
+> Lead each item with an explicit **start–end CT** time window so a reader can
+> judge staleness without reading the timeline. Show an end time only when
+> normal scheduler activity resumed after it; if the issue was still active at
+> report close, or the stream simply went silent, write **"ongoing"** (add
+> **"— verify"** for silence) instead of an end time.
 
-- **Audit rows for the 2:30–2:45 PM price spikes show no price-overlay transitions in the forward audit window.** The trace stream confirms the controller was already in the scarcity tier during this window (holding, not transitioning), so the absence of audit rows is consistent with no tier change occurring — not a missed response. Worth noting for completeness.
+- **06:01 CT (single tick), ongoing — verify — the `haven.indoor` feed had no reading.** The scheduler ran one tick at 6:01 AM CT without an indoor temperature reading; the reading was present for every other tick, so the gap was brief. Feed state at report close is unconfirmed — verify `haven.indoor` is writing now if it is expected to be active.
+
+- **14:30–14:45 CT — audit rows for the afternoon price spikes show no price-overlay transitions in the forward audit window.** The trace stream confirms the controller was already in the scarcity tier during this window (holding, not transitioning), so the absence of audit rows is consistent with no tier change — not a missed response. Bounded and benign; noted for completeness.
 
 ---
 
