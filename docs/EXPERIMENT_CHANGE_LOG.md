@@ -71,7 +71,7 @@ the recurrence and the watchdog false alarm.
 
 ## 2026-06-01 — Restart leaves the controller able to sense but unable to act
 
-**Category:** A (defect repair, to apply before 2026-06-15)
+**Category:** A (defect repair, applied 2026-06-02)
 
 **Symptom.** Observed in the 2026-05-31 decision-trace report: after the
 shadow→experiment restart at 14:23 CT, `layer_resolution` and
@@ -81,24 +81,42 @@ action at 19:00 CT).
 **Root cause.** On any restart, in-memory `FiringState.last_schedule_cool_f`
 resets to `None` and is only re-established when a scheduled action fires
 within its 5-minute make-up window. While it is `None`,
-`_push_layer_change_mid_period` short-circuits — which suppresses not just
-tracing but the §2 price-overlay re-push, the §3 5CP shutoff, and the
-P1.2 safety-supervisor indoor-overheat override, until the next schedule
-boundary. Harmless under Arm A (writes gated), but a real control and
+`_push_layer_change_mid_period` short-circuits — which suppresses the §2
+price-overlay re-push (control) and the P1.2 safety-supervisor
+indoor-overheat override (safety), plus the per-tick layer-resolution /
+5CP telemetry traces (observability), until the next schedule boundary.
+(5CP is telemetry-only per binding spec §11 #14 — not a live shutoff layer —
+so no 5CP *control* is lost; the earlier "§3 5CP shutoff" phrasing here was
+inaccurate.) Harmless under Arm A (writes gated), but a real control and
 safety gap under Arm B after any restart (redeploy, crash, power event)
 that lands between boundaries — up to ~7 h on a HOT-day schedule.
 
-**Fix implemented.** Tier 1 startup baseline reconstruction — on a tick
-where the baseline is `None`, derive it deterministically from today's
-day-type schedule and the current time (no re-firing of past actions),
-re-arming mid-period reactivity and the supervisor immediately. Fuller
-state-machine reconciliation (price-overlay / 5CP hold timers from
-telemetry) was considered and **declined**: it duplicates a documented
-"cold-start re-converges from current" design and adds reconstruction
-risk for modest benefit. Design plan and PR: pending (target before
-Arm B opens, 2026-06-15).
+**Fix implemented.** One-shot startup baseline reconstruction (full 24/7
+parity). On the first tick after a restart, if the baseline is `None`, derive
+it from the locked schedule logic: today's most-recent action ≤ now, or — when
+no action has fired yet today (overnight) — yesterday's last action resolved
+**read-only** through the same override order (vacation → day_type override →
+stored decision via `_read_stored_decision`, never the write-capable
+`fetch_today_decision`). A `baseline_initialized` one-shot guard ensures it
+runs only at startup; thereafter the normal action-fire / release-hold flow
+owns the baseline (including legitimate `None`s). The first reconstruction tick
+leaves `last_pushed_effective_cool_f = None` so the supervisor runs and the
+intended setpoint is re-asserted once. Adds zero new decision logic and leaves
+the live override-resolution path untouched. Fuller state-machine
+reconciliation (price-overlay / 5CP hold timers) was considered and
+**declined**: those self-converge after a restart; only the schedule baseline
+does not, so only it is reconstructed.
 
-**Links:** plan and PR pending.
+**Residual (Category C, disclosed).** After an overnight restart in the rare
+case where yesterday's decision row is *also* missing, the baseline cannot be
+sourced and the overheat supervisor stays unarmed until today's first action.
+The §2 price overlay and 5CP telemetry are inert in the overnight off-peak
+window, so control is unaffected — only the safety supervisor is briefly
+unarmed, and only in this double-rare case.
+
+**Links:** design `docs/plans/restart-baseline-reconstruction-design.md`; plan
+`docs/plans/restart-baseline-reconstruction-plan.md`; branch
+`fix/restart-baseline-reconstruction`.
 
 ---
 
