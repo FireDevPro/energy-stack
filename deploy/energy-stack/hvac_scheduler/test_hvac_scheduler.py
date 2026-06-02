@@ -3994,6 +3994,45 @@ def test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_n
     assert result == []
 
 
+def test_resolve_schedule_for_date_readonly_day_type_override_parity(monkeypatch):
+    """A day_type override short-circuits to the matching schedule without
+    touching _read_stored_decision."""
+    monkeypatch.setattr(
+        app, "_read_stored_decision",
+        lambda q, b, d: (_ for _ in ()).throw(
+            AssertionError("_read_stored_decision must not be called for day_type override"))
+    )
+    dt_override = app.Override(
+        from_date="2026-07-14",
+        to_date="2026-07-16",
+        day_type=app.DAYTYPE_HOT,
+        # cool_setpoint_f intentionally absent (None) so is_vacation() is False
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", [dt_override]
+    )
+
+    assert result == app.HOT_SCHEDULE
+
+
+def test_resolve_schedule_for_date_readonly_does_not_call_fetch_today_decision(monkeypatch):
+    """Stored-decision branch must use _read_stored_decision, never the
+    write-capable fetch_today_decision (P1-B read-only invariant)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: app.DAYTYPE_NORMAL)
+    monkeypatch.setattr(
+        app, "fetch_today_decision",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("fetch_today_decision must not be called by the read-only path"))
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == app.NORMAL_SCHEDULE
+
+
 # ---- reconstruct_startup_baseline (Task 4) ------------------------------------
 
 CT = ZoneInfo("America/Chicago")
