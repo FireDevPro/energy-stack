@@ -3924,7 +3924,8 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
 
 def test_action_in_effect_returns_latest_action_at_or_before_minute():
     # NORMAL: PRE_COOL 06:00, COAST 13:00, RECOVER 19:00, SLEEP 21:00
-    assert action_in_effect_at(NORMAL_SCHEDULE, 14 * 60).label == "COAST"
+    act = action_in_effect_at(NORMAL_SCHEDULE, 14 * 60)
+    assert act is not None and act.label == "COAST"
 
 
 def test_action_in_effect_none_before_first_action():
@@ -3932,12 +3933,14 @@ def test_action_in_effect_none_before_first_action():
 
 
 def test_action_in_effect_returns_last_action_at_end_of_day():
-    assert action_in_effect_at(NORMAL_SCHEDULE, 24 * 60 - 1).label == "SLEEP"
+    act = action_in_effect_at(NORMAL_SCHEDULE, 24 * 60 - 1)
+    assert act is not None and act.label == "SLEEP"
 
 
 def test_action_in_effect_returns_release_hold_when_it_is_latest():
     # MILD: only MILD_RELEASE_HOLD at 00:05
     act = action_in_effect_at(MILD_SCHEDULE, 12 * 60)
+    assert act is not None
     assert act.label == "MILD_RELEASE_HOLD" and act.release_hold is True
 
 
