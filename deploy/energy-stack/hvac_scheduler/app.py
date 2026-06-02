@@ -1196,6 +1196,23 @@ def schedule_for(day_type: str) -> list[ScheduleAction]:
     }.get(day_type, NORMAL_SCHEDULE)
 
 
+def action_in_effect_at(
+    schedule: list[ScheduleAction], minutes_since_midnight: int
+) -> ScheduleAction | None:
+    """The schedule action in effect at the given minute-of-day: the latest
+    action whose start (hour*60+minute) is <= minutes_since_midnight. None if
+    no action starts at or before that minute. The caller derives the baseline
+    (release_hold -> None; otherwise resolve_cool_setpoint)."""
+    in_effect: ScheduleAction | None = None
+    for a in schedule:
+        start = a.hour * 60 + a.minute
+        if start <= minutes_since_midnight and (
+            in_effect is None or start > in_effect.hour * 60 + in_effect.minute
+        ):
+            in_effect = a
+    return in_effect
+
+
 # Locked per EXPERIMENT_DESIGN.md Appendix A. Effective cool setpoint applied
 # during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
 # enough to functionally shut the AC off while staying inside the safety
@@ -1414,14 +1431,18 @@ class FiringState:
     fivecp_state_rto: FiveCPState = field(default_factory=FiveCPState)
     # Mid-period re-push tracking (§4 / Critical #2). The most recently
     # fired non-release-hold action's schedule-baseline setpoint and the
-    # last effective cool setpoint pushed to the thermostat. When a per-
-    # tick layer evaluation produces a different effective cool setpoint,
-    # run_schedule_check re-pushes mid-period without waiting for the
-    # next scheduled action. Reset to None on release_hold actions and on
-    # day boundaries.
+    # last effective cool setpoint pushed to the thermostat. Reset to None
+    # on release_hold actions. (It persists across midnight in normal
+    # operation -- there is no day-boundary reset -- so a restart is the
+    # only source of a mid-stream None; startup reconstruction repairs it.)
     last_schedule_cool_f: int | None = None
     last_action_label: str = ""
     last_pushed_effective_cool_f: int | None = None
+    # One-shot guard for startup baseline reconstruction. False only on a
+    # fresh process. Flipped True on the first run_schedule_check tick; after
+    # that the normal action-fire / release-hold flow owns the baseline
+    # (including its legitimate Nones, which must NOT be reconstructed).
+    baseline_initialized: bool = False
     # Phase 2 decision-trace: the effective cool setpoint computed at the
     # last layer-resolution evaluation. Distinct from
     # ``last_pushed_effective_cool_f`` (post-supervisor + actually-pushed) —
@@ -2409,6 +2430,59 @@ def fetch_today_decision(query_api: Any, write_api: Any, bucket: str, today_iso:
     return day_type
 
 
+def resolve_schedule_for_date_readonly(
+    date_iso: str, query_api: Any, bucket: str, overrides: list[Override]
+) -> list[ScheduleAction]:
+    """Resolve the schedule that governed `date_iso`, mirroring the live
+    override order (vacation -> day_type override -> stored decision) but
+    READ-ONLY: uses _read_stored_decision, never fetch_today_decision (which is
+    today-coupled and persists a recompute on a miss). Returns [] when no
+    override is active and no decision was stored. Used to source the overnight
+    carry-over baseline from yesterday's last action."""
+    override = find_active_override(overrides, date_iso)
+    if override and override.is_vacation():
+        return vacation_schedule(override)
+    if override and override.is_day_type_override():
+        return schedule_for(override.day_type or DAYTYPE_NORMAL)
+    stored = _read_stored_decision(query_api, bucket, date_iso)
+    if stored is None:
+        return []
+    return schedule_for(stored)
+
+
+def reconstruct_startup_baseline(
+    firing: FiringState,
+    today_schedule: list[ScheduleAction],
+    now_local: datetime,
+    today_dewpoint_f: float | None,
+    query_api: Any,
+    bucket: str,
+    overrides: list[Override],
+) -> None:
+    """One-shot startup repair of last_schedule_cool_f after a restart between
+    schedule boundaries. Sets the baseline the un-restarted controller would
+    hold, reusing locked schedule/setpoint logic. Leaves
+    last_pushed_effective_cool_f = None so the first mid-period tick re-asserts
+    (runs the supervisor and pushes the intended effective once)."""
+    now_min = now_local.hour * 60 + now_local.minute
+    act = action_in_effect_at(today_schedule, now_min)
+    if act is None:
+        # Overnight, before today's first action: carry over yesterday's last.
+        yesterday_iso = (now_local.date() - timedelta(days=1)).isoformat()
+        y_schedule = resolve_schedule_for_date_readonly(
+            yesterday_iso, query_api, bucket, overrides
+        )
+        act = action_in_effect_at(y_schedule, 24 * 60 - 1) if y_schedule else None
+    if act is None or act.release_hold:
+        firing.last_schedule_cool_f = None
+        if act is not None:
+            firing.last_action_label = act.label
+        return
+    cool, _reason = resolve_cool_setpoint(act, today_dewpoint_f)
+    firing.last_schedule_cool_f = cool
+    firing.last_action_label = act.label
+
+
 def vacation_schedule(override: Override) -> list[ScheduleAction]:
     """Synthesize a schedule from a vacation override -- one re-affirm action
     every VACATION_PING_INTERVAL_HOURS to keep the setpoint pinned (in case
@@ -3059,6 +3133,19 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
             schedule = merge_same_hour_actions_deepest_wins(
                 schedule + [precool_window_action(precool_window)]
             )
+
+    # ---- Startup baseline reconstruction (one-shot) ----
+    # A restart between schedule boundaries leaves last_schedule_cool_f None,
+    # which makes _push_layer_change_mid_period short-circuit (silencing the
+    # §2 re-push and the P1.2 supervisor) until the next action fires. Repair
+    # it once, before the layer eval below, so the first post-restart audit row
+    # carries the real baseline and the supervisor arms this tick.
+    if not firing.baseline_initialized and firing.last_schedule_cool_f is None:
+        reconstruct_startup_baseline(
+            firing, schedule, now_local, today_dewpoint_f,
+            query_api, cfg.influx_bucket, overrides,
+        )
+    firing.baseline_initialized = True
 
     # ---- Per-tick layer evaluation (Critical #2 fix) ----
     # Always evaluate price overlay + 5CP, write audit rows, regardless of

@@ -46,6 +46,7 @@ from .app import (
     execute_action,
     fetch_day_ahead_prices_for_date,
     fetch_today_decision,
+    action_in_effect_at,
     merge_same_hour_actions_deepest_wins,
     precool_window_action,
     resolve_cool_setpoint,
@@ -1875,7 +1876,13 @@ def test_already_fired_action_does_not_refire_within_window(monkeypatch):
     """Once an action has succeeded and been marked done, ticks within
     the make-up window must NOT refire it (the fired_actions set is
     the de-duplication guard)."""
-    firing = FiringState(fired_actions={("2026-07-15", 6, 0)})
+    # baseline_initialized=True: models a mid-session tick (the 6:00 action
+    # already fired in this session, so the startup hook already ran and the
+    # mid-period guard was set by the prior tick's push).
+    firing = FiringState(fired_actions={("2026-07-15", 6, 0)},
+                         baseline_initialized=True,
+                         last_schedule_cool_f=70,
+                         last_pushed_effective_cool_f=70)
     base = datetime(2026, 7, 15, 6, 2, tzinfo=ZoneInfo("America/Chicago"))
 
     _, _, _ = _drive_run_schedule_check(
@@ -3911,3 +3918,246 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
     )
     assert firing.price_overlay_state.current_tier == "scarcity"
     assert firing.nonfresh_after_hold_started_at_utc is None
+
+
+# ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
+
+def test_action_in_effect_returns_latest_action_at_or_before_minute():
+    # NORMAL: PRE_COOL 06:00, COAST 13:00, RECOVER 19:00, SLEEP 21:00
+    act = action_in_effect_at(NORMAL_SCHEDULE, 14 * 60)
+    assert act is not None and act.label == "COAST"
+
+
+def test_action_in_effect_none_before_first_action():
+    assert action_in_effect_at(NORMAL_SCHEDULE, 3 * 60) is None  # 03:00, first is 06:00
+
+
+def test_action_in_effect_returns_last_action_at_end_of_day():
+    act = action_in_effect_at(NORMAL_SCHEDULE, 24 * 60 - 1)
+    assert act is not None and act.label == "SLEEP"
+
+
+def test_action_in_effect_returns_release_hold_when_it_is_latest():
+    # MILD: only MILD_RELEASE_HOLD at 00:05
+    act = action_in_effect_at(MILD_SCHEDULE, 12 * 60)
+    assert act is not None
+    assert act.label == "MILD_RELEASE_HOLD" and act.release_hold is True
+
+
+# ---- resolve_schedule_for_date_readonly (Task 3: restart baseline reconstruction) --
+
+
+def test_resolve_schedule_for_date_readonly_uses_stored_decision(monkeypatch):
+    """No active override -> falls through to _read_stored_decision; returns
+    the schedule for the stored day-type."""
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: DAYTYPE_HOT)
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == app.HOT_SCHEDULE
+
+
+def test_resolve_schedule_for_date_readonly_vacation_override_wins(monkeypatch):
+    """A vacation override takes precedence over any stored decision."""
+    # _read_stored_decision must NOT be called when vacation wins.
+    monkeypatch.setattr(
+        app, "_read_stored_decision",
+        lambda q, b, d: (_ for _ in ()).throw(
+            AssertionError("_read_stored_decision must not be called for vacation override"))
+    )
+    vac_override = app.Override(
+        from_date="2026-07-14",
+        to_date="2026-07-16",
+        cool_setpoint_f=82,
+        heat_setpoint_f=60,
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", [vac_override]
+    )
+
+    # vacation_schedule returns ScheduleAction instances with VACATION_AFFIRM label
+    assert len(result) > 0
+    assert all(a.label == "VACATION_AFFIRM" for a in result)
+
+
+def test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_no_decision(
+    monkeypatch,
+):
+    """No override AND no stored decision -> returns [] (caller treats as no baseline)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == []
+
+
+def test_resolve_schedule_for_date_readonly_day_type_override_parity(monkeypatch):
+    """A day_type override short-circuits to the matching schedule without
+    touching _read_stored_decision."""
+    monkeypatch.setattr(
+        app, "_read_stored_decision",
+        lambda q, b, d: (_ for _ in ()).throw(
+            AssertionError("_read_stored_decision must not be called for day_type override"))
+    )
+    dt_override = app.Override(
+        from_date="2026-07-14",
+        to_date="2026-07-16",
+        day_type=app.DAYTYPE_HOT,
+        # cool_setpoint_f intentionally absent (None) so is_vacation() is False
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", [dt_override]
+    )
+
+    assert result == app.HOT_SCHEDULE
+
+
+def test_resolve_schedule_for_date_readonly_does_not_call_fetch_today_decision(monkeypatch):
+    """Stored-decision branch must use _read_stored_decision, never the
+    write-capable fetch_today_decision (P1-B read-only invariant)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: app.DAYTYPE_NORMAL)
+    monkeypatch.setattr(
+        app, "fetch_today_decision",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("fetch_today_decision must not be called by the read-only path"))
+    )
+
+    result = app.resolve_schedule_for_date_readonly(
+        "2026-07-15", MagicMock(), "energy", []
+    )
+
+    assert result == app.NORMAL_SCHEDULE
+
+
+# ---- reconstruct_startup_baseline (Task 4) ------------------------------------
+
+CT = ZoneInfo("America/Chicago")
+
+
+def test_reconstruct_startup_baseline_daytime_coast_normal(monkeypatch):
+    """Daytime restart mid-COAST on a NORMAL day -> baseline 79 (COAST), label COAST."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f == 79
+    assert firing.last_action_label == "COAST"
+
+
+def test_reconstruct_startup_baseline_overnight_yesterday_normal(monkeypatch):
+    """Overnight (03:00), today NORMAL (no action <= 03:00), yesterday NORMAL ->
+    yesterday's last action is SLEEP (73)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    # NORMAL_SCHEDULE's last action by minute is SLEEP at 21:00 -> 73
+    assert firing.last_schedule_cool_f == 73
+    assert firing.last_action_label == "SLEEP"
+
+
+def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
+    """Overnight (03:00), yesterday MILD -> yesterday's last action is
+    MILD_RELEASE_HOLD (release_hold=True) -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+    assert firing.last_action_label == "MILD_RELEASE_HOLD"
+
+
+def test_reconstruct_startup_baseline_mild_today_after_release(monkeypatch):
+    """Restart during a MILD day at 10:00 (after the 00:05 release_hold) ->
+    today's action in effect is MILD_RELEASE_HOLD -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, MILD_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+
+
+def test_reconstruct_startup_baseline_overnight_no_yesterday_decision(monkeypatch):
+    """Overnight (03:00), yesterday has no stored decision -> baseline None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_schedule_cool_f is None
+
+
+def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
+    """After daytime reconstruction, last_pushed_effective_cool_f is still None."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
+
+    app.reconstruct_startup_baseline(
+        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
+    )
+
+    assert firing.last_pushed_effective_cool_f is None
+
+
+# ---- Task 5: one-shot hook wiring in run_schedule_check -------------------
+
+
+def test_run_schedule_check_sets_baseline_initialized_and_reconstructs(monkeypatch):
+    """First tick with fresh FiringState (baseline_initialized=False,
+    last_schedule_cool_f=None) at a daytime hour where a NORMAL schedule
+    action is in effect: hook runs, baseline_initialized becomes True,
+    and last_schedule_cool_f is populated (not None)."""
+    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
+    firing = FiringState()
+    # 14:00 on a NORMAL day -> COAST action in effect (setpoint 79)
+    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
+    )
+    assert firing.baseline_initialized is True
+    assert firing.last_schedule_cool_f is not None
+
+
+def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick(monkeypatch):
+    """Idempotence: with baseline_initialized=True, the hook must NOT
+    call reconstruct_startup_baseline even when last_schedule_cool_f is
+    None (e.g. after a release_hold). The None baseline must remain None."""
+    reconstruct_called = []
+
+    def _fake_reconstruct(*args, **kwargs):
+        reconstruct_called.append(True)
+
+    monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
+    firing = FiringState(baseline_initialized=True, last_schedule_cool_f=None)
+    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
+    )
+    assert not reconstruct_called, "reconstruct must not run after baseline_initialized=True"
