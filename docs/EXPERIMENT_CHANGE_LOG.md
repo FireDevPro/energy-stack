@@ -133,3 +133,64 @@ window the single-day forecast-5CP-risk pre-cool escalation
 multi-day-heat-streak escalation path is available. By design.
 
 **Action.** None. Disclosed here and to be noted in the experiment writeup.
+
+---
+
+## 2026-06-03 — Extended Stage-2 cooling on mild evenings (CTK04 staging + 0.5 °C sensor quantization)
+
+**Category:** C (known limitation, disclosed), with a Category-B deferred-improvement note.
+
+**Symptom.** On the mild evening of 2026-06-02 (Arm A washout), the AC ran
+continuous Stage 2 ~19:05–00:10 CT (~5 h) while the wall thermostat moved only
+~2 °F — prompting a "why 5 h of Stage 2 to drop 2 °F" review.
+
+**Root cause (not a defect).** The CTK04 is behaving as-built. Three benign,
+interacting causes: (1) the Arm A program steps the cool setpoint down in
+2–3 °F jumps through the evening (78→75→73); each step's instantaneous error
+trips the cool staging differential (ISU 3030, ~2 °F) into Stage 2. (2) The
+CTK04 senses/controls in 0.5 °C (~0.9 °F) buckets, so °F setpoints sit between
+buckets — the call cannot register "satisfied" until the next-lower bucket,
+adding ~0.9 °F overcool and holding Stage 2 against a residual it cannot see
+closing. (3) The house actually cooled normally (~1 °F/h, ~5 °F over the run —
+confirmed by the co-located Ecowitt ch2 and the Haven return-air sensor); the
+"2 °F" was the quantized wall reading, not the real drop. **Not**
+dehumidification (ComfortNet `dehumidify_demand`=0; indoor RH ~38 %, outdoor
+dewpoint ~37 °F), **not** low capacity (serviced ~May 2026; all room sensors
+cooled together), **not** sensor placement (ch2 beside the control sensor
+cooled fine). Season-wide the system runs Stage 1 *more* than Stage 2 (68.6 h
+vs 57.0 h, 2026-05-16→06-03) — a mild-evening interaction, not a chronic
+Stage-2 lock.
+
+**Impact on the experiment.** None to comparability. This is the Arm A
+apparatus behaving as preregistered (CTK04 schedule running autonomously), and
+the behavior is **common-mode to both arms** (Arm B inherits the same
+equipment, sensor quantization, and staging on any thermostat-schedule
+fallback). It does not bias the A-vs-B comparison. No mid-experiment change
+applied.
+
+**Deferred improvements (Category B — post-experiment, after 2026-11-16).**
+
+- *Current system (CTK04):* enable Advanced installer mode (ISU 3010); widen
+  the cool staging differential (ISU 3030) and/or lower Cool CPH (ISU 3140) to
+  hold Stage 1 longer on mild loads; choose setpoints that land on 0.5 °C
+  buckets (72.5 / 73.4 / 74.3 / 75.2 °F) to remove the ~0.9 °F overcool; soften
+  the Arm A evening setpoint steps. (DEHUM is currently inert — no humidity
+  setpoint configured — so it has no effect unless one is set.)
+- *Planned hardware path:* replace CTK04 + ComfortNet with a Venstar ColorTouch
+  T7900 + ComfortBridge board, wired conventional 2-stage (ODS=2AC, Y1/Y2) so
+  the **thermostat owns staging** (deadband/timer/turnoff — true down-staging,
+  real-error, °F-native, deterministic), with the Venstar **local API** driving
+  setpoints (dropping Control4/TCC). Board-side CFS (1–5 / Target-Runtime
+  default 30 min) was considered and rejected in favor of thermostat-side
+  staging.
+
+**Open items to verify before the hardware change.** ComfortBridge "cannot
+down-stage within a call" (forum-sourced, not OEM-verified); ODS=2AC routing to
+the ASXC160481BE; furnace heat modulation preserved in conventional wiring;
+ComfortNet / CTK04 official end-of-life (unconfirmed — no dated OEM source
+found).
+
+**Links.** Diagnosis from live InfluxDB analysis (this session): Refoss
+`em:2`/`em:8`/`em:9`, `hvac.comfortnet`, `hvac.thermostat`, `ecowitt.weather`
+ch2, `haven.indoor`. CTK04 staging settings per `docs/HVAC_LOGIC.md`. No code
+change (Category C / deferred B).
