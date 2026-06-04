@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "gitCommitHash": "ad1f1287ee7e9c3bb388c52a74b09921efe8085f",
-  "generatedAt": "2026-05-25T20:46:36.530Z",
+  "gitCommitHash": "3e9b1779ce90e0fb37c255f033f645511e9a247e",
+  "generatedAt": "2026-06-03T14:55:26.752Z",
   "files": {
     ".github/workflows/check-freshness-drift.yml": {
       "filePath": ".github/workflows/check-freshness-drift.yml",
@@ -2133,1015 +2133,114 @@
     },
     "deploy/energy-stack/hvac_scheduler/app.py": {
       "filePath": "deploy/energy-stack/hvac_scheduler/app.py",
-      "contentHash": "2ab6d8fc8253c1a045e62ef059dcfa09abadacc13bb3016cdfa90b20734cdd0c",
+      "contentHash": "1a5fcca826e670382d6b79f292d9ad7a0a7d9394148cbff4ee0478f072e9fae7",
       "functions": [
-        {
-          "name": "load_overrides",
-          "params": [
-            "path"
-          ],
-          "returnType": "list[Override]",
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "find_active_override",
-          "params": [
-            "overrides",
-            "today_iso"
-          ],
-          "returnType": "Override | None",
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "log",
-          "params": [
-            "level",
-            "msg"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "_trace",
-          "params": [
-            "event_name",
-            "level",
-            "tick_id",
-            "now_ct"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 37
-        },
-        {
-          "name": "_price_overlay_hold_minutes_remaining",
-          "params": [
-            "state",
-            "now_utc"
-          ],
-          "returnType": "float | None",
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "_classify_layer_resolution",
-          "params": [
-            "lr"
-          ],
-          "returnType": "tuple[LayerResolutionCode, str]",
-          "exported": true,
-          "lineCount": 36
-        },
-        {
-          "name": "_classify_supervisor",
-          "params": [
-            "decision",
-            "proposed_cool_f",
-            "proposed_heat_f"
-          ],
-          "returnType": "SupervisorCode",
-          "exported": true,
-          "lineCount": 43
-        },
-        {
-          "name": "_trace_supervisor",
-          "params": [
-            "tick_id",
-            "now_ct",
-            "proposed_cool_f",
-            "proposed_heat_f",
-            "snapshot",
-            "decision"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "_trace_day_type",
-          "params": [
-            "tick_id",
-            "now_ct",
-            "decision_for_date",
-            "winning_day_type",
-            "reasons"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 34
-        },
-        {
-          "name": "_trace_precool",
-          "params": [
-            "tick_id",
-            "now_ct",
-            "decision_for_date",
-            "day_type",
-            "window",
-            "reason_code"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "_trace_layer_resolution",
-          "params": [
-            "tick_id",
-            "now_ct",
-            "firing",
-            "layer_resolution",
-            "layer_inputs"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 36
-        },
-        {
-          "name": "_validate_scheduler_mode_or_exit",
-          "params": [],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "_writes_allowed",
-          "params": [
-            "when_ct"
-          ],
-          "returnType": "bool",
-          "exported": true,
-          "lineCount": 27
-        },
-        {
-          "name": "fq_latest_forecast",
-          "params": [
-            "bucket",
-            "for_period"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "fq_latest_comed_5min",
-          "params": [
-            "bucket"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "fetch_latest_forecast",
-          "params": [
-            "query_api",
-            "bucket",
-            "for_period"
-          ],
-          "returnType": "dict[str, Any] | None",
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "fetch_latest_comed",
-          "params": [
-            "query_api",
-            "bucket",
-            "now_utc"
-          ],
-          "returnType": "\"PriceSample | None\"",
-          "exported": true,
-          "lineCount": 32
-        },
-        {
-          "name": "fetch_rto_peak_forecast_today",
-          "params": [
-            "query_api",
-            "bucket"
-          ],
-          "returnType": "float | None",
-          "exported": true,
-          "lineCount": 36
-        },
-        {
-          "name": "_classify_one_day",
-          "params": [
-            "forecast"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 34
-        },
-        {
-          "name": "_classify_with_tape",
-          "params": [
-            "forecast"
-          ],
-          "returnType": "tuple[str, list[dict[str, Any]]]",
-          "exported": true,
-          "lineCount": 90
-        },
-        {
-          "name": "decide_day_type",
-          "params": [
-            "forecast",
-            "day2_forecast",
-            "tomorrow_peak_load_mw",
-            "season_5th_highest_mw"
-          ],
-          "returnType": "tuple[str, dict[str, Any]]",
-          "exported": true,
-          "lineCount": 144
-        },
-        {
-          "name": "schedule_for",
-          "params": [
-            "day_type"
-          ],
-          "returnType": "list[ScheduleAction]",
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "resolve_layer_priority",
-          "params": [
-            "schedule_cool_f",
-            "price_overlay_tier",
-            "price_offset_f",
-            "price_override_f",
-            "fivecp_active",
-            "fivecp_shutoff_f"
-          ],
-          "returnType": "LayerResolution",
-          "exported": true,
-          "lineCount": 51
-        },
-        {
-          "name": "resolve_cool_setpoint",
-          "params": [
-            "action",
-            "today_dewpoint_f"
-          ],
-          "returnType": "tuple[int, str]",
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "fetch_day_ahead_prices_for_date",
-          "params": [
-            "query_api",
-            "bucket",
-            "target_date_iso",
-            "tz"
-          ],
-          "returnType": "list[float] | None",
-          "exported": true,
-          "lineCount": 87
-        },
-        {
-          "name": "compute_price_aware_precool_window",
-          "params": [
-            "query_api",
-            "bucket",
-            "target_date_iso",
-            "tz",
-            "forecast_period",
-            "trace_reason"
-          ],
-          "returnType": "dict[str, int] | None",
-          "exported": true,
-          "lineCount": 42
-        },
-        {
-          "name": "write_precool_window",
-          "params": [
-            "write_api",
-            "bucket",
-            "target_date_iso",
-            "window"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "read_precool_window_for_date",
-          "params": [
-            "query_api",
-            "bucket",
-            "target_date_iso"
-          ],
-          "returnType": "dict[str, int] | None",
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "merge_same_hour_actions_deepest_wins",
-          "params": [
-            "schedule"
-          ],
-          "returnType": "list[ScheduleAction]",
-          "exported": true,
-          "lineCount": 30
-        },
-        {
-          "name": "precool_window_action",
-          "params": [
-            "window"
-          ],
-          "returnType": "ScheduleAction",
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "_fetch_pjm_inputs_for_target_date",
-          "params": [
-            "query_api",
-            "bucket",
-            "target_date_iso",
-            "tz"
-          ],
-          "returnType": "tuple[float | None, float | None]",
-          "exported": true,
-          "lineCount": 56
-        },
-        {
-          "name": "write_5cp_state",
-          "params": [
-            "write_api",
-            "bucket",
-            "scope",
-            "is_active",
-            "current_load_mw",
-            "season_5th_highest_mw",
-            "load_derivative_mw_per_hour",
-            "forecast_peak_today_mw",
-            "zone"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "write_price_overlay_transition",
-          "params": [
-            "write_api",
-            "bucket",
-            "prev_tier",
-            "new_tier",
-            "current_price_cents",
-            "schedule_cool_f",
-            "effective_cool_f",
-            "triggered_at_utc"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 24
-        },
-        {
-          "name": "write_decision",
-          "params": [
-            "write_api",
-            "bucket",
-            "decision_for_date",
-            "day_type",
-            "reasons",
-            "comed_price"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "write_action",
-          "params": [
-            "write_api",
-            "bucket",
-            "day_type",
-            "action",
-            "cool_applied_f",
-            "heat_applied_f",
-            "fan_mode_applied",
-            "setpoint_reason",
-            "dry_run",
-            "applied",
-            "thermostat_state_before",
-            "error",
-            "supervisor_decision",
-            "supervisor_reason",
-            "layer_resolution"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 41
-        },
-        {
-          "name": "read_thermostat_snapshot",
-          "params": [
-            "c4"
-          ],
-          "returnType": "dict[str, Any]",
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "required_feeds_for_arm_mode",
-          "params": [
-            "when_ct",
-            "price_feed_healthy",
-            "weather_ok",
-            "pjm_capacity_risk_ok"
-          ],
-          "returnType": "dict[str, bool]",
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "_planned_boundary_ts",
-          "params": [
-            "when_naive"
-          ],
-          "returnType": "datetime | None",
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "maybe_log_arm_switch",
-          "params": [
-            "write_api",
-            "bucket",
-            "last_arm",
-            "arm_observed",
-            "when_ct"
-          ],
-          "returnType": "tuple[str | None, bool]",
-          "exported": true,
-          "lineCount": 36
-        },
-        {
-          "name": "write_input_feed_health",
-          "params": [
-            "write_api",
-            "bucket",
-            "when_ct",
-            "feeds"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "write_arm_mode",
-          "params": [
-            "write_api",
-            "bucket",
-            "when_ct",
-            "required_feeds",
-            "controller_alive"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 74
-        },
-        {
-          "name": "execute_action",
-          "params": [
-            "c4",
-            "action",
-            "cool_setpoint_to_apply",
-            "heat_setpoint_to_apply",
-            "state",
-            "dry_run",
-            "when_ct"
-          ],
-          "returnType": "tuple[bool, str | None]",
-          "exported": true,
-          "lineCount": 77
-        },
-        {
-          "name": "run_decision_revisit",
-          "params": [
-            "cfg",
-            "query_api",
-            "write_api",
-            "today_iso"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 62
-        },
-        {
-          "name": "run_decision",
-          "params": [
-            "cfg",
-            "c4",
-            "query_api",
-            "write_api",
-            "tz",
-            "firing"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 79
-        },
-        {
-          "name": "_read_stored_decision",
-          "params": [
-            "query_api",
-            "bucket",
-            "decision_for_date"
-          ],
-          "returnType": "str | None",
-          "exported": true,
-          "lineCount": 48
-        },
-        {
-          "name": "fetch_today_decision",
-          "params": [
-            "query_api",
-            "write_api",
-            "bucket",
-            "today_iso"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 58
-        },
-        {
-          "name": "vacation_schedule",
-          "params": [
-            "override"
-          ],
-          "returnType": "list[ScheduleAction]",
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "derive_price_feed_healthy",
-          "params": [
-            "firing",
-            "now_utc"
-          ],
-          "returnType": "bool",
-          "exported": true,
-          "lineCount": 25
-        },
-        {
-          "name": "_evaluate_layer_inputs",
-          "params": [
-            "query_api",
-            "write_api",
-            "cfg",
-            "firing",
-            "now_local",
-            "tick_id"
-          ],
-          "returnType": "LayerInputs",
-          "exported": true,
-          "lineCount": 349
-        },
-        {
-          "name": "_push_layer_change_mid_period",
-          "params": [
-            "cfg",
-            "c4",
-            "write_api",
-            "firing",
-            "day_type",
-            "layer_inputs",
-            "today_dewpoint_f",
-            "override_note",
-            "now_local",
-            "tick_id"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 134
-        },
-        {
-          "name": "run_schedule_check",
-          "params": [
-            "cfg",
-            "c4",
-            "query_api",
-            "write_api",
-            "tz",
-            "now_local",
-            "firing"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 284
-        },
-        {
-          "name": "main_async",
-          "params": [
-            "cfg"
-          ],
-          "returnType": "int",
-          "exported": true,
-          "lineCount": 120
-        },
-        {
-          "name": "main",
-          "params": [],
-          "returnType": "int",
-          "exported": true,
-          "lineCount": 3
-        }
-      ],
-      "classes": [
-        {
-          "name": "ScheduleAction",
-          "methods": [],
-          "properties": [
-            "hour",
-            "minute",
-            "label",
-            "cool_setpoint_f",
-            "heat_setpoint_f",
-            "fan_mode",
-            "cool_setpoint_humid_f",
-            "release_hold"
-          ],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "Override",
-          "methods": [
-            "applies_today",
-            "is_vacation",
-            "is_day_type_override"
-          ],
-          "properties": [
-            "from_date",
-            "to_date",
-            "day_type",
-            "cool_setpoint_f",
-            "heat_setpoint_f",
-            "fan_mode",
-            "note"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "Config",
-          "methods": [
-            "from_env"
-          ],
-          "properties": [
-            "email",
-            "password",
-            "controller_ip",
-            "thermostat_id",
-            "dry_run",
-            "mode",
-            "decision_trace_verbose",
-            "decision_hour",
-            "tz_name",
-            "influx_url",
-            "influx_token",
-            "influx_org",
-            "influx_bucket",
-            "token_file",
-            "overrides_file",
-            "revisit_hours"
-          ],
-          "exported": true,
-          "lineCount": 90
-        },
-        {
-          "name": "PriceSample",
-          "methods": [],
-          "properties": [
-            "cents_per_kwh",
-            "source_ts",
-            "freshness"
-          ],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "LayerResolution",
-          "methods": [],
-          "properties": [
-            "schedule_cool_f",
-            "price_overlay_tier",
-            "price_cool_f",
-            "fivecp_active",
-            "fivecp_cool_f",
-            "effective_cool_f"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "C4Client",
-          "methods": [
-            "__init__",
-            "_load_token",
-            "_save_token",
-            "_cloud_auth",
-            "ensure_director",
-            "get_climate",
-            "call_with_reauth"
-          ],
-          "properties": [],
-          "exported": true,
-          "lineCount": 84
-        },
-        {
-          "name": "FiringState",
-          "methods": [],
-          "properties": [
-            "last_decision_date",
-            "fired_actions",
-            "fired_revisits",
-            "price_overlay_state",
-            "fivecp_state_comed",
-            "fivecp_state_rto",
-            "last_schedule_cool_f",
-            "last_action_label",
-            "last_pushed_effective_cool_f",
-            "last_eval_effective_cool_f",
-            "last_5cp_audit_at_utc",
-            "last_arm_mode_audit_at_utc",
-            "last_observed_arm",
-            "arm_observed",
-            "last_fresh_bucket_source_ts",
-            "nonfresh_after_hold_started_at_utc"
-          ],
-          "exported": true,
-          "lineCount": 74
-        },
-        {
-          "name": "LayerInputs",
-          "methods": [],
-          "properties": [
-            "price_tier_name",
-            "price_offset_f",
-            "price_override_f",
-            "price_prev_tier",
-            "current_price_cents",
-            "fivecp_active",
-            "fivecp_scopes_fired",
-            "fivecp_load_mw",
-            "fivecp_derivative",
-            "fivecp_forecast_peak",
-            "fivecp_season_5th_mw",
-            "fivecp_data_available"
-          ],
-          "exported": true,
-          "lineCount": 27
-        }
-      ],
-      "imports": [
-        {
-          "source": "asyncio",
-          "specifiers": [
-            "asyncio"
-          ]
-        },
-        {
-          "source": "json",
-          "specifiers": [
-            "json"
-          ]
-        },
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "signal",
-          "specifiers": [
-            "signal"
-          ]
-        },
-        {
-          "source": "sys",
-          "specifiers": [
-            "sys"
-          ]
-        },
-        {
-          "source": "uuid",
-          "specifiers": [
-            "uuid"
-          ]
-        },
-        {
-          "source": "dataclasses",
-          "specifiers": [
-            "dataclass",
-            "field"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "datetime",
-            "timezone",
-            "timedelta",
-            "dtime"
-          ]
-        },
-        {
-          "source": "pathlib",
-          "specifiers": [
-            "Path"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Any",
-            "Awaitable",
-            "Callable"
-          ]
-        },
-        {
-          "source": "zoneinfo",
-          "specifiers": [
-            "ZoneInfo"
-          ]
-        },
-        {
-          "source": "influxdb_client",
-          "specifiers": [
-            "InfluxDBClient"
-          ]
-        },
-        {
-          "source": "influxdb_client.client.write_api",
-          "specifiers": [
-            "SYNCHRONOUS"
-          ]
-        },
-        {
-          "source": "pyControl4.account",
-          "specifiers": [
-            "C4Account"
-          ]
-        },
-        {
-          "source": "pyControl4.director",
-          "specifiers": [
-            "C4Director"
-          ]
-        },
-        {
-          "source": "pyControl4.climate",
-          "specifiers": [
-            "C4Climate"
-          ]
-        },
-        {
-          "source": ".arm_calendar",
-          "specifiers": [
-            "ARM_CALENDAR",
-            "current_arm_at"
-          ]
-        },
-        {
-          "source": ".pjm_5cp",
-          "specifiers": [
-            "COMED_SCOPE",
-            "RTO_SCOPE",
-            "FiveCPState",
-            "cooling_season_window_utc",
-            "evaluate_for_scope",
-            "fetch_forecast_peak_for_date",
-            "fetch_forecast_peak_today",
-            "in_cooling_season",
-            "update_season_5th_highest"
-          ]
-        },
-        {
-          "source": ".precool",
-          "specifiers": [
-            "dtod_delivery_rates_24h",
-            "should_add_price_aware_precool",
-            "should_deepen_precool"
-          ]
-        },
-        {
-          "source": ".price_overlay",
-          "specifiers": [
-            "DEFAULT_MINIMUM_HOLD_MINUTES",
-            "NORMAL_TIER_NAME",
-            "PriceOverlayState",
-            "evaluate_price_overlay",
-            "hold_elapsed",
-            "offset_and_override_for_tier",
-            "tier_priority"
-          ]
-        },
-        {
-          "source": ".safety_supervisor",
-          "specifiers": [
-            "SupervisorDecision",
-            "validate_setpoints"
-          ]
-        },
-        {
-          "source": ".decision_codes",
-          "specifiers": [
-            "DayTypeCode",
-            "LayerResolutionCode",
-            "PrecoolCode",
-            "PriceOverlayCode",
-            "SupervisorCode"
-          ]
-        },
-        {
-          "source": ".freshness",
-          "specifiers": [
-            "Freshness",
-            "classify",
-            "THRESHOLDS"
-          ]
-        },
-        {
-          "source": ".influx_adapter",
-          "specifiers": [
-            "project_record",
-            "TypedRecord",
-            "write_point"
-          ]
-        }
-      ],
-      "exports": [
-        "ScheduleAction",
-        "Override",
-        "load_overrides",
-        "find_active_override",
-        "log",
-        "_trace",
-        "_price_overlay_hold_minutes_remaining",
+        "__init__",
         "_classify_layer_resolution",
+        "_classify_one_day",
         "_classify_supervisor",
-        "_trace_supervisor",
+        "_classify_with_tape",
+        "_cloud_auth",
+        "_evaluate_layer_inputs",
+        "_fetch_pjm_inputs_for_target_date",
+        "_load_token",
+        "_planned_boundary_ts",
+        "_price_overlay_hold_minutes_remaining",
+        "_push_layer_change_mid_period",
+        "_read_stored_decision",
+        "_save_token",
+        "_trace",
         "_trace_day_type",
-        "_trace_precool",
         "_trace_layer_resolution",
+        "_trace_precool",
+        "_trace_supervisor",
         "_validate_scheduler_mode_or_exit",
         "_writes_allowed",
-        "Config",
-        "PriceSample",
-        "fq_latest_forecast",
-        "fq_latest_comed_5min",
-        "fetch_latest_forecast",
-        "fetch_latest_comed",
-        "fetch_rto_peak_forecast_today",
-        "_classify_one_day",
-        "_classify_with_tape",
-        "decide_day_type",
-        "schedule_for",
-        "LayerResolution",
-        "resolve_layer_priority",
-        "resolve_cool_setpoint",
-        "C4Client",
-        "FiringState",
-        "fetch_day_ahead_prices_for_date",
+        "action_in_effect_at",
+        "applies_today",
+        "call_with_reauth",
         "compute_price_aware_precool_window",
-        "write_precool_window",
-        "read_precool_window_for_date",
+        "decide_day_type",
+        "derive_price_feed_healthy",
+        "ensure_director",
+        "execute_action",
+        "fetch_day_ahead_prices_for_date",
+        "fetch_latest_comed",
+        "fetch_latest_forecast",
+        "fetch_rto_peak_forecast_today",
+        "fetch_today_decision",
+        "find_active_override",
+        "fq_latest_comed_5min",
+        "fq_latest_forecast",
+        "from_env",
+        "get_climate",
+        "handle_stop",
+        "is_day_type_override",
+        "is_vacation",
+        "load_overrides",
+        "log",
+        "main",
+        "main_async",
+        "maybe_log_arm_switch",
         "merge_same_hour_actions_deepest_wins",
         "precool_window_action",
-        "_fetch_pjm_inputs_for_target_date",
-        "write_5cp_state",
-        "write_price_overlay_transition",
-        "write_decision",
-        "write_action",
+        "read_precool_window_for_date",
         "read_thermostat_snapshot",
+        "reconstruct_startup_baseline",
+        "required",
         "required_feeds_for_arm_mode",
-        "_planned_boundary_ts",
-        "maybe_log_arm_switch",
-        "write_input_feed_health",
-        "write_arm_mode",
-        "execute_action",
-        "run_decision_revisit",
+        "resolve_cool_setpoint",
+        "resolve_layer_priority",
+        "resolve_schedule_for_date_readonly",
         "run_decision",
-        "_read_stored_decision",
-        "fetch_today_decision",
-        "vacation_schedule",
-        "LayerInputs",
-        "derive_price_feed_healthy",
-        "_evaluate_layer_inputs",
-        "_push_layer_change_mid_period",
+        "run_decision_revisit",
         "run_schedule_check",
-        "main_async",
-        "main"
+        "schedule_for",
+        "vacation_schedule",
+        "write_5cp_state",
+        "write_action",
+        "write_arm_mode",
+        "write_decision",
+        "write_input_feed_health",
+        "write_precool_window",
+        "write_price_overlay_transition"
       ],
+      "classes": [
+        "C4Client",
+        "Config",
+        "FiringState",
+        "LayerInputs",
+        "LayerResolution",
+        "Override",
+        "PriceSample",
+        "ScheduleAction",
+        "docstring"
+      ],
+      "imports": [
+        "(",
+        "ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI",
+        "Any, Awaitable, Callable",
+        "C4Account",
+        "C4Climate",
+        "C4Director",
+        "Freshness, classify, THRESHOLDS  # noqa: E402",
+        "InfluxDBClient  # type: ignore[attr-defined]  # influxdb_client lacks __all__/stubs; main() owns this single import for client wiring",
+        "Path",
+        "SYNCHRONOUS",
+        "SupervisorDecision, validate_setpoints",
+        "ZoneInfo",
+        "annotations",
+        "asyncio",
+        "dataclass, field",
+        "datetime, time as dtime, timezone, timedelta",
+        "json",
+        "os",
+        "project_record, TypedRecord, write_point  # noqa: E402",
+        "signal",
+        "sys",
+        "uuid"
+      ],
+      "exports": [],
       "totalLines": 3428,
       "hasStructuralAnalysis": true
     },
@@ -3481,261 +2580,38 @@
     },
     "deploy/energy-stack/hvac_scheduler/pjm_5cp.py": {
       "filePath": "deploy/energy-stack/hvac_scheduler/pjm_5cp.py",
-      "contentHash": "e8cc998e874dce53c21b2b146a5313e7af930abcf4349d268d5fa0bf3d0067f4",
+      "contentHash": "b66a5ede711ce22afc800d2ecac4955f5b67595dac201400f9633cf2a04adcec",
       "functions": [
-        {
-          "name": "in_cooling_season",
-          "params": [
-            "now_local"
-          ],
-          "returnType": "bool",
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "cooling_season_window_utc",
-          "params": [
-            "now_local",
-            "tz"
-          ],
-          "returnType": "tuple[datetime, datetime]",
-          "exported": true,
-          "lineCount": 32
-        },
-        {
-          "name": "hold_end_time",
-          "params": [
-            "triggered_at_utc"
-          ],
-          "returnType": "datetime",
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "evaluate_5cp_risk",
-          "params": [
-            "current_load_mw",
-            "season_5th_highest_mw",
-            "load_derivative_mw_per_hour",
-            "forecast_peak_today_mw",
-            "now_utc",
-            "state",
-            "window_tz",
-            "window_start_ct",
-            "window_end_ct",
-            "load_ratio_trigger",
-            "load_ratio_release"
-          ],
-          "returnType": "tuple[bool, FiveCPState]",
-          "exported": true,
-          "lineCount": 75
-        },
-        {
-          "name": "season_5th_highest_from_loads",
-          "params": [
-            "loads_mw",
-            "min_distinct_hours"
-          ],
-          "returnType": "Optional[float]",
-          "exported": true,
-          "lineCount": 31
-        },
-        {
-          "name": "update_season_5th_highest",
-          "params": [
-            "query_api",
-            "bucket",
-            "season_start_utc",
-            "season_end_utc",
-            "zone"
-          ],
-          "returnType": "Optional[float]",
-          "exported": true,
-          "lineCount": 71
-        },
-        {
-          "name": "fetch_zone_live",
-          "params": [
-            "query_api",
-            "bucket",
-            "area"
-          ],
-          "returnType": "Optional[ZoneLoadSnapshot]",
-          "exported": true,
-          "lineCount": 52
-        },
-        {
-          "name": "evaluate_for_scope",
-          "params": [
-            "scope",
-            "query_api",
-            "bucket",
-            "season_start_utc",
-            "season_end_utc",
-            "forecast_peak_today_mw",
-            "state",
-            "now_utc",
-            "tz"
-          ],
-          "returnType": "ScopeEvaluation",
-          "exported": true,
-          "lineCount": 141
-        },
-        {
-          "name": "_latest_forecast_revision_tag",
-          "params": [
-            "query_api",
-            "bucket",
-            "forecast_area",
-            "search_window"
-          ],
-          "returnType": "Optional[str]",
-          "exported": true,
-          "lineCount": 40
-        },
-        {
-          "name": "fetch_forecast_peak_today",
-          "params": [
-            "query_api",
-            "bucket",
-            "forecast_area",
-            "tz"
-          ],
-          "returnType": "Optional[float]",
-          "exported": true,
-          "lineCount": 32
-        },
-        {
-          "name": "fetch_forecast_peak_for_date",
-          "params": [
-            "query_api",
-            "bucket",
-            "target_date_iso",
-            "forecast_area",
-            "tz"
-          ],
-          "returnType": "Optional[float]",
-          "exported": true,
-          "lineCount": 27
-        },
-        {
-          "name": "_max_forecast_in_window",
-          "params": [
-            "query_api",
-            "bucket",
-            "forecast_area",
-            "revision_tag",
-            "start_utc",
-            "end_utc"
-          ],
-          "returnType": "Optional[float]",
-          "exported": true,
-          "lineCount": 22
-        }
+        "_latest_forecast_revision_tag",
+        "_max_forecast_in_window",
+        "cooling_season_window_utc",
+        "evaluate_5cp_risk",
+        "evaluate_for_scope",
+        "fetch_forecast_peak_for_date",
+        "fetch_forecast_peak_today",
+        "fetch_zone_live",
+        "hold_end_time",
+        "in_cooling_season",
+        "season_5th_highest_from_loads",
+        "update_season_5th_highest"
       ],
       "classes": [
-        {
-          "name": "DetectorScope",
-          "methods": [],
-          "properties": [
-            "name",
-            "inst_load_area",
-            "metered_load_zone",
-            "pre_season_fallback_5th_mw"
-          ],
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "FiveCPState",
-          "methods": [],
-          "properties": [
-            "is_active",
-            "triggered_at_utc",
-            "triggered_hour_ct"
-          ],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "ZoneLoadSnapshot",
-          "methods": [],
-          "properties": [
-            "current_mw",
-            "derivative_mw_per_hour",
-            "observed_at_utc"
-          ],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "ScopeEvaluation",
-          "methods": [],
-          "properties": [
-            "is_active",
-            "new_state",
-            "season_5th_mw",
-            "snapshot",
-            "log_fields"
-          ],
-          "exported": true,
-          "lineCount": 15
-        }
-      ],
-      "imports": [
-        {
-          "source": "dataclasses",
-          "specifiers": [
-            "dataclass"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "datetime",
-            "timedelta",
-            "timezone",
-            "dtime"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Any",
-            "Optional"
-          ]
-        },
-        {
-          "source": "zoneinfo",
-          "specifiers": [
-            "ZoneInfo"
-          ]
-        },
-        {
-          "source": ".influx_adapter",
-          "specifiers": [
-            "project_record"
-          ]
-        }
-      ],
-      "exports": [
-        "in_cooling_season",
-        "cooling_season_window_utc",
         "DetectorScope",
         "FiveCPState",
-        "hold_end_time",
-        "evaluate_5cp_risk",
-        "season_5th_highest_from_loads",
-        "update_season_5th_highest",
-        "ZoneLoadSnapshot",
-        "fetch_zone_live",
         "ScopeEvaluation",
-        "evaluate_for_scope",
-        "_latest_forecast_revision_tag",
-        "fetch_forecast_peak_today",
-        "fetch_forecast_peak_for_date",
-        "_max_forecast_in_window"
+        "ZoneLoadSnapshot"
       ],
+      "imports": [
+        "\"influxdata/influxdb/schema\"",
+        "Any, Optional",
+        "ZoneInfo",
+        "annotations",
+        "dataclass",
+        "datetime, time as dtime, timedelta, timezone",
+        "influxdata/influxdb/schema",
+        "project_record"
+      ],
+      "exports": [],
       "totalLines": 824,
       "hasStructuralAnalysis": true
     },
@@ -4269,1710 +3145,264 @@
     },
     "deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py": {
       "filePath": "deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py",
-      "contentHash": "aa75ec2a5cade38d54ce5d9b823fab506c421c3611b805b1a36efcf2466a8a5c",
+      "contentHash": "45aff1a721673c1407139c9f07242e3a6103d68c9eb0091c1bf3f6b4ee21552f",
       "functions": [
-        {
-          "name": "_stub_pjm_inputs",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "_fresh_sample",
-          "params": [
-            "cents",
-            "now_utc",
-            "age_min"
-          ],
-          "returnType": "Any",
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_resolve_layer_priority_scarcity_override_replaces_schedule",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_fivecp_active_does_not_change_effective_cool_f",
-          "params": [],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_scarcity_still_overrides_when_fivecp_active",
-          "params": [],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_resolve_layer_priority_warmer_wins_when_offset_below_baseline",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_resolve_layer_priority_returns_layer_resolution_dataclass",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_88_apparent_88_is_hot",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_82_apparent_92_is_hot",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_84_no_advisory_no_apparent_is_normal",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_84_with_apparent_88_stays_normal",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_76_apparent_88_is_normal",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_classify_high_70_is_mild",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_classify_heat_advisory_overrides_temp",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_classify_apparent_alone_can_trigger_hot",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_classify_partial_forecast_no_temps_falls_back_to_normal",
-          "params": [
-            "capsys"
-          ],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_classify_empty_forecast_dict_is_normal_not_mild",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_decide_day_type_carries_apparent_in_reasons",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_decide_day_type_escalates_to_streak_on_single_day_5cp_risk",
-          "params": [],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_decide_day_type_no_streak_when_pjm_inputs_absent",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_forecast",
-          "params": [],
-          "exported": true,
-          "lineCount": 43
-        },
-        {
-          "name": "test_scheduler_tick_target_lands_on_next_wall_clock_second",
-          "params": [],
-          "exported": true,
-          "lineCount": 35
-        },
-        {
-          "name": "test_scheduler_tick_second_is_after_poller_zero",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_decision_and_revisit_guards_dont_require_minute_zero",
-          "params": [],
-          "exported": true,
-          "lineCount": 30
-        },
-        {
-          "name": "test_decide_day_type_multi_day_streak_path_still_works",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_release_hold_action_has_no_setpoint",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_mild_schedule_releases_hold_at_start_of_day",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_existing_schedules_still_have_setpoints",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window",
-          "params": [],
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "test_resolve_cool_setpoint_release_hold_returns_sentinel",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_resolve_cool_setpoint_humid_override_unchanged_for_setpoint_actions",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_resolve_cool_setpoint_standard_path_unchanged",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "_mock_c4_client",
-          "params": [],
-          "returnType": "tuple[MagicMock, MagicMock]",
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_execute_release_hold_calls_set_hold_mode_schedule",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_execute_release_hold_runs_regardless_of_hvac_mode",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_execute_release_hold_dry_run_does_not_call_thermostat",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_execute_setpoint_action_still_pins_permanent_hold",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_execute_setpoint_action_sets_heat_before_cool",
-          "params": [],
-          "exported": true,
-          "lineCount": 38
-        },
-        {
-          "name": "test_execute_setpoint_action_skipped_when_in_heat_mode",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_execute_setpoint_action_dry_run_pushes_nothing",
-          "params": [],
-          "exported": true,
-          "lineCount": 20
-        },
-        {
-          "name": "test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_changes_setpoint",
-          "params": [],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_fetch_today_decision_returns_stored_value",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_fetch_today_decision_recomputes_when_stored_missing",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_fetch_today_decision_falls_back_to_normal_when_no_forecast",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_fetch_today_decision_passes_day2_forecast_for_streak_detection",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 25
-        },
-        {
-          "name": "_make_revisit_cfg",
-          "params": [
-            "bucket",
-            "tz_name"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_revisit_no_change_does_not_overwrite",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_revisit_escalates_normal_to_hot_when_forecast_busts_up",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 28
-        },
-        {
-          "name": "test_revisit_de_escalates_hot_to_normal_when_forecast_cools",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_revisit_no_forecast_does_not_overwrite",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 27
-        },
-        {
-          "name": "test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 40
-        },
-        {
-          "name": "test_revisit_does_not_escalate_when_pjm_inputs_unavailable",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "test_revisit_handles_no_stored_decision_yet",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_supervisor_approves_in_range_setpoints",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_supervisor_clamps_cool_setpoint_too_low",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_supervisor_clamps_cool_setpoint_too_high",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_supervisor_clamps_heat_setpoint",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_supervisor_emergency_overrides_when_indoor_too_hot",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_supervisor_emergency_threshold_inclusive",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_supervisor_no_emergency_below_threshold",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_supervisor_handles_missing_indoor_temp",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_supervisor_emergency_takes_precedence_over_clamp",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_supervisor_decision_is_immutable",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_merge_same_hour_actions_keeps_distinct_hours",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_merge_same_hour_setpoint_action_wins_over_release_hold",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_precool_window_action_synthesizes_correct_shape",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "_build_da_lmp_query_result",
-          "params": [
-            "hour_to_price_per_mwh",
-            "target_date_iso",
-            "tz_name"
-          ],
-          "returnType": "list[MagicMock]",
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_accepts_ept_ct_boundary_only_hour_23_missing",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_rejects_interior_gap",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_rejects_partial_coverage",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_rejects_empty_result",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 35
-        },
-        {
-          "name": "_make_schedule_check_cfg",
-          "params": [
-            "bucket",
-            "tz_name",
-            "dry_run"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "_stub_layer_eval_io",
-          "params": [
-            "monkeypatch",
-            "price_cents",
-            "zone_load",
-            "derivative",
-            "forecast_peak",
-            "season_5th",
-            "rto_zone_load",
-            "rto_derivative",
-            "rto_season_5th",
-            "rto_forecast_peak"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 68
-        },
-        {
-          "name": "test_evaluate_layer_inputs_runs_without_action_firing",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_evaluate_layer_inputs_carries_overlay_state_across_calls",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_5cp_audit_throttled_to_5min_intervals",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 35
-        },
-        {
-          "name": "test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "test_dual_scope_or_fires_when_rto_alone_qualifies",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 32
-        },
-        {
-          "name": "test_dual_scope_or_fires_when_comed_alone_qualifies",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "test_dual_scope_per_scope_state_is_independent",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 20
-        },
-        {
-          "name": "test_may_off_season_cannot_fire_against_bogus_low_baseline",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 30
-        },
-        {
-          "name": "test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 71
-        },
-        {
-          "name": "_drive_run_schedule_check",
-          "params": [
-            "monkeypatch",
-            "now_local",
-            "firing",
-            "execute_result",
-            "day_type",
-            "dry_run"
-          ],
-          "returnType": "tuple[Any, Any, Any]",
-          "exported": true,
-          "lineCount": 47
-        },
-        {
-          "name": "test_successful_action_marks_done",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_failed_action_in_live_mode_does_not_mark_done",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_dry_run_marks_done_regardless_of_apply_flag",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_failed_action_retries_within_makeup_window",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_failed_action_stops_retrying_after_makeup_window",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 24
-        },
-        {
-          "name": "test_already_fired_action_does_not_refire_within_window",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "_mock_query_api_for_decisions",
-          "params": [
-            "records"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 28
-        },
-        {
-          "name": "test_read_stored_decision_returns_day_type_when_present",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_read_stored_decision_returns_none_when_empty",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_read_stored_decision_flux_query_flattens_series_with_group",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_read_stored_decision_flux_filters_by_single_field_before_group",
-          "params": [],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_read_stored_decision_flux_query_picks_latest_by_time",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_read_stored_decision_handles_record_without_day_type",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_read_stored_decision_targets_correct_decision_for_date",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_price_tier_carries_effective_setpoint_when_feed_drops",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 35
-        },
-        {
-          "name": "test_price_tier_elevated_offset_preserved_across_feed_gap",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_normal_tier_unaffected_by_feed_gap",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_failed_action_does_not_update_pushed_guard",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 25
-        },
-        {
-          "name": "test_successful_action_updates_pushed_guard",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_dry_run_action_updates_pushed_guard",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_emergency_supervisor_fires_during_sustained_hold",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 76
-        },
-        {
-          "name": "test_no_push_when_supervisor_approves_unchanged_layer",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 56
-        },
-        {
-          "name": "test_supervisor_runs_thermostat_read_every_mid_period_tick",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 57
-        },
-        {
-          "name": "test_health_marker_gating_pattern_in_main_loop",
-          "params": [],
-          "exported": true,
-          "lineCount": 29
-        },
-        {
-          "name": "_reload_app_with_mode",
-          "params": [
-            "mode"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "restore_app_after_reload",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_shadow_mode_never_writes_even_with_dry_run_false",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_experiment_mode_arm_a_does_not_write",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_experiment_mode_arm_b_writes",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_experiment_mode_outside_window_does_not_write",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 24
-        },
-        {
-          "name": "test_production_mode_writes_regardless_of_calendar",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_invalid_scheduler_mode_fails_startup",
-          "params": [
-            "restore_app_after_reload"
-          ],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_missing_scheduler_mode_fails_startup",
-          "params": [
-            "restore_app_after_reload"
-          ],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_scheduler_dry_run_env_is_ignored_with_warning",
-          "params": [
-            "monkeypatch",
-            "capsys"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_config_dry_run_derived_from_shadow_mode",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_writes_allowed_handles_tz_aware_datetime",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_writes_allowed_fails_closed_on_runtime_invalid_mode",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "_line_protocol",
-          "params": [
-            "write_api"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_write_arm_mode_writes_a_active_during_arm_a",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "test_write_arm_mode_writes_b_active_when_all_feeds_healthy",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_write_arm_mode_writes_b_fallback_when_feed_stale",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_write_arm_mode_writes_b_down_when_controller_not_alive",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_write_arm_mode_in_window_production_emits_off_protocol_production",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "test_write_arm_mode_outside_experiment_window_emits_outside_window_row",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_write_arm_mode_outside_window_after_experiment_end",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_write_arm_mode_accepts_tz_aware_datetime",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_required_feeds_never_includes_pjm_after_5cp_demotion",
-          "params": [],
-          "exported": true,
-          "lineCount": 39
-        },
-        {
-          "name": "test_required_feeds_propagates_unhealthy_flags",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_switch_event_logged_at_a_to_b_boundary",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_switch_event_not_logged_within_arm",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_switch_event_cold_start_does_not_log",
-          "params": [],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_switch_event_logs_experiment_start_boundary_from_observed_none",
-          "params": [],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_switch_event_logged_at_b_to_a_boundary",
-          "params": [],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_switch_event_logged_at_experiment_end",
-          "params": [],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_switch_event_includes_actual_timestamp",
-          "params": [],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_write_input_feed_health_writes_one_row_per_feed",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_write_input_feed_health_logs_pjm_outside_operating_window_too",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_write_input_feed_health_empty_dict_is_noop",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "_all_schedule_actions",
-          "params": [],
-          "returnType": "list[Any]",
-          "exported": true,
-          "lineCount": 31
-        },
-        {
-          "name": "test_dry_run_never_calls_control4_for_any_action",
-          "params": [
-            "monkeypatch",
-            "label",
-            "action",
-            "cool_to_apply",
-            "hvac_mode"
-          ],
-          "exported": true,
-          "lineCount": 26
-        },
-        {
-          "name": "test_dry_run_blocks_even_when_mode_gate_would_allow",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_19_18z_downgrade_refused_on_stale_bucket",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 75
-        },
-        {
-          "name": "_mock_query_api_returning",
-          "params": [
-            "records"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "_record",
-          "params": [
-            "value",
-            "time"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_fetch_latest_comed_returns_PriceSample_when_row_exists",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_fetch_latest_comed_returns_None_when_no_row",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_fetch_latest_comed_returns_None_and_logs_error_when_time_missing",
-          "params": [
-            "caplog"
-          ],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_fetch_latest_comed_classifies_warn_age",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_fetch_latest_comed_classifies_stale_age",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_last_fresh_bucket_source_ts_updates_on_fresh_read",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 35
-        },
-        {
-          "name": "test_derive_price_feed_healthy_within_30_min_returns_true",
-          "params": [],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_derive_price_feed_healthy_past_30_min_returns_false",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_derive_price_feed_healthy_at_exactly_30_min_returns_true",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_derive_price_feed_healthy_returns_false_when_field_is_none",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_derive_price_feed_healthy_ignores_per_tick_freshness",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "_run_evaluate_with",
-          "params": [
-            "monkeypatch",
-            "sample",
-            "current_tier",
-            "triggered_at_utc",
-            "last_fresh_bucket_source_ts",
-            "now_utc",
-            "nonfresh_after_hold_started_at_utc"
-          ],
-          "returnType": "Any",
-          "exported": true,
-          "lineCount": 37
-        },
-        {
-          "name": "test_gate_refuses_downgrade_when_sample_is_warn",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_gate_allows_downgrade_when_sample_is_fresh",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_gate_does_not_affect_upgrade",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_gate_does_not_affect_hold_within_tier",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_gate_boundary_at_exact_seven_min",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_gate_boundary_at_seven_min_plus_one_second",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_gate_treats_future_dated_bucket_as_fresh_and_allows_downgrade",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_timer_does_not_set_during_min_hold",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_timer_does_not_set_at_normal_tier",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_timer_sets_on_first_post_hold_nonfresh_with_stale_sample",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 21
-        },
-        {
-          "name": "test_timer_sets_on_first_post_hold_nonfresh_with_none_sample",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_timer_clears_on_fresh_sample_when_seeded",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_timer_does_NOT_clear_when_stale_would_hold",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 31
-        },
-        {
-          "name": "test_timer_does_NOT_clear_when_stale_would_downgrade",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "test_timer_does_NOT_clear_when_sample_remains_none",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_timer_clears_on_return_to_normal",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_timer_clears_when_min_hold_restarts",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 20
-        },
-        {
-          "name": "test_safety_release_at_29_min_59_sec_still_held",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_safety_release_at_30_min_exactly_fires",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "test_safety_release_at_30_min_fires_no_data_reason",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_safety_release_does_not_use_data_source_clock",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 30
-        },
-        {
-          "name": "test_timer_clears_when_protective_upgrade_fires_post_min_hold",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 49
-        },
-        {
-          "name": "test_timer_clear_on_upgrade_is_noop_during_min_hold",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        }
-      ],
-      "classes": [],
-      "imports": [
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "datetime",
-            "timedelta",
-            "timezone"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Any"
-          ]
-        },
-        {
-          "source": "unittest.mock",
-          "specifiers": [
-            "AsyncMock",
-            "MagicMock"
-          ]
-        },
-        {
-          "source": "zoneinfo",
-          "specifiers": [
-            "ZoneInfo"
-          ]
-        },
-        {
-          "source": "pytest",
-          "specifiers": [
-            "pytest"
-          ]
-        },
-        {
-          "source": ".",
-          "specifiers": [
-            "app"
-          ]
-        },
-        {
-          "source": ".app",
-          "specifiers": [
-            "COOL_SHUTOFF_F",
-            "DAYTYPE_HOT",
-            "DAYTYPE_MILD",
-            "DAYTYPE_NORMAL",
-            "FiringState",
-            "LayerResolution",
-            "MILD_SCHEDULE",
-            "NORMAL_SCHEDULE",
-            "HOT_SCHEDULE",
-            "HOT_STREAK_DAY1_SCHEDULE",
-            "ScheduleAction",
-            "_classify_one_day",
-            "_evaluate_layer_inputs",
-            "_push_layer_change_mid_period",
-            "decide_day_type",
-            "execute_action",
-            "fetch_day_ahead_prices_for_date",
-            "fetch_today_decision",
-            "merge_same_hour_actions_deepest_wins",
-            "precool_window_action",
-            "resolve_cool_setpoint",
-            "resolve_layer_priority",
-            "run_decision_revisit"
-          ]
-        },
-        {
-          "source": ".safety_supervisor",
-          "specifiers": [
-            "DECISION_APPROVED",
-            "DECISION_CLAMPED",
-            "DECISION_EMERGENCY",
-            "EMERGENCY_COOL_TARGET_F",
-            "EMERGENCY_INDOOR_F",
-            "SAFE_COOL_MAX_F",
-            "SAFE_COOL_MIN_F",
-            "SupervisorDecision",
-            "validate_setpoints"
-          ]
-        },
-        {
-          "source": "pytest",
-          "specifiers": [
-            "pytest"
-          ]
-        }
-      ],
-      "exports": [
-        "_stub_pjm_inputs",
+        "__init__",
+        "_all_schedule_actions",
+        "_build_da_lmp_query_result",
+        "_call",
+        "_capture_trace",
+        "_drive_run_schedule_check",
+        "_fake_reconstruct",
+        "_fetch_zone_live_stub",
+        "_forecast",
         "_fresh_sample",
-        "test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged",
-        "test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer",
-        "test_resolve_layer_priority_scarcity_override_replaces_schedule",
-        "test_fivecp_active_does_not_change_effective_cool_f",
-        "test_scarcity_still_overrides_when_fivecp_active",
-        "test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85",
-        "test_resolve_layer_priority_warmer_wins_when_offset_below_baseline",
-        "test_resolve_layer_priority_returns_layer_resolution_dataclass",
-        "test_classify_high_88_apparent_88_is_hot",
+        "_line_protocol",
+        "_make_revisit_cfg",
+        "_make_schedule_check_cfg",
+        "_mock_c4_client",
+        "_mock_query_api_for_decisions",
+        "_mock_query_api_returning",
+        "_query",
+        "_record",
+        "_reload_app_with_mode",
+        "_run_evaluate_with",
+        "_snap",
+        "_stub_layer_eval_io",
+        "_stub_pjm_inputs",
+        "_update_season_5th_highest_stub",
+        "restore_app_after_reload",
+        "test_19_18z_downgrade_refused_on_stale_bucket",
+        "test_5cp_audit_throttled_to_5min_intervals",
+        "test_action_in_effect_none_before_first_action",
+        "test_action_in_effect_returns_last_action_at_end_of_day",
+        "test_action_in_effect_returns_latest_action_at_or_before_minute",
+        "test_action_in_effect_returns_release_hold_when_it_is_latest",
+        "test_already_fired_action_does_not_refire_within_window",
+        "test_classify_apparent_alone_can_trigger_hot",
+        "test_classify_empty_forecast_dict_is_normal_not_mild",
+        "test_classify_heat_advisory_overrides_temp",
+        "test_classify_high_70_is_mild",
+        "test_classify_high_76_apparent_88_is_normal",
         "test_classify_high_82_apparent_92_is_hot",
         "test_classify_high_84_no_advisory_no_apparent_is_normal",
         "test_classify_high_84_with_apparent_88_stays_normal",
-        "test_classify_high_76_apparent_88_is_normal",
-        "test_classify_high_70_is_mild",
-        "test_classify_heat_advisory_overrides_temp",
-        "test_classify_apparent_alone_can_trigger_hot",
+        "test_classify_high_88_apparent_88_is_hot",
         "test_classify_partial_forecast_no_temps_falls_back_to_normal",
-        "test_classify_empty_forecast_dict_is_normal_not_mild",
+        "test_config_dry_run_derived_from_shadow_mode",
         "test_decide_day_type_carries_apparent_in_reasons",
         "test_decide_day_type_escalates_to_streak_on_single_day_5cp_risk",
+        "test_decide_day_type_multi_day_streak_path_still_works",
         "test_decide_day_type_no_streak_when_pjm_inputs_absent",
         "test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_forecast",
-        "test_scheduler_tick_target_lands_on_next_wall_clock_second",
-        "test_scheduler_tick_second_is_after_poller_zero",
         "test_decision_and_revisit_guards_dont_require_minute_zero",
-        "test_decide_day_type_multi_day_streak_path_still_works",
-        "test_release_hold_action_has_no_setpoint",
-        "test_mild_schedule_releases_hold_at_start_of_day",
-        "test_existing_schedules_still_have_setpoints",
-        "test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window",
-        "test_resolve_cool_setpoint_release_hold_returns_sentinel",
-        "test_resolve_cool_setpoint_humid_override_unchanged_for_setpoint_actions",
-        "test_resolve_cool_setpoint_standard_path_unchanged",
-        "_mock_c4_client",
+        "test_derive_price_feed_healthy_at_exactly_30_min_returns_true",
+        "test_derive_price_feed_healthy_ignores_per_tick_freshness",
+        "test_derive_price_feed_healthy_past_30_min_returns_false",
+        "test_derive_price_feed_healthy_returns_false_when_field_is_none",
+        "test_derive_price_feed_healthy_within_30_min_returns_true",
+        "test_dry_run_action_updates_pushed_guard",
+        "test_dry_run_blocks_even_when_mode_gate_would_allow",
+        "test_dry_run_marks_done_regardless_of_apply_flag",
+        "test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged",
+        "test_dry_run_never_calls_control4_for_any_action",
+        "test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data",
+        "test_dual_scope_or_fires_when_comed_alone_qualifies",
+        "test_dual_scope_or_fires_when_rto_alone_qualifies",
+        "test_dual_scope_per_scope_state_is_independent",
+        "test_emergency_supervisor_fires_during_sustained_hold",
+        "test_evaluate_layer_inputs_carries_overlay_state_across_calls",
+        "test_evaluate_layer_inputs_runs_without_action_firing",
+        "test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition",
         "test_execute_release_hold_calls_set_hold_mode_schedule",
-        "test_execute_release_hold_runs_regardless_of_hvac_mode",
         "test_execute_release_hold_dry_run_does_not_call_thermostat",
-        "test_execute_setpoint_action_still_pins_permanent_hold",
-        "test_execute_setpoint_action_sets_heat_before_cool",
-        "test_execute_setpoint_action_skipped_when_in_heat_mode",
+        "test_execute_release_hold_runs_regardless_of_hvac_mode",
         "test_execute_setpoint_action_dry_run_pushes_nothing",
         "test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_changes_setpoint",
-        "test_fetch_today_decision_returns_stored_value",
-        "test_fetch_today_decision_recomputes_when_stored_missing",
-        "test_fetch_today_decision_falls_back_to_normal_when_no_forecast",
-        "test_fetch_today_decision_passes_day2_forecast_for_streak_detection",
-        "_make_revisit_cfg",
-        "test_revisit_no_change_does_not_overwrite",
-        "test_revisit_escalates_normal_to_hot_when_forecast_busts_up",
-        "test_revisit_de_escalates_hot_to_normal_when_forecast_cools",
-        "test_revisit_no_forecast_does_not_overwrite",
-        "test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot",
-        "test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk",
-        "test_revisit_does_not_escalate_when_pjm_inputs_unavailable",
-        "test_revisit_handles_no_stored_decision_yet",
-        "test_supervisor_approves_in_range_setpoints",
-        "test_supervisor_clamps_cool_setpoint_too_low",
-        "test_supervisor_clamps_cool_setpoint_too_high",
-        "test_supervisor_clamps_heat_setpoint",
-        "test_supervisor_emergency_overrides_when_indoor_too_hot",
-        "test_supervisor_emergency_threshold_inclusive",
-        "test_supervisor_no_emergency_below_threshold",
-        "test_supervisor_handles_missing_indoor_temp",
-        "test_supervisor_emergency_takes_precedence_over_clamp",
-        "test_supervisor_decision_is_immutable",
-        "test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint",
-        "test_merge_same_hour_actions_keeps_distinct_hours",
-        "test_merge_same_hour_setpoint_action_wins_over_release_hold",
-        "test_precool_window_action_synthesizes_correct_shape",
-        "_build_da_lmp_query_result",
-        "test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh",
-        "test_fetch_day_ahead_prices_accepts_ept_ct_boundary_only_hour_23_missing",
-        "test_fetch_day_ahead_prices_rejects_interior_gap",
-        "test_fetch_day_ahead_prices_rejects_partial_coverage",
-        "test_fetch_day_ahead_prices_rejects_empty_result",
-        "test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates",
-        "_make_schedule_check_cfg",
-        "_stub_layer_eval_io",
-        "test_evaluate_layer_inputs_runs_without_action_firing",
-        "test_evaluate_layer_inputs_carries_overlay_state_across_calls",
-        "test_5cp_audit_throttled_to_5min_intervals",
-        "test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data",
-        "test_dual_scope_or_fires_when_rto_alone_qualifies",
-        "test_dual_scope_or_fires_when_comed_alone_qualifies",
-        "test_dual_scope_per_scope_state_is_independent",
-        "test_may_off_season_cannot_fire_against_bogus_low_baseline",
-        "test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition",
-        "test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged",
-        "_drive_run_schedule_check",
-        "test_successful_action_marks_done",
-        "test_failed_action_in_live_mode_does_not_mark_done",
-        "test_dry_run_marks_done_regardless_of_apply_flag",
-        "test_failed_action_retries_within_makeup_window",
-        "test_failed_action_stops_retrying_after_makeup_window",
-        "test_already_fired_action_does_not_refire_within_window",
-        "_mock_query_api_for_decisions",
-        "test_read_stored_decision_returns_day_type_when_present",
-        "test_read_stored_decision_returns_none_when_empty",
-        "test_read_stored_decision_flux_query_flattens_series_with_group",
-        "test_read_stored_decision_flux_filters_by_single_field_before_group",
-        "test_read_stored_decision_flux_query_picks_latest_by_time",
-        "test_read_stored_decision_handles_record_without_day_type",
-        "test_read_stored_decision_targets_correct_decision_for_date",
-        "test_price_tier_carries_effective_setpoint_when_feed_drops",
-        "test_price_tier_elevated_offset_preserved_across_feed_gap",
-        "test_normal_tier_unaffected_by_feed_gap",
-        "test_failed_action_does_not_update_pushed_guard",
-        "test_successful_action_updates_pushed_guard",
-        "test_dry_run_action_updates_pushed_guard",
-        "test_emergency_supervisor_fires_during_sustained_hold",
-        "test_no_push_when_supervisor_approves_unchanged_layer",
-        "test_supervisor_runs_thermostat_read_every_mid_period_tick",
-        "test_health_marker_gating_pattern_in_main_loop",
-        "_reload_app_with_mode",
-        "restore_app_after_reload",
-        "test_shadow_mode_never_writes_even_with_dry_run_false",
+        "test_execute_setpoint_action_sets_heat_before_cool",
+        "test_execute_setpoint_action_skipped_when_in_heat_mode",
+        "test_execute_setpoint_action_still_pins_permanent_hold",
+        "test_existing_schedules_still_have_setpoints",
         "test_experiment_mode_arm_a_does_not_write",
         "test_experiment_mode_arm_b_writes",
         "test_experiment_mode_outside_window_does_not_write",
-        "test_production_mode_writes_regardless_of_calendar",
-        "test_invalid_scheduler_mode_fails_startup",
-        "test_missing_scheduler_mode_fails_startup",
-        "test_scheduler_dry_run_env_is_ignored_with_warning",
-        "test_config_dry_run_derived_from_shadow_mode",
-        "test_writes_allowed_handles_tz_aware_datetime",
-        "test_writes_allowed_fails_closed_on_runtime_invalid_mode",
-        "_line_protocol",
-        "test_write_arm_mode_writes_a_active_during_arm_a",
-        "test_write_arm_mode_writes_b_active_when_all_feeds_healthy",
-        "test_write_arm_mode_writes_b_fallback_when_feed_stale",
-        "test_write_arm_mode_writes_b_down_when_controller_not_alive",
-        "test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow",
-        "test_write_arm_mode_in_window_production_emits_off_protocol_production",
-        "test_write_arm_mode_outside_experiment_window_emits_outside_window_row",
-        "test_write_arm_mode_outside_window_after_experiment_end",
-        "test_write_arm_mode_accepts_tz_aware_datetime",
-        "test_required_feeds_never_includes_pjm_after_5cp_demotion",
-        "test_required_feeds_propagates_unhealthy_flags",
-        "test_switch_event_logged_at_a_to_b_boundary",
-        "test_switch_event_not_logged_within_arm",
-        "test_switch_event_cold_start_does_not_log",
-        "test_switch_event_logs_experiment_start_boundary_from_observed_none",
-        "test_switch_event_logged_at_b_to_a_boundary",
-        "test_switch_event_logged_at_experiment_end",
-        "test_switch_event_includes_actual_timestamp",
-        "test_write_input_feed_health_writes_one_row_per_feed",
-        "test_write_input_feed_health_logs_pjm_outside_operating_window_too",
-        "test_write_input_feed_health_empty_dict_is_noop",
-        "_all_schedule_actions",
-        "test_dry_run_never_calls_control4_for_any_action",
-        "test_dry_run_blocks_even_when_mode_gate_would_allow",
-        "test_19_18z_downgrade_refused_on_stale_bucket",
-        "_mock_query_api_returning",
-        "_record",
-        "test_fetch_latest_comed_returns_PriceSample_when_row_exists",
-        "test_fetch_latest_comed_returns_None_when_no_row",
-        "test_fetch_latest_comed_returns_None_and_logs_error_when_time_missing",
-        "test_fetch_latest_comed_classifies_warn_age",
+        "test_failed_action_does_not_update_pushed_guard",
+        "test_failed_action_in_live_mode_does_not_mark_done",
+        "test_failed_action_retries_within_makeup_window",
+        "test_failed_action_stops_retrying_after_makeup_window",
+        "test_fetch_day_ahead_prices_accepts_ept_ct_boundary_only_hour_23_missing",
+        "test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh",
+        "test_fetch_day_ahead_prices_rejects_empty_result",
+        "test_fetch_day_ahead_prices_rejects_interior_gap",
+        "test_fetch_day_ahead_prices_rejects_partial_coverage",
+        "test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates",
         "test_fetch_latest_comed_classifies_stale_age",
-        "test_last_fresh_bucket_source_ts_updates_on_fresh_read",
-        "test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read",
-        "test_derive_price_feed_healthy_within_30_min_returns_true",
-        "test_derive_price_feed_healthy_past_30_min_returns_false",
-        "test_derive_price_feed_healthy_at_exactly_30_min_returns_true",
-        "test_derive_price_feed_healthy_returns_false_when_field_is_none",
-        "test_derive_price_feed_healthy_ignores_per_tick_freshness",
-        "_run_evaluate_with",
-        "test_gate_refuses_downgrade_when_sample_is_warn",
+        "test_fetch_latest_comed_classifies_warn_age",
+        "test_fetch_latest_comed_returns_None_and_logs_error_when_time_missing",
+        "test_fetch_latest_comed_returns_None_when_no_row",
+        "test_fetch_latest_comed_returns_PriceSample_when_row_exists",
+        "test_fetch_today_decision_falls_back_to_normal_when_no_forecast",
+        "test_fetch_today_decision_passes_day2_forecast_for_streak_detection",
+        "test_fetch_today_decision_recomputes_when_stored_missing",
+        "test_fetch_today_decision_returns_stored_value",
+        "test_fivecp_active_does_not_change_effective_cool_f",
         "test_gate_allows_downgrade_when_sample_is_fresh",
-        "test_gate_does_not_affect_upgrade",
-        "test_gate_does_not_affect_hold_within_tier",
         "test_gate_boundary_at_exact_seven_min",
         "test_gate_boundary_at_seven_min_plus_one_second",
+        "test_gate_does_not_affect_hold_within_tier",
+        "test_gate_does_not_affect_upgrade",
+        "test_gate_refuses_downgrade_when_sample_is_warn",
         "test_gate_treats_future_dated_bucket_as_fresh_and_allows_downgrade",
-        "test_timer_does_not_set_during_min_hold",
-        "test_timer_does_not_set_at_normal_tier",
-        "test_timer_sets_on_first_post_hold_nonfresh_with_stale_sample",
-        "test_timer_sets_on_first_post_hold_nonfresh_with_none_sample",
-        "test_timer_clears_on_fresh_sample_when_seeded",
-        "test_timer_does_NOT_clear_when_stale_would_hold",
-        "test_timer_does_NOT_clear_when_stale_would_downgrade",
-        "test_timer_does_NOT_clear_when_sample_remains_none",
-        "test_timer_clears_on_return_to_normal",
-        "test_timer_clears_when_min_hold_restarts",
+        "test_health_marker_gating_pattern_in_main_loop",
+        "test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window",
+        "test_invalid_scheduler_mode_fails_startup",
+        "test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read",
+        "test_last_fresh_bucket_source_ts_updates_on_fresh_read",
+        "test_may_off_season_cannot_fire_against_bogus_low_baseline",
+        "test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint",
+        "test_merge_same_hour_actions_keeps_distinct_hours",
+        "test_merge_same_hour_setpoint_action_wins_over_release_hold",
+        "test_mild_schedule_releases_hold_at_start_of_day",
+        "test_missing_scheduler_mode_fails_startup",
+        "test_no_push_when_supervisor_approves_unchanged_layer",
+        "test_normal_tier_unaffected_by_feed_gap",
+        "test_precool_window_action_synthesizes_correct_shape",
+        "test_price_tier_carries_effective_setpoint_when_feed_drops",
+        "test_price_tier_elevated_offset_preserved_across_feed_gap",
+        "test_production_mode_writes_regardless_of_calendar",
+        "test_read_stored_decision_flux_filters_by_single_field_before_group",
+        "test_read_stored_decision_flux_query_flattens_series_with_group",
+        "test_read_stored_decision_flux_query_picks_latest_by_time",
+        "test_read_stored_decision_handles_record_without_day_type",
+        "test_read_stored_decision_returns_day_type_when_present",
+        "test_read_stored_decision_returns_none_when_empty",
+        "test_read_stored_decision_targets_correct_decision_for_date",
+        "test_reconstruct_startup_baseline_daytime_coast_normal",
+        "test_reconstruct_startup_baseline_leaves_last_pushed_untouched",
+        "test_reconstruct_startup_baseline_mild_today_after_release",
+        "test_reconstruct_startup_baseline_overnight_no_yesterday_decision",
+        "test_reconstruct_startup_baseline_overnight_yesterday_mild",
+        "test_reconstruct_startup_baseline_overnight_yesterday_normal",
+        "test_release_hold_action_has_no_setpoint",
+        "test_required_feeds_never_includes_pjm_after_5cp_demotion",
+        "test_required_feeds_propagates_unhealthy_flags",
+        "test_resolve_cool_setpoint_humid_override_unchanged_for_setpoint_actions",
+        "test_resolve_cool_setpoint_release_hold_returns_sentinel",
+        "test_resolve_cool_setpoint_standard_path_unchanged",
+        "test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer",
+        "test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged",
+        "test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85",
+        "test_resolve_layer_priority_returns_layer_resolution_dataclass",
+        "test_resolve_layer_priority_scarcity_override_replaces_schedule",
+        "test_resolve_layer_priority_warmer_wins_when_offset_below_baseline",
+        "test_resolve_schedule_for_date_readonly_day_type_override_parity",
+        "test_resolve_schedule_for_date_readonly_does_not_call_fetch_today_decision",
+        "test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_no_decision",
+        "test_resolve_schedule_for_date_readonly_uses_stored_decision",
+        "test_resolve_schedule_for_date_readonly_vacation_override_wins",
+        "test_revisit_de_escalates_hot_to_normal_when_forecast_cools",
+        "test_revisit_does_not_escalate_when_pjm_inputs_unavailable",
+        "test_revisit_escalates_normal_to_hot_when_forecast_busts_up",
+        "test_revisit_handles_no_stored_decision_yet",
+        "test_revisit_no_change_does_not_overwrite",
+        "test_revisit_no_forecast_does_not_overwrite",
+        "test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk",
+        "test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot",
+        "test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick",
+        "test_run_schedule_check_sets_baseline_initialized_and_reconstructs",
         "test_safety_release_at_29_min_59_sec_still_held",
         "test_safety_release_at_30_min_exactly_fires",
         "test_safety_release_at_30_min_fires_no_data_reason",
         "test_safety_release_does_not_use_data_source_clock",
+        "test_scarcity_still_overrides_when_fivecp_active",
+        "test_scheduler_dry_run_env_is_ignored_with_warning",
+        "test_scheduler_tick_second_is_after_poller_zero",
+        "test_scheduler_tick_target_lands_on_next_wall_clock_second",
+        "test_shadow_mode_never_writes_even_with_dry_run_false",
+        "test_successful_action_marks_done",
+        "test_successful_action_updates_pushed_guard",
+        "test_supervisor_approves_in_range_setpoints",
+        "test_supervisor_clamps_cool_setpoint_too_high",
+        "test_supervisor_clamps_cool_setpoint_too_low",
+        "test_supervisor_clamps_heat_setpoint",
+        "test_supervisor_decision_is_immutable",
+        "test_supervisor_emergency_overrides_when_indoor_too_hot",
+        "test_supervisor_emergency_takes_precedence_over_clamp",
+        "test_supervisor_emergency_threshold_inclusive",
+        "test_supervisor_handles_missing_indoor_temp",
+        "test_supervisor_no_emergency_below_threshold",
+        "test_supervisor_runs_thermostat_read_every_mid_period_tick",
+        "test_switch_event_cold_start_does_not_log",
+        "test_switch_event_includes_actual_timestamp",
+        "test_switch_event_logged_at_a_to_b_boundary",
+        "test_switch_event_logged_at_b_to_a_boundary",
+        "test_switch_event_logged_at_experiment_end",
+        "test_switch_event_logs_experiment_start_boundary_from_observed_none",
+        "test_switch_event_not_logged_within_arm",
+        "test_timer_clear_on_upgrade_is_noop_during_min_hold",
+        "test_timer_clears_on_fresh_sample_when_seeded",
+        "test_timer_clears_on_return_to_normal",
+        "test_timer_clears_when_min_hold_restarts",
         "test_timer_clears_when_protective_upgrade_fires_post_min_hold",
-        "test_timer_clear_on_upgrade_is_noop_during_min_hold"
+        "test_timer_does_NOT_clear_when_sample_remains_none",
+        "test_timer_does_NOT_clear_when_stale_would_downgrade",
+        "test_timer_does_NOT_clear_when_stale_would_hold",
+        "test_timer_does_not_set_at_normal_tier",
+        "test_timer_does_not_set_during_min_hold",
+        "test_timer_sets_on_first_post_hold_nonfresh_with_none_sample",
+        "test_timer_sets_on_first_post_hold_nonfresh_with_stale_sample",
+        "test_write_arm_mode_accepts_tz_aware_datetime",
+        "test_write_arm_mode_in_window_production_emits_off_protocol_production",
+        "test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow",
+        "test_write_arm_mode_outside_experiment_window_emits_outside_window_row",
+        "test_write_arm_mode_outside_window_after_experiment_end",
+        "test_write_arm_mode_writes_a_active_during_arm_a",
+        "test_write_arm_mode_writes_b_active_when_all_feeds_healthy",
+        "test_write_arm_mode_writes_b_down_when_controller_not_alive",
+        "test_write_arm_mode_writes_b_fallback_when_feed_stale",
+        "test_write_input_feed_health_empty_dict_is_noop",
+        "test_write_input_feed_health_logs_pjm_outside_operating_window_too",
+        "test_write_input_feed_health_writes_one_row_per_feed",
+        "test_writes_allowed_fails_closed_on_runtime_invalid_mode",
+        "test_writes_allowed_handles_tz_aware_datetime"
       ],
+      "classes": [
+        "_Rec",
+        "_Table"
+      ],
+      "imports": [
+        "(",
+        "(  # noqa: E402",
+        "Any",
+        "AsyncMock, MagicMock",
+        "DAYTYPE_HOT_STREAK_DAY1",
+        "FiringState, PriceSample, _evaluate_layer_inputs",
+        "FiringState, _evaluate_layer_inputs",
+        "FiringState, derive_price_feed_healthy",
+        "LayerInputs",
+        "MagicMock",
+        "PRICE_FEED_STALE_THRESHOLD",
+        "PriceOverlayState",
+        "PriceSample",
+        "PriceSample  # local import: deferred until first call",
+        "PriceSample, PRICE_FEED_STALE_THRESHOLD",
+        "PriceSample, fetch_latest_comed",
+        "SCHEDULER_TICK_SECOND",
+        "ZoneInfo",
+        "ZoneLoadSnapshot",
+        "annotations",
+        "app",
+        "asyncio",
+        "call",
+        "datetime, timedelta, timezone",
+        "fetch_latest_comed",
+        "importlib",
+        "inspect",
+        "os",
+        "pjm_5cp",
+        "pytest"
+      ],
+      "exports": [],
       "totalLines": 3914,
       "hasStructuralAnalysis": true
     },
@@ -6170,511 +3600,93 @@
     },
     "deploy/energy-stack/hvac_scheduler/test_pjm_5cp.py": {
       "filePath": "deploy/energy-stack/hvac_scheduler/test_pjm_5cp.py",
-      "contentHash": "2c7979d5ca4f4fc639702363c387133a416ffec9b967699db0ba8def0a66f2d5",
+      "contentHash": "030497e116f0579fbde987e11533c03ae36a7013c03f791f3a42e8379540d530",
       "functions": [
-        {
-          "name": "test_locked_thresholds",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_comed_pre_season_fallback_is_zone_scaled",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_min_distinct_hours_for_baseline_locked_at_168",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_season_5th_unavailable_below_168_distinct_hours",
-          "params": [],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_sufficient_data_picks_correct_5th_in_unsorted_input",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_min_distinct_hours_override_for_testing",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_hold_end_time_rounds_to_end_of_hour_plus_30min",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_hold_end_time_handles_top_of_hour",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "_all_conditions_met_args",
-          "params": [
-            "now_utc"
-          ],
-          "returnType": "dict[str, Any]",
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_all_conditions_met_triggers_active",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_load_ratio_below_trigger_does_not_fire",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_outside_13_20_ct_window_does_not_fire",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_just_before_13_ct_does_not_fire",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_descending_load_does_not_fire",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_forecast_peak_below_season_5th_does_not_fire",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_active_state_holds_through_end_of_hour_even_if_load_drops",
-          "params": [],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_hold_continues_30_min_past_end_of_hour",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_release_only_when_ratio_below_0_90_and_derivative_negative",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_no_release_when_ratio_below_0_90_but_derivative_positive",
-          "params": [],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_no_release_when_derivative_negative_but_ratio_above_release",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_fetch_zone_live_reads_inst_load_with_area_filter",
-          "params": [],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_fetch_zone_live_returns_none_when_under_two_observations",
-          "params": [],
-          "exported": true,
-          "lineCount": 14
-        },
-        {
-          "name": "test_fetch_zone_live_computes_per_hour_derivative",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "_fake_query_api_with_responses",
-          "params": [],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 27
-        },
-        {
-          "name": "test_fetch_forecast_peak_for_date_returns_max_from_latest_revision",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_fetch_forecast_peak_for_date_returns_none_when_no_revisions_exist",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_fetch_forecast_peak_for_date_returns_none_when_revision_has_no_data",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_fetch_forecast_peak_for_date_window_uses_local_tz_day_boundary",
-          "params": [],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_fetch_forecast_peak_for_date_picks_latest_revision_not_max_across_revisions",
-          "params": [],
-          "exported": true,
-          "lineCount": 31
-        },
-        {
-          "name": "test_fetch_forecast_peak_today_uses_local_tz_not_utc_today",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 27
-        },
-        {
-          "name": "test_replay_ramp_up_into_late_afternoon_peak",
-          "params": [],
-          "exported": true,
-          "lineCount": 38
-        },
-        {
-          "name": "test_comed_scope_constants_are_zone_scaled",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_rto_scope_constants_are_rto_scaled",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_rto_pre_season_fallback_value_matches_published_5cp",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_scope_dataclass_is_frozen",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "_scope_evaluation_fixture",
-          "params": [
-            "snapshot",
-            "season_5th_mw",
-            "forecast_peak",
-            "state",
-            "now_utc",
-            "scope",
-            "monkeypatch"
-          ],
-          "returnType": "ScopeEvaluation",
-          "exported": true,
-          "lineCount": 23
-        },
-        {
-          "name": "test_evaluate_for_scope_log_fields_always_include_scope_metadata",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "test_evaluate_for_scope_rto_log_fields_carry_rto_metadata",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "test_evaluate_for_scope_carries_state_on_missing_snapshot",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 20
-        },
-        {
-          "name": "test_evaluate_for_scope_forces_release_when_hold_elapsed_without_data",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "test_evaluate_for_scope_forces_release_on_missing_forecast_past_hold_end",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 20
-        },
-        {
-          "name": "test_evaluate_for_scope_does_not_force_release_inside_hold_window",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "test_evaluate_for_scope_missing_data_does_not_force_release_when_inactive",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "test_evaluate_for_scope_carries_state_on_missing_forecast_peak",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "test_evaluate_for_scope_triggers_when_all_inputs_say_go",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_in_cooling_season_boundaries",
-          "params": [
-            "month",
-            "day",
-            "expected_in_season"
-          ],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_cooling_season_window_in_season_uses_current_year",
-          "params": [],
-          "exported": true,
-          "lineCount": 9
-        },
-        {
-          "name": "test_cooling_season_window_off_season_october_to_december_uses_current_year",
-          "params": [],
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "test_cooling_season_window_off_season_january_to_may_uses_previous_year",
-          "params": [],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_evaluate_for_scope_skips_off_season",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 49
-        },
-        {
-          "name": "test_evaluate_for_scope_rto_fires_from_rto_forecast_alone",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast",
-          "params": [
-            "monkeypatch"
-          ],
-          "exported": true,
-          "lineCount": 15
-        },
-        {
-          "name": "_mock_metered_query_api",
-          "params": [
-            "records"
-          ],
-          "returnType": "MagicMock",
-          "exported": true,
-          "lineCount": 29
-        },
-        {
-          "name": "test_update_season_5th_flux_query_flattens_is_verified_with_group",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_update_season_5th_flux_group_appears_before_aggregate_window",
-          "params": [],
-          "exported": true,
-          "lineCount": 17
-        },
-        {
-          "name": "test_update_season_5th_flux_uses_max_to_prefer_verified",
-          "params": [],
-          "exported": true,
-          "lineCount": 22
-        }
-      ],
-      "classes": [],
-      "imports": [
-        {
-          "source": "datetime",
-          "specifiers": [
-            "datetime",
-            "timedelta",
-            "timezone"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Any"
-          ]
-        },
-        {
-          "source": "unittest.mock",
-          "specifiers": [
-            "MagicMock"
-          ]
-        },
-        {
-          "source": "zoneinfo",
-          "specifiers": [
-            "ZoneInfo"
-          ]
-        },
-        {
-          "source": "pytest",
-          "specifiers": [
-            "pytest"
-          ]
-        },
-        {
-          "source": ".pjm_5cp",
-          "specifiers": [
-            "COMED_PRE_SEASON_FALLBACK_5TH_MW",
-            "COMED_SCOPE",
-            "RTO_PRE_SEASON_FALLBACK_5TH_MW",
-            "RTO_SCOPE",
-            "COOL_SHUTOFF_F",
-            "LOAD_RATIO_RELEASE",
-            "LOAD_RATIO_TRIGGER",
-            "MIN_DISTINCT_HOURS_FOR_BASELINE",
-            "MIN_OBSERVATIONS_FOR_5TH",
-            "DetectorScope",
-            "FiveCPState",
-            "ScopeEvaluation",
-            "ZoneLoadSnapshot",
-            "cooling_season_window_utc",
-            "evaluate_5cp_risk",
-            "evaluate_for_scope",
-            "fetch_forecast_peak_for_date",
-            "fetch_zone_live",
-            "hold_end_time",
-            "in_cooling_season",
-            "season_5th_highest_from_loads",
-            "update_season_5th_highest"
-          ]
-        }
-      ],
-      "exports": [
-        "test_locked_thresholds",
-        "test_comed_pre_season_fallback_is_zone_scaled",
-        "test_min_distinct_hours_for_baseline_locked_at_168",
-        "test_season_5th_unavailable_below_168_distinct_hours",
-        "test_sufficient_data_picks_correct_5th_in_unsorted_input",
-        "test_min_distinct_hours_override_for_testing",
-        "test_hold_end_time_rounds_to_end_of_hour_plus_30min",
-        "test_hold_end_time_handles_top_of_hour",
+        "__init__",
         "_all_conditions_met_args",
-        "test_all_conditions_met_triggers_active",
-        "test_load_ratio_below_trigger_does_not_fire",
-        "test_outside_13_20_ct_window_does_not_fire",
-        "test_just_before_13_ct_does_not_fire",
-        "test_descending_load_does_not_fire",
-        "test_forecast_peak_below_season_5th_does_not_fire",
-        "test_active_state_holds_through_end_of_hour_even_if_load_drops",
-        "test_hold_continues_30_min_past_end_of_hour",
-        "test_release_only_when_ratio_below_0_90_and_derivative_negative",
-        "test_no_release_when_ratio_below_0_90_but_derivative_positive",
-        "test_no_release_when_derivative_negative_but_ratio_above_release",
-        "test_fetch_zone_live_reads_inst_load_with_area_filter",
-        "test_fetch_zone_live_returns_none_when_under_two_observations",
-        "test_fetch_zone_live_computes_per_hour_derivative",
         "_fake_query_api_with_responses",
+        "_mock_metered_query_api",
+        "_query",
+        "_scope_evaluation_fixture",
+        "_spy_fetch_zone_live",
+        "_spy_update_season",
+        "get_time",
+        "get_value",
+        "now",
+        "test_active_state_holds_through_end_of_hour_even_if_load_drops",
+        "test_all_conditions_met_triggers_active",
+        "test_comed_pre_season_fallback_is_zone_scaled",
+        "test_comed_scope_constants_are_zone_scaled",
+        "test_cooling_season_window_in_season_uses_current_year",
+        "test_cooling_season_window_off_season_january_to_may_uses_previous_year",
+        "test_cooling_season_window_off_season_october_to_december_uses_current_year",
+        "test_descending_load_does_not_fire",
+        "test_evaluate_for_scope_carries_state_on_missing_forecast_peak",
+        "test_evaluate_for_scope_carries_state_on_missing_snapshot",
+        "test_evaluate_for_scope_does_not_force_release_inside_hold_window",
+        "test_evaluate_for_scope_forces_release_on_missing_forecast_past_hold_end",
+        "test_evaluate_for_scope_forces_release_when_hold_elapsed_without_data",
+        "test_evaluate_for_scope_log_fields_always_include_scope_metadata",
+        "test_evaluate_for_scope_missing_data_does_not_force_release_when_inactive",
+        "test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast",
+        "test_evaluate_for_scope_rto_fires_from_rto_forecast_alone",
+        "test_evaluate_for_scope_rto_log_fields_carry_rto_metadata",
+        "test_evaluate_for_scope_skips_off_season",
+        "test_evaluate_for_scope_triggers_when_all_inputs_say_go",
+        "test_fetch_forecast_peak_for_date_picks_latest_revision_not_max_across_revisions",
         "test_fetch_forecast_peak_for_date_returns_max_from_latest_revision",
         "test_fetch_forecast_peak_for_date_returns_none_when_no_revisions_exist",
         "test_fetch_forecast_peak_for_date_returns_none_when_revision_has_no_data",
         "test_fetch_forecast_peak_for_date_window_uses_local_tz_day_boundary",
-        "test_fetch_forecast_peak_for_date_picks_latest_revision_not_max_across_revisions",
         "test_fetch_forecast_peak_today_uses_local_tz_not_utc_today",
-        "test_replay_ramp_up_into_late_afternoon_peak",
-        "test_comed_scope_constants_are_zone_scaled",
-        "test_rto_scope_constants_are_rto_scaled",
-        "test_rto_pre_season_fallback_value_matches_published_5cp",
-        "test_scope_dataclass_is_frozen",
-        "_scope_evaluation_fixture",
-        "test_evaluate_for_scope_log_fields_always_include_scope_metadata",
-        "test_evaluate_for_scope_rto_log_fields_carry_rto_metadata",
-        "test_evaluate_for_scope_carries_state_on_missing_snapshot",
-        "test_evaluate_for_scope_forces_release_when_hold_elapsed_without_data",
-        "test_evaluate_for_scope_forces_release_on_missing_forecast_past_hold_end",
-        "test_evaluate_for_scope_does_not_force_release_inside_hold_window",
-        "test_evaluate_for_scope_missing_data_does_not_force_release_when_inactive",
-        "test_evaluate_for_scope_carries_state_on_missing_forecast_peak",
-        "test_evaluate_for_scope_triggers_when_all_inputs_say_go",
+        "test_fetch_zone_live_computes_per_hour_derivative",
+        "test_fetch_zone_live_reads_inst_load_with_area_filter",
+        "test_fetch_zone_live_returns_none_when_under_two_observations",
+        "test_forecast_peak_below_season_5th_does_not_fire",
+        "test_hold_continues_30_min_past_end_of_hour",
+        "test_hold_end_time_handles_top_of_hour",
+        "test_hold_end_time_rounds_to_end_of_hour_plus_30min",
         "test_in_cooling_season_boundaries",
-        "test_cooling_season_window_in_season_uses_current_year",
-        "test_cooling_season_window_off_season_october_to_december_uses_current_year",
-        "test_cooling_season_window_off_season_january_to_may_uses_previous_year",
-        "test_evaluate_for_scope_skips_off_season",
-        "test_evaluate_for_scope_rto_fires_from_rto_forecast_alone",
-        "test_evaluate_for_scope_rto_does_not_fire_on_comed_scale_forecast",
-        "_mock_metered_query_api",
-        "test_update_season_5th_flux_query_flattens_is_verified_with_group",
+        "test_just_before_13_ct_does_not_fire",
+        "test_load_ratio_below_trigger_does_not_fire",
+        "test_locked_thresholds",
+        "test_min_distinct_hours_for_baseline_locked_at_168",
+        "test_min_distinct_hours_override_for_testing",
+        "test_no_release_when_derivative_negative_but_ratio_above_release",
+        "test_no_release_when_ratio_below_0_90_but_derivative_positive",
+        "test_outside_13_20_ct_window_does_not_fire",
+        "test_release_only_when_ratio_below_0_90_and_derivative_negative",
+        "test_replay_ramp_up_into_late_afternoon_peak",
+        "test_rto_pre_season_fallback_value_matches_published_5cp",
+        "test_rto_scope_constants_are_rto_scaled",
+        "test_scope_dataclass_is_frozen",
+        "test_season_5th_unavailable_below_168_distinct_hours",
+        "test_sufficient_data_picks_correct_5th_in_unsorted_input",
         "test_update_season_5th_flux_group_appears_before_aggregate_window",
-        "test_update_season_5th_flux_uses_max_to_prefer_verified"
+        "test_update_season_5th_flux_query_flattens_is_verified_with_group",
+        "test_update_season_5th_flux_uses_max_to_prefer_verified",
+        "test_update_season_5th_returns_none_on_negative_width_window_without_querying",
+        "test_update_season_5th_returns_none_on_zero_width_window_without_querying"
       ],
+      "classes": [
+        "_Rec",
+        "_StubDatetime",
+        "_Table",
+        "makes"
+      ],
+      "imports": [
+        "(",
+        "Any",
+        "MagicMock",
+        "ZoneInfo",
+        "annotations",
+        "dataclasses",
+        "datetime, timedelta, timezone",
+        "fetch_forecast_peak_today",
+        "pjm_5cp",
+        "pytest"
+      ],
+      "exports": [],
       "totalLines": 1045,
       "hasStructuralAnalysis": true
     },
@@ -10106,275 +7118,42 @@
     },
     "deploy/energy-stack/scripts/comed_parser.py": {
       "filePath": "deploy/energy-stack/scripts/comed_parser.py",
-      "contentHash": "e017cb752690a2c41941f3b71398ebde776b4bccc479a940d8199940adf14f27",
+      "contentHash": "6c4e6323de155a41f3ac77ad66220c39e8d8f94ba295f2a1d14e68d3acbac6e4",
       "functions": [
-        {
-          "name": "normalize_text",
-          "params": [
-            "text"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 37
-        },
-        {
-          "name": "_parse_mdy",
-          "params": [
-            "s"
-          ],
-          "returnType": "date",
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "parse_service_period",
-          "params": [
-            "text"
-          ],
-          "returnType": "tuple[date, date, int]",
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "parse_issued_date",
-          "params": [
-            "text"
-          ],
-          "returnType": "date",
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "parse_account_no",
-          "params": [
-            "text"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "parse_rate_plan",
-          "params": [
-            "text"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 10
-        },
-        {
-          "name": "parse_kwh",
-          "params": [
-            "text"
-          ],
-          "returnType": "int",
-          "exported": true,
-          "lineCount": 33
-        },
-        {
-          "name": "_money",
-          "params": [
-            "s"
-          ],
-          "returnType": "float",
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "_extract_block",
-          "params": [
-            "text",
-            "start_pat",
-            "end_pat"
-          ],
-          "returnType": "tuple[float, str]",
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "extract_supply_block",
-          "params": [
-            "text"
-          ],
-          "returnType": "tuple[float, str]",
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "extract_delivery_block",
-          "params": [
-            "text"
-          ],
-          "returnType": "tuple[float, str]",
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "extract_taxes_block",
-          "params": [
-            "text"
-          ],
-          "returnType": "tuple[float, str]",
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "extract_misc_block",
-          "params": [
-            "text"
-          ],
-          "returnType": "tuple[float, str]",
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "parse_line_items",
-          "params": [
-            "body",
-            "category"
-          ],
-          "returnType": "list[LineItem]",
-          "exported": true,
-          "lineCount": 55
-        },
-        {
-          "name": "parse_total_due",
-          "params": [
-            "text"
-          ],
-          "returnType": "float",
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "parse_bill",
-          "params": [
-            "text"
-          ],
-          "returnType": "Bill",
-          "exported": true,
-          "lineCount": 91
-        },
-        {
-          "name": "parse_pdf",
-          "params": [
-            "path"
-          ],
-          "returnType": "Bill",
-          "exported": true,
-          "lineCount": 11
-        }
+        "_extract_block",
+        "_money",
+        "_parse_mdy",
+        "effective_rate_per_kwh",
+        "extract_delivery_block",
+        "extract_misc_block",
+        "extract_supply_block",
+        "extract_taxes_block",
+        "normalize_text",
+        "parse_account_no",
+        "parse_bill",
+        "parse_issued_date",
+        "parse_kwh",
+        "parse_line_items",
+        "parse_pdf",
+        "parse_rate_plan",
+        "parse_service_period",
+        "parse_total_due"
       ],
       "classes": [
-        {
-          "name": "LineItem",
-          "methods": [],
-          "properties": [
-            "category",
-            "line_item",
-            "amount",
-            "quantity",
-            "unit",
-            "rate"
-          ],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "Bill",
-          "methods": [
-            "effective_rate_per_kwh"
-          ],
-          "properties": [
-            "account_no",
-            "rate_plan",
-            "bill_type",
-            "issued_date",
-            "service_from",
-            "service_to",
-            "service_days",
-            "kwh",
-            "peak_kw",
-            "total_due",
-            "supply_total",
-            "delivery_total",
-            "taxes_total",
-            "misc_total",
-            "line_items"
-          ],
-          "exported": true,
-          "lineCount": 22
-        },
-        {
-          "name": "BillParseError",
-          "methods": [],
-          "properties": [],
-          "exported": true,
-          "lineCount": 7
-        }
+        "Bill",
+        "BillParseError",
+        "LineItem",
+        "to"
       ],
       "imports": [
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "re",
-          "specifiers": [
-            "re"
-          ]
-        },
-        {
-          "source": "dataclasses",
-          "specifiers": [
-            "dataclass",
-            "field"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "date"
-          ]
-        },
-        {
-          "source": "pathlib",
-          "specifiers": [
-            "Path"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Optional",
-            "Union"
-          ]
-        }
+        "Optional, Union",
+        "Path",
+        "dataclass, field",
+        "date",
+        "pypdf  # local import to keep test-fixture path dependency-free",
+        "re"
       ],
-      "exports": [
-        "LineItem",
-        "Bill",
-        "normalize_text",
-        "_parse_mdy",
-        "parse_service_period",
-        "parse_issued_date",
-        "parse_account_no",
-        "parse_rate_plan",
-        "parse_kwh",
-        "_money",
-        "_extract_block",
-        "extract_supply_block",
-        "extract_delivery_block",
-        "extract_taxes_block",
-        "extract_misc_block",
-        "parse_line_items",
-        "BillParseError",
-        "parse_total_due",
-        "parse_bill",
-        "parse_pdf"
-      ],
+      "exports": [],
       "totalLines": 502,
       "hasStructuralAnalysis": true
     },
@@ -10656,64 +7435,22 @@
     },
     "deploy/energy-stack/scripts/parse_comed_bill.py": {
       "filePath": "deploy/energy-stack/scripts/parse_comed_bill.py",
-      "contentHash": "d0fafa3c9bb50b72591eb94541bb045087d8ffc20927a78434ce718515f22281",
+      "contentHash": "4c92d7621631b0578a1af9e8c15192fb687b1e4aaa689585ae7fb1aa87533fe0",
       "functions": [
-        {
-          "name": "main",
-          "params": [],
-          "exported": true,
-          "lineCount": 63
-        }
+        "main"
       ],
       "classes": [],
       "imports": [
-        {
-          "source": "argparse",
-          "specifiers": [
-            "argparse"
-          ]
-        },
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "shutil",
-          "specifiers": [
-            "shutil"
-          ]
-        },
-        {
-          "source": "sys",
-          "specifiers": [
-            "sys"
-          ]
-        },
-        {
-          "source": "pathlib",
-          "specifiers": [
-            "Path"
-          ]
-        },
-        {
-          "source": "comed_parser",
-          "specifiers": [
-            "parse_pdf",
-            "BillParseError"
-          ]
-        },
-        {
-          "source": "comed_influx",
-          "specifiers": [
-            "write_bill"
-          ]
-        }
+        "Path",
+        "argparse",
+        "bill_to_line_protocol",
+        "os",
+        "parse_pdf, BillParseError",
+        "shutil",
+        "sys",
+        "write_bill"
       ],
-      "exports": [
-        "main"
-      ],
+      "exports": [],
       "totalLines": 96,
       "hasStructuralAnalysis": true
     },
@@ -11583,285 +8320,50 @@
     },
     "deploy/energy-stack/scripts/tests/test_parser.py": {
       "filePath": "deploy/energy-stack/scripts/tests/test_parser.py",
-      "contentHash": "0371030999a3150d7da0ffe3bef4641e288e75258cb78d7477950b3612a57dfe",
+      "contentHash": "352f613a6e1d0522e885e84b9cbf2825221e4b5f06832d627a66cfe6522adec1",
       "functions": [
-        {
-          "name": "test_bill_dataclass_construction",
-          "params": [],
-          "exported": true,
-          "lineCount": 19
-        },
-        {
-          "name": "test_line_item_dataclass_construction",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_normalize_text_collapses_whitespace",
-          "params": [],
-          "exported": true,
-          "lineCount": 2
-        },
-        {
-          "name": "test_normalize_text_handles_real_fixture",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "_norm_fixture",
-          "params": [
-            "name"
-          ],
-          "returnType": "str",
-          "exported": true,
-          "lineCount": 2
-        },
-        {
-          "name": "test_parse_service_period_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_parse_service_period_fixed",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_parse_issued_date_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_account_no",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_rate_plan_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_rate_plan_fixed",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_kwh_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_kwh_fixed",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_parse_kwh_transition_is_zero",
-          "params": [],
-          "exported": true,
-          "lineCount": 3
-        },
-        {
-          "name": "test_extract_supply_block_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_extract_supply_block_fixed",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_extract_delivery_block_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_extract_taxes_block_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_extract_taxes_block_fixed_has_ac_credit",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_extract_misc_block_normal_is_zero",
-          "params": [],
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "test_parse_line_items_supply_hourly",
-          "params": [],
-          "exported": true,
-          "lineCount": 13
-        },
-        {
-          "name": "test_parse_line_items_supply_fixed_no_capacity",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_parse_line_items_delivery_includes_fixed_charges",
-          "params": [],
-          "exported": true,
-          "lineCount": 11
-        },
-        {
-          "name": "test_parse_line_items_taxes_with_credit",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_parse_line_items_sums_to_block_total_hourly_supply",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_parse_line_items_sums_to_block_total_hourly_taxes",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_parse_bill_hourly_april",
-          "params": [],
-          "exported": true,
-          "lineCount": 18
-        },
-        {
-          "name": "test_parse_bill_fixed_september",
-          "params": [],
-          "exported": true,
-          "lineCount": 7
-        },
-        {
-          "name": "test_parse_bill_transition_is_marked",
-          "params": [],
-          "exported": true,
-          "lineCount": 6
-        },
-        {
-          "name": "test_parse_bill_validates_totals",
-          "params": [],
-          "exported": true,
-          "lineCount": 8
-        },
-        {
-          "name": "test_parse_bill_rejects_wrong_account",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        },
-        {
-          "name": "test_parse_bill_from_pdf_file_endtoend",
-          "params": [],
-          "exported": true,
-          "lineCount": 5
-        }
-      ],
-      "classes": [],
-      "imports": [
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "date"
-          ]
-        },
-        {
-          "source": "pathlib",
-          "specifiers": [
-            "Path"
-          ]
-        },
-        {
-          "source": "pytest",
-          "specifiers": [
-            "pytest"
-          ]
-        },
-        {
-          "source": "comed_parser",
-          "specifiers": [
-            "Bill",
-            "BillParseError",
-            "LineItem",
-            "extract_delivery_block",
-            "extract_misc_block",
-            "extract_supply_block",
-            "extract_taxes_block",
-            "normalize_text",
-            "parse_account_no",
-            "parse_bill",
-            "parse_issued_date",
-            "parse_kwh",
-            "parse_line_items",
-            "parse_rate_plan",
-            "parse_service_period"
-          ]
-        }
-      ],
-      "exports": [
+        "_norm_fixture",
         "test_bill_dataclass_construction",
+        "test_extract_delivery_block_hourly",
+        "test_extract_misc_block_normal_is_zero",
+        "test_extract_supply_block_fixed",
+        "test_extract_supply_block_hourly",
+        "test_extract_taxes_block_fixed_has_ac_credit",
+        "test_extract_taxes_block_hourly",
         "test_line_item_dataclass_construction",
         "test_normalize_text_collapses_whitespace",
         "test_normalize_text_handles_real_fixture",
-        "_norm_fixture",
-        "test_parse_service_period_hourly",
-        "test_parse_service_period_fixed",
-        "test_parse_issued_date_hourly",
         "test_parse_account_no",
-        "test_parse_rate_plan_hourly",
-        "test_parse_rate_plan_fixed",
-        "test_parse_kwh_hourly",
-        "test_parse_kwh_fixed",
-        "test_parse_kwh_transition_is_zero",
-        "test_extract_supply_block_hourly",
-        "test_extract_supply_block_fixed",
-        "test_extract_delivery_block_hourly",
-        "test_extract_taxes_block_hourly",
-        "test_extract_taxes_block_fixed_has_ac_credit",
-        "test_extract_misc_block_normal_is_zero",
-        "test_parse_line_items_supply_hourly",
-        "test_parse_line_items_supply_fixed_no_capacity",
-        "test_parse_line_items_delivery_includes_fixed_charges",
-        "test_parse_line_items_taxes_with_credit",
-        "test_parse_line_items_sums_to_block_total_hourly_supply",
-        "test_parse_line_items_sums_to_block_total_hourly_taxes",
-        "test_parse_bill_hourly_april",
         "test_parse_bill_fixed_september",
+        "test_parse_bill_from_pdf_file_endtoend",
+        "test_parse_bill_hourly_april",
         "test_parse_bill_transition_is_marked",
         "test_parse_bill_validates_totals",
-        "test_parse_bill_rejects_wrong_account",
-        "test_parse_bill_from_pdf_file_endtoend"
+        "test_parse_issued_date_hourly",
+        "test_parse_kwh_fixed",
+        "test_parse_kwh_hourly",
+        "test_parse_kwh_transition_is_zero",
+        "test_parse_line_items_delivery_includes_fixed_charges",
+        "test_parse_line_items_sums_to_block_total_hourly_supply",
+        "test_parse_line_items_sums_to_block_total_hourly_taxes",
+        "test_parse_line_items_supply_fixed_no_capacity",
+        "test_parse_line_items_supply_hourly",
+        "test_parse_line_items_taxes_with_credit",
+        "test_parse_rate_plan_fixed",
+        "test_parse_rate_plan_hourly",
+        "test_parse_service_period_fixed",
+        "test_parse_service_period_hourly"
       ],
+      "classes": [],
+      "imports": [
+        "(",
+        "Path",
+        "date",
+        "os",
+        "parse_pdf",
+        "pytest"
+      ],
+      "exports": [],
       "totalLines": 312,
       "hasStructuralAnalysis": true
     },
@@ -13609,229 +10111,49 @@
     },
     "deploy/energy-stack/thermostat_poller/poller.py": {
       "filePath": "deploy/energy-stack/thermostat_poller/poller.py",
-      "contentHash": "186abba0132013058708a813c0fa371f516bc7f3dcf2f003167c387ed78e610d",
+      "contentHash": "11713563f870d8537171b102946564eb1ded1acb9130f5793fbff1bedd2c2643",
       "functions": [
-        {
-          "name": "log",
-          "params": [
-            "level",
-            "msg"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 4
-        },
-        {
-          "name": "read_snapshot",
-          "params": [
-            "c4"
-          ],
-          "returnType": "dict[str, Any]",
-          "exported": true,
-          "lineCount": 12
-        },
-        {
-          "name": "write_snapshot",
-          "params": [
-            "write_api",
-            "cfg",
-            "snap"
-          ],
-          "returnType": "None",
-          "exported": true,
-          "lineCount": 16
-        },
-        {
-          "name": "fetch_last_action",
-          "params": [
-            "query_api",
-            "bucket"
-          ],
-          "returnType": "dict[str, Any] | None",
-          "exported": true,
-          "lineCount": 29
-        },
-        {
-          "name": "classify_override",
-          "params": [
-            "snap",
-            "last",
-            "override_grace_min"
-          ],
-          "returnType": "dict[str, Any] | None",
-          "exported": true,
-          "lineCount": 38
-        },
-        {
-          "name": "detect_and_write_override",
-          "params": [
-            "query_api",
-            "write_api",
-            "cfg",
-            "snap"
-          ],
-          "returnType": "dict[str, Any] | None",
-          "exported": true,
-          "lineCount": 31
-        },
-        {
-          "name": "main_async",
-          "params": [
-            "cfg"
-          ],
-          "returnType": "int",
-          "exported": true,
-          "lineCount": 49
-        },
-        {
-          "name": "main",
-          "params": [],
-          "returnType": "int",
-          "exported": true,
-          "lineCount": 3
-        }
-      ],
-      "classes": [
-        {
-          "name": "Config",
-          "methods": [
-            "from_env"
-          ],
-          "properties": [
-            "email",
-            "password",
-            "controller_ip",
-            "thermostat_id",
-            "poll_interval",
-            "override_grace_min",
-            "influx_url",
-            "influx_token",
-            "influx_org",
-            "influx_bucket",
-            "token_file"
-          ],
-          "exported": true,
-          "lineCount": 34
-        },
-        {
-          "name": "C4Client",
-          "methods": [
-            "__init__",
-            "_load_token",
-            "_save_token",
-            "_cloud_auth",
-            "ensure_director",
-            "get_climate",
-            "call_with_reauth"
-          ],
-          "properties": [],
-          "exported": true,
-          "lineCount": 83
-        }
-      ],
-      "imports": [
-        {
-          "source": "asyncio",
-          "specifiers": [
-            "asyncio"
-          ]
-        },
-        {
-          "source": "json",
-          "specifiers": [
-            "json"
-          ]
-        },
-        {
-          "source": "os",
-          "specifiers": [
-            "os"
-          ]
-        },
-        {
-          "source": "signal",
-          "specifiers": [
-            "signal"
-          ]
-        },
-        {
-          "source": "sys",
-          "specifiers": [
-            "sys"
-          ]
-        },
-        {
-          "source": "dataclasses",
-          "specifiers": [
-            "dataclass"
-          ]
-        },
-        {
-          "source": "datetime",
-          "specifiers": [
-            "datetime",
-            "timezone"
-          ]
-        },
-        {
-          "source": "pathlib",
-          "specifiers": [
-            "Path"
-          ]
-        },
-        {
-          "source": "typing",
-          "specifiers": [
-            "Any",
-            "Awaitable",
-            "Callable",
-            "cast"
-          ]
-        },
-        {
-          "source": "influxdb_client",
-          "specifiers": [
-            "InfluxDBClient",
-            "Point"
-          ]
-        },
-        {
-          "source": "influxdb_client.client.write_api",
-          "specifiers": [
-            "SYNCHRONOUS"
-          ]
-        },
-        {
-          "source": "pyControl4.account",
-          "specifiers": [
-            "C4Account"
-          ]
-        },
-        {
-          "source": "pyControl4.director",
-          "specifiers": [
-            "C4Director"
-          ]
-        },
-        {
-          "source": "pyControl4.climate",
-          "specifiers": [
-            "C4Climate"
-          ]
-        }
-      ],
-      "exports": [
-        "log",
-        "Config",
-        "C4Client",
-        "read_snapshot",
-        "write_snapshot",
-        "fetch_last_action",
+        "__init__",
+        "_cloud_auth",
+        "_load_token",
+        "_save_token",
+        "call_with_reauth",
         "classify_override",
         "detect_and_write_override",
+        "ensure_director",
+        "fetch_last_action",
+        "from_env",
+        "get_climate",
+        "handle_stop",
+        "log",
+        "main",
         "main_async",
-        "main"
+        "read_snapshot",
+        "required",
+        "write_snapshot"
       ],
+      "classes": [
+        "C4Client",
+        "Config"
+      ],
+      "imports": [
+        "Any, Awaitable, Callable, cast",
+        "C4Account",
+        "C4Climate",
+        "C4Director",
+        "InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__",
+        "Path",
+        "SYNCHRONOUS",
+        "annotations",
+        "asyncio",
+        "dataclass",
+        "datetime, timezone",
+        "json",
+        "os",
+        "signal",
+        "sys"
+      ],
+      "exports": [],
       "totalLines": 387,
       "hasStructuralAnalysis": true
     },
@@ -27289,40 +23611,18 @@
     },
     "tools/cockpit/frontend/src/components/ThermostatRing.tsx": {
       "filePath": "tools/cockpit/frontend/src/components/ThermostatRing.tsx",
-      "contentHash": "0828e82b4f48265de4fe68806b03166cc9b8b0d4da1e072ea0fcd73efd355b79",
+      "contentHash": "931fc7798f061459e24580913614a8d49a5643f203d0b4f68c0cd785cb87429f",
       "functions": [
-        {
-          "name": "polar",
-          "params": [
-            "cx",
-            "cy",
-            "r",
-            "deg"
-          ],
-          "exported": false,
-          "lineCount": 4
-        },
-        {
-          "name": "tempToFrac",
-          "params": [
-            "f"
-          ],
-          "exported": false,
-          "lineCount": 4
-        },
-        {
-          "name": "ThermostatRing",
-          "params": [
-            "{\n  size,\n  indoor_f,\n  cool_f,\n  heat_f,\n}"
-          ],
-          "exported": true,
-          "lineCount": 103
-        }
+        "ThermostatRing",
+        "a",
+        "polar",
+        "rad",
+        "tempToFrac"
       ],
       "classes": [],
       "imports": [],
       "exports": [
-        "ThermostatRing"
+        "export function ThermostatRing({"
       ],
       "totalLines": 121,
       "hasStructuralAnalysis": true
