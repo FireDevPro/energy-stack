@@ -59,7 +59,9 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Dashboards live in the dedicated FireDevPro/grafana-dashboards repo,
+      # cloned to /opt/grafana-dashboards on Pi-lab (see that repo's README).
+      - /opt/grafana-dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q '\"database\": \"ok\"'"]
       interval: 30s
