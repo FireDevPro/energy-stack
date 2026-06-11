@@ -16,8 +16,8 @@
 #
 # Examples:
 #   tools/codex-focused-review.sh phase1 main
-#   tools/codex-focused-review.sh phase2 HEAD~5 'tools/cockpit/frontend/**'
-#   tools/codex-focused-review.sh phase3 HEAD~3 'tools/cockpit/**'
+#   tools/codex-focused-review.sh phase2 HEAD~5 'deploy/energy-stack/cockpit/frontend/**'
+#   tools/codex-focused-review.sh phase3 HEAD~3 'deploy/energy-stack/cockpit/**'
 
 set -euo pipefail
 

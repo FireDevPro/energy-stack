@@ -7,31 +7,46 @@ role-label: chris
 
 # Controller Cockpit
 
-Workstation-local read-only dashboard for the HVAC controller. Live-tape
-complement to the daily n8n/Telegram commissioning report.
+Read-only dashboard for the HVAC controller. Live-tape complement to the
+daily decision-trace report.
 
-## Run
+## Run (canonical: Pi-lab compose service)
 
-One-click launcher (Windows). First-time setup:
+The cockpit runs as the `cockpit` service in this stack's
+`docker-compose.yml`: a single container that serves the FastAPI proxy
+(`/api/*`) and the production frontend build same-origin on
+**<http://192.168.20.10:8765/>**. Merging changes under
+`deploy/energy-stack/cockpit/` to `main` deploys it like any other
+service. It reaches InfluxDB / Loki via compose service names and reads
+credentials from the Pi's `.env`; nothing runs on the workstation.
+
+Ops (on Pi-lab): `docker compose logs -f cockpit`,
+`docker compose restart cockpit`.
+
+## Dev loop (workstation)
+
+One-click dev launcher (Windows). First-time setup:
 
 ```pwsh
-cp tools/cockpit/.env.example tools/cockpit/.env.local
+cp deploy/energy-stack/cockpit/.env.example deploy/energy-stack/cockpit/.env.local
 # edit .env.local — fill INFLUXDB_TOKEN + confirm URLs.
 # Pi-lab token lives in /home/chris/energy-stack/.env as INFLUXDB_INIT_ADMIN_TOKEN.
 
-pwsh tools/cockpit/install-shortcut.ps1   # creates Cockpit.lnk on desktop
+pwsh deploy/energy-stack/cockpit/install-shortcut.ps1   # creates Cockpit.lnk on desktop
 ```
 
 Then double-click the Cockpit desktop icon. The launcher:
 
-- sources `tools/cockpit/.env.local` (gitignored)
+- sources `deploy/energy-stack/cockpit/.env.local` (gitignored)
 - kills any prior cockpit backend on `:8765` / Vite on `:5173`
   (only if the bound process command line matches the cockpit — leaves
   unrelated python/node alone)
-- spawns uvicorn (live mode) and Vite as hidden background processes; logs at `tools/cockpit/logs/backend.log` and `tools/cockpit/logs/frontend.log`
+- spawns uvicorn (live mode) and Vite as hidden background processes; logs at `cockpit/logs/backend.log` and `cockpit/logs/frontend.log`
 - waits for both to be healthy, then opens <http://localhost:5173/>
 
-To stop the cockpit, re-run `start-cockpit.ps1` (its first action is killing any prior bound process), or kill the uvicorn/Vite processes manually via Task Manager.
+To stop the dev cockpit, run `stop-cockpit.ps1` (or re-run
+`start-cockpit.ps1` — its first action is killing any prior bound
+process).
 
 Backend port `:8765` is pinned in `vite.config.ts` (proxy target) and
 in `start-cockpit.ps1` (`$BackendPort`). Frontend port `:5173` is
@@ -68,8 +83,8 @@ in a static snapshot from `src/fixtures/`. The full set:
 | `npm run test` | Vitest run (acceptance + live-fetch tests) |
 | `npm run test:watch` | Vitest watch mode |
 | `npm run lint` | ESLint |
-| `pytest tools/cockpit/backend/tests/` | backend pytest (snapshot + freshness) |
-| `uvicorn tools.cockpit.backend.app:app --reload` | run backend dev server (set `COCKPIT_BACKEND_MODE=live` explicitly — the launcher sets it, but bare `uvicorn` may default to canned-fixture mode) |
+| `pytest deploy/energy-stack/cockpit/backend` | backend pytest (snapshot + freshness) |
+| `uvicorn backend.app:app --reload` (from `deploy/energy-stack/cockpit/`) | run backend dev server (set `COCKPIT_BACKEND_MODE=live` explicitly — the launcher sets it, but bare `uvicorn` may default to canned-fixture mode) |
 
 ## Architecture
 
@@ -90,18 +105,21 @@ Shipped state:
 
 - **Phase 1** — mock fixtures, full UI rendering, no backend.
 - **Phase 2** — 9 fixtures total covering normal operation + edge cases.
-- **Phase 3** — `tools/cockpit/backend/` FastAPI proxy at `:8765` serving
+- **Phase 3** — `backend/` FastAPI proxy at `:8765` serving
   the `Snapshot` JSON shape. Frontend polls every 5s with fixture
   fallback on network errors and explicit fixture mode via `?fixture=`.
   Backend tests assert the snapshot contract.
-- **Live wire-up** — `tools/cockpit/backend/influx.py` +
+- **Live wire-up** — `backend/influx.py` +
   `loki.py` query builders are implemented against Pi-lab InfluxDB +
   Loki; live mode (`COCKPIT_BACKEND_MODE=live`, default in the
   launcher) is the canonical operator path. Canned mode
   (`COCKPIT_BACKEND_MODE=canned`) still serves the `summer_normal`
   fixture for offline development.
+- **Pi-lab deployment (2026-06-11)** — multi-stage Dockerfile builds the
+  frontend and serves it same-origin from the backend container as the
+  `cockpit` compose service; the workstation launcher became the dev loop.
 
-Locked design decisions live in [`docs/plans/archive/cockpit-plan.md`](../../docs/plans/archive/cockpit-plan.md) (archived 2026-05-17 when the feature shipped).
+Locked design decisions live in [`docs/plans/archive/cockpit-plan.md`](../../../docs/plans/archive/cockpit-plan.md) (archived 2026-05-17 when the feature shipped).
 
 ## Layout
 
@@ -143,7 +161,7 @@ Vitest + Testing Library + jsdom. Custom SVG decision-flow renderer
 not React Flow / @xyflow. Dark "Reticule" theme: Sora display font,
 Hanken Grotesk for UI text, JetBrains Mono for IDs/timestamps. Loaded
 via Google Fonts CDN; design source ported verbatim from operator's
-reference (gitignored at `tools/cockpit/reference/`).
+reference (gitignored at `deploy/energy-stack/cockpit/reference/`).
 
 ## Visual acceptance
 
@@ -171,7 +189,7 @@ Per repo policy, Vitest is currently non-gating for cockpit PRs —
 failures are predominantly missing-jsdom-API noise (e.g. `ResizeObserver`
 in components that measure their container), not data-path or build
 failures. The required gates are: `npm run typecheck`, `npm run lint`,
-`npm run build`, `pytest tools/cockpit/backend/tests/`, and manual
+`npm run build`, `pytest deploy/energy-stack/cockpit/backend`, and manual
 Chrome smoke on the operator's display.
 
 ## Known jsdom limitations

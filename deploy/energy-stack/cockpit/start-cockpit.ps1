@@ -1,7 +1,9 @@
 #requires -Version 7.0
-# Controller Cockpit one-click launcher.
+# Controller Cockpit dev launcher (workstation).
 #
-# Sources .env.local, kills any prior cockpit backend/frontend bound to
+# The canonical cockpit is the `cockpit` compose service on Pi-lab
+# (http://192.168.20.10:8765/). This script is the local dev loop:
+# sources .env.local, kills any prior cockpit backend/frontend bound to
 # :8765 / :5173, then spawns uvicorn (live mode) + Vite in two visible
 # pwsh windows and opens the cockpit in the default browser.
 #
@@ -14,7 +16,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir    = $PSScriptRoot
-$RepoRoot     = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
 $FrontendDir  = Join-Path $ScriptDir 'frontend'
 $LogDir       = Join-Path $ScriptDir 'logs'
 $BackendPort  = 8765
@@ -57,7 +58,7 @@ if ($missing) {
 }
 
 $env:COCKPIT_BACKEND_MODE = 'live'
-$env:PYTHONPATH = $RepoRoot
+$env:PYTHONPATH = $ScriptDir
 
 # ---- 2. Targeted cleanup of prior cockpit processes -------------------
 
@@ -79,15 +80,15 @@ function Stop-CockpitOnPort {
 }
 
 Write-Host 'Cleaning up prior cockpit processes...' -ForegroundColor Cyan
-Stop-CockpitOnPort -Port $BackendPort  -Pattern 'tools\.cockpit\.backend\.app|tools[\\/]+cockpit[\\/]+backend' -Label 'backend'
-Stop-CockpitOnPort -Port $FrontendPort -Pattern 'vite|tools[\\/]+cockpit[\\/]+frontend' -Label 'frontend'
+Stop-CockpitOnPort -Port $BackendPort  -Pattern 'backend\.app:app|cockpit[\\/]+backend' -Label 'backend'
+Stop-CockpitOnPort -Port $FrontendPort -Pattern 'vite|cockpit[\\/]+frontend' -Label 'frontend'
 Start-Sleep -Milliseconds 400
 
 # ---- 3. Spawn backend + frontend in visible pwsh windows -------------
 
 $BackendLog  = Join-Path $LogDir 'backend.log'
 $FrontendLog = Join-Path $LogDir 'frontend.log'
-$BackendCmd  = "Set-Location '$RepoRoot'; uvicorn tools.cockpit.backend.app:app --host 127.0.0.1 --port $BackendPort *> '$BackendLog'"
+$BackendCmd  = "Set-Location '$ScriptDir'; uvicorn backend.app:app --host 127.0.0.1 --port $BackendPort *> '$BackendLog'"
 $FrontendCmd = "Set-Location '$FrontendDir'; npm run dev *> '$FrontendLog'"
 
 Write-Host "Starting backend on :$BackendPort (log: $BackendLog)..." -ForegroundColor Cyan

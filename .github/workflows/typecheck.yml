@@ -53,7 +53,7 @@ jobs:
             deploy/energy-stack/refoss_poller/requirements.txt \
             deploy/energy-stack/telegram_notifier/requirements.txt \
             deploy/energy-stack/thermostat_poller/requirements.txt \
-            tools/cockpit/backend/requirements.txt; do
+            deploy/energy-stack/cockpit/backend/requirements.txt; do
             if [[ -f "$req" ]]; then
               pip install -r "$req"
             fi

@@ -33,9 +33,11 @@ services=(
     thermostat_poller
 )
 
-# scripts/tests/ is a proper package with __init__.py; safe to collect in one shot.
+# scripts/tests/ and cockpit/backend/tests/ are proper packages with
+# __init__.py; safe to collect in one shot each.
 extras=(
     scripts
+    cockpit/backend
 )
 
 failed=()

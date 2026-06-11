@@ -1,0 +1,8 @@
+node_modules
+**/__pycache__
+**/.pytest_cache
+frontend/dist
+logs
+reference
+.env.local
+*.log

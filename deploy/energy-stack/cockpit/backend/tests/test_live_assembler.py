@@ -6,18 +6,10 @@ assembler is a pure function, fully testable in isolation.
 """
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
-# Allow running as `pytest tools/cockpit/backend/tests/` from repo root.
-_BACKEND_ROOT = Path(__file__).resolve().parents[1]
-_REPO_ROOT = _BACKEND_ROOT.parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from tools.cockpit.backend.snapshot import build_snapshot_live
+from ..snapshot import build_snapshot_live
 
 
 _NOW = datetime(2026, 7, 14, 18, 0, 30, tzinfo=timezone.utc)

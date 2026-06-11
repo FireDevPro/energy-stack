@@ -9,30 +9,19 @@ Drift between the Python fixture and the TS fixture surfaces here.
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-
-# Allow running as `pytest tools/cockpit/backend/tests/` from repo root
-# without installing as a package.
-_BACKEND_ROOT = Path(__file__).resolve().parents[1]
-_REPO_ROOT = _BACKEND_ROOT.parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from datetime import datetime, timedelta, timezone
-
 from fastapi.testclient import TestClient
 
-from tools.cockpit.backend.app import app
-from tools.cockpit.backend.snapshot import (
+from ..app import app
+from ..snapshot import (
     _build_price_overlay_node,
     build_snapshot_canned,
 )
-from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
-from tools.cockpit.backend.freshness import classify
+from ..freshness import classify
+from .fixtures.summer_normal import SUMMER_NORMAL
 
 
 class TestCannedSnapshot:

@@ -6,12 +6,15 @@ on:
     branches: [main]
     paths:
       - 'deploy/energy-stack/hvac_scheduler/freshness.py'
-      - 'tools/cockpit/backend/freshness.py'
+      - 'deploy/energy-stack/cockpit/backend/freshness.py'
       - '.github/workflows/check-freshness-drift.yml'
 
 jobs:
   check-drift:
-    runs-on: self-hosted
+    # ubuntu-latest: the prior self-hosted runner was decommissioned with
+    # the deploy workflow's move to Tailscale (see deploy.yml); this job
+    # only needs bash + python3.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,11 +43,11 @@ jobs:
           }
 
           A=$(strip_header deploy/energy-stack/hvac_scheduler/freshness.py)
-          B=$(strip_header tools/cockpit/backend/freshness.py)
+          B=$(strip_header deploy/energy-stack/cockpit/backend/freshness.py)
           if [ "$A" != "$B" ]; then
             echo "ERROR: freshness modules have drifted (excluding header docstrings)."
             echo "Canonical: deploy/energy-stack/hvac_scheduler/freshness.py"
-            echo "Cockpit:   tools/cockpit/backend/freshness.py"
+            echo "Cockpit:   deploy/energy-stack/cockpit/backend/freshness.py"
             echo ""
             echo "Both files must contain the same Freshness Literal, Thresholds"
             echo "class, THRESHOLDS dict, and classify() function. If you're"
