@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from tools.cockpit.backend.schedules import (
+from .schedules import (
     PlannedAction,
     planned_setpoints_for_day,
 )

@@ -127,8 +127,6 @@ How to deploy, run, and tweak the running stack on Pi-lab.
 Workstation-local utilities and analysis scaffolds. Most are
 self-contained mini-projects with their own READMEs.
 
-- [tools/cockpit/README.md](tools/cockpit/README.md) — Controller
-  Cockpit: read-only live dashboard
 - [tools/analysis/queries/README.md](tools/analysis/queries/README.md)
   — Flux query library for analysis pipelines
 - [tools/analysis/replay/README.md](tools/analysis/replay/README.md)
@@ -159,10 +157,11 @@ content:
   the May 2026 doc audit pass. Useful as historical context for why
   the current doc state looks the way it does; not load-bearing for
   ongoing work.
-- **`tools/cockpit/frontend/`** and other vendored / generated
-  artifacts (`node_modules/`, `.pytest_cache/`, `site/`).
+- **Vendored / generated artifacts** (`node_modules/`,
+  `.pytest_cache/`, `site/`).
 - **Per-service code, configs, and tests** under
-  `deploy/energy-stack/<service>/` — discoverable from
+  `deploy/energy-stack/<service>/` (including the Controller Cockpit
+  at `deploy/energy-stack/cockpit/`) — discoverable from
   `deploy/energy-stack/README.md` and the per-service Dockerfiles +
   source.
 

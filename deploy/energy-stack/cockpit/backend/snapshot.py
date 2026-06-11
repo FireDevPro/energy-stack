@@ -3,7 +3,7 @@ Snapshot dict that the frontend consumes.
 
 This module is the contract seam between live data and the cockpit UI.
 The shape it produces MUST match the TS `Snapshot` interface defined
-at tools/cockpit/frontend/src/types.ts. Drift surfaces in
+at ../frontend/src/types.ts. Drift surfaces in
 test_snapshot.py via the paired fixture comparison.
 
 Two assembly modes:
@@ -21,8 +21,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from tools.cockpit.backend.tests.fixtures.summer_normal import SUMMER_NORMAL
-from tools.cockpit.backend.freshness import Freshness, classify
+from .tests.fixtures.summer_normal import SUMMER_NORMAL
+from .freshness import Freshness, classify
 
 
 def build_snapshot_canned() -> dict[str, Any]:

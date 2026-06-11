@@ -19,6 +19,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 |---|---|---|---|
 | `influxdb` | Time-series storage (energy bucket) | 8086 | [SERVICES.md#influxdb](../../docs/SERVICES.md#influxdb) |
 | `grafana` | Visualization (dashboards + Loki Explore) | 3000 | [SERVICES.md#grafana](../../docs/SERVICES.md#grafana) |
+| `cockpit` | Controller Cockpit — read-only HVAC dashboard (FastAPI proxy + built frontend, same-origin) | 8765 | [SERVICES.md#cockpit](../../docs/SERVICES.md#cockpit) |
 | `eagle-poller` | EAGLE-3 smart meter, billing-grade demand + summation, 30 s | — | [SERVICES.md#eagle-poller](../../docs/SERVICES.md#eagle-poller) |
 | `comed-poller` | ComEd Hourly Pricing 5min + hourly_avg, 60 s | — | [SERVICES.md#comed-poller](../../docs/SERVICES.md#comed-poller) |
 | `refoss-poller` | Refoss EM16P 18 channels, 30 s | — | [SERVICES.md#refoss-poller](../../docs/SERVICES.md#refoss-poller) |
@@ -154,7 +155,7 @@ Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot
 
 ## Type checking
 
-Every Python service in this stack — plus `tools/cockpit/backend` — is enforced under `mypy --strict` and an import-linter contract. The enforcement is the project's structural defense against the freshness-class drift that motivated the 2026-05 type-checker rollout (see archived plan at `docs/plans/archive/type-checker-plan.md` and shipped spec at `docs/superpowers/specs/2026-05-20-type-checker-design.md`).
+Every Python service in this stack — plus `cockpit/backend` — is enforced under `mypy --strict` and an import-linter contract. The enforcement is the project's structural defense against the freshness-class drift that motivated the 2026-05 type-checker rollout (see archived plan at `docs/plans/archive/type-checker-plan.md` and shipped spec at `docs/superpowers/specs/2026-05-20-type-checker-design.md`).
 
 Run locally:
 
@@ -162,7 +163,7 @@ Run locally:
 bash deploy/energy-stack/run_typecheck.sh
 ```
 
-The wrapper invokes mypy per-target (each service in `service_dirs`, plus `tools/cockpit/backend` in `repo_targets`) so an error in one service doesn't mask errors in another. Final step runs `import-linter` against the active contract.
+The wrapper invokes mypy per-target (each service in `service_dirs`, plus `cockpit/backend` in `repo_targets`) so an error in one service doesn't mask errors in another. Final step runs `import-linter` against the active contract.
 
 **Contract currently enforced**: `Only influx_adapter may import influxdb_client`. Direct use of `influxdb_client.*` outside `hvac_scheduler/influx_adapter.py` is a build failure. Adapter pattern documented in `docs/type-debt-backlog.md` (which also tracks future adapter candidates like `pyControl4`).
 
@@ -178,8 +179,9 @@ The wrapper invokes mypy per-target (each service in `service_dirs`, plus `tools
 |---|---|---|
 | 8086 | InfluxDB API + UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3000 | Grafana UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
-| 3100 | Loki (Grafana queries it via container network) | Reachable on the homelab 192.168.20.x subnet (used by the workstation cockpit per `tools/cockpit/.env.example:9`) + Pi-lab localhost |
+| 3100 | Loki (Grafana + cockpit query it via container network) | Reachable on the homelab 192.168.20.x subnet (used by the workstation dev cockpit per `cockpit/.env.example`) + Pi-lab localhost |
 | 8088 | ecowitt-ingest HTTP receiver | LAN — GW1200B pushes here every 60 s |
+| 8765 | cockpit (Controller Cockpit UI + API) | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 
 No firewall changes required — existing "Allow Trusted to Homelab" ZBF rule covers the user-facing ports.
 

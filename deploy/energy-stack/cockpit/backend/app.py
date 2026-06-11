@@ -12,34 +12,39 @@ Modes (via COCKPIT_BACKEND_MODE env var):
   using snapshot.build_snapshot_live. Requires:
     INFLUXDB_URL, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET
     LOKI_URL, LOKI_CONTAINER (default: hvac-scheduler)
-  Workstation usage: start via ../start-cockpit.ps1 which sources
-  tools/cockpit/.env.local for these values.
+  Deployed usage: runs as the `cockpit` compose service on Pi-lab
+  (../Dockerfile); compose supplies the env vars and the image also
+  serves the built frontend (see static mount at the bottom).
+  Workstation dev: start via ../start-cockpit.ps1 which sources
+  ../.env.local for these values.
 
-Run (only supported invocation form, from repo root):
-    PYTHONPATH=. uvicorn tools.cockpit.backend.app:app --reload --port 8765
+Run (from the cockpit directory, deploy/energy-stack/cockpit/):
+    uvicorn backend.app:app --reload --port 8765
 """
 from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from tools.cockpit.backend.day_ahead import (
+from .day_ahead import (
     build_day_ahead_canned,
     build_day_ahead_live,
 )
-from tools.cockpit.backend.day_at_a_glance import (
+from .day_at_a_glance import (
     build_day_at_a_glance_canned,
     build_day_at_a_glance_live,
 )
-from tools.cockpit.backend.snapshot import (
+from .snapshot import (
     build_snapshot_canned,
     build_snapshot_live,
 )
-from tools.cockpit.backend.today_actions import (
+from .today_actions import (
     build_today_actions_canned,
     build_today_actions_live,
 )
@@ -137,11 +142,11 @@ def _live_snapshot() -> dict[str, Any]:
             status_code=503,
             detail=(
                 "live mode requires `influxdb-client` — install via "
-                "`pip install -r tools/cockpit/backend/requirements.txt`"
+                "`pip install -r deploy/energy-stack/cockpit/backend/requirements.txt`"
             ),
         ) from e
 
-    from tools.cockpit.backend import influx, loki  # noqa: PLC0415
+    from . import influx, loki  # noqa: PLC0415
 
     url = _require_env("INFLUXDB_URL")
     token = _require_env("INFLUXDB_TOKEN")
@@ -214,13 +219,13 @@ def _live_day_ahead() -> dict[str, Any]:
             status_code=503,
             detail=(
                 "live mode requires `influxdb-client` — install via "
-                "`pip install -r tools/cockpit/backend/requirements.txt`"
+                "`pip install -r deploy/energy-stack/cockpit/backend/requirements.txt`"
             ),
         ) from e
 
     from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-    from tools.cockpit.backend import influx  # noqa: PLC0415
+    from . import influx  # noqa: PLC0415
 
     url = _require_env("INFLUXDB_URL")
     token = _require_env("INFLUXDB_TOKEN")
@@ -269,7 +274,7 @@ def _live_today_actions() -> dict[str, Any]:
     """Resolve today's day_type from the latest scheduler trace and
     build the action list. Reuses the day_at_a_glance loki-fetch
     pattern; day_type lookup is the only external dep."""
-    from tools.cockpit.backend import loki  # noqa: PLC0415
+    from . import loki  # noqa: PLC0415
 
     loki_url = _require_env("LOKI_URL")
     container = os.environ.get("LOKI_CONTAINER", "hvac-scheduler")
@@ -295,13 +300,13 @@ def _live_day_at_a_glance() -> dict[str, Any]:
             status_code=503,
             detail=(
                 "live mode requires `influxdb-client` — install via "
-                "`pip install -r tools/cockpit/backend/requirements.txt`"
+                "`pip install -r deploy/energy-stack/cockpit/backend/requirements.txt`"
             ),
         ) from e
 
     from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-    from tools.cockpit.backend import influx, loki  # noqa: PLC0415
+    from . import influx, loki  # noqa: PLC0415
 
     url = _require_env("INFLUXDB_URL")
     token = _require_env("INFLUXDB_TOKEN")
@@ -360,8 +365,8 @@ def _live_day_at_a_glance() -> dict[str, Any]:
 def _build_feed_health(
     query_api: Any, bucket: str, now: datetime
 ) -> list[dict[str, Any]]:
-    from tools.cockpit.backend import influx  # noqa: PLC0415
-    from tools.cockpit.backend.freshness import classify  # noqa: PLC0415
+    from . import influx  # noqa: PLC0415
+    from .freshness import classify  # noqa: PLC0415
 
     out: list[dict[str, Any]] = []
     for display_name, measurement, freshness_key, tag_filter in influx.FEED_DEFINITIONS:
@@ -431,3 +436,12 @@ class _HttpxLokiClient:
         r = httpx.get(url, params=params, timeout=5.0)
         r.raise_for_status()
         return r.json()
+
+
+# The Docker image copies the Vite production build to ../frontend/dist;
+# when present, serve it same-origin so the container exposes the API and
+# the UI on one port. Dev keeps using the Vite server (no dist, no mount).
+# Mounted after all route definitions so /api/* always wins.
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="frontend")
