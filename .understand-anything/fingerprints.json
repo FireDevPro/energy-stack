@@ -21848,8 +21848,8 @@
       "totalLines": 188,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/__init__.py": {
-      "filePath": "tools/cockpit/__init__.py",
+    "deploy/energy-stack/cockpit/__init__.py": {
+      "filePath": "deploy/energy-stack/cockpit/__init__.py",
       "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "functions": [],
       "classes": [],
@@ -21858,8 +21858,8 @@
       "totalLines": 1,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/.env.example": {
-      "filePath": "tools/cockpit/.env.example",
+    "deploy/energy-stack/cockpit/.env.example": {
+      "filePath": "deploy/energy-stack/cockpit/.env.example",
       "contentHash": "fcf025556b702f6837b8bf070b1ca4db5dd1a2e1bcfb06b9586fda74dc169a7a",
       "functions": [],
       "classes": [],
@@ -21868,8 +21868,8 @@
       "totalLines": 13,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/__init__.py": {
-      "filePath": "tools/cockpit/backend/__init__.py",
+    "deploy/energy-stack/cockpit/backend/__init__.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/__init__.py",
       "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "functions": [],
       "classes": [],
@@ -21878,8 +21878,8 @@
       "totalLines": 1,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/app.py": {
-      "filePath": "tools/cockpit/backend/app.py",
+    "deploy/energy-stack/cockpit/backend/app.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/app.py",
       "contentHash": "b39bfe133b59cd07938b5bb8d82013f502b3bc1a0fad532c8750c2b20d2ebf23",
       "functions": [
         {
@@ -22076,8 +22076,8 @@
       "totalLines": 434,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/day_ahead.py": {
-      "filePath": "tools/cockpit/backend/day_ahead.py",
+    "deploy/energy-stack/cockpit/backend/day_ahead.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/day_ahead.py",
       "contentHash": "71fb6aacdaa45ffd95db26999a0d5762a7454f62ad84a242f70759c77ec321ab",
       "functions": [
         {
@@ -22158,8 +22158,8 @@
       "totalLines": 126,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/day_at_a_glance.py": {
-      "filePath": "tools/cockpit/backend/day_at_a_glance.py",
+    "deploy/energy-stack/cockpit/backend/day_at_a_glance.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/day_at_a_glance.py",
       "contentHash": "6fc57379f91ffd2ce09c55ecc684254868abf282859bceff71125a8f3ca8b5ea",
       "functions": [
         {
@@ -22267,8 +22267,8 @@
       "totalLines": 211,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/freshness.py": {
-      "filePath": "tools/cockpit/backend/freshness.py",
+    "deploy/energy-stack/cockpit/backend/freshness.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/freshness.py",
       "contentHash": "c3e117cf0750b92e12d22f875b97b607cfaa2bf5411358f3fa396c4e2a0931df",
       "functions": [
         {
@@ -22336,8 +22336,8 @@
       "totalLines": 74,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/influx.py": {
-      "filePath": "tools/cockpit/backend/influx.py",
+    "deploy/energy-stack/cockpit/backend/influx.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/influx.py",
       "contentHash": "d526c1f207cb9e1385e7e99d4c763edc8b77c1799667a7547da4bede14fc1b12",
       "functions": [
         {
@@ -22582,8 +22582,8 @@
       "totalLines": 517,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/loki.py": {
-      "filePath": "tools/cockpit/backend/loki.py",
+    "deploy/energy-stack/cockpit/backend/loki.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/loki.py",
       "contentHash": "8aa6ee838e9384bdf2dd9ba70b0cdecb86c44ce8d29c8d91bfc44ac389544ce0",
       "functions": [
         {
@@ -22653,8 +22653,8 @@
       "totalLines": 126,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/requirements.txt": {
-      "filePath": "tools/cockpit/backend/requirements.txt",
+    "deploy/energy-stack/cockpit/backend/requirements.txt": {
+      "filePath": "deploy/energy-stack/cockpit/backend/requirements.txt",
       "contentHash": "e640972ba2572f82bc7b0ebd094a08a54582bd8c2cac1edc69200af90e4aef3e",
       "functions": [],
       "classes": [],
@@ -22663,8 +22663,8 @@
       "totalLines": 7,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/backend/schedules.py": {
-      "filePath": "tools/cockpit/backend/schedules.py",
+    "deploy/energy-stack/cockpit/backend/schedules.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/schedules.py",
       "contentHash": "872aa5f0ace55efd7bdd10f9e7b48c87dabb2fe79c70ea4de0a510f2a227499d",
       "functions": [
         {
@@ -22706,8 +22706,8 @@
       "totalLines": 79,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/snapshot.py": {
-      "filePath": "tools/cockpit/backend/snapshot.py",
+    "deploy/energy-stack/cockpit/backend/snapshot.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/snapshot.py",
       "contentHash": "0007be14a0c7416cbe3b1a5f133d44d61a321753f7c2f0a18c9d69d74d3f9bcf",
       "functions": [
         {
@@ -23016,8 +23016,8 @@
       "totalLines": 636,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/tests/__init__.py": {
-      "filePath": "tools/cockpit/backend/tests/__init__.py",
+    "deploy/energy-stack/cockpit/backend/tests/__init__.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/tests/__init__.py",
       "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "functions": [],
       "classes": [],
@@ -23026,8 +23026,8 @@
       "totalLines": 1,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/tests/fixtures/__init__.py": {
-      "filePath": "tools/cockpit/backend/tests/fixtures/__init__.py",
+    "deploy/energy-stack/cockpit/backend/tests/fixtures/__init__.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/tests/fixtures/__init__.py",
       "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "functions": [],
       "classes": [],
@@ -23036,8 +23036,8 @@
       "totalLines": 1,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/tests/fixtures/summer_normal.py": {
-      "filePath": "tools/cockpit/backend/tests/fixtures/summer_normal.py",
+    "deploy/energy-stack/cockpit/backend/tests/fixtures/summer_normal.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/tests/fixtures/summer_normal.py",
       "contentHash": "14e2aa1a537599df33f7c7f1933cc0482111909f999fbbd59c40eefb8a8356b6",
       "functions": [],
       "classes": [],
@@ -23053,8 +23053,8 @@
       "totalLines": 221,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/tests/test_live_assembler.py": {
-      "filePath": "tools/cockpit/backend/tests/test_live_assembler.py",
+    "deploy/energy-stack/cockpit/backend/tests/test_live_assembler.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/tests/test_live_assembler.py",
       "contentHash": "1895305781cde98a1b04356d6b80ca726f1eefd21c683e601979c63c83cae0aa",
       "functions": [
         {
@@ -23206,8 +23206,8 @@
       "totalLines": 350,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/tests/test_snapshot.py": {
-      "filePath": "tools/cockpit/backend/tests/test_snapshot.py",
+    "deploy/energy-stack/cockpit/backend/tests/test_snapshot.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/tests/test_snapshot.py",
       "contentHash": "460bd882d4cd617f693ea71885f98ef89b25d5755e1df0d38eed2dc41ce6e006",
       "functions": [],
       "classes": [
@@ -23362,8 +23362,8 @@
       "totalLines": 344,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/backend/today_actions.py": {
-      "filePath": "tools/cockpit/backend/today_actions.py",
+    "deploy/energy-stack/cockpit/backend/today_actions.py": {
+      "filePath": "deploy/energy-stack/cockpit/backend/today_actions.py",
       "contentHash": "d8e890bb01ab677fb026846f4935968a0e1c6b2405414b39f6c032e6c8a6f9a1",
       "functions": [
         {
@@ -23419,8 +23419,8 @@
       "totalLines": 89,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/eslint.config.js": {
-      "filePath": "tools/cockpit/frontend/eslint.config.js",
+    "deploy/energy-stack/cockpit/frontend/eslint.config.js": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/eslint.config.js",
       "contentHash": "cf80a7510234dcd5ae594b30b44682b8b45ba13c0fcb5bf8928bea143802aa1c",
       "functions": [],
       "classes": [],
@@ -23467,8 +23467,8 @@
       "totalLines": 23,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/index.html": {
-      "filePath": "tools/cockpit/frontend/index.html",
+    "deploy/energy-stack/cockpit/frontend/index.html": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/index.html",
       "contentHash": "f703ae0662deb780970eac934693884cf155109109d2af869b6e7e8fed3f219b",
       "functions": [],
       "classes": [],
@@ -23477,8 +23477,8 @@
       "totalLines": 21,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/frontend/package.json": {
-      "filePath": "tools/cockpit/frontend/package.json",
+    "deploy/energy-stack/cockpit/frontend/package.json": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/package.json",
       "contentHash": "cdf2eccd6c631fa0267badf30f9447b2249581a2dcd2ac7fe0bfb3b0bbb89455",
       "functions": [],
       "classes": [],
@@ -23487,8 +23487,8 @@
       "totalLines": 43,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/postcss.config.js": {
-      "filePath": "tools/cockpit/frontend/postcss.config.js",
+    "deploy/energy-stack/cockpit/frontend/postcss.config.js": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/postcss.config.js",
       "contentHash": "190c877db466995bf1482f4a16abd06e04a89ede3119341e2a86ff96e1737b27",
       "functions": [],
       "classes": [],
@@ -23497,8 +23497,8 @@
       "totalLines": 7,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/__tests__/setup.ts": {
-      "filePath": "tools/cockpit/frontend/src/__tests__/setup.ts",
+    "deploy/energy-stack/cockpit/frontend/src/__tests__/setup.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/__tests__/setup.ts",
       "contentHash": "843f5e2274731f1054f672d8ded86cd35999c3a0f9df1b2f4223519b76490d79",
       "functions": [],
       "classes": [],
@@ -23518,8 +23518,8 @@
       "totalLines": 34,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/App.tsx": {
-      "filePath": "tools/cockpit/frontend/src/App.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/App.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/App.tsx",
       "contentHash": "1c51c6d33d3dc51eb22bcaa3348a9cb0a754177a844d2dbc4f39e1751692a8d8",
       "functions": [
         {
@@ -23544,8 +23544,8 @@
       "totalLines": 6,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/components/Header.tsx": {
-      "filePath": "tools/cockpit/frontend/src/components/Header.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/components/Header.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/components/Header.tsx",
       "contentHash": "8c768f823eba2e90dc2c12e0f91d8824f5c1018aee08b2e76307fa59dfbc4ff3",
       "functions": [
         {
@@ -23581,8 +23581,8 @@
       "totalLines": 66,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/components/PriceChip.tsx": {
-      "filePath": "tools/cockpit/frontend/src/components/PriceChip.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/components/PriceChip.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/components/PriceChip.tsx",
       "contentHash": "d45a39cd461ff7e26d1f596fadf7a6fa05e60e8434a255834dab183532b81924",
       "functions": [
         {
@@ -23609,8 +23609,8 @@
       "totalLines": 37,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/components/ThermostatRing.tsx": {
-      "filePath": "tools/cockpit/frontend/src/components/ThermostatRing.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/components/ThermostatRing.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/components/ThermostatRing.tsx",
       "contentHash": "931fc7798f061459e24580913614a8d49a5643f203d0b4f68c0cd785cb87429f",
       "functions": [
         "ThermostatRing",
@@ -23627,8 +23627,8 @@
       "totalLines": 121,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/arm_switch.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/arm_switch.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/arm_switch.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/arm_switch.ts",
       "contentHash": "3b91e840e660048bc631ea59c731c410769373b4f2f215d482858740f8454243",
       "functions": [],
       "classes": [],
@@ -23646,8 +23646,8 @@
       "totalLines": 249,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/controller_down.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/controller_down.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/controller_down.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/controller_down.ts",
       "contentHash": "c83e6d4fbd13f0f1523438b6ec13e19a8e00fa5a37bb7e3dfa4ec7f86b36f8c1",
       "functions": [],
       "classes": [],
@@ -23665,8 +23665,8 @@
       "totalLines": 218,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/feed_outage.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/feed_outage.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/feed_outage.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/feed_outage.ts",
       "contentHash": "bb70a7c17a9b3e1b4b75b5265295134242d59caa589613824184fdda61863501",
       "functions": [],
       "classes": [],
@@ -23684,8 +23684,8 @@
       "totalLines": 238,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/fivecp_risk.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/fivecp_risk.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/fivecp_risk.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/fivecp_risk.ts",
       "contentHash": "fb7ec05d20c2c6ce0a865da3171aaf1fc7f5efe40cc0c88da3ab1075d3be6cba",
       "functions": [],
       "classes": [],
@@ -23703,8 +23703,8 @@
       "totalLines": 224,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/mild_day.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/mild_day.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/mild_day.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/mild_day.ts",
       "contentHash": "8c872902592b01852354f29ded3ea2f64463449533b7255bc6f92892c2939fbe",
       "functions": [],
       "classes": [],
@@ -23722,8 +23722,8 @@
       "totalLines": 243,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/price_spike.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/price_spike.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/price_spike.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/price_spike.ts",
       "contentHash": "5147b370b384c6e5edbc4aa1252419f0bcc4c3fb9ac10fde4a2a0c3ef70621fb",
       "functions": [],
       "classes": [],
@@ -23741,8 +23741,8 @@
       "totalLines": 239,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/shadow_current.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/shadow_current.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/shadow_current.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/shadow_current.ts",
       "contentHash": "2b62164f3a59072a98dc8a645d894cc6249d84ba4024e01e4a8be0fe575e618a",
       "functions": [],
       "classes": [],
@@ -23760,8 +23760,8 @@
       "totalLines": 236,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/summer_normal.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/summer_normal.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/summer_normal.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/summer_normal.ts",
       "contentHash": "ed1d0f9aa8b4c8b5fb562430b73374bf923788317a25112ba85e4a0c9206f5cd",
       "functions": [],
       "classes": [],
@@ -23779,8 +23779,8 @@
       "totalLines": 234,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/fixtures/supervisor_clamp.ts": {
-      "filePath": "tools/cockpit/frontend/src/fixtures/supervisor_clamp.ts",
+    "deploy/energy-stack/cockpit/frontend/src/fixtures/supervisor_clamp.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/fixtures/supervisor_clamp.ts",
       "contentHash": "61ea0e419aa7a0314770ec00676096c6d62eec821030bcf29a112a4e6d147e98",
       "functions": [],
       "classes": [],
@@ -23798,8 +23798,8 @@
       "totalLines": 233,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/freshness.ts": {
-      "filePath": "tools/cockpit/frontend/src/freshness.ts",
+    "deploy/energy-stack/cockpit/frontend/src/freshness.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/freshness.ts",
       "contentHash": "6fffa5ac4f010fb94cc1cba77f6089454af797ec7901594819ccb97d9b8c2046",
       "functions": [
         {
@@ -23845,8 +23845,8 @@
       "totalLines": 102,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/index.css": {
-      "filePath": "tools/cockpit/frontend/src/index.css",
+    "deploy/energy-stack/cockpit/frontend/src/index.css": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/index.css",
       "contentHash": "b6d145a3d991282319caae17b2585329c91ce7239ebefe42981cf1fe38084868",
       "functions": [],
       "classes": [],
@@ -23855,8 +23855,8 @@
       "totalLines": 924,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/frontend/src/lib/api.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/api.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/api.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/api.ts",
       "contentHash": "5df779ba198a8bed507ecbf46dfbb8fe47a2e90d8b86db0ecc15565b2079268d",
       "functions": [
         {
@@ -23884,8 +23884,8 @@
       "totalLines": 18,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/lib/loadFixture.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/loadFixture.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/loadFixture.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/loadFixture.ts",
       "contentHash": "f6cc0c6f6ce0b852f37232e5031e026a9d2c5c7c77c80fa5434667417cefe421",
       "functions": [
         {
@@ -23966,8 +23966,8 @@
       "totalLines": 38,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/lib/tone.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/tone.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/tone.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/tone.ts",
       "contentHash": "6099da403fce5a639cf0298e9ee3e4d700b69d9fb93d65b36296198ea2c88b03",
       "functions": [
         {
@@ -24048,8 +24048,8 @@
       "totalLines": 70,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/lib/useCountUp.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/useCountUp.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/useCountUp.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/useCountUp.ts",
       "contentHash": "5ab27ae8567e840bdab464a2ecbef5775b4d7d8959119c9b19a65151699a1e36",
       "functions": [
         {
@@ -24087,8 +24087,8 @@
       "totalLines": 25,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/lib/usePolling.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/usePolling.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/usePolling.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/usePolling.ts",
       "contentHash": "3b1d3bf1b45e97df46fe0ab2a6d4e3e83149fb2bef7c0ed4ec1e382f06478bea",
       "functions": [
         {
@@ -24120,8 +24120,8 @@
       "totalLines": 83,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/lib/useSize.ts": {
-      "filePath": "tools/cockpit/frontend/src/lib/useSize.ts",
+    "deploy/energy-stack/cockpit/frontend/src/lib/useSize.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/lib/useSize.ts",
       "contentHash": "a7092628d47aad5cb41c3b20999a8f6ba6d3d574f0c95148a718965659af09a8",
       "functions": [
         {
@@ -24149,8 +24149,8 @@
       "totalLines": 43,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/main.tsx": {
-      "filePath": "tools/cockpit/frontend/src/main.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/main.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/main.tsx",
       "contentHash": "b443ba5bb3e7e593b8b1863df1516b52a5c07e3c2175d025a569935af37cec9c",
       "functions": [],
       "classes": [],
@@ -24188,8 +24188,8 @@
       "totalLines": 14,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/ActionLog.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/ActionLog.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/ActionLog.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/ActionLog.tsx",
       "contentHash": "47f898b7e1af22af76e05a7191ef824837ffede852b139d0e611b33dfa8e9e10",
       "functions": [
         {
@@ -24273,8 +24273,8 @@
       "totalLines": 104,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/DayAheadPanel.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/DayAheadPanel.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/DayAheadPanel.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/DayAheadPanel.tsx",
       "contentHash": "f877b4a0748154cc482dbcecb7ab6438da68686298a82c0f7dcaa33497cbfd64",
       "functions": [
         {
@@ -24376,8 +24376,8 @@
       "totalLines": 203,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/DayAtAGlance.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/DayAtAGlance.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/DayAtAGlance.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/DayAtAGlance.tsx",
       "contentHash": "8df3a93be7277bc228e341e382d31a8525836fd6561ead27a24f314b49e76b9b",
       "functions": [
         {
@@ -24535,8 +24535,8 @@
       "totalLines": 694,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/DecisionPipeline.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/DecisionPipeline.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/DecisionPipeline.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/DecisionPipeline.tsx",
       "contentHash": "4901d24db34be0c8491fd0866d0c3ba68111ab4c562ac85c3150cc58072c87b7",
       "functions": [
         {
@@ -24573,8 +24573,8 @@
       "totalLines": 131,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/HeroPanel.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/HeroPanel.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/HeroPanel.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/HeroPanel.tsx",
       "contentHash": "d37673a5f7163505fbf705603ff281346f5e2a6dc93fd0547f8c3c62d6e38f8d",
       "functions": [
         {
@@ -24637,8 +24637,8 @@
       "totalLines": 131,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/components/WhyThisDecision.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/components/WhyThisDecision.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/components/WhyThisDecision.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/components/WhyThisDecision.tsx",
       "contentHash": "2ced743fa40a66a2a768c0426474ef5734731104e029e78eb43c911d6c89aea9",
       "functions": [
         {
@@ -24719,8 +24719,8 @@
       "totalLines": 259,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/fixtures/day_ahead.ts": {
-      "filePath": "tools/cockpit/frontend/src/narrative/fixtures/day_ahead.ts",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/day_ahead.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/day_ahead.ts",
       "contentHash": "7ba73fd6ff4892ffb3197ad592ca90c641dda5ef806e2ab6bdd48048487c0777",
       "functions": [],
       "classes": [],
@@ -24738,8 +24738,8 @@
       "totalLines": 25,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/fixtures/day_at_a_glance.ts": {
-      "filePath": "tools/cockpit/frontend/src/narrative/fixtures/day_at_a_glance.ts",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/day_at_a_glance.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/day_at_a_glance.ts",
       "contentHash": "6f1347dbc730f3b0739a1d63fe35fd4025ec39abec77de3936f7961566c3c6b2",
       "functions": [
         {
@@ -24767,8 +24767,8 @@
       "totalLines": 63,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/fixtures/today_actions.ts": {
-      "filePath": "tools/cockpit/frontend/src/narrative/fixtures/today_actions.ts",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/today_actions.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/fixtures/today_actions.ts",
       "contentHash": "d2b84a49e9cc0b411eac400ec9377ff7dd48900f2819484550fcfbb382e4bdbd",
       "functions": [],
       "classes": [],
@@ -24786,8 +24786,8 @@
       "totalLines": 15,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/lib/api.ts": {
-      "filePath": "tools/cockpit/frontend/src/narrative/lib/api.ts",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/lib/api.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/lib/api.ts",
       "contentHash": "3b40edf2f1830864164fa15a227921b5b5db53ceed2a0149595700dd91863922",
       "functions": [
         {
@@ -24837,8 +24837,8 @@
       "totalLines": 45,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/narrative.css": {
-      "filePath": "tools/cockpit/frontend/src/narrative/narrative.css",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/narrative.css": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/narrative.css",
       "contentHash": "0827275cdc9a75cd6ee55fb10858f2b5967cb35119ae8fe50fbdcaa0b67826f5",
       "functions": [],
       "classes": [],
@@ -24847,8 +24847,8 @@
       "totalLines": 571,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/frontend/src/narrative/NarrativeCockpit.tsx": {
-      "filePath": "tools/cockpit/frontend/src/narrative/NarrativeCockpit.tsx",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/NarrativeCockpit.tsx": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/NarrativeCockpit.tsx",
       "contentHash": "9c34baa10ac0c6f16afca64fba5fd09e82e8fdc7e52e7c015bac521161994d7e",
       "functions": [
         {
@@ -24957,8 +24957,8 @@
       "totalLines": 121,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/narrative/types.ts": {
-      "filePath": "tools/cockpit/frontend/src/narrative/types.ts",
+    "deploy/energy-stack/cockpit/frontend/src/narrative/types.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/narrative/types.ts",
       "contentHash": "a35b5abc4f89b3156f5c8743d91385016e5cf2235dd8711d24dd77237e293991",
       "functions": [],
       "classes": [],
@@ -24967,8 +24967,8 @@
       "totalLines": 77,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/src/types.ts": {
-      "filePath": "tools/cockpit/frontend/src/types.ts",
+    "deploy/energy-stack/cockpit/frontend/src/types.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/src/types.ts",
       "contentHash": "fc5bdd54fcbd125023c945b476f714312a01883f903a2e73cba984cfc1c6d892",
       "functions": [],
       "classes": [],
@@ -24977,8 +24977,8 @@
       "totalLines": 212,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/tailwind.config.js": {
-      "filePath": "tools/cockpit/frontend/tailwind.config.js",
+    "deploy/energy-stack/cockpit/frontend/tailwind.config.js": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/tailwind.config.js",
       "contentHash": "4c824407e04b5a62bc869dd872bcadd71073cd78e169ca220a82056aa3d5e429",
       "functions": [],
       "classes": [],
@@ -24987,8 +24987,8 @@
       "totalLines": 39,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/tsconfig.app.json": {
-      "filePath": "tools/cockpit/frontend/tsconfig.app.json",
+    "deploy/energy-stack/cockpit/frontend/tsconfig.app.json": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/tsconfig.app.json",
       "contentHash": "b1eac9ba6cd1c01d59ebca159805e052c798d9d4ab904680b79ce3e306ea0bbd",
       "functions": [],
       "classes": [],
@@ -24997,8 +24997,8 @@
       "totalLines": 26,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/tsconfig.json": {
-      "filePath": "tools/cockpit/frontend/tsconfig.json",
+    "deploy/energy-stack/cockpit/frontend/tsconfig.json": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/tsconfig.json",
       "contentHash": "770b4140bbb581e2dfd9ea9946ffc9c75a1d86ba7d2db5f77c83e37cbdf9d808",
       "functions": [],
       "classes": [],
@@ -25007,8 +25007,8 @@
       "totalLines": 8,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/tsconfig.node.json": {
-      "filePath": "tools/cockpit/frontend/tsconfig.node.json",
+    "deploy/energy-stack/cockpit/frontend/tsconfig.node.json": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/tsconfig.node.json",
       "contentHash": "90a22c920cbc14624fb4658b58f15c875abf3234224f3933f211849c3ada3242",
       "functions": [],
       "classes": [],
@@ -25017,8 +25017,8 @@
       "totalLines": 25,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/vite.config.ts": {
-      "filePath": "tools/cockpit/frontend/vite.config.ts",
+    "deploy/energy-stack/cockpit/frontend/vite.config.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/vite.config.ts",
       "contentHash": "2e8b4c0f555f6f5bbc1d713422ea32538f428b6c4fe989fc456e0b61447e4bb8",
       "functions": [],
       "classes": [],
@@ -25040,8 +25040,8 @@
       "totalLines": 20,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/frontend/vitest.config.ts": {
-      "filePath": "tools/cockpit/frontend/vitest.config.ts",
+    "deploy/energy-stack/cockpit/frontend/vitest.config.ts": {
+      "filePath": "deploy/energy-stack/cockpit/frontend/vitest.config.ts",
       "contentHash": "a3597dc79f3e2a54851f3a8e37b030269fe75d9e3339b7210abda266ab95c251",
       "functions": [],
       "classes": [],
@@ -25063,8 +25063,8 @@
       "totalLines": 12,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/install-shortcut.ps1": {
-      "filePath": "tools/cockpit/install-shortcut.ps1",
+    "deploy/energy-stack/cockpit/install-shortcut.ps1": {
+      "filePath": "deploy/energy-stack/cockpit/install-shortcut.ps1",
       "contentHash": "1aea513865ef25fc588af5eb3fa65c2a16a178fa5dbeca98ddca3e7fc2dc0e1f",
       "functions": [],
       "classes": [],
@@ -25073,8 +25073,8 @@
       "totalLines": 35,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/README.md": {
-      "filePath": "tools/cockpit/README.md",
+    "deploy/energy-stack/cockpit/README.md": {
+      "filePath": "deploy/energy-stack/cockpit/README.md",
       "contentHash": "f46236355c2e4ca29d08863c6532f369dec2eda718ba9e3534e3ac6ce92cc972",
       "functions": [],
       "classes": [],
@@ -25083,8 +25083,8 @@
       "totalLines": 197,
       "hasStructuralAnalysis": true
     },
-    "tools/cockpit/start-cockpit.ps1": {
-      "filePath": "tools/cockpit/start-cockpit.ps1",
+    "deploy/energy-stack/cockpit/start-cockpit.ps1": {
+      "filePath": "deploy/energy-stack/cockpit/start-cockpit.ps1",
       "contentHash": "e676e9ea99932e8b38370794881753e94e84a8eb6239779928be546a25b18db1",
       "functions": [],
       "classes": [],
@@ -25093,8 +25093,8 @@
       "totalLines": 134,
       "hasStructuralAnalysis": false
     },
-    "tools/cockpit/stop-cockpit.ps1": {
-      "filePath": "tools/cockpit/stop-cockpit.ps1",
+    "deploy/energy-stack/cockpit/stop-cockpit.ps1": {
+      "filePath": "deploy/energy-stack/cockpit/stop-cockpit.ps1",
       "contentHash": "e9c5e5bfd376820d127adea06d9018ebe679804e5ea378f53e6e963ec0cd5615",
       "functions": [],
       "classes": [],
