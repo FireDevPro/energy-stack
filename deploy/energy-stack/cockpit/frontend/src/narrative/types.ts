@@ -1,6 +1,6 @@
 // Narrative cockpit (v2) payload shapes — not part of the locked
 // Snapshot contract in ../types.ts. Mirrors
-// tools/cockpit/backend/day_at_a_glance.py output.
+// backend/day_at_a_glance.py output.
 
 export interface IndoorPoint {
   ts: string

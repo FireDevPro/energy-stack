@@ -84,6 +84,35 @@ services:
     expose:
       - "8081"
 
+  cockpit:
+    # Controller Cockpit — read-only HVAC dashboard. FastAPI proxy plus the
+    # built React frontend served same-origin on :8765. Supersedes the
+    # workstation-local launcher as the canonical way to run it
+    # (cockpit/start-cockpit.ps1 remains the dev loop).
+    build: ./cockpit
+    container_name: cockpit
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    environment:
+      COCKPIT_BACKEND_MODE: live
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+      LOKI_URL: http://loki:3100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   eagle-poller:
     build: ./eagle_poller
     container_name: eagle-poller

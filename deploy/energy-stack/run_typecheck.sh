@@ -9,8 +9,10 @@
 # Two target types are supported:
 #   - service_dirs: service package names under deploy/energy-stack/
 #     (underscore names, post-rename)
-#   - repo_targets: paths relative to repo root (used for cockpit-backend
-#     and any other enforced module living outside deploy/energy-stack/)
+#   - repo_targets: paths relative to repo root (used for the
+#     cockpit backend, whose package root is nested at
+#     deploy/energy-stack/cockpit/backend rather than being a
+#     service_dirs-style top-level package)
 #
 # Also runs import-linter to enforce adapter boundaries (spec §5.5).
 # Exits non-zero if any enforced check fails.
@@ -38,10 +40,9 @@ service_dirs=(
     telegram_notifier
 )
 
-# Paths outside deploy/energy-stack/ in the enforced set
-# (relative to REPO_ROOT)
+# Path-based targets in the enforced set (relative to REPO_ROOT)
 repo_targets=(
-    tools/cockpit/backend
+    deploy/energy-stack/cockpit/backend
 )
 
 failed=()
@@ -76,8 +77,9 @@ for svc in "${service_dirs[@]}"; do
     fi
 done
 
-# Repo-relative targets (cockpit-backend etc.). Invoked from repo root
-# because their imports use absolute paths like `tools.cockpit.backend.X`.
+# Repo-relative path targets (cockpit-backend etc.). Invoked from repo
+# root; mypy roots the package at the first non-package ancestor, so the
+# cockpit backend checks as the top-level `backend` package.
 for tgt in "${repo_targets[@]}"; do
     echo
     echo "=== type-checking $tgt ==="

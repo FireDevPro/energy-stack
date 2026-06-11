@@ -8,8 +8,9 @@ export default defineConfig({
     proxy: {
       // Forward /api/* to the FastAPI backend during dev. Backend port
       // is pinned to 8765 to match start-cockpit.ps1 — keep them in sync
-      // if either ever moves. Production build is workstation-local;
-      // reverse-proxy would serve both /api/* and / from the same origin.
+      // if either ever moves. Production is the Pi compose service: the
+      // backend container serves the built dist/ and /api/* same-origin,
+      // so this proxy is dev-only.
       '/api': {
         target: 'http://localhost:8765',
         changeOrigin: false,

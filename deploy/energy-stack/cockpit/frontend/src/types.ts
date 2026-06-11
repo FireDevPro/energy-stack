@@ -144,7 +144,7 @@ export interface FiveCPDetails {
 export interface WinnerDetails {
   // Post binding spec §11 #14, 5CP no longer wins layer resolution
   // and the scheduler does not emit "tie" anymore. Cockpit narrows
-  // to the only two live values; see tools/cockpit/backend/snapshot.py
+  // to the only two live values; see ../backend/snapshot.py
   // _build_winner_node for the defensive narrowing path that keeps
   // older stale traces from breaking the UI.
   winning_layer: 'schedule' | 'price_overlay'

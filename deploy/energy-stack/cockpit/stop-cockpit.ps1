@@ -23,13 +23,13 @@ function Stop-CockpitOnPort {
   }
 }
 
-Stop-CockpitOnPort -Port 8765 -Pattern 'tools\.cockpit\.backend\.app|tools[\\/]+cockpit[\\/]+backend' -Label 'backend'
-Stop-CockpitOnPort -Port 5173 -Pattern 'vite|tools[\\/]+cockpit[\\/]+frontend' -Label 'frontend'
+Stop-CockpitOnPort -Port 8765 -Pattern 'backend\.app:app|cockpit[\\/]+backend' -Label 'backend'
+Stop-CockpitOnPort -Port 5173 -Pattern 'vite|cockpit[\\/]+frontend' -Label 'frontend'
 
 # Reap any orphaned pwsh wrappers (hidden launcher children that
 # survived after their inner uvicorn/vite exited).
 Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" |
-  Where-Object { $_.CommandLine -match 'tools\.cockpit\.backend\.app|tools[\\/]+cockpit[\\/]+frontend' } |
+  Where-Object { $_.CommandLine -match 'backend\.app:app|cockpit[\\/]+frontend' } |
   ForEach-Object {
     Write-Host "Stopping wrapper pwsh (PID $($_.ProcessId))"
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue

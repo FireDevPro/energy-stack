@@ -14,6 +14,7 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [influxdb](#influxdb) — time-series storage
 - [influx-init](#influx-init) — one-shot longterm bucket + downsample task provisioning
 - [grafana](#grafana) — visualization
+- [cockpit](#cockpit) — Controller Cockpit (read-only HVAC dashboard)
 - [eagle-poller](#eagle-poller) — billing-grade smart meter
 - [comed-poller](#comed-poller) — ComEd Hourly Pricing
 - [refoss-poller](#refoss-poller) — per-circuit power
@@ -152,6 +153,21 @@ InfluxDB and Loki provisioned as datasources (read-only via `editable: false`). 
 **Healthcheck:** `wget /api/health` every 30 s (must report `database: ok`).
 
 **Editing dashboards:** modify JSON in `grafana/dashboards/`, restart Grafana (`docker compose restart grafana`) — provisioning is read-only at runtime, so UI edits to provisioned dashboards don't persist after restart. To iterate: edit in UI → Dashboard Settings → JSON Model → save back to file → commit.
+
+---
+
+## cockpit
+
+Build: `./cockpit` (multi-stage: Node builds the Vite frontend, Python runtime serves it) · Port: `8765`
+
+Controller Cockpit — read-only narrative HVAC dashboard at `http://192.168.20.10:8765/`. One container serves both the FastAPI proxy (`/api/snapshot`, `/api/health`, `/api/day_ahead`, `/api/today_actions`, `/api/day_at_a_glance`) and the production frontend build, same-origin. Assembles its snapshot from existing `hvac.*` Influx measurements and `decision_trace.*` Loki logs; no writes, no control-path surface. Full detail in [`deploy/energy-stack/cockpit/README.md`](../deploy/energy-stack/cockpit/README.md), including the workstation dev loop.
+
+**Env:**
+- `COCKPIT_BACKEND_MODE=live` — live Influx/Loki assembly (`canned` serves the offline fixture)
+- `INFLUXDB_URL`, `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` — Influx reads
+- `LOKI_URL` (+ optional `LOKI_CONTAINER`, default `hvac-scheduler`) — decision-trace reads
+
+**Healthcheck:** `GET /api/health` every 30 s.
 
 ---
 
@@ -388,7 +404,7 @@ The canonical scheduler-liveness signal is recent `hvac.arm_mode` rows from the 
 
 **Healthcheck:** none — single-purpose loop with `restart: unless-stopped`. If the watchdog itself crashes, docker compose brings it back.
 
-**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_latest_heartbeat`) for the header controller-alive light. Telegram-notifier alerts on the same signal.
+**Consumed by:** Controller Cockpit (`deploy/energy-stack/cockpit/backend/influx.py::query_latest_heartbeat`) for the header controller-alive light. Telegram-notifier alerts on the same signal.
 
 Source: [`deploy/energy-stack/hvac_scheduler_watchdog/check.py`](../deploy/energy-stack/hvac_scheduler_watchdog/check.py).
 
@@ -495,7 +511,7 @@ HTTP receiver for the Ecowitt GW1200 gateway's "Customized Server" upload. The G
 | GW1200 internal | `indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg` | GW1200 onboard |
 | Other paired WH31 channels | `ch{N}_temp_f`, `ch{N}_rh_pct`, `ch{N}_dewpoint_f` | Any WH31/WN31 paired channel `!= ECOWITT_SHADED_CHANNEL`. With `ECOWITT_SHADED_CHANNEL` unset (production), this path includes channel 1. |
 
-**Consumed by:** Controller Cockpit (`tools/cockpit/backend/influx.py::query_outdoor_now` reads `ch1_*` for live outdoor display). Future bias-correction work pairs `ch1_temp_f` against NWS forecast for affine intercept+slope fit.
+**Consumed by:** Controller Cockpit (`deploy/energy-stack/cockpit/backend/influx.py::query_outdoor_now` reads `ch1_*` for live outdoor display). Future bias-correction work pairs `ch1_temp_f` against NWS forecast for affine intercept+slope fit.
 
 **Healthcheck:** `/tmp/last_push_ok` marker.
 
