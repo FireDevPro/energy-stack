@@ -263,17 +263,19 @@ function Chart({
           data-testid="da-indoor"
         />
       )}
-      {/* Past-actual setpoint on TOP of indoor (solid cyan).
-          Visually clean against the dashed planned-future line. When
-          AC pins indoor at the setpoint the two lines are coincident
-          — that's accurate; one line is correct. They visibly diverge
-          when the price overlay fires or the supervisor clamps. */}
+      {/* Past-actual setpoint on TOP of indoor, dotted ("2 3", tighter
+          than the future line's "4 4" dash) so the indoor line stays
+          visible through the gaps when the AC pins indoor exactly at
+          the setpoint and the two paths are coincident. They visibly
+          diverge when the price overlay fires or the supervisor
+          clamps. */}
       {setpointPastPath && (
         <path
           d={setpointPastPath}
           stroke="var(--ice)"
           strokeWidth={2}
           fill="none"
+          strokeDasharray="2 3"
           opacity={0.95}
           data-testid="da-setpoint-past"
         />
@@ -652,7 +654,7 @@ function Legend({ xRight }: { xRight: number }) {
     cap?: 'round' | 'butt'
   }> = [
     { label: 'indoor', stroke: 'var(--ember)', width: 2.4 },
-    { label: 'setpoint (actual)', stroke: 'var(--ice)', width: 2 },
+    { label: 'setpoint (actual)', stroke: 'var(--ice)', width: 2, dash: '2 3' },
     {
       label: 'setpoint (planned)',
       stroke: 'var(--ice)',
