@@ -194,3 +194,61 @@ found).
 `em:2`/`em:8`/`em:9`, `hvac.comfortnet`, `hvac.thermostat`, `ecowitt.weather`
 ch2, `haven.indoor`. CTK04 staging settings per `docs/HVAC_LOGIC.md`. No code
 change (Category C / deferred B).
+
+---
+
+## 2026-06-15 — AIR (ISU 4090) documentation contradiction corrected; dead arm-transition logger removed
+
+**Category:** Documentation erratum (no apparatus change).
+
+**What was wrong.** The frozen pre-registration contained an internal
+contradiction about CTK04 ISU 4090 (Adaptive Intelligent Recovery, "AIR"):
+
+- `docs/HVAC_LOGIC.md` (authoritative equipment table; present since the
+  initial commit) correctly stated **AIR = OFF** — "critical for this
+  scheduler," because AIR pre-empts scheduled setpoints 30–60 min early,
+  pulling runtime into peak pricing.
+- `docs/THERMOSTAT_ARM_A_SCHEDULE.md`, `docs/ARM_TRANSITIONS.md`, and
+  `docs/ARM_B_IMPLEMENTATION.md` §5 (introduced 2026-05-10) incorrectly
+  described **AIR = ON during Arm A**, toggled per arm each Monday, with a
+  manual audit logger (`scripts/log_arm_transition.py`) and a speculative
+  Control4-driver automation. This per-arm AIR toggle was never the intended
+  design and was never operationalized.
+
+**As-run state (evidence).** AIR ran **OFF in both arms** for the entire study
+to date. Thermostat + co-located Ecowitt ch2 telemetry over 2026-06-08→06-14
+show cooling beginning **at** each scheduled setpoint drop (Return 19:00, Sleep
+22:00) with the house never pre-cooled to the new setpoint — the AIR-off
+signature — including on hot nights where AIR-on would have pre-cooled hardest.
+The `hvac.arm_transitions` measurement the logger would have written has **zero
+rows** (logger never run).
+
+**Why it does not affect the result.** AIR was identical (OFF) in both arms — a
+common-mode apparatus setting, not a treatment variable — so it cannot bias the
+Arm A vs Arm B matched-pair comparison. The binding spec
+(`sced-rebaseline-spec-2026-05-13.md`) defines the arms by control authority
+(thermostat program vs active Pi) and characterizes Arm A as "a standard
+programmable thermostat schedule"; it does not itself assert AIR = ON (it
+delegates the value to the equipment docs).
+
+**Correction applied (docs only).** Set AIR = OFF consistently in
+`THERMOSTAT_ARM_A_SCHEDULE.md`, `ARM_TRANSITIONS.md`, and
+`ARM_B_IMPLEMENTATION.md`; removed the per-arm-toggle / Monday-flip framing.
+Deleted the dead, never-run `scripts/log_arm_transition.py` and its test. No
+code path ever touched ISU 4090 (verified: the scheduler has zero references to
+4090 / AIR), so there is no behavioral change.
+
+**Flagged follow-up (not done here).** The `hvac.arm_transitions` measurement
+remains listed in the analysis replay manifest
+(`tools/analysis/replay/manifest.py`) as a reason-coded empty series. Removing
+it touches the frozen replay-validation baseline and is deferred for a separate,
+deliberate decision.
+
+**OSF action (operator).** The contradiction is in the OSF-frozen deposit
+(`osf-prereg-2026-05-31`); this correction should be noted as an erratum on the
+OSF record — the frozen docs disagreed on a common-mode setting, the apparatus
+ran OFF (the authoritative value), and the record is corrected to OFF.
+
+**Links.** Diagnosis from live InfluxDB + git history (this session). Drift
+introduced 2026-05-10 (`2ce7716`, `4eb9914`); not caught by the 2026-05-18
+pre-OSF doc audit.

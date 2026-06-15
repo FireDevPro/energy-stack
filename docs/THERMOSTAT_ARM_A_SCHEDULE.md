@@ -28,12 +28,12 @@ The schedule documented here is the same 4-event daily program applied to all se
 
 ## Equipment-level settings that bind together with the schedule
 
-This document lists the equipment-side settings that are most directly relevant to Arm A behavior. The single Arm-A-specific value is **CTK04 ISU 4090 = ON**; all other rows below are unchanged across arms and are reproduced here as a self-contained reference. The full installer-menu enumeration — including outdoor-equipment-type detection, IFC airflow trim / ramping profile / on-off delays, and the captured-state IFC user-menu rows — lives in the equipment-settings table at `docs/HVAC_LOGIC.md` and is the authoritative full list.
+This document lists the equipment-side settings that are most directly relevant to Arm A behavior. **CTK04 ISU 4090 (AIR) = OFF** in both arms; all rows below are unchanged across arms and are reproduced here as a self-contained reference. The full installer-menu enumeration — including outdoor-equipment-type detection, IFC airflow trim / ramping profile / on-off delays, and the captured-state IFC user-menu rows — lives in the equipment-settings table at `docs/HVAC_LOGIC.md` and is the authoritative full list.
 
 | Source | Code / Label | Setting | Arm A value | Why it matters |
 |---|---|---|---|---|
 | CTK04 ISU | 3000 | Auto Changeover Deadband | 3-5°F (verified at CTK04AE installer menu; matches HVAC_LOGIC.md equipment table) | Minimum separation between heat and cool setpoints in Auto mode. Every schedule period above satisfies the configured value (Wake at 5°F is the floor). |
-| CTK04 ISU | 4090 | Adaptive Intelligent Recovery (AIR) | **ON during Arm A** | This is the Arm-A-specific value. AIR has the thermostat begin transitioning toward the next scheduled setpoint 30 to 60 minutes before the scheduled time, mirroring Ecobee Smart Recovery and Nest learned-recovery behavior. The Arm A baseline is a standard programmable-thermostat experience, so AIR runs as a typical homeowner would have it configured. (Arm B flips this to OFF so the Pi scheduler's explicit setpoint pushes land at the precise scheduled minute. See `docs/ARM_TRANSITIONS.md` for the per-arm-boundary toggle procedure.) |
+| CTK04 ISU | 4090 | Adaptive Intelligent Recovery (AIR) | **OFF** | OFF in both arms. With AIR on, the thermostat starts cooling 30 to 60 minutes before a scheduled setpoint change, which pulls runtime into peak pricing and makes the Pi's setpoint pushes unpredictable; OFF means a scheduled setpoint applies exactly at its scheduled time. Matches the authoritative `docs/HVAC_LOGIC.md` row. |
 | CTK04 ISU | 3020 | Finish With High Cool Stage | OFF (finish on LOW) | End-of-cycle stage management — better dehumidification and efficiency at end of cool calls. |
 | CTK04 ISU | 3030 | Staging Control - Cool Differentials | Default (~2°F to call stage 2) | Stage 1 handles most loads; stage 2 only on overshoot. |
 | CTK04 ISU | 3140 | Cool / Compressor Cycles Per Hour | Default | Compressor cycle protection. |
@@ -44,7 +44,7 @@ This document lists the equipment-side settings that are most directly relevant 
 | IFC user-menu | DEHUM | Dehumidification active flag | ON | Equipment-side flag that enables the IFC blower-slowdown behavior during cool+DH calls. |
 | IFC user-menu | CL OFF | Cool blower-off delay | 60 seconds (OEM default) | Blower runs 60 seconds after compressor cutoff, pulling residual latent cooling off the wet coil. |
 
-The CTK04 ISU 4090 = ON setting is the single behavioral difference between Arm A and Arm B on the thermostat itself. During Arm A periods this setting stays ON; on the transition from Arm A to Arm B the operator flips it to OFF in the TCC installer menu (see `docs/ARM_TRANSITIONS.md`). All other settings above are unchanged across arms. Arm A's equipment-side freeze is therefore: ISU 4090 = ON plus whatever value each row in the HVAC_LOGIC.md authoritative table holds at the OSF-filing commit hash; changes to either after that commit are protocol deviations on the same footing as setpoint changes.
+CTK04 ISU 4090 is OFF and does not change across arms. All settings above are unchanged across arms. Arm A's equipment-side freeze is therefore whatever value each row in the HVAC_LOGIC.md authoritative table holds at the OSF-filing commit hash; changes after that commit are protocol deviations on the same footing as setpoint changes.
 
 ## Hold, vacation, and manual override assumptions
 
