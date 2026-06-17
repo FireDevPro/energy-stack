@@ -96,10 +96,10 @@ def build_snapshot_live(
         "flow": {
             "weather": _build_weather_node(day_type, weather, outdoor, now),
             "day_type": _build_day_type_node(day_type, now),
-            "schedule": _build_schedule_node(layer, last_action, now),
+            "schedule": _build_schedule_node(layer, last_action, now, thermostat=thermostat),
             "price_overlay": _build_price_overlay_node(po_eval, layer, now),
             "fivecp": _build_fivecp_node(layer, day_type, now),
-            "winner": _build_winner_node(layer, last_action, now),
+            "winner": _build_winner_node(layer, last_action, now, thermostat=thermostat),
             "supervisor": _build_supervisor_node(sup, last_action, indoor_temp_available, now),
             "action": _build_action_node(last_action, now),
         },
@@ -249,13 +249,18 @@ def _build_day_type_node(day_type: dict[str, Any], now: datetime) -> dict[str, A
 
 
 def _build_schedule_node(
-    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime
+    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime,
+    *, thermostat: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Prefer layer_resolution trace; fall back to last hvac.actions row
-    # so values are populated even without recent Loki traces.
+    # Prefer layer_resolution trace; fall back to last hvac.actions row,
+    # then to the live thermostat setpoint, so values are real even without
+    # recent Loki traces. The hardcoded 78 is a last resort only.
+    has_decision = bool(layer.get("tick_id"))
+    ts_cool = _i((thermostat or {}).get("cool_setpoint_f"))
     base = (
         _i(layer.get("schedule_cool_f"))
         or _i((last_action or {}).get("schedule_cool_f"))
+        or ts_cool
         or 78
     )
     effective = (
@@ -265,10 +270,17 @@ def _build_schedule_node(
     )
     winning_layer = layer.get("winning_layer") or "schedule"
     role = "winning" if winning_layer == "schedule" else "dimmed"
+    # No live layer_resolution trace this tick (e.g. mild day, hold
+    # released): mark stale and reflect the held thermostat value rather
+    # than presenting a fabricated baseline as a fresh decision.
+    if has_decision:
+        freshness, freshness_label = "fresh", "from last action"
+    else:
+        role, freshness, freshness_label = "stale", "stale", "holding · no recent decision"
     return {
         "role_state": role,
-        "freshness": "fresh",
-        "freshness_label": "from last action",
+        "freshness": freshness,
+        "freshness_label": freshness_label,
         "title": "Schedule",
         "subtitle": f"{(last_action or {}).get('day_type') or 'NORMAL'} · {effective}°F",
         "details": {
@@ -371,12 +383,18 @@ def _build_fivecp_node(
 
 
 def _build_winner_node(
-    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime
+    layer: dict[str, Any], last_action: dict[str, Any] | None, now: datetime,
+    *, thermostat: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    has_decision = bool(layer.get("tick_id"))
+    # Fall back through last_action to the live thermostat setpoint before
+    # the 0 sentinel, so the winner reflects the real held setpoint when no
+    # layer_resolution trace exists (e.g. mild day with hold released).
     effective = (
         _i(layer.get("effective_cool_f"))
         or _i((last_action or {}).get("effective_cool_f"))
         or _i((last_action or {}).get("cool_setpoint_f"))
+        or _i((thermostat or {}).get("cool_setpoint_f"))
         or 0
     )
     prev = _i(layer.get("prev_effective_cool_f")) or effective
@@ -390,12 +408,22 @@ def _build_winner_node(
         "schedule": "Schedule",
         "price_overlay": "RTP Spike",
     }[winning_layer]
+    # No live decision trace this tick: present the held setpoint as stale
+    # rather than a fresh winning arbitration with a fabricated 0°F.
+    if has_decision:
+        role_state, freshness, freshness_label, subtitle = (
+            "winning", "fresh", "this tick", layer_display,
+        )
+    else:
+        role_state, freshness, freshness_label, subtitle = (
+            "stale", "stale", "holding · no recent decision", "holding",
+        )
     return {
-        "role_state": "winning",
-        "freshness": "fresh",
-        "freshness_label": "this tick",
+        "role_state": role_state,
+        "freshness": freshness,
+        "freshness_label": freshness_label,
         "title": "Winner",
-        "subtitle": layer_display,
+        "subtitle": subtitle,
         "details": {
             "winning_layer": winning_layer,
             "effective_cool_f": effective,
