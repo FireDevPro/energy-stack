@@ -147,7 +147,7 @@ Currently covered (22 test files across 11 services + scripts/ suite as of 2026-
 - `refoss_poller/test_refoss_poller.py`
 - `telegram_notifier/test_telegram_notifier.py`
 - `thermostat_poller/test_thermostat_poller.py`
-- `scripts/tests/` — six test files: `test_backfill_pjm.py`, `test_influx.py`, `test_log_arm_transition.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
+- `scripts/tests/` — five test files: `test_backfill_pjm.py`, `test_influx.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
 
 Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot provisioning shell), `telegraf` (config-only). The compose-controlled containers (`influxdb`, `grafana`, `loki`, `promtail`, `mosquitto`) are all upstream images with no Python under test.
 

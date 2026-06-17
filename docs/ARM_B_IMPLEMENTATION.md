@@ -37,9 +37,9 @@ Arm B requires four new capabilities on top of the currently deployed scheduler 
 3. **PJM 5CP-eligibility detection** (live load + season-to-date tracking)
 4. **Layer priority resolution** in `execute_action` (warmer-wins over schedule, safety supervisor floor)
 
-Plus two operational procedures:
+Plus:
 
-5. **AIR toggling** (CTK04 ISU 4090) for arm transitions on Mondays
+5. **AIR** (CTK04 ISU 4090) — fixed OFF in both arms, not toggled
 6. **Dry-run mode validation** for Arm A weeks
 
 This document specifies the code-level changes, integration points, new env vars, new InfluxDB measurements, and validation criteria for each.
@@ -556,43 +556,11 @@ Unit tests covering layer interaction:
 
 ---
 
-## 5. AIR toggling for arm transitions
+## 5. AIR — fixed OFF (not toggled)
 
-**CTK04 ISU 4090** (Adaptive Intelligent Recovery) needs to be:
-- **ON during Arm A weeks** (so the thermostat learns recovery timing, matching consumer-grade behavior)
-- **OFF during Arm B weeks** (so Pi setpoint pushes are honored exactly when fired, not pre-emptively interpreted)
+**CTK04 ISU 4090** (Adaptive Intelligent Recovery) is **OFF in both arms**. With it on, the thermostat starts cooling 30-60 min before a scheduled setpoint change, which pulls runtime into peak pricing and pre-empts the price-aware schedule. It is therefore left OFF and **not** toggled per arm — there is no per-Monday AIR action and nothing to automate. See `docs/HVAC_LOGIC.md`.
 
-### Manual procedure (v1)
-
-Every Monday at 00:00 CT (the arm-transition boundary):
-
-1. Read assignment CSV: `docs/experiment-assignments-summer-2026.csv` for this week's arm.
-2. If transitioning A → B: open TCC web UI (`mytotalconnectcomfort.com`), navigate to the CTK04AE installer menu, set ISU 4090 = OFF.
-3. If transitioning B → A: same path, set ISU 4090 = ON.
-4. If staying on the same arm (within a 2-week run): no action needed.
-5. Log the action to `hvac.arm_transitions` measurement with timestamp and outcome.
-
-### Automation (v2, if feasible)
-
-Investigate whether the Cinegration C4 driver exposes ISU 4090 as a writable parameter. If yes, automate the toggle from `execute_action()` at the Monday 00:00 transition. If no, manual procedure stays as v1.
-
-### New InfluxDB measurement
-
-```
-measurement: hvac.arm_transitions
-tags: from_arm (A or B), to_arm (A or B)
-fields:
-  air_setting: "on" | "off"
-  manual_or_auto: "manual" | "auto"
-  pi_dry_run: bool
-```
-
-### Validation criterion
-
-For at least the first three Monday transitions of summer 2026, verify (via thermostat readout in TCC):
-- AIR is ON when starting an Arm A week
-- AIR is OFF when starting an Arm B week
-- The transition was logged
+The earlier per-arm AIR toggle, its `hvac.arm_transitions` audit logger, and the proposed Control4-driver automation were drift — never operationalized — and were removed 2026-06-15. See `docs/EXPERIMENT_CHANGE_LOG.md`.
 
 ---
 

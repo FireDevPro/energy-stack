@@ -145,33 +145,12 @@ docker exec hvac-scheduler bash -c \
 `decision_trace.*` event type, to confirm the production emission path
 produces correctly-shaped Loki lines.
 
-## log_arm_transition.py — manual Monday Arm A ↔ Arm B audit row
+## log_arm_transition.py — removed 2026-06-15
 
-Writes an audit row to `hvac.arm_transitions` documenting a Monday arm
-boundary, including the CTK04AE ISU 4090 (Adaptive Intelligent Recovery,
-"AIR") setting that flips with each transition:
-
-- **Arm A**: AIR = ON (thermostat learns recovery timing, matches consumer
-  Nest/Ecobee Smart Recovery behaviour)
-- **Arm B**: AIR = OFF (Pi setpoint pushes are honored at the scheduled
-  minute, not pre-emptively reinterpreted by the thermostat)
-
-The AIR toggle itself is currently a manual TCC-web-UI step (v1). This
-script just writes the experimental-record row so the analysis side knows
-which arm was live at each transition.
-
-**Usage:**
-
-```bash
-# Arm A → Arm B (manual TCC flip done; AIR now OFF):
-python log_arm_transition.py --from A --to B --air off --mode manual
-
-# Arm B → Arm A (manual TCC flip done; AIR now ON):
-python log_arm_transition.py --from B --to A --air on --mode auto
-```
-
-**Required env** (reads from `~/energy-stack/.env`): `INFLUXDB_URL`,
-`INFLUXDB_INIT_ADMIN_TOKEN`, `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_BUCKET`.
+This manual audit logger was removed. It was built on a per-arm AIR-toggle
+concept that was never the design (AIR is fixed OFF in both arms), was never
+run (its `hvac.arm_transitions` measurement has zero rows), and was redundant
+with the deterministic arm calendar. See `docs/EXPERIMENT_CHANGE_LOG.md`.
 
 **When to run:** every Monday at the arm-boundary crossover (2026-06-01,
 2026-06-15, 2026-06-29, ... per the canonical arm calendar at
