@@ -1798,7 +1798,9 @@ def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
         price_cents=46.4, day_type="MILD",
         execute_result=(True, None), dry_run=False,
     )
-    pushed_cools = [c.args[2] for c in app.execute_action.await_args_list]
+    execute_mock = app.execute_action
+    assert isinstance(execute_mock, AsyncMock)  # patched by the harness
+    pushed_cools = [c.args[2] for c in execute_mock.await_args_list]
     assert 85 in pushed_cools, f"expected an 85F mid-period push, got {pushed_cools}"
 
 
