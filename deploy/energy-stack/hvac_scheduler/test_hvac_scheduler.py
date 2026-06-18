@@ -1782,7 +1782,6 @@ def _drive_run_schedule_check(
     return cfg, c4, write_api
 
 
-@pytest.mark.xfail(strict=True, reason="MILD is release-hold only; the mid-period re-push short-circuits on last_schedule_cool_f is None, so the overlay can't actuate on MILD until MILD has a real schedule (mild-full-controller Phase 1)")
 def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
     """NORTH STAR: a >=20c ComEd 5-min print on a MILD day must drive the
     thermostat to the 85F scarcity setpoint via the MID-PERIOD re-push (the

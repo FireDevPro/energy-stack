@@ -219,13 +219,18 @@ HOT_SCHEDULE: list[ScheduleAction] = [
     ScheduleAction(21, 0, "SLEEP",            cool_setpoint_f=73),
 ]
 
-# MILD day: forecast <75F. No active scheduling; thermostat baseline handles
-# it — but a single 00:05 release-hold action clears any Permanent hold left
-# over from yesterday (e.g. SLEEP=73 from a NORMAL day's last action). Without
-# this, the thermostat would stay pinned to the previous day's last setpoint
-# instead of returning to its own baseline schedule.
+# MILD day: forecast <75F. No pre-cool (it's cool out), but the Pi still OWNS
+# the day so the real-time price overlay can actuate (the whole point of the
+# mild-full-controller fix — without a Pi-pushed baseline, last_schedule_cool_f
+# stays None and the mid-period overlay re-push short-circuits). Setpoints
+# mirror the CTK04 comfort program the house already ran on mild days, now
+# Pi-pushed with Permanent holds. The §7 day-ahead price-aware pre-cool can
+# still inject here (not day-type-gated) on a grid-event night.
 MILD_SCHEDULE: list[ScheduleAction] = [
-    ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True),
+    ScheduleAction(6,  0, "MILD_MORNING", cool_setpoint_f=73, fan_mode="Auto"),
+    ScheduleAction(13, 0, "MILD_DAY",     cool_setpoint_f=78, fan_mode="Circulate"),
+    ScheduleAction(19, 0, "MILD_RECOVER", cool_setpoint_f=75, fan_mode="Auto"),
+    ScheduleAction(21, 0, "SLEEP",        cool_setpoint_f=73, fan_mode="Auto"),
 ]
 
 # HOT STREAK DAY 1: tomorrow AND day-after both forecast HOT. Heat wave starting.
