@@ -1,7 +1,7 @@
 ---
 date: 2026-06-18
 owner: chris
-status: draft
+status: draft — dual-reviewed 2026-06-18
 role-label: code-team
 ---
 
@@ -17,8 +17,8 @@ role-label: code-team
 
 ## Global Constraints
 
-- **Day-type owns ONLY the pre-cool.** Day-type decides pre-cool depth/timing (MILD = none, NORMAL/HOT/STREAK = progressively earlier+deeper). Day-type does NOT gate price-reactivity. The back half of the day (coast → recover → sleep) is a shared comfort baseline the Pi owns on every day-type. (Verified: evening recover=75 / sleep=73 are already identical across all active day-types.)
-- **Holds stay Permanent.** No timed "Hold Until," no dead-man automation. Pi-down protection is the existing external host-liveness monitor (off-box) → manual hold-release; the thermostat independently caps the house at ≤85°F meanwhile (scarcity setpoint = 85; supervisor emergency at indoor ≥86°F → 74°F). See [docs/SERVICES.md] and [docs/HVAC_LOGIC.md].
+- **Day-type's *scheduled* schedule owns ONLY the pre-cool.** Day-type decides pre-cool depth/timing (the MILD day-type schedule has **no** pre-cool action; NORMAL/HOT/STREAK = progressively earlier+deeper). Day-type does NOT gate price-reactivity. The back half of the day (coast → recover → sleep) is a shared comfort baseline the Pi owns on every day-type. (Verified: evening recover=75 / sleep=73 are already identical across all active day-types.) **Caveat (review):** the §7 day-ahead price-aware pre-cool injection (`read_precool_window_for_date` → `merge_same_hour_actions_deepest_wins`, `app.py:3128`) is NOT day-type-gated, so a grid-event night can inject a pre-cool action into MILD too. Now that MILD is Pi-owned that's desirable (price-aware pre-cool on a cool grid-event day) — but do not state "MILD never pre-cools" as an invariant.
+- **Holds stay Permanent.** No timed "Hold Until," no dead-man automation. While the Pi is **alive**, the supervisor caps overshoot (indoor ≥86°F → 74°F, runs in-process every tick). On a **Pi-down** event the supervisor is gone with the process; protection is then: (a) the thermostat holds its last Pi-pushed setpoint, which on a scarcity hold is ≤85°F — warm but safe; (b) the external off-box host-liveness monitor alerts → manual hold-release; (c) once the hold clears, the CTK04 program reclaims (cooler comfort). See [docs/SERVICES.md] and [docs/HVAC_LOGIC.md].
 - **5CP unchanged.** Stays day-ahead/telemetry-only per binding spec §11 #14. Out of scope.
 - **Experiment is terminated (2026-06-18).** The OSF pre-registration freeze is no longer binding, so the binding-spec §11 #12 "MILD has no setpoint table" completeness lock and the `B-fallback` enum semantics are no longer protocol constraints — they become ordinary doc-truth updates (Phase 3). See memory `project-experiment-killed-2026-06-18`.
 - **Cockpit is a separate PR.** Per memory `feedback_cockpit_scope_boundary`, cockpit changes touch `deploy/energy-stack/cockpit/` only and ship as their own PR (Phase 2).
@@ -69,53 +69,64 @@ Heat is paired at 65°F on every push (deadband safety, unchanged from other sch
 - Test: `deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py`
 
 **Interfaces:**
-- Consumes: `_drive_run_schedule_check(monkeypatch, *, now_local, firing, execute_result, day_type, dry_run)` (existing harness, line 1734); `FiringState`; `app.execute_action` (mocked by the harness as `AsyncMock`).
-- Produces: nothing (test only).
+- Consumes: `_drive_run_schedule_check(...)` (existing harness, line 1734) — EXTENDED with a `price_cents` passthrough in Step 1a; `_stub_layer_eval_io(monkeypatch, *, price_cents=5.0, ...)` (line 1334 — already accepts `price_cents`; it stubs `fetch_latest_comed`); `FiringState`; `app.execute_action` (mocked by the harness as `AsyncMock`).
+- Produces: `_drive_run_schedule_check`'s new `price_cents` param.
 
-- [ ] **Step 1: Write the failing acceptance test, marked xfail-strict**
+**Why this shape (review-hardened — dual review 2026-06-18):** drive scarcity through the REAL price path — `_stub_layer_eval_io`'s `price_cents`, which is what `_evaluate_layer_inputs` actually reads. Do **not** add a separate `monkeypatch.setattr(app, "fetch_latest_comed", ...)`: `_drive_run_schedule_check` calls `_stub_layer_eval_io` internally (line 1749) and would clobber it (both reviewers caught this). Fire at a **non-action minute (14:00)** so the test exercises `_push_layer_change_mid_period` — the actual dormancy gate (`app.py:2971`, `last_schedule_cool_f is None`) — not the action-fire path. Start from a fresh `FiringState` (tier `normal`) so the 46.4¢ price *itself* must upgrade the overlay to scarcity (a scarcity upgrade is immediate — no min-hold), proving price → actuation end-to-end rather than proving a pre-seeded state survives a tick.
 
-The harness mocks `execute_action` and stubs the layer-eval IO. To force scarcity, also stub the ComEd price to a fresh ≥20¢ sample and pre-seed the overlay state to `scarcity` (so the tier is active this tick without waiting out the min-hold). Assert the scheduler pushed cool=85 at a MILD **action time**.
+- [ ] **Step 1a: Add a `price_cents` passthrough to the harness**
+
+`_drive_run_schedule_check` calls `_stub_layer_eval_io` without a `price_cents`, so it defaults to 5¢. Thread it through:
 
 ```python
-@pytest.mark.xfail(strict=True, reason="MILD is release-hold only; overlay cannot actuate until MILD gets a real schedule (mild-full-controller Phase 1)")
+def _drive_run_schedule_check(
+    monkeypatch, *, now_local, firing,
+    execute_result=(True, None), day_type="NORMAL", dry_run=False,
+    price_cents=5.0,                                   # NEW
+):
+    ...
+    _stub_layer_eval_io(monkeypatch, price_cents=price_cents,   # forward it
+                        zone_load=14000.0, derivative=0.0,
+                        forecast_peak=17000.0, season_5th=20375.0)
+    ...
+```
+
+- [ ] **Step 1b: Write the failing acceptance test, marked xfail-strict**
+
+```python
+@pytest.mark.xfail(strict=True, reason="MILD is release-hold only; the mid-period re-push short-circuits on last_schedule_cool_f is None, so the overlay can't actuate on MILD until MILD has a real schedule (mild-full-controller Phase 1)")
 def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
-    """NORTH STAR: on a MILD day, a >=20c ComEd 5-min print must drive
-    the thermostat to the 85F scarcity setpoint. Today MILD is a single
-    00:05 release_hold, so at 13:00 no action fires and the overlay never
-    actuates -> this xfails. It passes once MILD has a real schedule."""
-    from .price_overlay import PriceOverlayState
-    # Fresh 46c sample -> scarcity tier; pre-seed state so the tier is
-    # already active (min-hold not in the way) this tick.
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: app.PriceSample(
-                            cents_per_kwh=46.4, source_ts=now_utc,
-                            freshness="fresh"))
-    firing = FiringState(price_overlay_state=PriceOverlayState(
-        current_tier="scarcity",
-        triggered_at_utc=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)))
-    # 13:00 CT = MILD_DAY action time once MILD has a real schedule.
-    now_local = datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/Chicago"))
+    """NORTH STAR: a >=20c ComEd 5-min print on a MILD day must drive the
+    thermostat to the 85F scarcity setpoint via the MID-PERIOD re-push (the
+    real dormancy gate). Fresh state, no pre-seeded tier -- the 46.4c price
+    itself upgrades the overlay to scarcity (immediate, no min-hold) and the
+    mid-period push must fire. 14:00 is a NON-action minute, so this exercises
+    _push_layer_change_mid_period, not the action-fire path. Today MILD's only
+    action is the 00:05 release_hold, so reconstruct_startup_baseline sets
+    last_schedule_cool_f=None and the mid-period push short-circuits -> no 85
+    -> strict-xfail. After MILD gets a real schedule, 13:00 MILD_DAY is in
+    effect (baseline 78), the push fires, warmer-wins gives 85."""
+    firing = FiringState()  # price_overlay_state defaults to "normal"
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
     _drive_run_schedule_check(
         monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(True, None), day_type="MILD", dry_run=False,
+        price_cents=46.4, day_type="MILD",
+        execute_result=(True, None), dry_run=False,
     )
-    # execute_action is the AsyncMock the harness installs; assert it was
-    # called with cool=85 (scarcity override beats the 78 MILD_DAY baseline
-    # under warmer-wins).
     pushed_cools = [c.args[2] for c in app.execute_action.await_args_list]
-    assert 85 in pushed_cools, f"expected an 85F push, got {pushed_cools}"
+    assert 85 in pushed_cools, f"expected an 85F mid-period push, got {pushed_cools}"
 ```
 
 - [ ] **Step 2: Run it to confirm it xfails (not errors)**
 
 Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_hvac_scheduler.py::test_mild_day_scarcity_spike_pushes_85 -v`
-Expected: `XFAIL` (strict) — the test runs to completion and the assertion fails because today no MILD action fires at 13:00. If it ERRORS instead (e.g. `PriceSample`/`fetch_latest_comed` signature mismatch), fix the stub to match the real signatures at `app.py:790-861` before proceeding.
+Expected: `XFAIL` (strict) — the tick runs to completion; today at 14:00 MILD's in-effect action is the 00:05 release_hold, so `reconstruct_startup_baseline` sets `last_schedule_cool_f=None`, the mid-period re-push short-circuits, no 85 is pushed, and the assertion fails under xfail. If it ERRORS (not xfails), the harness wiring is wrong — fix before proceeding.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add deploy/energy-stack/hvac_scheduler/test_hvac_scheduler.py
-git commit -m "test(hvac): add xfail north-star — MILD scarcity spike must push 85"
+git commit -m "test(hvac): add xfail north-star — MILD scarcity spike must push 85 mid-period"
 ```
 
 ### Task 2: Give MILD a real Pi-owned schedule
@@ -146,7 +157,7 @@ MILD_SCHEDULE: list[ScheduleAction] = [
 
 Delete the `@pytest.mark.xfail(...)` line from `test_mild_day_scarcity_spike_pushes_85`.
 Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_hvac_scheduler.py::test_mild_day_scarcity_spike_pushes_85 -v`
-Expected: PASS — the 13:00 `MILD_DAY` action fires, `resolve_layer_priority` returns effective cool 85 (scarcity override > 78 baseline), `execute_action` is called with 85.
+Expected: PASS — at 14:00 `reconstruct_startup_baseline` finds `MILD_DAY` (13:00) in effect so `last_schedule_cool_f=78`; the 46.4¢ price upgrades the overlay to scarcity; the mid-period re-push runs `resolve_layer_priority(78, override=85)=85` and `execute_action` is called with 85.
 
 - [ ] **Step 3: Commit**
 
@@ -173,7 +184,11 @@ The schedule change breaks tests that asserted MILD = a single release_hold and 
 ```
 Rename it to `test_mild_schedule_is_pi_owned`.
 - `test_action_in_effect_returns_release_hold_when_it_is_latest` (~L3940): MILD no longer has a release_hold; change the fixture to construct an explicit single-`release_hold` schedule (not `MILD_SCHEDULE`) so it still exercises `action_in_effect_at`'s release_hold path. Update the docstring's "MILD: only MILD_RELEASE_HOLD" comment.
-- `test_reconstruct_startup_baseline_overnight_yesterday_mild` (~L4074) and `test_reconstruct_startup_baseline_mild_today_after_release` (~L4089): MILD now reconstructs a **real** baseline, not None. Update the expected `last_schedule_cool_f` to the in-effect MILD setpoint (e.g. overnight-before-06:00 carries yesterday's `SLEEP` 73; midday carries `MILD_DAY` 78). Rename away from "after_release".
+- `test_reconstruct_startup_baseline_overnight_yesterday_mild` (~L4074) and `test_reconstruct_startup_baseline_mild_today_after_release` (~L4089): MILD now reconstructs a **real** baseline, not None. Update the expected `last_schedule_cool_f` to the in-effect MILD setpoint. NOTE the exact value per the test's wall-clock: the overnight-before-06:00 test carries yesterday's `SLEEP` 73; the **10:00 restart** test (`mild_today_after_release`) carries `MILD_MORNING` **73** — the 06:00 action is in effect, the 13:00 `MILD_DAY` (78) is still future (do NOT assert 78 there). Rename away from "after_release".
+
+- [ ] **Step 1b: Confirm the dry-run audit parametrization (blast-radius site)**
+
+`_all_schedule_actions()` (~L2954) iterates `app.MILD_SCHEDULE`; after the swap MILD contributes 4 setpoint actions instead of 1 release_hold, so the parametrized `test_dry_run_never_calls_control4_for_any_action` (~L2987) gets more cases. It should still pass (it handles `cool_setpoint_f is not None` generically), but run it explicitly to confirm: `python -m pytest test_hvac_scheduler.py -k dry_run_never_calls -v`. If it regresses, the generic `cool_setpoint_f` handling at ~L2967 needs a look.
 
 - [ ] **Step 2: Update stale-rationale docstrings**
 
@@ -233,6 +248,8 @@ Branch fresh from `main`. Scope: `deploy/energy-stack/cockpit/` only.
 
 **Placeholder scan:** none — `MILD_SCHEDULE` code is complete; the acceptance test is concrete against the real harness. The one deliberately-open item is the MILD setpoint table, gated behind the explicit DECISION TO CONFIRM callout (Chris signs off before Task 1).
 
-**Type consistency:** `MILD_SCHEDULE` is `list[ScheduleAction]` matching `schedule_for`'s return and the other schedules. The acceptance test stubs `fetch_latest_comed` to return `app.PriceSample(cents_per_kwh, source_ts, freshness)` — implementer must confirm that signature against `app.py:791-795` (the `PriceSample` dataclass) and `fetch_latest_comed`'s keyword-only `now_utc` before un-xfailing; the test's Step 2 explicitly checks for an ERROR-vs-XFAIL mismatch to catch a stub drift.
+**Type consistency:** `MILD_SCHEDULE` is `list[ScheduleAction]` matching `schedule_for`'s return and the other schedules. The acceptance test drives the price through `_stub_layer_eval_io(price_cents=46.4)` via the new `_drive_run_schedule_check(price_cents=...)` passthrough — it does NOT stub `fetch_latest_comed` directly (the harness's internal `_stub_layer_eval_io` call would clobber that). `_stub_layer_eval_io` builds the sample with `_fresh_sample(price_cents, now_utc=...)`, so the `PriceSample` shape is the helper's concern, not the test's.
 
-**Risk note (carry into execution):** the only non-obvious coupling is that Task 2 is a one-line schedule swap that *silently* turns the price overlay on for all of MILD (via the `last_schedule_cool_f is None` short-circuit ceasing to fire). That is intended, but the acceptance test is what makes it visible. Analysis pipeline mis-classification was checked and is NOT a risk: `hvac.arm_mode` is written every tick on a 30-min cadence independent of whether a setpoint action fires, so live MILD hours keep emitting `mode_actual` and won't be mis-stamped B-down.
+**Dual-reviewed 2026-06-18:** Codex + Claude both confirmed core correctness (the swap actuates the overlay) and the safety caps; their findings (test price-stub clobber + action-fire-vs-mid-period, the §7 pre-cool caveat, the Pi-down supervisor wording, the `_all_schedule_actions` blast-radius site, the 10:00=`MILD_MORNING` test value, and the 5-min cadence figure) are folded in above.
+
+**Risk note (carry into execution):** the only non-obvious coupling is that Task 2 is a one-line schedule swap that *silently* turns the price overlay on for all of MILD (via the `last_schedule_cool_f is None` short-circuit ceasing to fire). That is intended, but the acceptance test is what makes it visible. Analysis pipeline mis-classification was checked and is NOT a risk: `hvac.arm_mode` is written on a ~5-min cadence (288 rows/day, `_ARM_MODE_AUDIT_INTERVAL`, `app.py:2532`) independent of whether a setpoint action fires, so live MILD hours keep emitting `mode_actual` and `arm_period_pipeline.py`'s hourly-majority aggregation won't mis-stamp them B-down.
