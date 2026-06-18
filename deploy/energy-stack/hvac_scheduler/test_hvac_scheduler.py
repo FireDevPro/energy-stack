@@ -225,7 +225,7 @@ def test_classify_high_76_apparent_88_is_normal():
 
 
 def test_classify_high_70_is_mild():
-    """Below the 75F NORMAL threshold -> MILD (no active scheduling)."""
+    """Below the 75F NORMAL threshold -> MILD."""
     assert _classify_one_day({"high_f": 70.0,
                               "is_heat_advisory": 0}) == DAYTYPE_MILD
 
@@ -247,10 +247,10 @@ def test_classify_apparent_alone_can_trigger_hot():
 def test_classify_partial_forecast_no_temps_falls_back_to_normal(capsys):
     """P2.7 regression: a forecast row that's present but missing both
     high_f and apparent_max_f (degraded NWS parse / API failure)
-    previously fell through to DAYTYPE_MILD, which clears holds and
-    disables active scheduling. That's dangerous on an actually-hot
-    day. Now falls back to DAYTYPE_NORMAL with a warn log so the
-    standard schedule still runs."""
+    previously fell through to DAYTYPE_MILD, whose schedule has no
+    pre-cool. That under-protects an actually-hot day. Now falls back
+    to DAYTYPE_NORMAL with a warn log so the standard pre-cool/coast
+    schedule still runs."""
     forecast = {
         "period_date": "2026-07-15",
         "is_heat_advisory": 0,
@@ -473,15 +473,13 @@ def test_release_hold_action_has_no_setpoint():
     assert a.fan_mode is None
 
 
-def test_mild_schedule_releases_hold_at_start_of_day():
-    """MILD must have an early action that clears the previous day's
-    Permanent hold — this is the bug fix."""
-    assert len(MILD_SCHEDULE) == 1
-    a = MILD_SCHEDULE[0]
-    assert a.release_hold is True
-    # Fires shortly after midnight so the thermostat baseline takes over for
-    # the rest of the MILD day.
-    assert (a.hour, a.minute) == (0, 5)
+def test_mild_schedule_is_pi_owned():
+    """MILD is now a real Pi-owned schedule (no release_hold) so the price
+    overlay can actuate on mild days — this is the mild-full-controller fix."""
+    assert [a.label for a in MILD_SCHEDULE] == [
+        "MILD_MORNING", "MILD_DAY", "MILD_RECOVER", "SLEEP"]
+    assert all(a.cool_setpoint_f is not None for a in MILD_SCHEDULE)
+    assert all(a.release_hold is False for a in MILD_SCHEDULE)
 
 
 def test_existing_schedules_still_have_setpoints():
@@ -3962,10 +3960,12 @@ def test_action_in_effect_returns_last_action_at_end_of_day():
 
 
 def test_action_in_effect_returns_release_hold_when_it_is_latest():
-    # MILD: only MILD_RELEASE_HOLD at 00:05
-    act = action_in_effect_at(MILD_SCHEDULE, 12 * 60)
+    # release_hold is no longer used by any day-type schedule, but
+    # action_in_effect_at must still surface it when it is the latest action.
+    sched = [ScheduleAction(0, 5, "RELEASE_HOLD", release_hold=True)]
+    act = action_in_effect_at(sched, 12 * 60)
     assert act is not None
-    assert act.label == "MILD_RELEASE_HOLD" and act.release_hold is True
+    assert act.label == "RELEASE_HOLD" and act.release_hold is True
 
 
 # ---- resolve_schedule_for_date_readonly (Task 3: restart baseline reconstruction) --
@@ -4096,8 +4096,8 @@ def test_reconstruct_startup_baseline_overnight_yesterday_normal(monkeypatch):
 
 
 def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
-    """Overnight (03:00), yesterday MILD -> yesterday's last action is
-    MILD_RELEASE_HOLD (release_hold=True) -> baseline None."""
+    """Overnight (03:00), yesterday MILD -> yesterday's last action is now
+    SLEEP=73 (MILD is a real Pi-owned schedule), so the baseline carries 73."""
     monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
     firing = FiringState()
     now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
@@ -4106,13 +4106,13 @@ def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
         firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f is None
-    assert firing.last_action_label == "MILD_RELEASE_HOLD"
+    assert firing.last_schedule_cool_f == 73
+    assert firing.last_action_label == "SLEEP"
 
 
-def test_reconstruct_startup_baseline_mild_today_after_release(monkeypatch):
-    """Restart during a MILD day at 10:00 (after the 00:05 release_hold) ->
-    today's action in effect is MILD_RELEASE_HOLD -> baseline None."""
+def test_reconstruct_startup_baseline_mild_today_at_1000(monkeypatch):
+    """Restart during a MILD day at 10:00 -> MILD_MORNING (06:00) is in effect
+    (MILD is now Pi-owned), so the baseline carries 73."""
     monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
     firing = FiringState()
     now = datetime(2026, 7, 1, 10, 0, tzinfo=CT)
@@ -4121,7 +4121,8 @@ def test_reconstruct_startup_baseline_mild_today_after_release(monkeypatch):
         firing, MILD_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f is None
+    assert firing.last_schedule_cool_f == 73
+    assert firing.last_action_label == "MILD_MORNING"
 
 
 def test_reconstruct_startup_baseline_overnight_no_yesterday_decision(monkeypatch):
