@@ -1739,6 +1739,7 @@ def _drive_run_schedule_check(
     execute_result: tuple[bool, str | None] = (True, None),
     day_type: str = "NORMAL",
     dry_run: bool = False,
+    price_cents: float | None = 5.0,
 ) -> tuple[Any, Any, Any]:
     """Drive ``app.run_schedule_check`` end-to-end with the IO stubbed.
     ``execute_result`` controls the (applied, error) tuple returned by
@@ -1746,7 +1747,8 @@ def _drive_run_schedule_check(
     callers can inspect side effects."""
     import asyncio
 
-    _stub_layer_eval_io(monkeypatch, zone_load=14000.0, derivative=0.0,
+    _stub_layer_eval_io(monkeypatch, price_cents=price_cents,
+                         zone_load=14000.0, derivative=0.0,
                          forecast_peak=17000.0, season_5th=20375.0)
 
     # The rest of the run_schedule_check dependency surface:
@@ -1778,6 +1780,29 @@ def _drive_run_schedule_check(
         ZoneInfo(cfg.tz_name), now_local, firing,
     ))
     return cfg, c4, write_api
+
+
+@pytest.mark.xfail(strict=True, reason="MILD is release-hold only; the mid-period re-push short-circuits on last_schedule_cool_f is None, so the overlay can't actuate on MILD until MILD has a real schedule (mild-full-controller Phase 1)")
+def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
+    """NORTH STAR: a >=20c ComEd 5-min print on a MILD day must drive the
+    thermostat to the 85F scarcity setpoint via the MID-PERIOD re-push (the
+    real dormancy gate). Fresh state, no pre-seeded tier -- the 46.4c price
+    itself upgrades the overlay to scarcity (immediate, no min-hold) and the
+    mid-period push must fire. 14:00 is a NON-action minute, so this exercises
+    _push_layer_change_mid_period, not the action-fire path. Today MILD's only
+    action is the 00:05 release_hold, so reconstruct_startup_baseline sets
+    last_schedule_cool_f=None and the mid-period push short-circuits -> no 85
+    -> strict-xfail. After MILD gets a real schedule, 13:00 MILD_DAY is in
+    effect (baseline 78), the push fires, warmer-wins gives 85."""
+    firing = FiringState()  # price_overlay_state defaults to "normal"
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    _drive_run_schedule_check(
+        monkeypatch, now_local=now_local, firing=firing,
+        price_cents=46.4, day_type="MILD",
+        execute_result=(True, None), dry_run=False,
+    )
+    pushed_cools = [c.args[2] for c in app.execute_action.await_args_list]
+    assert 85 in pushed_cools, f"expected an 85F mid-period push, got {pushed_cools}"
 
 
 def test_successful_action_marks_done(monkeypatch):
