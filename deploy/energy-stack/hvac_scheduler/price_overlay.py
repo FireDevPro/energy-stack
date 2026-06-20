@@ -40,11 +40,13 @@ from typing import Optional
 @dataclass(frozen=True)
 class PriceTier:
     """One tier of the price-spike overlay. The combination of
-    ``cool_setpoint_offset_f`` and ``cool_setpoint_override_f`` selects
+    ``cool_setpoint_offset`` and ``cool_setpoint_override`` selects
     additive vs. replacement semantics:
 
       * offset only (override=None): effective = schedule + offset
       * override set: effective = override (offset is ignored)
+
+    Offset and override are expressed in the controller's ``temp_scale``.
 
     ``priority`` is used by the state machine to compare tiers for
     upgrade decisions. Higher number = higher priority. Setting it once
@@ -57,8 +59,8 @@ class PriceTier:
     name: str
     trigger_price_cents_per_kwh: float
     release_price_cents_per_kwh: float
-    cool_setpoint_offset_f: int
-    cool_setpoint_override_f: Optional[int]
+    cool_setpoint_offset: float
+    cool_setpoint_override: Optional[float]
     priority: int
 
 
@@ -68,16 +70,16 @@ PRICE_TIERS: tuple[PriceTier, ...] = (
         name="scarcity",
         trigger_price_cents_per_kwh=20.0,
         release_price_cents_per_kwh=18.0,
-        cool_setpoint_offset_f=0,
-        cool_setpoint_override_f=85,
+        cool_setpoint_offset=0,
+        cool_setpoint_override=85,
         priority=2,
     ),
     PriceTier(
         name="elevated",
         trigger_price_cents_per_kwh=10.0,
         release_price_cents_per_kwh=8.0,
-        cool_setpoint_offset_f=3,
-        cool_setpoint_override_f=None,
+        cool_setpoint_offset=3,
+        cool_setpoint_override=None,
         priority=1,
     ),
 )
@@ -222,11 +224,11 @@ def tier_priority(name: str) -> int:
 
 def offset_and_override_for_tier(
     tier_name: str,
-) -> tuple[int, Optional[int]]:
-    """Return ``(offset_f, override_f)`` for a tier, defaulting to (0, None)
-    when the tier is normal or unknown. Used by the §4 layer-priority
-    resolver."""
+) -> tuple[float, Optional[float]]:
+    """Return ``(offset, override)`` for a tier (in the controller's
+    ``temp_scale``), defaulting to (0, None) when the tier is normal or
+    unknown. Used by the §4 layer-priority resolver."""
     tier = _tier_by_name(tier_name)
     if tier is None:
         return 0, None
-    return tier.cool_setpoint_offset_f, tier.cool_setpoint_override_f
+    return tier.cool_setpoint_offset, tier.cool_setpoint_override

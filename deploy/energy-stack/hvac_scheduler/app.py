@@ -60,6 +60,11 @@ Environment variables:
     SCHEDULER_REVISIT_HOURS     Comma-separated local hours at which to re-poll
                                 today's forecast and re-classify if it shifted
                                 (default "6,11"; empty disables)
+    TEMP_SCALE                  Temperature scale the controller logic operates
+                                in (default "F"). Behavior-preserving: with "F"
+                                every scale-agnostic controller value carries
+                                its historical Fahrenheit number and the °F
+                                telemetry fields are written unchanged.
     SCHEDULER_TZ                IANA tz (default America/Chicago)
     INFLUXDB_URL                http://influxdb:8086
     INFLUXDB_TOKEN              admin or write token
@@ -134,7 +139,7 @@ DAYTYPE_HOT_STREAK_DAY1 = "HOT_STREAK_DAY1"  # tomorrow + day-after both HOT -> 
 # target that gives a 15F deadband against typical cool setpoints (70-80F),
 # well above the ASHRAE 90.1 5F minimum (and safely above the CTK04
 # ISU 300 default of 3F which is below code).
-HEAT_SETPOINT_FLOOR_F = 65
+HEAT_SETPOINT_FLOOR = 65
 
 # Dewpoint threshold above which comfort fails at typical coast setpoints
 # (per ASHRAE 55-2020 PMV math + PNNL-26478 humidity studies). Above this,
@@ -148,12 +153,13 @@ class ScheduleAction:
     hour: int
     minute: int
     label: str
-    # cool_setpoint_f is None when release_hold=True; the action only flips
+    # Setpoints below are in the controller's ``temp_scale`` (default "F").
+    # cool_setpoint is None when release_hold=True; the action only flips
     # the thermostat back to schedule mode without changing setpoints.
-    cool_setpoint_f: int | None = None
-    heat_setpoint_f: int = HEAT_SETPOINT_FLOOR_F
+    cool_setpoint: float | None = None
+    heat_setpoint: float = HEAT_SETPOINT_FLOOR
     fan_mode: str | None = None  # 'Auto' | 'On' | 'Circulate' | None=don't touch
-    cool_setpoint_humid_f: int | None = None  # used if today's max dewpoint > HUMID_DEWPOINT_F
+    cool_setpoint_humid: float | None = None  # used if today's max dewpoint > HUMID_DEWPOINT_F
     # When True: clear the thermostat's Permanent hold so the device's own
     # baseline schedule resumes. Used by MILD_SCHEDULE to release a hold left
     # over from yesterday's NORMAL/HOT cycle. Skips setpoint and fan_mode
@@ -166,11 +172,11 @@ class ScheduleAction:
 # Coast humid override drops 79->75 when dewpoint >65F to keep low-stage AC running
 # for latent removal (per PNNL-26478, ASHRAE 55 humidity comfort).
 NORMAL_SCHEDULE: list[ScheduleAction] = [
-    ScheduleAction(6,  0, "PRE_COOL", cool_setpoint_f=70),
-    ScheduleAction(13, 0, "COAST",    cool_setpoint_f=79, fan_mode="Circulate",
-                   cool_setpoint_humid_f=75),
-    ScheduleAction(19, 0, "RECOVER",  cool_setpoint_f=75, fan_mode="Auto"),
-    ScheduleAction(21, 0, "SLEEP",    cool_setpoint_f=73),
+    ScheduleAction(6,  0, "PRE_COOL", cool_setpoint=70),
+    ScheduleAction(13, 0, "COAST",    cool_setpoint=79, fan_mode="Circulate",
+                   cool_setpoint_humid=75),
+    ScheduleAction(19, 0, "RECOVER",  cool_setpoint=75, fan_mode="Auto"),
+    ScheduleAction(21, 0, "SLEEP",    cool_setpoint=73),
 ]
 
 # HOT/5CP-risk day: forecast >=85F max OR apparent >=90F (per Appendix A).
@@ -212,25 +218,25 @@ NORMAL_SCHEDULE: list[ScheduleAction] = [
 # through the relevant five-hour average, not full-year-per-kW. See O2
 # in EXPERIMENT_DESIGN.md for the modeling approach.
 HOT_SCHEDULE: list[ScheduleAction] = [
-    ScheduleAction(4,  0, "HOT_PRE_COOL",     cool_setpoint_f=68),
-    ScheduleAction(12, 0, "HOT_COAST",        cool_setpoint_f=80, fan_mode="Circulate",
-                   cool_setpoint_humid_f=76),
-    ScheduleAction(19, 0, "HOT_RECOVER",      cool_setpoint_f=75, fan_mode="Auto"),
-    ScheduleAction(21, 0, "SLEEP",            cool_setpoint_f=73),
+    ScheduleAction(4,  0, "HOT_PRE_COOL",     cool_setpoint=68),
+    ScheduleAction(12, 0, "HOT_COAST",        cool_setpoint=80, fan_mode="Circulate",
+                   cool_setpoint_humid=76),
+    ScheduleAction(19, 0, "HOT_RECOVER",      cool_setpoint=75, fan_mode="Auto"),
+    ScheduleAction(21, 0, "SLEEP",            cool_setpoint=73),
 ]
 
 # MILD day: forecast <75F. No pre-cool (it's cool out), but the Pi still OWNS
 # the day so the real-time price overlay can actuate (the whole point of the
-# mild-full-controller fix — without a Pi-pushed baseline, last_schedule_cool_f
+# mild-full-controller fix — without a Pi-pushed baseline, last_schedule_cool
 # stays None and the mid-period overlay re-push short-circuits). Setpoints
 # mirror the CTK04 comfort program the house already ran on mild days, now
 # Pi-pushed with Permanent holds. The §7 day-ahead price-aware pre-cool can
 # still inject here (not day-type-gated) on a grid-event night.
 MILD_SCHEDULE: list[ScheduleAction] = [
-    ScheduleAction(6,  0, "MILD_MORNING", cool_setpoint_f=73, fan_mode="Auto"),
-    ScheduleAction(13, 0, "MILD_DAY",     cool_setpoint_f=78, fan_mode="Circulate"),
-    ScheduleAction(19, 0, "MILD_RECOVER", cool_setpoint_f=75, fan_mode="Auto"),
-    ScheduleAction(21, 0, "SLEEP",        cool_setpoint_f=73, fan_mode="Auto"),
+    ScheduleAction(6,  0, "MILD_MORNING", cool_setpoint=73, fan_mode="Auto"),
+    ScheduleAction(13, 0, "MILD_DAY",     cool_setpoint=78, fan_mode="Circulate"),
+    ScheduleAction(19, 0, "MILD_RECOVER", cool_setpoint=75, fan_mode="Auto"),
+    ScheduleAction(21, 0, "SLEEP",        cool_setpoint=73, fan_mode="Auto"),
 ]
 
 # HOT STREAK DAY 1: tomorrow AND day-after both forecast HOT. Heat wave starting.
@@ -238,11 +244,11 @@ MILD_SCHEDULE: list[ScheduleAction] = [
 # event, to build extra thermal mass that day 2 can coast on. Day 2 of the
 # streak just runs the regular HOT_SCHEDULE since the mass is already there.
 HOT_STREAK_DAY1_SCHEDULE: list[ScheduleAction] = [
-    ScheduleAction(3,  0, "STREAK_PRE_COOL_EARLY", cool_setpoint_f=66),
-    ScheduleAction(12, 0, "HOT_COAST",             cool_setpoint_f=80, fan_mode="Circulate",
-                   cool_setpoint_humid_f=76),
-    ScheduleAction(19, 0, "HOT_RECOVER",           cool_setpoint_f=75, fan_mode="Auto"),
-    ScheduleAction(21, 0, "SLEEP",                 cool_setpoint_f=73),
+    ScheduleAction(3,  0, "STREAK_PRE_COOL_EARLY", cool_setpoint=66),
+    ScheduleAction(12, 0, "HOT_COAST",             cool_setpoint=80, fan_mode="Circulate",
+                   cool_setpoint_humid=76),
+    ScheduleAction(19, 0, "HOT_RECOVER",           cool_setpoint=75, fan_mode="Auto"),
+    ScheduleAction(21, 0, "SLEEP",                 cool_setpoint=73),
 ]
 
 
@@ -411,24 +417,24 @@ def _classify_layer_resolution(
     setpoint; effective is `max` across them. A layer contributes when its
     own proposal matches effective AND it is actually active:
       * Price overlay contributes when the tier is non-normal AND
-        `price_cool_f` equals effective.
-      * Schedule contributes when `schedule_cool_f` equals effective.
+        `price_cool` equals effective.
+      * Schedule contributes when `schedule_cool` equals effective.
 
     **5CP is excluded from this classification** (binding spec §11 #14):
-    5CP no longer contributes to ``effective_cool_f`` so it cannot be a
+    5CP no longer contributes to ``effective_cool`` so it cannot be a
     `winning_layer`. The ``LayerResolutionCode.FIVECP_WINS`` and
     ``TIE_WARMER_WINS`` enum values are preserved for back-compat with
     existing dashboards / archived trace rows but are no longer emitted.
     Post-hoc analysis of when 5CP WOULD have fired uses the preserved
-    ``fivecp_active`` / ``fivecp_cool_f`` fields on the trace row, plus
+    ``fivecp_active`` / ``fivecp_cool`` fields on the trace row, plus
     ``hvac.5cp_state`` and ``fivecp_eval`` telemetry.
     """
-    eff = lr.effective_cool_f
+    eff = lr.effective_cool
     price_overlay_contributes = (
         lr.price_overlay_tier != NORMAL_TIER_NAME
-        and lr.price_cool_f == eff
+        and lr.price_cool == eff
     )
-    schedule_matches = lr.schedule_cool_f == eff
+    schedule_matches = lr.schedule_cool == eff
 
     if price_overlay_contributes:
         return LayerResolutionCode.PRICE_OVERLAY_WINS, "price_overlay"
@@ -462,20 +468,20 @@ def _classify_supervisor(
     if decision.decision == "emergency":
         return SupervisorCode.EMERGENCY_OVERHEAT
     # decision.decision == "clamped"
-    cool_clamped = decision.cool_setpoint_f != proposed_cool_f
-    heat_clamped = decision.heat_setpoint_f != proposed_heat_f
+    cool_clamped = decision.cool_setpoint != proposed_cool_f
+    heat_clamped = decision.heat_setpoint != proposed_heat_f
     if cool_clamped and heat_clamped:
         return SupervisorCode.CLAMPED_MULTIPLE
     if cool_clamped:
         return (
             SupervisorCode.CLAMPED_COOL_FLOOR
-            if decision.cool_setpoint_f > proposed_cool_f
+            if decision.cool_setpoint > proposed_cool_f
             else SupervisorCode.CLAMPED_COOL_CEILING
         )
     if heat_clamped:
         return (
             SupervisorCode.CLAMPED_HEAT_FLOOR
-            if decision.heat_setpoint_f > proposed_heat_f
+            if decision.heat_setpoint > proposed_heat_f
             else SupervisorCode.CLAMPED_HEAT_CEILING
         )
     # Defensive fallback (should be unreachable): clamp decision with
@@ -515,8 +521,8 @@ def _trace_supervisor(
         decision=decision.decision,
         reason_code=reason_code.value,
         supervisor_reason=decision.reason,
-        final_cool_f=int(decision.cool_setpoint_f),
-        final_heat_f=int(decision.heat_setpoint_f),
+        final_cool_f=int(decision.cool_setpoint),
+        final_heat_f=int(decision.heat_setpoint),
     )
 
 
@@ -590,10 +596,10 @@ def _trace_layer_resolution(
     """Emit one `decision_trace.layer_resolution` line per
     `resolve_layer_priority` call. Caller passes the `LayerResolution`
     plus optional `LayerInputs` (used for the 5CP scope detail field).
-    `firing` is mutated to update `last_eval_effective_cool_f`."""
+    `firing` is mutated to update `last_eval_effective_cool`."""
     reason_code, winning_layer = _classify_layer_resolution(layer_resolution)
-    prev_eff = firing.last_eval_effective_cool_f
-    new_eff = layer_resolution.effective_cool_f
+    prev_eff = firing.last_eval_effective_cool
+    new_eff = layer_resolution.effective_cool
     # info on effective change (operator-visible event); debug on
     # no-change (suppressed unless verbose=true).
     level = "info" if prev_eff != new_eff else "debug"
@@ -602,21 +608,21 @@ def _trace_layer_resolution(
         level=level,
         tick_id=tick_id,
         now_ct=now_ct,
-        schedule_cool_f=layer_resolution.schedule_cool_f,
+        schedule_cool_f=layer_resolution.schedule_cool,
         price_overlay_tier=layer_resolution.price_overlay_tier,
-        price_cool_f=layer_resolution.price_cool_f,
+        price_cool_f=layer_resolution.price_cool,
         fivecp_active=layer_resolution.fivecp_active,
         fivecp_scopes_fired=(
             list(layer_inputs.fivecp_scopes_fired)
             if layer_inputs is not None else []
         ),
-        fivecp_cool_f=layer_resolution.fivecp_cool_f,
+        fivecp_cool_f=layer_resolution.fivecp_cool,
         effective_cool_f=new_eff,
         prev_effective_cool_f=prev_eff,
         winning_layer=winning_layer,
         reason_code=reason_code.value,
     )
-    firing.last_eval_effective_cool_f = new_eff
+    firing.last_eval_effective_cool = new_eff
 
 
 # ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
@@ -697,6 +703,7 @@ class Config:
     thermostat_id: int
     dry_run: bool
     mode: str
+    temp_scale: str
     decision_trace_verbose: bool
     decision_hour: int
     tz_name: str
@@ -759,6 +766,12 @@ class Config:
             # SCHEDULER_MODE gate inside execute_action.
             dry_run=(mode == "shadow"),
             mode=mode,
+            # Temperature scale the controller logic operates in. Default
+            # "F" preserves historical behavior: every scale-agnostic
+            # controller value (setpoints, bounds, offsets) carries the
+            # same numeric Fahrenheit value it always did, and the °F
+            # telemetry fields receive it unchanged.
+            temp_scale=os.environ.get("TEMP_SCALE", "F"),
             # Documents the env var at startup. Runtime gating is in
             # `_trace`, which reads os.environ on each call so tests can
             # monkeypatch.setenv without reloading the module.
@@ -1222,7 +1235,7 @@ def action_in_effect_at(
 # during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
 # enough to functionally shut the AC off while staying inside the safety
 # supervisor's [65, 86]F clamp.
-COOL_SHUTOFF_F = 85
+COOL_SHUTOFF = 85
 
 
 @dataclass(frozen=True)
@@ -1236,27 +1249,29 @@ class LayerResolution:
     setpoint is the max of those proposals (capped later by the safety
     supervisor's 86F upper bound).
 
-    5CP is preserved as telemetry (``fivecp_active``, ``fivecp_cool_f``)
+    5CP is preserved as telemetry (``fivecp_active``, ``fivecp_cool``)
     so post-hoc analysis can reconstruct when 5CP would have fired, but
-    per binding spec §11 #14 it is NOT included in the ``effective_cool_f``
+    per binding spec §11 #14 it is NOT included in the ``effective_cool``
     max — 5CP does not independently force live setpoint changes.
+
+    Setpoint fields are in the controller's ``temp_scale`` (default "F").
     """
-    schedule_cool_f: int
+    schedule_cool: float
     price_overlay_tier: str           # "normal" | "elevated" | "scarcity"
-    price_cool_f: int                 # Schedule baseline if no tier active
-    fivecp_active: bool               # Telemetry only; not part of effective_cool_f
-    fivecp_cool_f: int                # Telemetry only: what 5CP WOULD have proposed
-    effective_cool_f: int             # max(schedule, price) -- 5CP excluded
+    price_cool: float                 # Schedule baseline if no tier active
+    fivecp_active: bool               # Telemetry only; not part of effective_cool
+    fivecp_cool: float                # Telemetry only: what 5CP WOULD have proposed
+    effective_cool: float             # max(schedule, price) -- 5CP excluded
 
 
 def resolve_layer_priority(
-    schedule_cool_f: int,
+    schedule_cool: float,
     *,
     price_overlay_tier: str = "normal",
-    price_offset_f: int = 0,
-    price_override_f: int | None = None,
+    price_offset: float = 0,
+    price_override: float | None = None,
     fivecp_active: bool = False,
-    fivecp_shutoff_f: int = COOL_SHUTOFF_F,
+    fivecp_shutoff: float = COOL_SHUTOFF,
 ) -> LayerResolution:
     """Resolve the effective cool setpoint across schedule / price layers.
 
@@ -1265,44 +1280,44 @@ def resolve_layer_priority(
 
       1. **Schedule baseline** -- the day-type schedule's cool_setpoint_f
          after `resolve_cool_setpoint` applies humid-override logic.
-      2. **Price overlay** (§2) -- elevated tier adds ``price_offset_f`` to
+      2. **Price overlay** (§2) -- elevated tier adds ``price_offset`` to
          the schedule baseline; scarcity tier replaces it with
-         ``price_override_f``. ``price_overlay_tier="normal"`` means no
+         ``price_override``. ``price_overlay_tier="normal"`` means no
          overlay is active.
 
     **5CP is NOT a live layer** (binding spec §11 #14): ``fivecp_active`` and
-    ``fivecp_cool_f`` are preserved on the returned ``LayerResolution`` for
+    ``fivecp_cool`` are preserved on the returned ``LayerResolution`` for
     telemetry / post-hoc analysis of when 5CP would have fired, but they
-    do not contribute to ``effective_cool_f``. A bare ``fivecp_active=True``
+    do not contribute to ``effective_cool``. A bare ``fivecp_active=True``
     with normal prices does not change the effective cool setpoint. Severe
     price events still drive shutoff via the price overlay (scarcity tier
     override to 85F).
 
     The function is a pure transform; it doesn't read any global state. §2
     evaluates its condition and passes the resulting arguments in;
-    ``fivecp_active``/``fivecp_shutoff_f`` are accepted for telemetry only.
+    ``fivecp_active``/``fivecp_shutoff`` are accepted for telemetry only.
     """
-    if price_override_f is not None:
-        price_cool_f = price_override_f
+    if price_override is not None:
+        price_cool = price_override
     else:
-        price_cool_f = schedule_cool_f + price_offset_f
+        price_cool = schedule_cool + price_offset
 
     # 5CP is telemetry-only: compute what it WOULD have proposed, but
-    # exclude it from the effective_cool_f max. (Binding spec §11 #14.)
-    fivecp_cool_f = fivecp_shutoff_f if fivecp_active else price_cool_f
-    effective_cool_f = max(schedule_cool_f, price_cool_f)
+    # exclude it from the effective_cool max. (Binding spec §11 #14.)
+    fivecp_cool = fivecp_shutoff if fivecp_active else price_cool
+    effective_cool = max(schedule_cool, price_cool)
 
     return LayerResolution(
-        schedule_cool_f=schedule_cool_f,
+        schedule_cool=schedule_cool,
         price_overlay_tier=price_overlay_tier,
-        price_cool_f=price_cool_f,
+        price_cool=price_cool,
         fivecp_active=fivecp_active,
-        fivecp_cool_f=fivecp_cool_f,
-        effective_cool_f=effective_cool_f,
+        fivecp_cool=fivecp_cool,
+        effective_cool=effective_cool,
     )
 
 
-def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None) -> tuple[int, str]:
+def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None) -> tuple[float, str]:
     """Return (setpoint_to_apply, reason) — picks the humid override if dewpoint
     is high enough and an override is defined for this action.
 
@@ -1312,15 +1327,15 @@ def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None
     """
     if action.release_hold:
         return 0, "release_hold"
-    if (action.cool_setpoint_humid_f is not None
+    if (action.cool_setpoint_humid is not None
             and today_dewpoint_f is not None
             and today_dewpoint_f > HUMID_DEWPOINT_F):
-        return action.cool_setpoint_humid_f, f"humid_override (dewpoint {today_dewpoint_f:.1f}F > {HUMID_DEWPOINT_F}F)"
-    # Non-release_hold ScheduleAction always carries cool_setpoint_f (per
+        return action.cool_setpoint_humid, f"humid_override (dewpoint {today_dewpoint_f:.1f}F > {HUMID_DEWPOINT_F}F)"
+    # Non-release_hold ScheduleAction always carries cool_setpoint (per
     # field-level invariant in the dataclass docstring); release_hold is
     # the only path that leaves it None and that case returns above.
-    assert action.cool_setpoint_f is not None
-    return action.cool_setpoint_f, "standard"
+    assert action.cool_setpoint is not None
+    return action.cool_setpoint, "standard"
 
 
 # ---- Control4 client wrapper ----------------------------------------------
@@ -1436,13 +1451,14 @@ class FiringState:
     fivecp_state_rto: FiveCPState = field(default_factory=FiveCPState)
     # Mid-period re-push tracking (§4 / Critical #2). The most recently
     # fired non-release-hold action's schedule-baseline setpoint and the
-    # last effective cool setpoint pushed to the thermostat. Reset to None
+    # last effective cool setpoint pushed to the thermostat (in the
+    # controller's temp_scale). Reset to None
     # on release_hold actions. (It persists across midnight in normal
     # operation -- there is no day-boundary reset -- so a restart is the
     # only source of a mid-stream None; startup reconstruction repairs it.)
-    last_schedule_cool_f: int | None = None
+    last_schedule_cool: float | None = None
     last_action_label: str = ""
-    last_pushed_effective_cool_f: int | None = None
+    last_pushed_effective_cool: float | None = None
     # One-shot guard for startup baseline reconstruction. False only on a
     # fresh process. Flipped True on the first run_schedule_check tick; after
     # that the normal action-fire / release-hold flow owns the baseline
@@ -1450,11 +1466,11 @@ class FiringState:
     baseline_initialized: bool = False
     # Phase 2 decision-trace: the effective cool setpoint computed at the
     # last layer-resolution evaluation. Distinct from
-    # ``last_pushed_effective_cool_f`` (post-supervisor + actually-pushed) —
+    # ``last_pushed_effective_cool`` (post-supervisor + actually-pushed) —
     # this is the pre-supervisor effective for the per-eval trace's
     # info/debug level gating. None until the first resolve_layer_priority
     # call lands.
-    last_eval_effective_cool_f: int | None = None
+    last_eval_effective_cool: float | None = None
     # Throttle for hvac.5cp_state audit writes. Spec calls for ~every-5-min
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
@@ -1696,8 +1712,8 @@ def merge_same_hour_actions_deepest_wins(
         if action.release_hold and not existing.release_hold:
             continue  # keep existing setpoint action
         # Both have setpoints (or both release_hold); pick deepest.
-        existing_cool = existing.cool_setpoint_f if existing.cool_setpoint_f is not None else 999
-        new_cool = action.cool_setpoint_f if action.cool_setpoint_f is not None else 999
+        existing_cool = existing.cool_setpoint if existing.cool_setpoint is not None else 999
+        new_cool = action.cool_setpoint if action.cool_setpoint is not None else 999
         if new_cool < existing_cool:
             by_time[key] = action
     return sorted(by_time.values(), key=lambda a: (a.hour, a.minute))
@@ -1713,8 +1729,8 @@ def precool_window_action(window: dict[str, int]) -> ScheduleAction:
         hour=int(window["hour_ct"]),
         minute=0,
         label="PRICE_AWARE_PRECOOL",
-        cool_setpoint_f=int(window["depth_f"]),
-        heat_setpoint_f=HEAT_SETPOINT_FLOOR_F,
+        cool_setpoint=int(window["depth_f"]),
+        heat_setpoint=HEAT_SETPOINT_FLOOR,
         fan_mode=None,
     )
 
@@ -1877,8 +1893,8 @@ def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAct
         "fan_mode": fan_mode_applied or "",
         "setpoint_reason": setpoint_reason,
         "supervisor_reason": supervisor_reason or "",
-        "cool_setpoint_proposed_f": float(action.cool_setpoint_f or 0),
-        "heat_setpoint_proposed_f": float(action.heat_setpoint_f),
+        "cool_setpoint_proposed_f": float(action.cool_setpoint or 0),
+        "heat_setpoint_proposed_f": float(action.heat_setpoint),
         "applied": int(applied),
         "error": error or "",
         "hvac_mode_before": str(thermostat_state_before.get("hvac_mode") or ""),
@@ -1893,10 +1909,10 @@ def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAct
         # effective setpoint different from the schedule baseline?"
         tags["price_overlay_tier"] = layer_resolution.price_overlay_tier
         tags["fivecp_active"] = "true" if layer_resolution.fivecp_active else "false"
-        fields["schedule_cool_f"] = float(layer_resolution.schedule_cool_f)
-        fields["price_cool_f"] = float(layer_resolution.price_cool_f)
-        fields["fivecp_cool_f"] = float(layer_resolution.fivecp_cool_f)
-        fields["effective_cool_f"] = float(layer_resolution.effective_cool_f)
+        fields["schedule_cool_f"] = float(layer_resolution.schedule_cool)
+        fields["price_cool_f"] = float(layer_resolution.price_cool)
+        fields["fivecp_cool_f"] = float(layer_resolution.fivecp_cool)
+        fields["effective_cool_f"] = float(layer_resolution.effective_cool)
     write_point(write_api, bucket, "hvac.actions", tags=tags, fields=fields)
 
 
@@ -2110,7 +2126,7 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
     """Apply the action to the thermostat. Returns (applied, error).
 
     Both setpoints are passed in explicitly (rather than read from
-    `action.heat_setpoint_f` / etc.) because the safety supervisor may
+    `action.heat_setpoint` / etc.) because the safety supervisor may
     have clamped or overridden them before this call.
 
     Two execution paths:
@@ -2464,10 +2480,10 @@ def reconstruct_startup_baseline(
     bucket: str,
     overrides: list[Override],
 ) -> None:
-    """One-shot startup repair of last_schedule_cool_f after a restart between
+    """One-shot startup repair of last_schedule_cool after a restart between
     schedule boundaries. Sets the baseline the un-restarted controller would
     hold, reusing locked schedule/setpoint logic. Leaves
-    last_pushed_effective_cool_f = None so the first mid-period tick re-asserts
+    last_pushed_effective_cool = None so the first mid-period tick re-asserts
     (runs the supervisor and pushes the intended effective once)."""
     now_min = now_local.hour * 60 + now_local.minute
     act = action_in_effect_at(today_schedule, now_min)
@@ -2479,12 +2495,12 @@ def reconstruct_startup_baseline(
         )
         act = action_in_effect_at(y_schedule, 24 * 60 - 1) if y_schedule else None
     if act is None or act.release_hold:
-        firing.last_schedule_cool_f = None
+        firing.last_schedule_cool = None
         if act is not None:
             firing.last_action_label = act.label
         return
     cool, _reason = resolve_cool_setpoint(act, today_dewpoint_f)
-    firing.last_schedule_cool_f = cool
+    firing.last_schedule_cool = cool
     firing.last_action_label = act.label
 
 
@@ -2493,13 +2509,13 @@ def vacation_schedule(override: Override) -> list[ScheduleAction]:
     every VACATION_PING_INTERVAL_HOURS to keep the setpoint pinned (in case
     something else briefly clears the Hold)."""
     cool = override.cool_setpoint_f or 80
-    heat = override.heat_setpoint_f or HEAT_SETPOINT_FLOOR_F
+    heat = override.heat_setpoint_f or HEAT_SETPOINT_FLOOR
     fan = override.fan_mode  # may be None
     actions = []
     for hr in range(0, 24, VACATION_PING_INTERVAL_HOURS):
         actions.append(ScheduleAction(
             hour=hr, minute=0, label="VACATION_AFFIRM",
-            cool_setpoint_f=cool, heat_setpoint_f=heat, fan_mode=fan,
+            cool_setpoint=cool, heat_setpoint=heat, fan_mode=fan,
         ))
     return actions
 
@@ -2725,8 +2741,8 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
                 price_override_f = None
                 price_tier_name = NORMAL_TIER_NAME
             else:
-                price_offset_f = active_tier.cool_setpoint_offset_f
-                price_override_f = active_tier.cool_setpoint_override_f
+                price_offset_f = active_tier.cool_setpoint_offset
+                price_override_f = active_tier.cool_setpoint_override
                 price_tier_name = active_tier.name
 
     else:
@@ -2889,7 +2905,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
             write_api, cfg.influx_bucket,
             prev_tier=prev_tier, new_tier=new_tier,
             current_price_cents=current_price_cents,
-            schedule_cool_f=firing.last_schedule_cool_f or 0,
+            schedule_cool_f=firing.last_schedule_cool or 0,
             effective_cool_f=0,  # filled in by mid-period push if it runs
             triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
         )
@@ -2973,18 +2989,18 @@ async def _push_layer_change_mid_period(
     clamped to a different value, we push regardless of whether the
     raw effective changed.
     """
-    if firing.last_schedule_cool_f is None:
+    if firing.last_schedule_cool is None:
         return  # no baseline to layer on top of
 
     if tick_id is None:
         tick_id = uuid.uuid4().hex
 
-    schedule_cool = firing.last_schedule_cool_f
+    schedule_cool = firing.last_schedule_cool
     layer_resolution = resolve_layer_priority(
         schedule_cool,
         price_overlay_tier=layer_inputs.price_tier_name,
-        price_offset_f=layer_inputs.price_offset_f,
-        price_override_f=layer_inputs.price_override_f,
+        price_offset=layer_inputs.price_offset_f,
+        price_override=layer_inputs.price_override_f,
         fivecp_active=layer_inputs.fivecp_active,
     )
     _trace_layer_resolution(
@@ -3000,34 +3016,34 @@ async def _push_layer_change_mid_period(
     # threshold needs the supervisor's 74F override to kick in.
     snapshot = await read_thermostat_snapshot(c4)
     decision = validate_setpoints(
-        layer_resolution.effective_cool_f, HEAT_SETPOINT_FLOOR_F, snapshot,
+        layer_resolution.effective_cool, HEAT_SETPOINT_FLOOR, snapshot,
     )
     _trace_supervisor(
         tick_id=tick_id, now_ct=now_local,
-        proposed_cool_f=layer_resolution.effective_cool_f,
-        proposed_heat_f=HEAT_SETPOINT_FLOOR_F,
+        proposed_cool_f=layer_resolution.effective_cool,
+        proposed_heat_f=HEAT_SETPOINT_FLOOR,
         snapshot=snapshot, decision=decision,
     )
-    sup_cool = decision.cool_setpoint_f
-    sup_heat = decision.heat_setpoint_f
+    sup_cool = decision.cool_setpoint
+    sup_heat = decision.heat_setpoint
     sup_decision = decision.decision
     sup_reason = decision.reason
 
     # No-push short-circuit: skip the push only when the supervisor
     # APPROVED the layer-resolved setpoint AND that approved value
     # already equals the last-pushed guard. If the supervisor clamped
-    # or escalated to emergency, sup_cool != effective_cool_f and we
+    # or escalated to emergency, sup_cool != effective_cool and we
     # must push the supervisor's chosen value.
     if (sup_decision == "approved"
-            and sup_cool == firing.last_pushed_effective_cool_f):
+            and sup_cool == firing.last_pushed_effective_cool):
         return
 
     # Construct a synthetic action for execute_action / write_action / log.
     synthetic_action = ScheduleAction(
         hour=now_local.hour, minute=now_local.minute,
         label=f"MID_PERIOD_REPUSH:{firing.last_action_label}",
-        cool_setpoint_f=schedule_cool,
-        heat_setpoint_f=HEAT_SETPOINT_FLOOR_F,
+        cool_setpoint=schedule_cool,
+        heat_setpoint=HEAT_SETPOINT_FLOOR,
         fan_mode=None,  # leave fan mode alone mid-period
     )
 
@@ -3036,9 +3052,9 @@ async def _push_layer_change_mid_period(
         log(level, "supervisor_intervention",
             day_type=day_type, label=synthetic_action.label,
             decision=decision.decision, reason=decision.reason,
-            cool_proposed=layer_resolution.effective_cool_f,
+            cool_proposed=layer_resolution.effective_cool,
             cool_applied=sup_cool,
-            heat_proposed=HEAT_SETPOINT_FLOOR_F,
+            heat_proposed=HEAT_SETPOINT_FLOOR,
             heat_applied=sup_heat,
             indoor_temp_f=snapshot.get("indoor_temp_f"))
 
@@ -3056,8 +3072,8 @@ async def _push_layer_change_mid_period(
     log("info", "mid_period_repush",
         day_type=day_type, label=synthetic_action.label,
         cool_setpoint_f=sup_cool,
-        prior_effective_cool_f=firing.last_pushed_effective_cool_f,
-        new_effective_cool_f=layer_resolution.effective_cool_f,
+        prior_effective_cool_f=firing.last_pushed_effective_cool,
+        new_effective_cool_f=layer_resolution.effective_cool,
         price_overlay_tier=layer_inputs.price_tier_name,
         fivecp_active=layer_inputs.fivecp_active,
         override_note=override_note,
@@ -3075,7 +3091,7 @@ async def _push_layer_change_mid_period(
     # mid-period repush would think the value was already on the
     # thermostat (P1.3).
     if cfg.dry_run or error is None:
-        firing.last_pushed_effective_cool_f = sup_cool
+        firing.last_pushed_effective_cool = sup_cool
 
 
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_api: Any,
@@ -3140,12 +3156,12 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
             )
 
     # ---- Startup baseline reconstruction (one-shot) ----
-    # A restart between schedule boundaries leaves last_schedule_cool_f None,
+    # A restart between schedule boundaries leaves last_schedule_cool None,
     # which makes _push_layer_change_mid_period short-circuit (silencing the
     # §2 re-push and the P1.2 supervisor) until the next action fires. Repair
     # it once, before the layer eval below, so the first post-restart audit row
     # carries the real baseline and the supervisor arms this tick.
-    if not firing.baseline_initialized and firing.last_schedule_cool_f is None:
+    if not firing.baseline_initialized and firing.last_schedule_cool is None:
         reconstruct_startup_baseline(
             firing, schedule, now_local, today_dewpoint_f,
             query_api, cfg.influx_bucket, overrides,
@@ -3241,18 +3257,18 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
             cool_to_apply = schedule_cool
             layer_resolution = None
             sup_cool = schedule_cool
-            sup_heat = action.heat_setpoint_f
+            sup_heat = action.heat_setpoint
             sup_decision = "approved"
             sup_reason = None
-            firing.last_schedule_cool_f = None
+            firing.last_schedule_cool = None
             firing.last_action_label = action.label
-            firing.last_pushed_effective_cool_f = None
+            firing.last_pushed_effective_cool = None
         else:
             layer_resolution = resolve_layer_priority(
                 schedule_cool,
                 price_overlay_tier=layer_inputs.price_tier_name,
-                price_offset_f=layer_inputs.price_offset_f,
-                price_override_f=layer_inputs.price_override_f,
+                price_offset=layer_inputs.price_offset_f,
+                price_override=layer_inputs.price_override_f,
                 fivecp_active=layer_inputs.fivecp_active,
             )
             _trace_layer_resolution(
@@ -3260,17 +3276,17 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
                 firing=firing, layer_resolution=layer_resolution,
                 layer_inputs=layer_inputs,
             )
-            cool_to_apply = layer_resolution.effective_cool_f
+            cool_to_apply = layer_resolution.effective_cool
 
-            decision = validate_setpoints(cool_to_apply, action.heat_setpoint_f, snapshot)
+            decision = validate_setpoints(cool_to_apply, action.heat_setpoint, snapshot)
             _trace_supervisor(
                 tick_id=tick_id, now_ct=now_local,
                 proposed_cool_f=cool_to_apply,
-                proposed_heat_f=action.heat_setpoint_f,
+                proposed_heat_f=action.heat_setpoint,
                 snapshot=snapshot, decision=decision,
             )
-            sup_cool = decision.cool_setpoint_f
-            sup_heat = decision.heat_setpoint_f
+            sup_cool = decision.cool_setpoint
+            sup_heat = decision.heat_setpoint
             sup_decision = decision.decision
             sup_reason = decision.reason
             if decision.needs_alert:
@@ -3281,12 +3297,12 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
                     decision=decision.decision,
                     reason=decision.reason,
                     cool_proposed=cool_to_apply,
-                    cool_applied=decision.cool_setpoint_f,
-                    heat_proposed=action.heat_setpoint_f,
-                    heat_applied=decision.heat_setpoint_f,
+                    cool_applied=decision.cool_setpoint,
+                    heat_proposed=action.heat_setpoint,
+                    heat_applied=decision.heat_setpoint,
                     indoor_temp_f=snapshot.get("indoor_temp_f"))
 
-            firing.last_schedule_cool_f = schedule_cool
+            firing.last_schedule_cool = schedule_cool
             firing.last_action_label = action.label
 
         applied, error = await execute_action(c4, action, sup_cool, sup_heat,
@@ -3304,7 +3320,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
             cool_setpoint_f=sup_cool,
             heat_setpoint_f=sup_heat,
             cool_setpoint_proposed_f=cool_to_apply,
-            heat_setpoint_proposed_f=action.heat_setpoint_f,
+            heat_setpoint_proposed_f=action.heat_setpoint,
             fan_mode=action.fan_mode,
             setpoint_reason=setpoint_reason,
             supervisor_decision=sup_decision,
@@ -3338,7 +3354,7 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
             # already-failed state would silently skip because the
             # guard claims the target value is already on the
             # thermostat (it isn't; the push failed).
-            firing.last_pushed_effective_cool_f = sup_cool
+            firing.last_pushed_effective_cool = sup_cool
         fired_anything = True
 
         # P1.2: only mark the action done AFTER it actually applied (or

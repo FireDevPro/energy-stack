@@ -237,9 +237,9 @@ class TestPhase2LayerResolution:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=75,  # baseline; needed so the mid-period path runs
+            last_schedule_cool=75,  # baseline; needed so the mid-period path runs
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
 
@@ -296,7 +296,7 @@ class TestPhase2LayerResolution:
         # All three calls emit a layer-resolution trace (trace is
         # written BEFORE the no-push short-circuit). Tick 3 emits a
         # trace but does NOT call execute_action — verified below via
-        # firing.last_pushed_effective_cool_f staying at 78.
+        # firing.last_pushed_effective_cool staying at 78.
         assert len(traces) == 3, f"expected 3 traces, got {len(traces)}: {traces}"
         t1, t2, t3 = traces
 
@@ -333,10 +333,10 @@ class TestPhase2LayerResolution:
         assert t3["tick_id"] == "tick_3"
 
         # ACCEPTANCE: 5CP-only transition does not call execute_action.
-        # last_pushed_effective_cool_f is updated only by a successful
+        # last_pushed_effective_cool is updated only by a successful
         # push; it stayed at 78 from tick 2, so no mid-period push fired
         # for tick 3 (binding spec §11 #14).
-        assert firing.last_pushed_effective_cool_f == 78
+        assert firing.last_pushed_effective_cool == 78
 
     @pytest.mark.asyncio
     async def test_scarcity_with_fivecp_active_price_overlay_wins(self, capsys, monkeypatch):
@@ -354,9 +354,9 @@ class TestPhase2LayerResolution:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=75,
+            last_schedule_cool=75,
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         # Scarcity tier (override=85F) + 5CP active. Pre-§11 #14 these
         # would have tied at 85F; post-fix only the price overlay
@@ -414,9 +414,9 @@ class TestPhase2LayerResolution:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=75,
+            last_schedule_cool=75,
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         layer_inputs = LayerInputs(
             price_tier_name="elevated", price_offset_f=3, price_override_f=None,
@@ -457,7 +457,7 @@ class TestPhase2LayerResolution:
         )
         # Guard updated to the new effective cool — proves the supervisor
         # + push branch executed cleanly through to the end.
-        assert firing.last_pushed_effective_cool_f == 78
+        assert firing.last_pushed_effective_cool == 78
 
 
 # ---- Phase 3 — supervisor per invocation ---------------------------------
@@ -544,8 +544,8 @@ class TestPhase3Supervisor:
         assert t["proposed_cool_f"] == proposed_cool
         assert t["proposed_heat_f"] == proposed_heat
         # Final values match the supervisor decision.
-        assert t["final_cool_f"] == decision.cool_setpoint_f
-        assert t["final_heat_f"] == decision.heat_setpoint_f
+        assert t["final_cool_f"] == decision.cool_setpoint
+        assert t["final_heat_f"] == decision.heat_setpoint
 
     @pytest.mark.asyncio
     async def test_supervisor_trace_fires_from_mid_period_repush(self, capsys, monkeypatch):
@@ -559,9 +559,9 @@ class TestPhase3Supervisor:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=78,
+            last_schedule_cool=78,
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         layer_inputs = LayerInputs(
             price_tier_name="normal", price_offset_f=0, price_override_f=None,
@@ -587,7 +587,7 @@ class TestPhase3Supervisor:
         assert len(layer_traces) == 1, "layer_resolution trace must also fire (Phase 2)"
         assert sup_traces[0]["tick_id"] == "tick_integration"
         assert layer_traces[0]["tick_id"] == "tick_integration"
-        # The mid-period repush proposes layer_resolution.effective_cool_f
+        # The mid-period repush proposes layer_resolution.effective_cool
         # (78 = schedule, no overlay) with HEAT_SETPOINT_FLOOR_F=65 heat.
         assert sup_traces[0]["proposed_cool_f"] == 78
         assert sup_traces[0]["proposed_heat_f"] == 65
@@ -612,9 +612,9 @@ class TestPhase3Supervisor:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=78,
+            last_schedule_cool=78,
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         layer_inputs = LayerInputs(
             price_tier_name="normal", price_offset_f=0, price_override_f=None,
@@ -644,7 +644,7 @@ class TestPhase3Supervisor:
         assert len(action_rows) >= 1, (
             "hvac.actions write must still happen under trace fault"
         )
-        assert firing.last_pushed_effective_cool_f == 78
+        assert firing.last_pushed_effective_cool == 78
 
 
 # ---- Phase 4 — §7 precool rejection reason -------------------------------
@@ -1016,9 +1016,9 @@ class TestFeatureChain:
         c4, _ = _mock_c4_client()
         write_api = MagicMock()
         firing = FiringState(
-            last_schedule_cool_f=78,  # baseline so mid-period repush runs
+            last_schedule_cool=78,  # baseline so mid-period repush runs
             last_action_label="COAST",
-            last_pushed_effective_cool_f=None,
+            last_pushed_effective_cool=None,
         )
         now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
 

@@ -6,6 +6,12 @@ This is RBC infrastructure that runs regardless of which controller
 variant is generating the proposed action. Any future controller
 hangs off the same gate.
 
+All bound constants are expressed in the controller's ``temp_scale``
+(see app.Config.temp_scale). With the current default scale they carry
+the same numeric Fahrenheit values they always had; the unit is now a
+controller-level parameter rather than a hardcoded-°F assumption baked
+into these names.
+
 What this catches (v1 scope):
 
   1. Out-of-range setpoint commands. Cool ∈ [SAFE_COOL_MIN, SAFE_COOL_MAX]
@@ -16,10 +22,10 @@ What this catches (v1 scope):
      simply won't engage (high).
 
   2. Emergency indoor temperature. If the thermostat snapshot reports
-     indoor > EMERGENCY_INDOOR_F (= 86), regardless of what the
+     indoor > EMERGENCY_INDOOR (= 86), regardless of what the
      scheduled action or layer-resolved setpoint says, override cool
-     to EMERGENCY_COOL_TARGET_F (= 74). Catches HOT_COAST periods (or
-     a price-scarcity / 5CP layer pushed to 85°F) that overshoot in
+     to EMERGENCY_COOL_TARGET (= 74). Catches HOT_COAST periods (or
+     a price-scarcity / 5CP layer pushed to 85°) that overshoot in
      real heat-wave conditions, plus any case where the household is
      uncomfortably hot for any reason.
 
@@ -45,24 +51,26 @@ from dataclasses import dataclass
 from typing import Any
 
 
-# Range bounds. Outside these, the equipment is either operating in
-# regions outside its design envelope (won't engage at high) or wasting
-# energy with no comfort benefit (overcooling at low). Picked to
-# accommodate VACATION setpoints (cool=83) and any reasonable HOT_5CP
-# shutoff (cool=85), with a small margin.
-SAFE_COOL_MIN_F = 65
-SAFE_COOL_MAX_F = 86
-SAFE_HEAT_MIN_F = 55
-SAFE_HEAT_MAX_F = 75
+# Range bounds, expressed in the controller's ``temp_scale``. Outside
+# these, the equipment is either operating in regions outside its design
+# envelope (won't engage at high) or wasting energy with no comfort
+# benefit (overcooling at low). Picked to accommodate VACATION setpoints
+# (cool=83) and any reasonable HOT_5CP shutoff (cool=85), with a small
+# margin. Default numeric values are the historical Fahrenheit bounds.
+SAFE_COOL_MIN = 65.0
+SAFE_COOL_MAX = 86.0
+SAFE_HEAT_MIN = 55.0
+SAFE_HEAT_MAX = 75.0
 
-# Indoor-temperature emergency threshold. Above this, the household is
-# uncomfortable enough that no scheduled action should be allowed to
-# leave the AC sitting idle.
-EMERGENCY_INDOOR_F = 86.0
+# Indoor-temperature emergency threshold (in ``temp_scale``). Above this,
+# the household is uncomfortable enough that no scheduled action should be
+# allowed to leave the AC sitting idle.
+EMERGENCY_INDOOR = 86.0
 
-# Cool setpoint to apply during an emergency. Aggressive enough to
-# actually pull indoor down quickly. Within the safe range above.
-EMERGENCY_COOL_TARGET_F = 74
+# Cool setpoint to apply during an emergency (in ``temp_scale``).
+# Aggressive enough to actually pull indoor down quickly. Within the safe
+# range above.
+EMERGENCY_COOL_TARGET = 74.0
 
 # Decision kinds. Free strings (instead of an enum) so they're easy to
 # write directly to InfluxDB as a tag value.
@@ -75,14 +83,15 @@ DECISION_EMERGENCY = "emergency"
 class SupervisorDecision:
     """Result of validating one proposed setpoint command.
 
-    cool_setpoint_f / heat_setpoint_f: what the caller should ACTUALLY
-        apply (may be clamped or overridden vs what was proposed).
+    cool_setpoint / heat_setpoint: what the caller should ACTUALLY
+        apply (may be clamped or overridden vs what was proposed), in the
+        controller's ``temp_scale``.
     decision: which path was taken (approved/clamped/emergency).
     reason: short human-readable string for audit logging. None when
         decision is APPROVED.
     """
-    cool_setpoint_f: int
-    heat_setpoint_f: int
+    cool_setpoint: float
+    heat_setpoint: float
     decision: str
     reason: str | None = None
 
@@ -95,11 +104,15 @@ class SupervisorDecision:
 
 
 def validate_setpoints(
-    proposed_cool_f: int,
-    proposed_heat_f: int,
+    proposed_cool: float,
+    proposed_heat: float,
     snapshot: dict[str, Any],
 ) -> SupervisorDecision:
     """Decide what setpoints to actually push to the thermostat.
+
+    Proposed setpoints and the returned setpoints are in the controller's
+    ``temp_scale``; the snapshot indoor temperature is read on the same
+    scale-agnostic basis.
 
     Order of precedence (first match wins):
       1. Emergency indoor-temperature override (snapshot says household is
@@ -107,40 +120,40 @@ def validate_setpoints(
       2. Out-of-range clamp -> nearest bound.
       3. Approved -> proposed values pass through unchanged.
     """
-    indoor_f = snapshot.get("indoor_temp_f")
+    indoor = snapshot.get("indoor_temp_f")
 
     # Emergency override: household too hot. Trumps the schedule.
-    if isinstance(indoor_f, (int, float)) and indoor_f >= EMERGENCY_INDOOR_F:
+    if isinstance(indoor, (int, float)) and indoor >= EMERGENCY_INDOOR:
         return SupervisorDecision(
-            cool_setpoint_f=EMERGENCY_COOL_TARGET_F,
-            heat_setpoint_f=_clamp(proposed_heat_f, SAFE_HEAT_MIN_F, SAFE_HEAT_MAX_F),
+            cool_setpoint=EMERGENCY_COOL_TARGET,
+            heat_setpoint=_clamp(proposed_heat, SAFE_HEAT_MIN, SAFE_HEAT_MAX),
             decision=DECISION_EMERGENCY,
-            reason=f"indoor_{indoor_f:.1f}F_above_{EMERGENCY_INDOOR_F:.0f}F",
+            reason=f"indoor_{indoor:.1f}_above_{EMERGENCY_INDOOR:.0f}",
         )
 
     # Clamp out-of-range setpoints.
-    cool_clamped = _clamp(proposed_cool_f, SAFE_COOL_MIN_F, SAFE_COOL_MAX_F)
-    heat_clamped = _clamp(proposed_heat_f, SAFE_HEAT_MIN_F, SAFE_HEAT_MAX_F)
-    if cool_clamped != proposed_cool_f or heat_clamped != proposed_heat_f:
+    cool_clamped = _clamp(proposed_cool, SAFE_COOL_MIN, SAFE_COOL_MAX)
+    heat_clamped = _clamp(proposed_heat, SAFE_HEAT_MIN, SAFE_HEAT_MAX)
+    if cool_clamped != proposed_cool or heat_clamped != proposed_heat:
         reasons = []
-        if cool_clamped != proposed_cool_f:
-            reasons.append(f"cool_{proposed_cool_f}_to_{cool_clamped}")
-        if heat_clamped != proposed_heat_f:
-            reasons.append(f"heat_{proposed_heat_f}_to_{heat_clamped}")
+        if cool_clamped != proposed_cool:
+            reasons.append(f"cool_{proposed_cool}_to_{cool_clamped}")
+        if heat_clamped != proposed_heat:
+            reasons.append(f"heat_{proposed_heat}_to_{heat_clamped}")
         return SupervisorDecision(
-            cool_setpoint_f=cool_clamped,
-            heat_setpoint_f=heat_clamped,
+            cool_setpoint=cool_clamped,
+            heat_setpoint=heat_clamped,
             decision=DECISION_CLAMPED,
             reason=",".join(reasons),
         )
 
     return SupervisorDecision(
-        cool_setpoint_f=proposed_cool_f,
-        heat_setpoint_f=proposed_heat_f,
+        cool_setpoint=proposed_cool,
+        heat_setpoint=proposed_heat,
         decision=DECISION_APPROVED,
         reason=None,
     )
 
 
-def _clamp(value: int, lo: int, hi: int) -> int:
+def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
