@@ -5,8 +5,8 @@ from .precool import (
     CHEAP_PRICE_THRESHOLD_C,
     DEEPEN_PEAK_RATIO,
     DEEPEN_TEMP_THRESHOLD_F,
-    DEEPEST_PRECOOL_DEPTH_F,
-    DEFAULT_PRECOOL_DEPTH_F,
+    DEEPEST_PRECOOL_DEPTH,
+    DEFAULT_PRECOOL_DEPTH,
     DTOD_PERIODS_CT,
     SPIKE_PRICE_THRESHOLD_C,
     dtod_delivery_rate_for_hour,
@@ -105,7 +105,7 @@ def test_window_with_midday_cheap_and_evening_spike():
     assert out is not None
     assert out["hour_ct"] == 12
     # 12c spike is 20% of the way from 10c to 20c: depth ~67-68F
-    assert DEEPEST_PRECOOL_DEPTH_F <= out["depth_f"] <= DEFAULT_PRECOOL_DEPTH_F
+    assert DEEPEST_PRECOOL_DEPTH <= out["depth_f"] <= DEFAULT_PRECOOL_DEPTH
 
 
 def test_window_with_negative_morning_and_evening_spike():
@@ -145,7 +145,7 @@ def test_depth_scales_with_spike_magnitude():
         prices[h] = 25.0   # well above 20c
     out = should_add_price_aware_precool(prices, {})
     assert out is not None
-    assert out["depth_f"] == DEEPEST_PRECOOL_DEPTH_F
+    assert out["depth_f"] == DEEPEST_PRECOOL_DEPTH
 
 
 def test_returns_earliest_qualifying_cheap_window_when_multiple():

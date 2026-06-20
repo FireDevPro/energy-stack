@@ -28,7 +28,7 @@ def _stub_pjm_inputs(monkeypatch):
         lambda query_api, bucket, target_date_iso, tz: (None, 130000.0),
     )
 from .app import (
-    COOL_SHUTOFF_F,
+    COOL_SHUTOFF,
     DAYTYPE_HOT,
     DAYTYPE_MILD,
     DAYTYPE_NORMAL,
@@ -86,11 +86,11 @@ def test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged():
     """The default passthrough: nothing fires, schedule baseline wins.
     Same shape that runs while §2 (price overlay) and §3 (5CP) modules
     haven't wired in yet."""
-    r = resolve_layer_priority(schedule_cool_f=79)
-    assert r.effective_cool_f == 79
-    assert r.schedule_cool_f == 79
-    assert r.price_cool_f == 79
-    assert r.fivecp_cool_f == 79
+    r = resolve_layer_priority(schedule_cool=79)
+    assert r.effective_cool == 79
+    assert r.schedule_cool == 79
+    assert r.price_cool == 79
+    assert r.fivecp_cool == 79
     assert r.price_overlay_tier == "normal"
     assert r.fivecp_active is False
 
@@ -99,24 +99,24 @@ def test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer():
     """Spec §4 case 2: schedule 79°F, elevated price (+3°F offset)
     -> effective 82°F."""
     r = resolve_layer_priority(
-        schedule_cool_f=79,
+        schedule_cool=79,
         price_overlay_tier="elevated",
-        price_offset_f=3,
+        price_offset=3,
     )
-    assert r.effective_cool_f == 82
-    assert r.price_cool_f == 82
+    assert r.effective_cool == 82
+    assert r.price_cool == 82
 
 
 def test_resolve_layer_priority_scarcity_override_replaces_schedule():
     """Spec §4 case 3: schedule 73°F (sleep), scarcity tier (override
     to 85°F) -> effective 85°F (override wins, far warmer than 73°F+offset)."""
     r = resolve_layer_priority(
-        schedule_cool_f=73,
+        schedule_cool=73,
         price_overlay_tier="scarcity",
-        price_override_f=85,
+        price_override=85,
     )
-    assert r.effective_cool_f == 85
-    assert r.price_cool_f == 85
+    assert r.effective_cool == 85
+    assert r.price_cool == 85
 
 
 def test_fivecp_active_does_not_change_effective_cool_f():
@@ -128,15 +128,15 @@ def test_fivecp_active_does_not_change_effective_cool_f():
     LayerResolution so post-hoc analysis can reconstruct when 5CP would
     have fired."""
     r = resolve_layer_priority(
-        schedule_cool_f=80,
+        schedule_cool=80,
         fivecp_active=True,
     )
     # Effective stays at schedule baseline; 5CP does NOT push to 85F.
-    assert r.effective_cool_f == 80
-    # Telemetry preserved: fivecp_active is still True, fivecp_cool_f
+    assert r.effective_cool == 80
+    # Telemetry preserved: fivecp_active is still True, fivecp_cool
     # records what 5CP WOULD have proposed (85F) — but it didn't win.
     assert r.fivecp_active is True
-    assert r.fivecp_cool_f == COOL_SHUTOFF_F
+    assert r.fivecp_cool == COOL_SHUTOFF
 
 
 def test_scarcity_still_overrides_when_fivecp_active():
@@ -146,13 +146,13 @@ def test_scarcity_still_overrides_when_fivecp_active():
     85°F from the PRICE overlay (the only live-authority layer at the
     warm end); 5CP does not contribute."""
     r = resolve_layer_priority(
-        schedule_cool_f=80,
+        schedule_cool=80,
         price_overlay_tier="scarcity",
-        price_override_f=85,
+        price_override=85,
         fivecp_active=True,
     )
-    assert r.effective_cool_f == 85
-    assert r.price_cool_f == 85  # price overlay is the one that pushed it
+    assert r.effective_cool == 85
+    assert r.price_cool == 85  # price overlay is the one that pushed it
 
 
 def test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85():
@@ -160,11 +160,11 @@ def test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85():
     (+3°F offset) -> effective 71°F. Importantly, elevated tier does NOT
     blow pre-cool to 85°F; that requires the scarcity override or 5CP."""
     r = resolve_layer_priority(
-        schedule_cool_f=68,
+        schedule_cool=68,
         price_overlay_tier="elevated",
-        price_offset_f=3,
+        price_offset=3,
     )
-    assert r.effective_cool_f == 71
+    assert r.effective_cool == 71
 
 
 def test_resolve_layer_priority_warmer_wins_when_offset_below_baseline():
@@ -172,17 +172,17 @@ def test_resolve_layer_priority_warmer_wins_when_offset_below_baseline():
     than the schedule intended. ``effective = max(schedule, price, ...)``
     enforces 'warmer wins' even if the price layer mis-computes."""
     r = resolve_layer_priority(
-        schedule_cool_f=79,
+        schedule_cool=79,
         price_overlay_tier="elevated",
-        price_offset_f=-5,
+        price_offset=-5,
     )
-    assert r.effective_cool_f == 79  # schedule baseline still wins
+    assert r.effective_cool == 79  # schedule baseline still wins
 
 
 def test_resolve_layer_priority_returns_layer_resolution_dataclass():
     """Caller-facing contract: the return value is a LayerResolution with
     fields that map 1:1 onto the new hvac.actions audit fields."""
-    r = resolve_layer_priority(schedule_cool_f=78)
+    r = resolve_layer_priority(schedule_cool=78)
     assert isinstance(r, LayerResolution)
 
 
@@ -468,7 +468,7 @@ def test_release_hold_action_has_no_setpoint():
     """release_hold actions don't carry a cool_setpoint_f — verifies the
     optional default."""
     a = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
-    assert a.cool_setpoint_f is None
+    assert a.cool_setpoint is None
     assert a.release_hold is True
     assert a.fan_mode is None
 
@@ -478,7 +478,7 @@ def test_mild_schedule_is_pi_owned():
     overlay can actuate on mild days — this is the mild-full-controller fix."""
     assert [a.label for a in MILD_SCHEDULE] == [
         "MILD_MORNING", "MILD_DAY", "MILD_RECOVER", "SLEEP"]
-    assert all(a.cool_setpoint_f is not None for a in MILD_SCHEDULE)
+    assert all(a.cool_setpoint is not None for a in MILD_SCHEDULE)
     assert all(a.release_hold is False for a in MILD_SCHEDULE)
 
 
@@ -487,8 +487,8 @@ def test_existing_schedules_still_have_setpoints():
     leave NORMAL/HOT actions setpoint-less."""
     for action in NORMAL_SCHEDULE + HOT_SCHEDULE:
         assert action.release_hold is False
-        assert action.cool_setpoint_f is not None
-        assert action.cool_setpoint_f > 0
+        assert action.cool_setpoint is not None
+        assert action.cool_setpoint > 0
 
 
 def test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window():
@@ -517,10 +517,10 @@ def test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window():
     # No schedule entry should pin cool >= 85 on a HOT day -- those
     # are dynamic-layer territory now.
     for a in HOT_SCHEDULE + HOT_STREAK_DAY1_SCHEDULE:
-        if a.cool_setpoint_f is not None:
-            assert a.cool_setpoint_f < 85, (
+        if a.cool_setpoint is not None:
+            assert a.cool_setpoint < 85, (
                 f"HOT-day schedule action {a.label} pins cool="
-                f"{a.cool_setpoint_f}; that's the dynamic-layer "
+                f"{a.cool_setpoint}; that's the dynamic-layer "
                 f"shutoff range and should not appear in the locked "
                 f"schedule baseline."
             )
@@ -538,14 +538,14 @@ def test_resolve_cool_setpoint_release_hold_returns_sentinel():
 
 def test_resolve_cool_setpoint_humid_override_unchanged_for_setpoint_actions():
     """The humid-override path must still work for non-release actions."""
-    a = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79, cool_setpoint_humid_f=75)
+    a = ScheduleAction(13, 0, "COAST", cool_setpoint=79, cool_setpoint_humid=75)
     setpoint, reason = resolve_cool_setpoint(a, today_dewpoint_f=70.0)
     assert setpoint == 75
     assert "humid_override" in reason
 
 
 def test_resolve_cool_setpoint_standard_path_unchanged():
-    a = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    a = ScheduleAction(13, 0, "COAST", cool_setpoint=79)
     setpoint, reason = resolve_cool_setpoint(a, today_dewpoint_f=60.0)
     assert setpoint == 79
     assert reason == "standard"
@@ -622,7 +622,7 @@ async def test_execute_setpoint_action_still_pins_permanent_hold():
     """The original behavior — set setpoints + Permanent hold — must remain
     intact for non-release actions."""
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79,
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=79,
                              fan_mode="Circulate")
 
     applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
@@ -654,7 +654,7 @@ async def test_execute_setpoint_action_sets_heat_before_cool():
 
     # HOT_PRE_COOL action: cool=68 from prior schedule state where heat
     # might have been higher than 65.
-    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint_f=68,
+    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint=68,
                              fan_mode="Auto")
     applied, error = await execute_action(
         c4, action, cool_setpoint_to_apply=68, heat_setpoint_to_apply=65,
@@ -678,7 +678,7 @@ async def test_execute_setpoint_action_sets_heat_before_cool():
 async def test_execute_setpoint_action_skipped_when_in_heat_mode():
     """Setpoint actions still no-op in Heat mode (no fighting the furnace)."""
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=79)
 
     applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
                                            state={"hvac_mode": "Heat"}, dry_run=False)
@@ -697,7 +697,7 @@ async def test_execute_setpoint_action_dry_run_pushes_nothing():
     runs unobstructed. This is the binding contract validated by the
     24-hour pre-flight test before randomization begins."""
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=79,
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=79,
                              fan_mode="Circulate")
 
     applied, error = await execute_action(
@@ -721,7 +721,7 @@ async def test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_
     # An action that would normally pre-cool to 68F; layer resolver bumped
     # it to 85F via scarcity-tier override. Even with that aggressive
     # resolution, dry-run pushes nothing.
-    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint_f=68)
+    action = ScheduleAction(4, 0, "HOT_PRE_COOL", cool_setpoint=68)
     applied, error = await execute_action(
         c4, action, cool_setpoint_to_apply=85, heat_setpoint_to_apply=65,
         state={"hvac_mode": "Cool"}, dry_run=True,
@@ -1039,10 +1039,10 @@ from .safety_supervisor import (  # noqa: E402
     DECISION_APPROVED,
     DECISION_CLAMPED,
     DECISION_EMERGENCY,
-    EMERGENCY_COOL_TARGET_F,
-    EMERGENCY_INDOOR_F,
-    SAFE_COOL_MAX_F,
-    SAFE_COOL_MIN_F,
+    EMERGENCY_COOL_TARGET,
+    EMERGENCY_INDOOR,
+    SAFE_COOL_MAX,
+    SAFE_COOL_MIN,
     SupervisorDecision,
     validate_setpoints,
 )
@@ -1052,8 +1052,8 @@ def test_supervisor_approves_in_range_setpoints():
     """Happy path: setpoints within bounds + indoor temp comfortable."""
     d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.5})
     assert d.decision == DECISION_APPROVED
-    assert d.cool_setpoint_f == 75
-    assert d.heat_setpoint_f == 60
+    assert d.cool_setpoint == 75
+    assert d.heat_setpoint == 60
     assert d.reason is None
     assert not d.needs_alert
 
@@ -1062,7 +1062,7 @@ def test_supervisor_clamps_cool_setpoint_too_low():
     """A controller bug producing cool=55 must not reach the thermostat."""
     d = validate_setpoints(55, 60, snapshot={"indoor_temp_f": 73.0})
     assert d.decision == DECISION_CLAMPED
-    assert d.cool_setpoint_f == SAFE_COOL_MIN_F
+    assert d.cool_setpoint == SAFE_COOL_MIN
     assert "cool_55_to_65" in (d.reason or "")
     assert d.needs_alert
 
@@ -1071,7 +1071,7 @@ def test_supervisor_clamps_cool_setpoint_too_high():
     """cool=95 would leave AC sitting idle; clamp to safe upper bound."""
     d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 73.0})
     assert d.decision == DECISION_CLAMPED
-    assert d.cool_setpoint_f == SAFE_COOL_MAX_F
+    assert d.cool_setpoint == SAFE_COOL_MAX
     assert "cool_95_to_86" in (d.reason or "")
 
 
@@ -1079,7 +1079,7 @@ def test_supervisor_clamps_heat_setpoint():
     """Heat-side bounds are also enforced."""
     d = validate_setpoints(75, 80, snapshot={"indoor_temp_f": 73.0})
     assert d.decision == DECISION_CLAMPED
-    assert d.heat_setpoint_f == 75  # SAFE_HEAT_MAX_F
+    assert d.heat_setpoint == 75  # SAFE_HEAT_MAX
 
 
 def test_supervisor_emergency_overrides_when_indoor_too_hot():
@@ -1088,20 +1088,20 @@ def test_supervisor_emergency_overrides_when_indoor_too_hot():
     the emergency target."""
     d = validate_setpoints(85, 60, snapshot={"indoor_temp_f": 87.0})
     assert d.decision == DECISION_EMERGENCY
-    assert d.cool_setpoint_f == EMERGENCY_COOL_TARGET_F
-    assert "indoor_87.0F" in (d.reason or "")
+    assert d.cool_setpoint == EMERGENCY_COOL_TARGET
+    assert "indoor_87.0" in (d.reason or "")
     assert d.needs_alert
 
 
 def test_supervisor_emergency_threshold_inclusive():
     """Boundary check: indoor exactly at the emergency threshold triggers."""
-    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR_F})
+    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR})
     assert d.decision == DECISION_EMERGENCY
 
 
 def test_supervisor_no_emergency_below_threshold():
     """Just below the emergency threshold means clamping/approving normally."""
-    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR_F - 0.1})
+    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR - 0.1})
     assert d.decision == DECISION_APPROVED
 
 
@@ -1119,7 +1119,7 @@ def test_supervisor_emergency_takes_precedence_over_clamp():
     hot), emergency wins so the AC actually engages aggressively."""
     d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 88.0})
     assert d.decision == DECISION_EMERGENCY
-    assert d.cool_setpoint_f == EMERGENCY_COOL_TARGET_F
+    assert d.cool_setpoint == EMERGENCY_COOL_TARGET
 
 
 def test_supervisor_decision_is_immutable():
@@ -1127,7 +1127,7 @@ def test_supervisor_decision_is_immutable():
     it after the fact."""
     d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.0})
     with pytest.raises((AttributeError, Exception)):
-        d.cool_setpoint_f = 99   # type: ignore[misc]
+        d.cool_setpoint = 99   # type: ignore[misc]
 
 
 # ---- §7 price-aware pre-cool wire-up -------------------------------------
@@ -1136,24 +1136,24 @@ def test_supervisor_decision_is_immutable():
 def test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint():
     """When the §7 price-aware-precool action lands on the same hour as
     a base-schedule action, deepest setpoint wins per the spec."""
-    base = ScheduleAction(12, 0, "HOT_COAST", cool_setpoint_f=80,
+    base = ScheduleAction(12, 0, "HOT_COAST", cool_setpoint=80,
                            fan_mode="Circulate")
     price_aware = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL",
-                                  cool_setpoint_f=66)
+                                  cool_setpoint=66)
     merged = merge_same_hour_actions_deepest_wins([base, price_aware])
     assert len(merged) == 1
-    assert merged[0].cool_setpoint_f == 66
+    assert merged[0].cool_setpoint == 66
     assert merged[0].label == "PRICE_AWARE_PRECOOL"
 
 
 def test_merge_same_hour_actions_keeps_distinct_hours():
     """Actions at different hours don't merge — both fire at their
     scheduled times."""
-    a = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL", cool_setpoint_f=66)
+    a = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL", cool_setpoint=66)
     # Synthetic fixture: just a different-hour action with any label.
     # HOT_5CP_SHUTOFF was the pre-prereg fixed-window action; kept here
     # as a label string only because the test logic is opaque to it.
-    b = ScheduleAction(14, 0, "SYNTHETIC_AFTERNOON", cool_setpoint_f=85)
+    b = ScheduleAction(14, 0, "SYNTHETIC_AFTERNOON", cool_setpoint=85)
     merged = merge_same_hour_actions_deepest_wins([a, b])
     assert len(merged) == 2
     assert sorted(m.hour for m in merged) == [12, 14]
@@ -1165,7 +1165,7 @@ def test_merge_same_hour_setpoint_action_wins_over_release_hold():
     than clearing the hold). The MILD schedule's 00:05 release_hold
     plus a hypothetical 00:05 setpoint action gives the setpoint."""
     rh = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
-    setpoint = ScheduleAction(0, 5, "PRICE_AWARE_PRECOOL", cool_setpoint_f=66)
+    setpoint = ScheduleAction(0, 5, "PRICE_AWARE_PRECOOL", cool_setpoint=66)
     merged = merge_same_hour_actions_deepest_wins([rh, setpoint])
     assert len(merged) == 1
     assert merged[0].label == "PRICE_AWARE_PRECOOL"
@@ -1179,7 +1179,7 @@ def test_precool_window_action_synthesizes_correct_shape():
     assert a.hour == 12
     assert a.minute == 0
     assert a.label == "PRICE_AWARE_PRECOOL"
-    assert a.cool_setpoint_f == 67
+    assert a.cool_setpoint == 67
     assert a.fan_mode is None
 
 
@@ -1655,7 +1655,7 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
 
 async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged(monkeypatch):
     """P1.2 regression: in dry-run mode the mid-period re-push guard
-    must update last_pushed_effective_cool_f even though execute_action
+    must update last_pushed_effective_cool even though execute_action
     skipped the real Control4 call. Otherwise the guard compares the
     new effective_cool_f to None forever and writes a phantom
     MID_PERIOD_REPUSH row every scheduler tick.
@@ -1673,9 +1673,9 @@ async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_uncha
     c4, climate = _mock_c4_client()
     write_api = MagicMock()
     firing = FiringState(
-        last_schedule_cool_f=79,           # COAST action fired earlier
+        last_schedule_cool=79,           # COAST action fired earlier
         last_action_label="COAST",
-        last_pushed_effective_cool_f=None,  # post-firing state in dry-run pre-fix
+        last_pushed_effective_cool=None,  # post-firing state in dry-run pre-fix
     )
     layer_inputs = LayerInputs(
         price_tier_name="normal",
@@ -1707,7 +1707,7 @@ async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_uncha
     )
     assert first_rows == 1
     # After the first call, the guard variable should be updated.
-    assert firing.last_pushed_effective_cool_f == 79
+    assert firing.last_pushed_effective_cool == 79
 
     # Second call, identical inputs, 1 minute later: must skip silently.
     await _push_layer_change_mid_period(
@@ -1788,7 +1788,7 @@ def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
     mid-period push must fire. 14:00 is a NON-action minute, so this exercises
     _push_layer_change_mid_period, not the action-fire path. Today MILD's only
     action is the 00:05 release_hold, so reconstruct_startup_baseline sets
-    last_schedule_cool_f=None and the mid-period push short-circuits -> no 85
+    last_schedule_cool=None and the mid-period push short-circuits -> no 85
     -> strict-xfail. After MILD gets a real schedule, 13:00 MILD_DAY is in
     effect (baseline 78), the push fires, warmer-wins gives 85."""
     firing = FiringState()  # price_overlay_state defaults to "normal"
@@ -1905,8 +1905,8 @@ def test_already_fired_action_does_not_refire_within_window(monkeypatch):
     # mid-period guard was set by the prior tick's push).
     firing = FiringState(fired_actions={("2026-07-15", 6, 0)},
                          baseline_initialized=True,
-                         last_schedule_cool_f=70,
-                         last_pushed_effective_cool_f=70)
+                         last_schedule_cool=70,
+                         last_pushed_effective_cool=70)
     base = datetime(2026, 7, 15, 6, 2, tzinfo=ZoneInfo("America/Chicago"))
 
     _, _, _ = _drive_run_schedule_check(
@@ -2114,7 +2114,7 @@ def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
 
 def test_failed_action_does_not_update_pushed_guard(monkeypatch):
     """Reviewer-flagged 2026-05-11: when a live scheduled push fails,
-    ``firing.last_pushed_effective_cool_f`` MUST NOT be updated to the
+    ``firing.last_pushed_effective_cool`` MUST NOT be updated to the
     target setpoint. Otherwise a later mid-period repush sees
     ``effective == last_pushed`` and silently skips, leaving the
     thermostat at whatever value WAS successfully pushed (which is
@@ -2125,8 +2125,8 @@ def test_failed_action_does_not_update_pushed_guard(monkeypatch):
     ``execute_action`` returns ``(False, "C4 timeout")``. The guard
     must stay at 78, not move to 75."""
     firing = FiringState(
-        last_pushed_effective_cool_f=78,
-        last_schedule_cool_f=78,
+        last_pushed_effective_cool=78,
+        last_schedule_cool=78,
         last_action_label="HOT_COAST",
     )
     now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -2136,7 +2136,7 @@ def test_failed_action_does_not_update_pushed_guard(monkeypatch):
     )
     # Guard MUST stay at the last successfully-pushed value, not the
     # failed-target value.
-    assert firing.last_pushed_effective_cool_f == 78
+    assert firing.last_pushed_effective_cool == 78
 
 
 def test_successful_action_updates_pushed_guard(monkeypatch):
@@ -2144,8 +2144,8 @@ def test_successful_action_updates_pushed_guard(monkeypatch):
     guard to the supervisor-approved cool setpoint, so the next
     mid-period evaluation has the correct reference."""
     firing = FiringState(
-        last_pushed_effective_cool_f=78,
-        last_schedule_cool_f=78,
+        last_pushed_effective_cool=78,
+        last_schedule_cool=78,
         last_action_label="HOT_COAST",
     )
     now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -2156,7 +2156,7 @@ def test_successful_action_updates_pushed_guard(monkeypatch):
     # NORMAL_SCHEDULE at 19:00 has RECOVER 75. So the guard moves to 75.
     # But schedule_for here is determined by day_type stub (NORMAL),
     # which has RECOVER at 19:00 with cool=75 -- so sup_cool == 75.
-    assert firing.last_pushed_effective_cool_f == 75
+    assert firing.last_pushed_effective_cool == 75
 
 
 def test_dry_run_action_updates_pushed_guard(monkeypatch):
@@ -2167,7 +2167,7 @@ def test_dry_run_action_updates_pushed_guard(monkeypatch):
     phantom MID_PERIOD_REPUSH audit rows every tick. This test pins
     that dry-run still moves the guard."""
     firing = FiringState(
-        last_pushed_effective_cool_f=None,
+        last_pushed_effective_cool=None,
         last_action_label="",
     )
     now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -2176,7 +2176,7 @@ def test_dry_run_action_updates_pushed_guard(monkeypatch):
         execute_result=(False, None),  # dry-run: no error, no apply
         dry_run=True,
     )
-    assert firing.last_pushed_effective_cool_f == 75
+    assert firing.last_pushed_effective_cool == 75
 
 
 # ---- P1.2 (reviewer-flagged 2026-05-11): per-tick supervisor continuity ---
@@ -2219,9 +2219,9 @@ async def test_emergency_supervisor_fires_during_sustained_hold(monkeypatch):
     c4, _climate = _mock_c4_client()
     write_api = MagicMock()
     firing = FiringState(
-        last_schedule_cool_f=80,           # HOT_COAST baseline
+        last_schedule_cool=80,           # HOT_COAST baseline
         last_action_label="HOT_COAST",
-        last_pushed_effective_cool_f=85,    # scarcity tier active, last push was 85
+        last_pushed_effective_cool=85,    # scarcity tier active, last push was 85
     )
     # Scarcity tier still active -- layer-resolved effective stays at 85.
     layer_inputs = LayerInputs(
@@ -2257,7 +2257,7 @@ async def test_emergency_supervisor_fires_during_sustained_hold(monkeypatch):
     sup_cool_pushed = push_call.args[2]  # third positional arg
     assert sup_cool_pushed == 74
     # Guard tracks the supervisor's chosen value, not the raw effective.
-    assert firing.last_pushed_effective_cool_f == 74
+    assert firing.last_pushed_effective_cool == 74
 
 
 async def test_no_push_when_supervisor_approves_unchanged_layer(monkeypatch):
@@ -2285,9 +2285,9 @@ async def test_no_push_when_supervisor_approves_unchanged_layer(monkeypatch):
     c4, _climate = _mock_c4_client()
     write_api = MagicMock()
     firing = FiringState(
-        last_schedule_cool_f=79,
+        last_schedule_cool=79,
         last_action_label="COAST",
-        last_pushed_effective_cool_f=79,
+        last_pushed_effective_cool=79,
     )
     layer_inputs = LayerInputs(
         price_tier_name="normal",
@@ -2315,7 +2315,7 @@ async def test_no_push_when_supervisor_approves_unchanged_layer(monkeypatch):
     # Supervisor approved 79 (same as last_pushed), no push fired.
     assert app.execute_action.await_count == 0   # type: ignore[attr-defined]
     # Guard stays at 79.
-    assert firing.last_pushed_effective_cool_f == 79
+    assert firing.last_pushed_effective_cool == 79
 
 
 async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch):
@@ -2344,9 +2344,9 @@ async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch
     c4, _climate = _mock_c4_client()
     write_api = MagicMock()
     firing = FiringState(
-        last_schedule_cool_f=79,
+        last_schedule_cool=79,
         last_action_label="COAST",
-        last_pushed_effective_cool_f=79,   # nothing will change this tick
+        last_pushed_effective_cool=79,   # nothing will change this tick
     )
     layer_inputs = LayerInputs(
         price_tier_name="normal",
@@ -2455,7 +2455,7 @@ async def test_shadow_mode_never_writes_even_with_dry_run_false(monkeypatch):
     the dry_run parameter. Defense in depth."""
     monkeypatch.setenv("SCHEDULER_MODE", "shadow")
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78,
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=78,
                              fan_mode="Circulate")
     when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B) — irrelevant in shadow
 
@@ -2475,7 +2475,7 @@ async def test_experiment_mode_arm_a_does_not_write(monkeypatch):
     mode. CTK04AE thermostat program runs autonomously."""
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=78)
     when_ct = datetime(2026, 6, 5, 13, 0)  # mid-Arm-1 (Arm A)
 
     applied, _ = await app.execute_action(
@@ -2490,7 +2490,7 @@ async def test_experiment_mode_arm_b_writes(monkeypatch):
     """Spec §3 experiment: Arm B periods = scheduler active, writes pushed."""
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=78)
     when_ct = datetime(2026, 6, 20, 13, 0)  # mid-Arm-2 (Arm B)
 
     applied, error = await app.execute_action(
@@ -2507,7 +2507,7 @@ async def test_experiment_mode_outside_window_does_not_write(monkeypatch):
     no writes. No implicit "preserve pre-experiment" fallback."""
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=78)
 
     # Before experiment start
     pre_when = datetime(2026, 5, 25, 13, 0)
@@ -2533,7 +2533,7 @@ async def test_production_mode_writes_regardless_of_calendar(monkeypatch):
     deliberate non-study operation. Excluded from analysis dataset."""
     monkeypatch.setenv("SCHEDULER_MODE", "production")
     c4, climate = _mock_c4_client()
-    action = ScheduleAction(13, 0, "COAST", cool_setpoint_f=78)
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=78)
     # During what would be Arm A in experiment mode, production still writes.
     when_ct = datetime(2026, 6, 5, 13, 0)
 
@@ -2988,22 +2988,22 @@ def _all_schedule_actions() -> list[Any]:
         app.HOT_STREAK_DAY1_SCHEDULE,
     ):
         for action in sched:
-            cool = action.cool_setpoint_f if action.cool_setpoint_f is not None else 0
+            cool = action.cool_setpoint if action.cool_setpoint is not None else 0
             out.append((action.label, action, cool, "Cool"))
     # Synthetic mid-period repush (constructed in
     # _push_layer_change_mid_period at line ~2002)
     repush = app.ScheduleAction(13, 0, "MID_PERIOD_REPUSH:COAST",
-                                  cool_setpoint_f=82, fan_mode=None)
+                                  cool_setpoint=82, fan_mode=None)
     out.append(("MID_PERIOD_REPUSH:COAST", repush, 82, "Cool"))
     # Synthetic vacation action (vacation_schedule helper)
-    vac = app.ScheduleAction(0, 0, "VACATION_HOLD", cool_setpoint_f=80)
+    vac = app.ScheduleAction(0, 0, "VACATION_HOLD", cool_setpoint=80)
     out.append(("VACATION_HOLD", vac, 80, "Cool"))
     # Auto mode hits the same setpoint branch
-    auto_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    auto_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint=79)
     out.append(("COAST_AUTO_MODE", auto_action, 79, "Auto"))
     # Heating/Off mode short-circuits ("hvac_mode_not_cooling") - dry_run
     # gate must still pre-empt that path.
-    heat_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    heat_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint=79)
     out.append(("COAST_HEAT_MODE", heat_action, 79, "Heat"))
     return out
 
@@ -3023,7 +3023,7 @@ async def test_dry_run_never_calls_control4_for_any_action(
     applied, error = await app.execute_action(
         c4, action,
         cool_setpoint_to_apply=cool_to_apply,
-        heat_setpoint_to_apply=app.HEAT_SETPOINT_FLOOR_F,
+        heat_setpoint_to_apply=app.HEAT_SETPOINT_FLOOR,
         state={"hvac_mode": hvac_mode},
         dry_run=True,
         when_ct=when_ct,
@@ -3046,7 +3046,7 @@ async def test_dry_run_blocks_even_when_mode_gate_would_allow(monkeypatch):
     dry_run gate must still pre-empt. Defense in depth."""
     monkeypatch.setenv("SCHEDULER_MODE", "production")
     c4, climate = _mock_c4_client()
-    action = app.ScheduleAction(13, 0, "COAST", cool_setpoint_f=79)
+    action = app.ScheduleAction(13, 0, "COAST", cool_setpoint=79)
     when_ct = datetime(2026, 6, 20, 13, 0)
     applied, error = await app.execute_action(
         c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=65,
@@ -4077,7 +4077,7 @@ def test_reconstruct_startup_baseline_daytime_coast_normal(monkeypatch):
         firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f == 79
+    assert firing.last_schedule_cool == 79
     assert firing.last_action_label == "COAST"
 
 
@@ -4093,7 +4093,7 @@ def test_reconstruct_startup_baseline_overnight_yesterday_normal(monkeypatch):
     )
 
     # NORMAL_SCHEDULE's last action by minute is SLEEP at 21:00 -> 73
-    assert firing.last_schedule_cool_f == 73
+    assert firing.last_schedule_cool == 73
     assert firing.last_action_label == "SLEEP"
 
 
@@ -4108,7 +4108,7 @@ def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
         firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f == 73
+    assert firing.last_schedule_cool == 73
     assert firing.last_action_label == "SLEEP"
 
 
@@ -4123,7 +4123,7 @@ def test_reconstruct_startup_baseline_mild_today_at_1000(monkeypatch):
         firing, MILD_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f == 73
+    assert firing.last_schedule_cool == 73
     assert firing.last_action_label == "MILD_MORNING"
 
 
@@ -4137,11 +4137,11 @@ def test_reconstruct_startup_baseline_overnight_no_yesterday_decision(monkeypatc
         firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_schedule_cool_f is None
+    assert firing.last_schedule_cool is None
 
 
 def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
-    """After daytime reconstruction, last_pushed_effective_cool_f is still None."""
+    """After daytime reconstruction, last_pushed_effective_cool is still None."""
     monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
     firing = FiringState()
     now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
@@ -4150,7 +4150,7 @@ def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
         firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
     )
 
-    assert firing.last_pushed_effective_cool_f is None
+    assert firing.last_pushed_effective_cool is None
 
 
 # ---- Task 5: one-shot hook wiring in run_schedule_check -------------------
@@ -4158,9 +4158,9 @@ def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
 
 def test_run_schedule_check_sets_baseline_initialized_and_reconstructs(monkeypatch):
     """First tick with fresh FiringState (baseline_initialized=False,
-    last_schedule_cool_f=None) at a daytime hour where a NORMAL schedule
+    last_schedule_cool=None) at a daytime hour where a NORMAL schedule
     action is in effect: hook runs, baseline_initialized becomes True,
-    and last_schedule_cool_f is populated (not None)."""
+    and last_schedule_cool is populated (not None)."""
     monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
     firing = FiringState()
     # 14:00 on a NORMAL day -> COAST action in effect (setpoint 79)
@@ -4169,12 +4169,12 @@ def test_run_schedule_check_sets_baseline_initialized_and_reconstructs(monkeypat
         monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
     )
     assert firing.baseline_initialized is True
-    assert firing.last_schedule_cool_f is not None
+    assert firing.last_schedule_cool is not None
 
 
 def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick(monkeypatch):
     """Idempotence: with baseline_initialized=True, the hook must NOT
-    call reconstruct_startup_baseline even when last_schedule_cool_f is
+    call reconstruct_startup_baseline even when last_schedule_cool is
     None (e.g. after a release_hold). The None baseline must remain None."""
     reconstruct_called = []
 
@@ -4182,7 +4182,7 @@ def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick
         reconstruct_called.append(True)
 
     monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
-    firing = FiringState(baseline_initialized=True, last_schedule_cool_f=None)
+    firing = FiringState(baseline_initialized=True, last_schedule_cool=None)
     now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
     _drive_run_schedule_check(
         monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",

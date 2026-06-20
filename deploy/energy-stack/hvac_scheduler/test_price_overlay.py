@@ -27,11 +27,11 @@ def test_locked_tier_thresholds():
     by_name = {t.name: t for t in PRICE_TIERS}
     assert by_name["elevated"].trigger_price_cents_per_kwh == 10.0
     assert by_name["elevated"].release_price_cents_per_kwh == 8.0
-    assert by_name["elevated"].cool_setpoint_offset_f == 3
-    assert by_name["elevated"].cool_setpoint_override_f is None
+    assert by_name["elevated"].cool_setpoint_offset == 3
+    assert by_name["elevated"].cool_setpoint_override is None
     assert by_name["scarcity"].trigger_price_cents_per_kwh == 20.0
     assert by_name["scarcity"].release_price_cents_per_kwh == 18.0
-    assert by_name["scarcity"].cool_setpoint_override_f == 85
+    assert by_name["scarcity"].cool_setpoint_override == 85
 
 
 def test_offset_and_override_lookup_returns_normal_defaults():

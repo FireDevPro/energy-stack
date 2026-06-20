@@ -44,9 +44,9 @@ MIN_GAP_BETWEEN_CHEAP_AND_SPIKE_HOURS = 4
 CHEAP_WINDOW_SEARCH_START_HOUR_CT = 6
 CHEAP_WINDOW_SEARCH_END_HOUR_CT = 15  # exclusive
 
-# Pre-cool depth
-DEFAULT_PRECOOL_DEPTH_F = 68
-DEEPEST_PRECOOL_DEPTH_F = 66
+# Pre-cool depth (values in the controller's temp_scale; default "F")
+DEFAULT_PRECOOL_DEPTH = 68
+DEEPEST_PRECOOL_DEPTH = 66
 
 
 # ---- ComEd Delivery TOD rate schedule (P2.6) ------------------------------
@@ -211,7 +211,7 @@ def should_add_price_aware_precool(
     The cheap window is scored by sum (cheapest wins); the spike window
     is the first qualifying one after the gap requirement. ``depth_f``
     scales with spike magnitude: 68F base, dropping toward 66F as the
-    spike's max price rises (capped at ``DEEPEST_PRECOOL_DEPTH_F``).
+    spike's max price rises (capped at ``DEEPEST_PRECOOL_DEPTH``).
 
     When ``delivery_rates_cents`` is provided (24-element ¢/kWh vector
     aligned to ``day_ahead_prices`` by hour_ct), the qualifying-window
@@ -287,15 +287,15 @@ def should_add_price_aware_precool(
     # Depth scaling: 68F at the trigger threshold (10c), 66F when the
     # spike doubles to 20c+. Linear interpolation, clamped.
     if spike_max >= 20.0:
-        depth_f = DEEPEST_PRECOOL_DEPTH_F
+        depth_f = DEEPEST_PRECOOL_DEPTH
     elif spike_max <= SPIKE_PRICE_THRESHOLD_C:
-        depth_f = DEFAULT_PRECOOL_DEPTH_F
+        depth_f = DEFAULT_PRECOOL_DEPTH
     else:
         # 10c -> 68F, 20c -> 66F linearly
-        scaled = DEFAULT_PRECOOL_DEPTH_F - (
+        scaled = DEFAULT_PRECOOL_DEPTH - (
             (spike_max - SPIKE_PRICE_THRESHOLD_C)
             / (20.0 - SPIKE_PRICE_THRESHOLD_C)
-        ) * (DEFAULT_PRECOOL_DEPTH_F - DEEPEST_PRECOOL_DEPTH_F)
+        ) * (DEFAULT_PRECOOL_DEPTH - DEEPEST_PRECOOL_DEPTH)
         depth_f = int(round(scaled))
 
     if trace_reason is not None:
