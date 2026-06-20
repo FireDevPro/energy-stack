@@ -1,52 +1,79 @@
 ---
 date: 2026-06-20
 owner: chris
-status: draft (post dual-review — Codex + Claude — revision)
+status: draft (revision 3 — post context-fed review)
 role-label: code-team
 supersedes_intent_of: docs/HVAC_LOGIC.md (day-type / deep-precool model)
-depends_on: docs/superpowers/specs/2026-06-19-control4-to-tcc-swap-design.md
+depends_on: Control4->TCC actuation swap (spec + plan on branch design/control4-to-tcc-swap, not yet merged)
 ---
 
 # Commissioning Controller — design spec
 
-## Goal
+## What this is (read first)
 
-Re-center the `hvac_scheduler` service from a weather day-type scheduler onto a
-config-driven, real-time **price-reactive** controller that delivers a fixed
-comfort program at minimum electricity cost, **rewritten in place** (single
-path, shared infra), **shadow-validated** before it writes, and run live in
-**`production` mode** through the 2026 commissioning season. The A/B experiment
-is deferred to 2027.
+This is a **controlled demolition** of the old `hvac_scheduler` and its
+replacement with a much simpler controller.
 
-Replaces the *intent* of [`docs/HVAC_LOGIC.md`](../../HVAC_LOGIC.md). Does not
-change the actuation contract — that is the separate
-[Control4→TCC swap](2026-06-19-control4-to-tcc-swap-design.md), this controller's
-prerequisite write path.
+- **Arm A** = a comfortable thermostat program (the static schedule).
+- **Arm B** = that same Arm A program **plus price awareness** — it holds the
+  comfort baseline and drifts *warmer* when power is expensive. **That is the
+  entire controller.** Nothing else.
 
-**Build discipline (binding): reuse, don't reinvent.** Every component below is
-an extend-in-place of a named existing backbone. Do not rebuild what exists.
+Gone: weather day-types, the 21:00 decision cycle, the four fixed schedules,
+deep day-ahead precool, thermal models, live 5CP control, and the software safety
+supervisor. The old controller failed under its own complexity and drift; this is
+the cure, not a feature.
 
-## Why (the reframe)
+**2026 scope is only: get it built and running solidly.** Not tuning, not
+cost-measurement. The cost-savings comparison (Arm A vs Arm B) is the **2027**
+experiment; nothing in 2026 depends on it. 2026 calibration is at most: does it
+run without glitches, and maybe the setpoints.
 
-1. **Pure-cost is degenerate** (the optimum is "set it as warm as tolerable").
-   The real question: can price awareness deliver the *same comfort* for less?
-   **Comfort is a held-equal constraint, not a free variable.**
+> **Context:** the previously-planned A/B field experiment is offline and its
+> pre-registration is being **retracted** — no binding frozen schema or
+> pre-registration constrains this work. The experiment apparatus (arm calendar,
+> `experiment` mode, `current_arm_at`, `hvac.arm_mode`) is **retained** for the
+> 2027 comparison but is not driving 2026. Old analysis/replay tooling that read
+> the dead controller's telemetry is being rebuilt and is out of scope here.
+
+## How 2026 runs
+
+1. **Shadow, Arm A in control.** The thermostat (Arm A) does the real
+   controlling; Arm B runs in **shadow** — it computes and logs what it *would*
+   do but never writes. Watch it for several weeks to catch glitches and things
+   to fix.
+2. **Flip.** Once Arm B looks solid, it takes over and **runs the season** for
+   real; Arm A sits in the background.
+3. **Review.** End of season: how did it run, did anything break, what to fix.
+
+## Build discipline (binding): reuse, don't reinvent
+
+Every component is an extend-in-place of a named existing backbone. The only
+net-new code is the YAML config loader (+ a small helper module). Do not rebuild
+what exists.
+
+## Why this shape (the reframe)
+
+1. **Cost-saving is primary; comfort is the constraint, not the goal.** Pure
+   cost-minimization is degenerate ("set it as warm as tolerable"); the comfort
+   *constraints* make it sensible — a baseline floor it never cools below and a
+   ceiling it never drifts above bound the warm drift. Cost-first, within the
+   comfort envelope.
 2. **The old deep-precool model assumed the wrong house** — right-sized 2-stage
    equipment (stage 1 = 2.35 kW, stage 2 = 3.22 kW; stage 1 never carried a
-   descent in 25 d → **stage 2 = "get colder," stage 1 = "hold"**), high-solar
+   descent in 25 d -> **stage 2 = "get colder," stage 1 = "hold"**), high-solar
    envelope (banked coolth leaks before the afternoon peak), cold-sensitive
-   occupant (comfort floor caps precool depth). Deep early precool is
+   occupant (the baseline floor caps how cold we ever go). Deep early precool is
    unreachable, mistimed, and uninhabitable here.
 3. **Cost lives in the evening** — the deep evening pulldown to 73°F was ~60% of
-   HVAC cost (stage 2), landing when spikes cluster; the afternoon coast was ~5%.
+   HVAC cost (stage 2); the afternoon coast was ~5%.
 4. **Spikes, not average spread, are the prize, and not weather-forecastable**
-   (daily-max-temp vs daily-max-price r = 0.08; spikes to 376¢ this season). So
-   the architecture is **reactive, not predictive**; weather is at most a regime
-   detector for the (default-off) heat-stretch banking.
+   (daily-max-temp vs daily-max-price r = 0.08; spikes to 376¢). So the
+   architecture is **reactive, not predictive** — **no weather input, no
+   forecasting, no banking** in the controller. The live price signal is the
+   only control input.
 5. **Summer re-introduces sustained events** (2025 DA-LMP proxy: median 4 h, max
-   10 h, evening-clustered, on hot-day streaks) vs shoulder 5-min blips.
-6. **The literature doesn't cover this regime** — the controller's edge is
-   unknown and plausibly material; commissioning measures it.
+   10 h, evening-clustered) vs shoulder 5-min blips.
 
 ## Empirical grounds (measured 2026-06)
 
@@ -55,249 +82,225 @@ an extend-in-place of a named existing backbone. Do not rebuild what exists.
 | Stage 1 / 2 compressor power | 2.35 / 3.22 kW (1.37×); stage 1 never descends |
 | Weather ↔ spike | r = 0.08 (decoupled); max spike 376.5¢ |
 | Spike duration | shoulder median 5 min; summer (proxy) median 4 h |
-| Cheap windows | sub-3¢ is common in mild conditions, day or night |
 | Instrument | ecowitt ch2: 0.18°F, 60 s, at the control point (r=0.92 vs stat) |
+| Cooling overshoot | the unit overshoots its setpoint ~1-1.5°F — watch this at the ceiling |
 
-## Design
+## What the controller does
 
-### Comfort program (the spine)
+### Comfort program (the spine) — and the floor
 
-Research-grounded (ASHRAE 55 summer zone ~73-80°F; sleep-neutral-with-bedding
-68-84°F). Both the static baseline and, in 2027, the program both arms share.
-**Reuse** the existing `ScheduleAction`/time-block lookup to represent it.
+The Arm A program, represented with the existing `ScheduleAction`/time-block
+lookup. Values are **config**, in `temp_scale`. A reasonable seed (shown in °F
+as shorthand; the config is almost certainly authored in °C for the 0.5° grid):
 
-| Block (CT) | Cool °F | Grounding |
+| Block (CT) | Cool (seed) | Grounding |
 |---|---|---|
-| 22:00-06:00 (sleep) | 74 | bedding-adjusted neutral; cool middle ground |
+| 22:00-06:00 (sleep) | 74 | bedding-adjusted neutral |
 | 06:00-12:00 | 76 | ASHRAE mid-zone |
-| 12:00-18:00 | 78 | ASHRAE warm edge; humidity-gated |
+| 12:00-18:00 | 78 | ASHRAE warm edge |
 | 18:00-22:00 | 76 | ASHRAE mid-zone |
 
-Heat pinned to a floor (65°F) every push (Auto deadband + freeze backstop).
+**The comfort baseline is the floor — a code invariant.** The controller NEVER
+commands below the current block's baseline; an unconditional clamp enforces it,
+not just a test. The only direction from baseline is *warmer*, on price. Heat is
+pinned to a floor (config) every push.
 
-### Reactive core — **warm-only overlay** above the comfort baseline
+### Reactive core — warm-only overlay above the baseline
 
-The controller holds the comfort baseline and only ever pushes **warmer** when
-power is expensive (use less cooling now, recover when cheap — the warm-side
-setback is where the savings live, ~2/3 of the value per the literature).
-**Extend** the existing `price_overlay.py` state machine; do not rebuild it.
+Holds the comfort baseline; only ever pushes **warmer** when power is expensive.
+**Extend** the existing `price_overlay.py` state machine. Four tiers, all
+warmer-or-equal to baseline; thresholds and offsets are config:
 
 | RTP tier | Action |
 |---|---|
-| normal (< ~10¢) | hold the comfort setpoint |
-| elevated (~10-20¢) | +offset, drift up |
-| scarcity (~20-50¢) | float toward the ceiling |
-| extreme (≥ ~50¢) | snap to the ceiling |
+| normal | hold the comfort baseline |
+| elevated | +offset, drift up |
+| scarcity | float toward the ceiling |
+| extreme | snap to the ceiling |
 
-All tiers are **warmer-or-equal** to baseline. Flexibility band is warm-side:
-baseline → ceiling, +2°F working / +3-4°F on spikes (Blonz: ~0.75°F accepted,
-rare overrides; utility DR 2-4°F). The price signal carries the diurnal shape;
-no clock schedule beyond the comfort program.
+`extreme` is a first-class 4th tier everywhere; its reason-classifier branch
+exists (else it mislabels as release-to-normal). **Extreme rationale:** an
+extreme-price hour carries tail probability of being a 5CP hour worth a year of
+capacity charge — so be maximally aggressive. No separate live 5CP mechanism.
 
-**Extreme-tier rationale:** be maximally aggressive on extreme price — not only
-for live energy but because an extreme-price hour carries tail probability of
-being a 5CP hour worth a year of capacity charge. No separate live 5CP mechanism.
+**No below-baseline path.** No cheap tier (cooling below target when cheap spends
+cooling for no payback and runs a cold-sensitive house colder than wanted); no
+heat-stretch below-baseline banking (the floor invariant is absolute).
 
-**No "cheap"/below-baseline tier.** Cooling below the comfort target when power
-is cheap *spends* more cooling for no payback (it only pays if it offsets a
-*later* expensive period — that's forecast-gated banking, not a price point),
-and a bare sub-3¢ gate would fire most of a mild day, running the house colder
-than a cold-sensitive occupant wants. **Cut.** *(Deferred future idea: a
-properly time-gated, deep-overnight, sub-3¢ banking variant — revisit only if it
-earns its complexity.)* The only below-baseline path is heat-stretch banking
-(below, off by default, forecast-gated).
+### Feed-gap behavior — reuse as-is (controller logic, not safety)
 
-### Feed-gap safety — reuse the existing mechanism **as-is**
-
-Because the overlay is warm-only, the existing safety theorem holds (a stale feed
-fails toward *less* cooling = safe). **Reuse** the existing minimum-hold +
-30-minute safety-release in `app.py:_evaluate_layer_inputs` unchanged: hold the
-active tier, release to baseline after 30 min of genuine staleness. The delayed
-release rides out the routine ~5-min publish gaps; feed-health telegram alerting
-is the human backstop. No asymmetry, no rework (the cheap-tier cut removed that
-need entirely).
+**Reuse** the existing minimum-hold + stale-release in
+`app.py:_evaluate_layer_inputs` unchanged:
+- brief gap -> **hold** the active tier (rides out routine ~5-min publish gaps);
+- sustained staleness -> **release to baseline**. Note the stale-release timer
+  runs *after* the minimum-hold window, so a release takes roughly **min-hold +
+  ~30 min**, not a flat 30 min. This is the existing mechanism, reused as-is and
+  intended (don't "fix" it to a flat 30 min);
+- **react to a stale spike** — a stale-but-present high-price sample drives a warm
+  upgrade (deliberate cost-primary choice; bounded by the ceiling, the humidity
+  guard, the 30-min release, and fresh-data correction). Downgrades stay
+  freshness-gated.
 
 ### Guards
 
-- **Humidity guard** — runs **after the snapshot read, before the supervisor, in
-  both the action-fire and mid-period paths**. Reads `snapshot["humidity"]`
-  (missing → guard-conservative, not RH=0). If indoor RH > 60% (≈12 g/kg /
-  dewpoint ≤60°F), drop the setpoint / extend stage-1 regardless of price (gates
-  the 78°F daytime block). Not merely a `resolve_cool_setpoint` extension.
-- **Spike-shed ceiling** — 82°F operational, 85°F hard cap, humidity-aware
-  (lower when RH high; dog-bound). The supervisor's 86°F indoor emergency
-  overrides the ceiling by design and will alert — expected during a deep shed.
+- **Ceiling — ride it (a cap the controller holds at, not a bounce).** The drift
+  rises to the configured comfort ceiling and **holds there** for the spike (keep
+  the savings, sit at the warmest tolerable point), then cools back to baseline
+  when price drops. The ceiling is a **config value tuned during 2026** — because
+  the unit overshoots its setpoint, the *actual* indoor temp can run above the
+  commanded ceiling; watch the commanded-vs-actual gap and lower the ceiling if
+  the house runs hotter than intended.
+- **Humidity guard — a second ceiling that *releases* (unlike the temp ceiling).**
+  When indoor RH ≥ threshold (config), gate the overlay off so the effective
+  setpoint falls back to the current comfort baseline (reuses the
+  no-overlay=baseline path). It overrides the spike-hold min-hold and re-enables
+  with hysteresis. Missing humidity -> conservative (treat as humid -> baseline).
+  At baseline the AC cycles and dries the air; **never below baseline, no DEHUM**
+  (DEHUM pre-cools early — against the goal). Asymmetric with the temp ceiling on
+  purpose: temp **rides**, humidity **releases** (because only cooling fixes
+  humidity, but riding warm *is* the temp goal).
 
-### Units — `temp_scale` parameter (controller logic)
+### Units — `temp_scale`, controller-native, conversion only at analysis
 
-The controller's temperature unit is a **config parameter, `temp_scale`** (env
-`TEMP_SCALE`; default `F`). The **controller decision logic speaks `temp_scale`**
-end to end — float internally, scale-agnostic field names — so there is no
-hardcoded °F/°C in the control path. **The value is a config choice, not baked
-into the design** (default `F` = whole-degree; `C` gives 0.5° on-grid
-granularity; switching is a one-line config change, not a code change).
+The controller runs **entirely in its native `temp_scale`** (env `TEMP_SCALE`;
+parameterization merged in #104). The value is a config choice (C or F); the
+device is set to the same unit, so the device write is **format-only**, never a
+conversion. No conversion anywhere in the controller — the single unit bridge
+lives in the (out-of-scope, being-rebuilt) analysis layer, which normalizes on
+read. Telemetry uses **scale-neutral field names + a `unit` tag**. Config values
+are authored on the scale's grid (whole for F, 0.5 for C); the loader validates.
 
-**Scope boundary (deliberate): `temp_scale` is the *controller* unit, not the
-whole stack.** The **experiment telemetry/analysis stays °F** (Ecowitt-anchored);
-the controller emits its scale-agnostic values into the existing °F telemetry
-keys at a single emission seam. Humidity/dewpoint thresholds and forecast fields
-stay °F (Ecowitt °F data). Cockpit is downstream observability, never a
-constraint.
+### Config is the experimental surface
 
-**Device seam — formatting, not conversion (the one cross-cutting thing).** The
-device is set to match `temp_scale`, so the control path needs no unit
-conversion — only **format-on-write**: render the internal float to the form the
-thermostat accepts for that scale (`F` → whole degree, `78`; `C` → 0.5 grid,
-`23.5`). Values are already on-grid by construction (config authored on-grid;
-on-grid arithmetic stays on-grid; loader validates), so it's formatting, not
-snapping. Readback / override-detection compares **numerically** (`78 == 78.0`).
-This lives in the device adapter (the TCC swap surface) + the poller's compare.
-
-**Status: implemented.** The parameterization landed in the controller (default
-`F`, behavior-preserving, dual-reviewed, suite green); the reactive rewrite
-inherits it. The F/C question is now a config knob, not a code decision.
-
-### Modes (default OFF)
-
-- **Heat-stretch** — forecast-gated banking ahead of a hot stretch (the *only*
-  below-baseline path; bank target validated ≥ comfort floor). Re-enabling needs
-  a forecast-fetch helper — **keep one alive** (dead until the mode flips on)
-  rather than deleting all forecast plumbing.
-- **Stage-1 ramp** — gradual descent to stay in low stage.
-
-### Config (YAML) — no cheap tier, no `runtime.mode`
+Baseline, warm offsets, guard thresholds, ceiling, hold TTL — **all config, not
+hardcoded**, in `temp_scale`. **Code owns invariants only:** warm-only; never
+below the current baseline; the **humidity** guard revokes the overlay to
+baseline while the **temp ceiling rides** (caps-and-holds, does not revoke);
+device fail-safe. 2026's
+"refine the setpoints" happens by editing config, so config identity must be
+recorded (see Telemetry) to keep refinements interpretable.
 
 ```yaml
-temp_scale: F            # controller unit; config choice (default F whole-degree; C for 0.5° on-grid). Temps below in temp_scale.
-comfort_program:
-  - {from: "22:00", to: "06:00", cool: 74}   # sleep
-  - {from: "06:00", to: "12:00", cool: 76}
-  - {from: "12:00", to: "18:00", cool: 78}   # humidity-gated
-  - {from: "18:00", to: "22:00", cool: 76}
-  heat_floor: 65
-  comfort_floor: 70        # loader validates: on the temp_scale grid, and ≥ supervisor floor
-flexibility:     {warm_band: 2, spike_extra: 2}
+temp_scale: C            # or F — config choice. All temps below in temp_scale.
+comfort_program:         # blocks {from, to, cool}; supports midnight wrap
+  - {from: "22:00", to: "06:00", cool: 23.5}
+  - {from: "06:00", to: "12:00", cool: 24.5}
+  - {from: "12:00", to: "18:00", cool: 25.5}
+  - {from: "18:00", to: "22:00", cool: 24.5}
+heat_floor: 18.5
+flexibility:     {warm_band: 1.0, spike_extra: 1.0}
 price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
-humidity_guard:  {rh_max_pct: 60, action: cap_at_baseline}   # warm-side cap; never below baseline
-ceiling:         {operational: 82, hard: 85, humidity_aware: true}
-supervisor:      {cool_min: 65, cool_max: 86, emergency_indoor: 86, emergency_target: 74}  # in temp_scale; loader-validated WITHIN a hardcoded absolute backstop (config may only narrow)
-modes:           {heat_stretch: {enabled: false, trigger_high_f: 88, bank_to: 72, band_shift: -2}, stage1_ramp: {enabled: false, step: 1}}
+humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
+ceiling:         {comfort_max: 29.0}        # the warm-drift ceiling the controller rides (tuned in 2026)
+hold_ttl_minutes: 60
+modes:           {stage1_ramp: {enabled: false}}
 ```
-All temperature values are in `temp_scale` (shown at the `F` default). The unit
-is a single config parameter; field names are scale-agnostic, not `_f`-baked.
 
-`SCHEDULER_MODE` (env) is the sole write gate; secrets stay in env.
+No `cheap` tier, no `runtime.mode` key, no `supervisor` block. `SCHEDULER_MODE`
+(env) is the sole write gate; secrets stay in env.
+
+## Safety — device-owned (no software supervisor)
+
+Safety lives in the **device** (which keeps running when the Pi is dead), not in
+controller code (which dies with the Pi). Two facts:
+
+1. **The thermostat's own setpoint min/max limits are the hard cap.** No command
+   — buggy or not — can be set outside them. This is the load-bearing safety and
+   it exists today (a device setting). **The controller's comfort ceiling is NOT
+   a safety mechanism** — it's a control target; the device limit is the cap.
+2. **Holds are timed, never Permanent** -> a dead/hung controller's hold lapses
+   (≤ `hold_ttl_minutes`) and the thermostat reverts to its onboard schedule.
+   This is the graceful-reversion enhancement; it is implemented in the TCC swap
+   (current code sets a Permanent hold; the swap's timed-hold increment is the
+   prerequisite). **Until it lands, a dead controller leaves the last setpoint
+   held — still bounded by fact #1.**
+
+There is **no software safety supervisor** (`safety_supervisor.py` /
+`validate_setpoints` is deleted). Worst case is bounded by fact #1: the house
+can't be commanded past the device's max.
+
+Prerequisites (verify in the swap / operational checklist): the thermostat's
+setpoint min/max are set appropriately; **the CTK04 onboard fallback schedule is
+a known-safe cool schedule, captured as an authoritative current snapshot** — it
+is the safety fallback a lapsed hold reverts to, so it is *operationally current*,
+not historical. `docs/THERMOSTAT_ARM_A_SCHEDULE.md` is its home and must be
+refreshed to the deployed CTK04 program. `aiosomecomfort` exposes a time-based
+hold.
 
 ## Telemetry
 
-- **Decision log = reuse `hvac.actions`** (the existing per-push decision record)
-  + the existing `decision_trace` Loki lines — **no new measurement.**
-  `hvac.actions` already carries the tier (`price_overlay_tier` tag), the baseline
-  (`schedule_cool_f`, repurposed as the comfort baseline), the effective setpoint
-  (`effective_cool_f`), the reason, the supervisor decision, and the humidity
-  before-state. Reshape it for the reactive model (drop the `day_type` tag; values
-  in `temp_scale`). Per-tick reasoning (even when no push fires) is
-  already the `decision_trace` eval line. There is no separate daily "decision"
-  anymore — the controller decides every tick.
-- **Leave `hvac.price_overlay` untouched** — do not inject the new `extreme` tier
-  name into its transition rows (its typed consumers know only
-  normal/elevated/scarcity); `hvac.actions` carries the full tier.
-- **Remove the day-type writers** (`hvac.decisions`, `hvac.precool_window`) —
-  artifacts of the removed day-type controller. Their consumers (the OSF-frozen
-  analysis pipeline; the cockpit day-type/precool panels, which read the Loki
-  `day_type` trace, not the measurement) **migrate to `hvac.actions` / traces** as
-  tracked downstream work (2027 analysis-prep + a cockpit PR); the replay
-  manifest reason-codes the gap. Not silent deletion, not fake inert rows.
-- **`hvac.arm_mode` unchanged** — keeps emitting (watchdog liveness). In
-  `production` it tags `off-protocol-production` (correct: commissioning isn't
-  the frozen A/B protocol). **`required_feeds_for_arm_mode` must match active
-  live inputs** — drop `weather` from required feeds while no enabled mode uses
-  it, else an NWS outage mislabels `B-fallback`.
-- **5CP** (`pjm_5cp.py`, `hvac.5cp_state`) retained as telemetry-only.
+- **Decision log = reshape `hvac.actions` in place** (no new measurement) + the
+  `decision_trace` Loki lines. Reshape for the reactive model:
+  - **scale-neutral field names + a `unit` tag**;
+  - carry tier, comfort baseline, **commanded setpoint, and actual indoor temp**
+    side by side (so you can watch Arm B behave in shadow and see the ceiling
+    overshoot), humidity-guard state, drift state;
+  - **purge the old controller's provenance:** drop the `day_type` tag, the
+    `fivecp_*` fields, and the supervisor fields. No controller row should imply
+    a day-type or that 5CP participated. PJM 5CP stays only as its own separate
+    telemetry (`hvac.5cp_state`) for later analysis.
+- **Config provenance:** log the config file path + SHA256 at startup, and tag
+  the decision rows / trace with a `config_id`; archive deployed config snapshots
+  with effective dates. Without it, 2026's "refine and re-look" is not
+  interpretable (controller change vs config change is indistinguishable).
+- **`hvac.price_overlay`** carries the full 4 tiers including `extreme`.
+- **Remove the day-type writers** `hvac.decisions` and `hvac.precool_window`.
+- **Observers are intentionally second-class during the rebuild — the final
+  controller schema wins.** Cockpit, the daily trace report, and the
+  `tools/analysis/` pipeline **will break and are rebuilt after the controller is
+  stable.** This is a deliberate choice, not an oversight; the breakage is
+  recorded, not avoided. (The scheduler's own startup read-back of the removed
+  measurements is removed by the rewrite — the per-tick baseline replaces it.)
+- **`hvac.arm_mode` keeps emitting** (watchdog liveness).
+  **`required_feeds_for_arm_mode` is derived from the enabled-mode set** (not a
+  hardcoded dict); `weather` drops when no enabled mode uses it.
 
-## Runtime / safety
+## Runtime
 
-- **`SCHEDULER_MODE` keeps all three values; the controller's operation is
-  independent of the arm calendar.** Commissioning = **`production`** (writes
-  continuously, `_writes_allowed` never consults the calendar). `experiment` is
-  the 2027 layer where the arm calendar gates A/B. `shadow` computes/logs without
-  writing. The arm calendar is the *experiment's* tool, kept fully intact and
-  untouched.
-- **Supervisor** (`validate_setpoints`) gates every write; its **structure is
-  reused unchanged**, but its **bounds are `temp_scale` values** (loader-
-  validated within a hardcoded absolute backstop; config may only narrow).
-  Comfort floor ≥ supervisor clamp floor; the loader validates any bank target
-  stays above the floor.
-- **Per-tick baseline (supervisor continuity).** The mid-period re-push
-  (`_push_layer_change_mid_period`'s indoor-emergency continuity path) short-
-  circuits when `last_schedule_cool is None`. Removing the schedule boundaries
-  + startup-reconstruction would leave it permanently None → supervisor silently
-  off after a restart. So **compute the comfort baseline every tick and feed it
-  there**; test block-boundary and mid-block-restart continuity.
-- **Shadow validation = the existing harness** (`run_shadow_validation.py` +
-  `shadow-validation.yml` + dated `docs/replay-validation/*`), checks extended to
-  the reshaped `hvac.actions` decision log. Not a new oracle.
-- **Resilience.** Controller down → `hvac.arm_mode` liveness alert → manual
-  takeover (in place). The distinct case is **TCC down while away** (manual
-  takeover also needs TCC): evaluate **temporary/expiring holds** (the swap's
-  timed-hold increment) so a lapsed hold reverts to a sane onboard fallback
-  schedule at the device level.
-- **Go-active gates:** read-after-write verification (a real write/readback
-  round-trip — can't be validated in shadow, where an out-of-range native write
-  hard-fails silently); native-unit/range preflight against `aiosomecomfort`
-  limits; a container-restart check that `dry_run`/mode is recomputed; SOPS /
-  `SCHEDULER_MODE` confirmation.
+- **`SCHEDULER_MODE`** is the write gate: `shadow` (compute/log, never write) ->
+  flip to `production` (write for the season) per "How 2026 runs." `experiment`
+  (arm-gated) is the 2027 layer, untouched. A partial slice deployed via merge
+  must stay in `shadow`; the flip to `production` is explicit and gated.
+- **Per-tick comfort baseline.** Compute the current baseline **every tick** (the
+  loop needs it to decide), which also removes the old day-type startup
+  reconstruction. *(No supervisor-continuity concern — supervisor removed.)*
+- **Shadow validation for 2026 = log Arm B's proposed actions and watch them**
+  (the several-weeks shadow phase), plus a small set of sanity checks (floor
+  never violated, setpoints on-grid, no day-type consulted). **This is net-new —
+  `run_shadow_validation.py` is the ingestion-pipeline validator and does NOT
+  check setpoints; do not claim to "extend" it for the decision oracle.**
+
+## Go-active (the flip to `production`)
+
+The TCC swap landed (incl. the timed-hold increment) + the thermostat's setpoint
+limits and onboard fallback schedule confirmed set + a **hold-expiry-reverts-to-
+onboard-schedule** check on real hardware + a format-on-write/readback round-trip
++ a container-restart recompute check + SOPS/`SCHEDULER_MODE` confirmation ->
+flip `shadow` -> `production`.
 
 ## Architecture
 
 **In-place, single-path rewrite.** Rewrite the decision/resolve logic in place;
-keep the supervisor, the price-overlay state machine, the feed-gap machinery,
-the write gate, the telemetry writers, `freshness.py`, **and the full
-experiment-scheduling apparatus** (arm calendar, `experiment` mode,
-`current_arm_at`, `hvac.arm_mode`) as shared single-copy infra. No parallel path,
-no feature flag — `shadow` provides safety isolation, git history is rollback.
-Only **Arm B's internal decision logic** (day-types, the four schedules, the
-21:00 decision cycle, day-ahead precool, startup baseline reconstruction) is
-removed/replaced by the reactive core. **Phase discipline:** delete the day-type
-tests in the same slice that removes the code, so every slice lands green (no
-multi-PR red-suite window).
-
-## Actuation dependency
-
-The controller cannot write without the TCC path
-([swap spec](2026-06-19-control4-to-tcc-swap-design.md), docs-only). The swap
-lands first and operates in `temp_scale` (the device set to the same unit), so
-the device write is format-only — not a unit conversion. Shadow work doesn't
-block on the swap; go-*active* does.
+keep the price-overlay state machine, the feed-gap machinery, the write gate, the
+telemetry writers, `freshness.py`, **and the retained experiment apparatus** (arm
+calendar, `experiment` mode, `current_arm_at`, `hvac.arm_mode`) as shared infra.
+No parallel path, no flag — `shadow` is the isolation, git history is rollback.
+Removed: Arm B's day-type logic (day-types, four schedules, 21:00 cycle, day-ahead
+precool, startup reconstruction) **and the software safety supervisor** — each
+removed with all its callers in a single slice so the suite never goes red.
+**Phase discipline:** delete a thing's tests and stop the main loop calling it in
+the same slice that removes it.
 
 ## Scope
 
-**IN:** in-place warm-only reactive controller (comfort program + warm price
-tiers + warm band + humidity guard + dog ceiling), `temp_scale` actuation
-(device-write format-only), `shadow → production` runtime, YAML config, reshaped
-`hvac.actions` decision log, live for 2026 commissioning.
+**IN:** in-place warm-only reactive controller (comfort program + 4 warm tiers +
+warm band + humidity-release guard + ride-the-ceiling), device-owned safety
+(thermostat min/max now; timed-hold via the swap), `temp_scale` actuation
+(format-only), config-as-surface + provenance, `shadow -> production` runtime,
+reshaped `hvac.actions`, live for 2026 commissioning (build/validate/run/review).
 
-**OUT / removed:** day-types, four schedules, 21:00 decision cycle, day-ahead
-precool, startup baseline reconstruction, **vacation override** (Chris doesn't
-travel), the **cheap/below-baseline tier** (cut; deferred future idea), full MPC.
-**Deferred behind toggles:** heat-stretch (the only below-baseline path),
-stage-1 ramp. **Kept (not removed):** the experiment apparatus (arm calendar +
-`experiment` mode + `hvac.arm_mode`), `pjm_5cp.py`/`hvac.5cp_state`.
-
-## Open questions → answered by commissioning
-
-1. Warm-band width (is +2°F the right cost/comfort trade?).
-2. Heat-stretch banking value on summer streaks (right-sized unit, leaky envelope).
-3. Stage-1 descent feasibility + per-degree efficiency.
-4. The controller's actual marginal $ value vs a well-set static program under
-   the current spike regime — the headline unknown.
-
-## Relationship to the 2027 experiment
-
-This *is* the 2027 Arm-B controller, run full-time now to commission it. **2027
-reuses the exact existing experiment design — Arm A vs Arm B, 14-day arms, 48h
-washouts — on the kept apparatus** (`SCHEDULER_MODE=experiment`, restore the
-alternating calendar with 2027 dates). Arm A = the existing static comparator
-(thermostat's own program, per the current design, locked at 2027 prereg). Only
-Arm B's internal logic was redesigned. Keeping the scheduler/arm machinery whole
-is load-bearing — it's the experiment's backbone, not commissioning scaffolding.
+**OUT / removed:** day-types, four schedules, 21:00 cycle, day-ahead precool,
+startup reconstruction, **the software safety supervisor**, below-baseline cooling
+(cheap tier + heat-stretch banking), DEHUM, predictive control, **cost/savings
+measurement (that is 2027)**. Observer rebuilds (cockpit, trace, analysis) are
+tracked but out of scope here.
