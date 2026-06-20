@@ -448,8 +448,8 @@ def _classify_layer_resolution(
 
 def _classify_supervisor(
     decision: SupervisorDecision,
-    proposed_cool_f: int,
-    proposed_heat_f: int,
+    proposed_cool_f: float,
+    proposed_heat_f: float,
 ) -> SupervisorCode:
     """Return reason_code for one validate_setpoints call from observable
     state (proposed setpoints + decision dataclass).
@@ -494,7 +494,7 @@ def _classify_supervisor(
 def _trace_supervisor(
     *,
     tick_id: str, now_ct: datetime,
-    proposed_cool_f: int, proposed_heat_f: int,
+    proposed_cool_f: float, proposed_heat_f: float,
     snapshot: dict[str, Any], decision: SupervisorDecision,
 ) -> None:
     """Emit one `decision_trace.supervisor` line per `validate_setpoints`
@@ -1832,7 +1832,7 @@ def write_price_overlay_transition(
     write_api: Any, bucket: str,
     *, prev_tier: str, new_tier: str,
     current_price_cents: float,
-    schedule_cool_f: int, effective_cool_f: int,
+    schedule_cool_f: float, effective_cool_f: float,
     triggered_at_utc: datetime | None,
 ) -> None:
     """Write one ``hvac.price_overlay`` row when the price-overlay tier
@@ -1874,7 +1874,7 @@ def write_decision(write_api: Any, bucket: str, decision_for_date: str,
 
 
 def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAction,
-                 cool_applied_f: int, heat_applied_f: int,
+                 cool_applied_f: float, heat_applied_f: float,
                  fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
                  thermostat_state_before: dict[str, Any], error: str | None = None,
@@ -2118,8 +2118,8 @@ def write_arm_mode(write_api: Any, bucket: str, when_ct: datetime,
 
 
 async def execute_action(c4: C4Client, action: ScheduleAction,
-                          cool_setpoint_to_apply: int,
-                          heat_setpoint_to_apply: int,
+                          cool_setpoint_to_apply: float,
+                          heat_setpoint_to_apply: float,
                           state: dict[str, Any], dry_run: bool,
                           when_ct: datetime | None = None,
                           ) -> tuple[bool, str | None]:
@@ -2537,8 +2537,8 @@ class LayerInputs:
     per-scope detail is in ``hvac.5cp_state`` rows tagged by scope.
     """
     price_tier_name: str
-    price_offset_f: int
-    price_override_f: int | None
+    price_offset_f: float
+    price_override_f: float | None
     price_prev_tier: str
     current_price_cents: float | None
     fivecp_active: bool
@@ -2676,7 +2676,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
     release_reason = None
     downgrade_gate_held = False
     active_tier = None
-    price_offset_f = 0
+    price_offset_f = 0.0
     price_override_f = None
     price_tier_name = prev_tier  # default; branches below override.
 
@@ -2702,7 +2702,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         safety_release_fired = True
         # Explicit normal outputs -- do NOT inherit prev_tier's offset/override.
         price_tier_name = NORMAL_TIER_NAME
-        price_offset_f = 0
+        price_offset_f = 0.0
         price_override_f = None
         active_tier = None
 
@@ -2737,7 +2737,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
             firing.price_overlay_state = proposed_state
             active_tier = proposed_tier
             if active_tier is None:
-                price_offset_f = 0
+                price_offset_f = 0.0
                 price_override_f = None
                 price_tier_name = NORMAL_TIER_NAME
             else:
