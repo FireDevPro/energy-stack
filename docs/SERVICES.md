@@ -20,7 +20,7 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [refoss-poller](#refoss-poller) — per-circuit power
 - [nws-poller](#nws-poller) — weather forecast + alerts
 - [pjm-dm2-poller](#pjm-dm2-poller) — PJM zonal market data (DA LMP, load forecast, metered, peak, NSPL)
-- [hvac-scheduler](#hvac-scheduler) — Control4 setpoint pushes (with safety supervisor)
+- [hvac-scheduler](#hvac-scheduler) — reactive commissioning controller (TCC setpoint pushes; warm-only price overlay; device-owned safety)
 - [hvac-scheduler-watchdog](#hvac-scheduler-watchdog) — out-of-band controller-liveness beacon (`hvac.heartbeat`)
 - [thermostat-poller](#thermostat-poller) — continuous thermostat reads + override detection
 - [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
@@ -72,11 +72,8 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
 | `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. **The per-feed health signal** — telegram-notifier's `check_pjm_feed_failures` and `check_pjm_feed_freshness` both consume it |
 | `pjm.poller_heartbeat` | pjm-dm2-poller | one row per loop cycle (hourly), single field `alive=1`. Liveness signal for telegram-notifier's `check_poller_silence` so the long quiet stretches between scheduled feeds don't look like a dead poller |
-| `hvac.decisions` | hvac-scheduler | tag `decision_for_date`, `day_type`; `high_f`, `max_dewpoint_f`, `is_heat_advisory`, `alert_summary`, `reason`, `comed_price_at_decision` |
-| `hvac.actions` | hvac-scheduler | tags `action_label`, `day_type`, `dry_run`, `supervisor_decision` (always); `price_overlay_tier`, `fivecp_active` (added when a `LayerResolution` is computed). Fields: `cool_setpoint_f`, `heat_setpoint_f`, `fan_mode`, `setpoint_reason`, `supervisor_reason`, `cool_setpoint_proposed_f`, `heat_setpoint_proposed_f`, `applied` (0/1), `error`, thermostat-snapshot-before (`hvac_mode_before`, `indoor_temp_before_f`, `cool_setpoint_before_f`, `heat_setpoint_before_f`, `indoor_humidity_before_pct`), plus layer-resolution audit (`schedule_cool_f`, `price_cool_f`, `fivecp_cool_f`, `effective_cool_f`) when present |
-| `hvac.precool_window` | hvac-scheduler | tag `target_date`, `source` (`decision` vs `schedule_check_recompute`); fields `hour_ct`, `depth_f`. §7 day-ahead-price-aware precool window decision |
-| `hvac.5cp_state` | hvac-scheduler | tag `scope`, `zone`, `is_active`; fields `current_load_mw`, `season_5th_highest_mw`, `load_ratio`, `load_derivative_mw_per_hour`, `forecast_peak_today_mw`. Per-tick 5CP detector state machine |
-| `hvac.price_overlay` | hvac-scheduler | tag `prev_tier`, `new_tier`; fields `current_price_cents`, `schedule_cool_f`, `effective_cool_f`, `triggered_at_utc`. RTP tier transitions only (not every tick) |
+| `hvac.actions` | hvac-scheduler | Scale-neutral (`unit` tag = `F`/`C`; values stay in the controller's `temp_scale`). Tags: `unit`, `tier` (price-overlay tier this tick), `action_label`, `dry_run`. Fields: `commanded_cool`, `commanded_heat`, `baseline_cool`, `drift` (`= commanded_cool − baseline_cool`, the warm-drift magnitude), `humidity_gated` (0/1 — humidity-release guard fired this tick), `fan_mode`, `setpoint_reason`, `applied` (0/1), `error`, `config_id` (loaded config's SHA256), `hvac_mode_before`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per push attempt |
+| `hvac.price_overlay` | hvac-scheduler | tag `prev_tier`, `new_tier`, `unit` (`F`/`C`); fields `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc`. Warm-only RTP tier transitions only (not every tick) |
 | `hvac.arm_mode` | hvac-scheduler | tag `scheduler_mode`, `arm` (when applicable); field `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. **Canonical scheduler-alive signal** — the watchdog reads this measurement to determine whether to emit a `hvac.heartbeat` down-beacon |
 | `hvac.switch_event` | hvac-scheduler | fields `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary transitions |
 | `hvac.input_feed_health` | hvac-scheduler | tag `feed`; field `healthy` (bool). Per-feed gate state observed by the controller each tick |
@@ -345,36 +342,39 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 
 Build: `./hvac-scheduler` · Cycle: 1-min ticker · Volume: `hvac_scheduler_data` (`/data`)
 
-Decides tomorrow's day-type at 21:00 local, then fires schedule actions throughout the next day. Each action sets cool + heat setpoints (heat always paired for Auto-mode safety), optionally sets fan mode, then pins `Hold = Permanent` so the thermostat baseline doesn't override.
+The Arm B commissioning controller — a single-path reactive loop, no day-type decision cycle. On every tick it recomputes the comfort baseline from the mounted `commissioning-controller.yaml` (config-driven `comfort_program` + ceiling), then applies a warm-only ComEd-RTP price overlay *above* that baseline. The overlay is a four-tier state machine (`normal` / `elevated` / `scarcity` / `extreme`); each non-normal tier carries a warm offset, and the effective cool setpoint is `clamp(baseline + offset, floor = baseline, ceiling = comfort_max)` — it never drops below the baseline (warm-only floor invariant) and never above the comfort ceiling (ride-the-ceiling). The setpoint is pushed only when the effective value changes from the last push; each push sends heat-then-cool (deadband-safe ordering) then pins `Hold = Permanent`. Pushes are skipped when the thermostat `hvac_mode` is not `Cool`/`Auto` (heating-season no-op).
 
-Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Safety is being moved into the device (thermostat min/max + timed holds) per the [commissioning-controller spec, Safety section](superpowers/specs/2026-06-20-commissioning-controller-design.md#safety--device-owned-no-software-supervisor); the software supervisor is slated for removal there.
+A **humidity-release guard** (hysteresis on indoor RH) gates the warm overlay off at the effective layer: when RH crosses the configured `rh_max_pct` (or is missing) the effective falls back to baseline while the price-overlay tier keeps tracking price underneath — temp rides, humidity releases. A feed-gap safety-release returns the overlay to `normal` if the ComEd feed stays stale past 30 min.
 
-**Device client:** the Control4/pyControl4 path has been retired. The device client is now a stubbed `ThermostatClient` seam; TCC/`aiosomecomfort` wiring is deferred (see the [Control4→TCC actuation swap](superpowers/specs/2026-06-20-commissioning-controller-design.md)).
+**Safety is device-owned — there is no software supervisor in this service.** The thermostat enforces its own min/max bounds, and the `Permanent` hold is the only software pin (a Pi failure leaves the last-set setpoint in place; degraded scheduling, not a safety issue). See the [commissioning-controller spec, Safety section](superpowers/specs/2026-06-20-commissioning-controller-design.md#safety--device-owned-no-software-supervisor).
+
+**Device client:** the Control4/pyControl4 path is demolished. The controller talks to a `ThermostatClient` seam; the concrete client is the Total Connect Comfort (`aiosomecomfort`) `TCCClient`, constructed when `TCC_USERNAME`/`TCC_PASSWORD` are present. With creds absent the scheduler keeps the inert `StubThermostatClient` (fail-loud on any device call) so a credential-less deploy stays in the known not-yet-wired state.
 
 **Env:**
-- `CONTROL4_THERMOSTAT_ID` — thermostat identifier carried through the stubbed `ThermostatClient` seam (default `3231`). Flagged for rename at TCC wire-up.
-- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid). Accepted values: `shadow` (never writes, logs decisions only — safe pre-experiment default), `experiment` (writes only during Arm B periods inside the locked 2026-06-01..2026-11-16 calendar; outside that window or during Arm A periods = no writes), `production` (writes always, ignores A/B calendar — deliberate non-study operation only). Replaces the retired `SCHEDULER_DRY_RUN` env var.
+- `TCC_USERNAME`, `TCC_PASSWORD` — Total Connect Comfort account creds. When both are present the controller constructs the real `TCCClient`; when either is absent it keeps the inert `StubThermostatClient`.
+- `TCC_DEVICE_ID` — Honeywell TCC device id (default `4750378`).
+- `CONTROLLER_CONFIG_FILE` — path to the controller config YAML (default mount `/config/commissioning-controller.yaml`; the file is mounted read-only from `./hvac_scheduler/commissioning-controller.yaml`). This config is the experimental surface (comfort program, ceiling, tier offsets/thresholds, hold TTL, humidity guard). Loader fail-fasts on a load error.
+- `TEMP_SCALE` — scale the controller logic operates in (`F`/`C`; compose default `C`). **Must match the YAML's `temp_scale`** or the loader fail-fasts (A3 coherence check); setpoints and telemetry stay in this scale, converted only at analysis.
+- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid; compose supplies a safe-by-default `shadow`). Accepted values: `shadow` (never writes; logs the proposed action only), `experiment` (writes only during Arm B periods), `production` (writes always). The 2026 live-experiment calendar gating is dead — there is no live A/B calendar governing control now (the experiment was killed and the OSF registration retracted); the `experiment` mode's arm-calendar branch still exists in code but is not driving 2026 operation. The 2026 path is `shadow` -> `production`. Replaces the retired `SCHEDULER_DRY_RUN` env var.
+- `SCHEDULER_DECISION_TRACE_VERBOSE` — when true, per-evaluation "no-change" decision-trace lines emit at `debug`; transitions/pushes/releases/errors always emit at `info` (default false; orthogonal to `SCHEDULER_MODE`).
 - `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)
 - `INFLUXDB_*`
 
 **Writes:**
 
+All setpoint/baseline values are scale-neutral: the `unit` tag records the controller's `temp_scale` (`F`/`C`) and values stay in that scale — no conversion.
+
 | Measurement | Tags | Fields |
 |---|---|---|
-| `hvac.decisions` | `decision_for_date`, `day_type` | `high_f`, `max_dewpoint_f`, `is_heat_advisory`, `alert_summary`, `reason`, `comed_price_at_decision` |
-| `hvac.actions` | `day_type`, `action_label`, `dry_run`, `supervisor_decision` (always); `price_overlay_tier`, `fivecp_active` (added when a `LayerResolution` is computed) | `cool_setpoint_f`, `heat_setpoint_f`, `fan_mode`, `setpoint_reason` (`standard`/`humid_override`/etc.), `supervisor_reason`, `cool_setpoint_proposed_f`, `heat_setpoint_proposed_f`, `applied` (0/1), `error`, thermostat-snapshot-before (`hvac_mode_before`, `indoor_temp_before_f`, `cool_setpoint_before_f`, `heat_setpoint_before_f`, `indoor_humidity_before_pct`); plus layer-resolution audit (`schedule_cool_f`, `price_cool_f`, `fivecp_cool_f`, `effective_cool_f`) when present |
-| `hvac.arm_mode` | `scheduler_mode`, `arm` (when applicable) | `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. Written every tick — canonical scheduler-alive signal that the watchdog reads. |
-| `hvac.precool_window` | `target_date`, `source` (`decision` vs `schedule_check_recompute`) | `hour_ct`, `depth_f`. §7 day-ahead-price-aware precool window decision. |
-| `hvac.5cp_state` | `scope`, `zone`, `is_active` | `current_load_mw`, `season_5th_highest_mw`, `load_ratio`, `load_derivative_mw_per_hour`, `forecast_peak_today_mw`. Per-tick 5CP detector state, dual scope (ComEd zone + PJM RTO). |
-| `hvac.price_overlay` | `prev_tier`, `new_tier` | `current_price_cents`, `schedule_cool_f`, `effective_cool_f`, `triggered_at_utc`. RTP tier transitions only (not every tick). |
+| `hvac.actions` | `unit`, `tier`, `action_label`, `dry_run` | `commanded_cool`, `commanded_heat`, `baseline_cool`, `drift` (`= commanded_cool − baseline_cool`), `humidity_gated` (0/1), `fan_mode`, `setpoint_reason`, `applied` (0/1), `error`, `config_id` (loaded config's SHA256), `hvac_mode_before`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per push attempt. |
+| `hvac.price_overlay` | `prev_tier`, `new_tier`, `unit` | `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc`. Warm-only RTP tier transitions only (not every tick). |
+| `hvac.arm_mode` | `scheduler_mode`, `arm` (when applicable) | `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. Written on a ~5-min cadence — canonical scheduler-alive signal that the watchdog reads. |
 | `hvac.switch_event` | — | `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary crossings. |
-| `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller each tick. |
+| `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller (~5-min cadence). |
 
-**Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in the [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
+**Healthcheck:** `/tmp/last_tick_ok` touched every tick only when the schedule check completed without raising — a sustained failure flips the container unhealthy.
 
-**Healthcheck:** `/tmp/last_tick_ok` touched every minute regardless of whether actions fired — failure means the scheduler is wedged.
-
-**Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
+**Detailed controller logic (comfort program, warm-only overlay tiers, guards, units, device-owned safety):** [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 ---
 
