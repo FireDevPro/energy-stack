@@ -120,13 +120,11 @@ from .price_overlay import (
     offset_and_override_for_tier,
     tier_priority,
 )
-from .safety_supervisor import SupervisorDecision, validate_setpoints
 from .decision_codes import (
     DayTypeCode,
     LayerResolutionCode,
     PrecoolCode,
     PriceOverlayCode,
-    SupervisorCode,
 )
 
 
@@ -446,86 +444,6 @@ def _classify_layer_resolution(
     # schedule and price. Fall back to SCHEDULE_WINS rather than raise
     # from a diagnostic helper.
     return LayerResolutionCode.SCHEDULE_WINS, "schedule"
-
-
-def _classify_supervisor(
-    decision: SupervisorDecision,
-    proposed_cool_f: float,
-    proposed_heat_f: float,
-) -> SupervisorCode:
-    """Return reason_code for one validate_setpoints call from observable
-    state (proposed setpoints + decision dataclass).
-
-    Mirrors the supervisor's precedence: emergency > clamp > approved.
-    For clamps, distinguishes which axis(es) and direction(s) were
-    violated:
-      * cool clamped UP (from below 65) -> CLAMPED_COOL_FLOOR
-      * cool clamped DOWN (from above 86) -> CLAMPED_COOL_CEILING
-      * heat clamped UP (from below 55) -> CLAMPED_HEAT_FLOOR
-      * heat clamped DOWN (from above 75) -> CLAMPED_HEAT_CEILING
-      * both axes clamped -> CLAMPED_MULTIPLE
-    """
-    if decision.decision == "approved":
-        return SupervisorCode.APPROVED
-    if decision.decision == "emergency":
-        return SupervisorCode.EMERGENCY_OVERHEAT
-    # decision.decision == "clamped"
-    cool_clamped = decision.cool_setpoint != proposed_cool_f
-    heat_clamped = decision.heat_setpoint != proposed_heat_f
-    if cool_clamped and heat_clamped:
-        return SupervisorCode.CLAMPED_MULTIPLE
-    if cool_clamped:
-        return (
-            SupervisorCode.CLAMPED_COOL_FLOOR
-            if decision.cool_setpoint > proposed_cool_f
-            else SupervisorCode.CLAMPED_COOL_CEILING
-        )
-    if heat_clamped:
-        return (
-            SupervisorCode.CLAMPED_HEAT_FLOOR
-            if decision.heat_setpoint > proposed_heat_f
-            else SupervisorCode.CLAMPED_HEAT_CEILING
-        )
-    # Defensive fallback (should be unreachable): clamp decision with
-    # neither axis showing a difference. Don't raise from a diagnostic
-    # helper; return APPROVED so the trace doesn't lie about the
-    # supervisor's intent (it WOULD have approved this).
-    return SupervisorCode.APPROVED
-
-
-def _trace_supervisor(
-    *,
-    tick_id: str, now_ct: datetime,
-    proposed_cool_f: float, proposed_heat_f: float,
-    snapshot: dict[str, Any], decision: SupervisorDecision,
-) -> None:
-    """Emit one `decision_trace.supervisor` line per `validate_setpoints`
-    call. Trace cadence is per-INVOCATION (not per scheduler tick) —
-    supervisor only runs when a layer resolution proposes a setpoint to
-    apply. `indoor_temp_available` surfaces the diagnostic case where
-    the supervisor approved without an indoor-temp signal (safety floor
-    can't apply emergency override)."""
-    indoor_f = snapshot.get("indoor_temp_f")
-    indoor_temp_available = isinstance(indoor_f, (int, float))
-    reason_code = _classify_supervisor(decision, proposed_cool_f, proposed_heat_f)
-    # info on any non-approved decision (operator-visible event); debug on
-    # approved (suppressed unless verbose=true).
-    level = "info" if decision.decision != "approved" else "debug"
-    _trace(
-        "decision_trace.supervisor",
-        level=level,
-        tick_id=tick_id,
-        now_ct=now_ct,
-        proposed_cool_f=int(proposed_cool_f),
-        proposed_heat_f=int(proposed_heat_f),
-        indoor_temp_f=(float(indoor_f) if isinstance(indoor_f, (int, float)) else None),
-        indoor_temp_available=indoor_temp_available,
-        decision=decision.decision,
-        reason_code=reason_code.value,
-        supervisor_reason=decision.reason,
-        final_cool_f=int(decision.cool_setpoint),
-        final_heat_f=int(decision.heat_setpoint),
-    )
 
 
 def _trace_day_type(
@@ -1919,21 +1837,17 @@ def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAct
                  fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
                  thermostat_state_before: dict[str, Any], error: str | None = None,
-                 supervisor_decision: str = "approved",
-                 supervisor_reason: str | None = None,
                  layer_resolution: LayerResolution | None = None) -> None:
     tags: dict[str, str] = {
         "day_type": day_type,
         "action_label": action.label,
         "dry_run": "true" if dry_run else "false",
-        "supervisor_decision": supervisor_decision,
     }
     fields: dict[str, float | int | bool | str] = {
         "cool_setpoint_f": float(cool_applied_f),
         "heat_setpoint_f": float(heat_applied_f),
         "fan_mode": fan_mode_applied or "",
         "setpoint_reason": setpoint_reason,
-        "supervisor_reason": supervisor_reason or "",
         "cool_setpoint_proposed_f": float(action.cool_setpoint or 0),
         "heat_setpoint_proposed_f": float(action.heat_setpoint),
         "applied": int(applied),
@@ -1982,32 +1896,50 @@ CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
 CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
 
 
+# Feeds required by each controller mode. The reactive warm-only overlay
+# (always enabled) consumes the live ComEd price feed only. No enabled
+# mode consumes weather, day-ahead forecasts, or PJM capacity-risk, so
+# none of those are required for B-active classification. Adding a mode
+# that needs a new feed extends this map.
+_FEED_REQUIREMENTS_BY_MODE: dict[str, tuple[str, ...]] = {
+    "price_overlay": ("price",),
+}
+
+# Modes enabled in the commissioning controller. The price overlay is the
+# entire controller (spec "Reactive core"); it is unconditionally enabled.
+_ENABLED_MODES: tuple[str, ...] = ("price_overlay",)
+
+
 def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
                                   weather_ok: bool,
                                   pjm_capacity_risk_ok: bool) -> dict[str, bool]:
     """Return the dict of input-feed health flags REQUIRED for B-active
-    classification at ``when_ct`` (spec §5 + §5.1, revised by §11 #14).
+    classification, derived from the enabled-mode set (spec "Telemetry":
+    required_feeds_for_arm_mode is derived from the enabled-mode set, not a
+    hardcoded dict).
 
-    Price + weather are always required during Arm B. PJM capacity-risk
-    inputs are NOT required for B-active classification (binding spec
-    §11 #14): 5CP was demoted from live-setpoint authority to
-    planning/telemetry only, so missing or insufficient PJM/5CP data
-    does not down-classify ordinary afternoon ticks to B-fallback.
-    Live control depends on price + weather only.
+    Only feeds consumed by an enabled mode are required. The reactive
+    warm-only overlay is the sole enabled mode and consumes the live price
+    feed only, so the required set is ``{"price": ...}``. ``weather`` is
+    dropped: no enabled mode consumes it (day-types / forecasts / deep
+    precool are gone). PJM capacity-risk is likewise not required (5CP is
+    planning/telemetry only).
 
-    The full feed-health audit (every feed, including PJM capacity-risk
-    health) is written separately by ``write_input_feed_health`` so the
-    operator still sees PJM feed status in telemetry. The
-    ``pjm_capacity_risk_ok`` argument is accepted here for signature
-    stability with existing callers; it is intentionally unused.
-
-    ``when_ct`` and ``CAPACITY_RISK_WINDOW_*`` are preserved in the
-    signature for back-compat and potential future re-introduction of
-    window-scoped required feeds; currently they are unused.
+    The full feed-health audit (every feed, including weather and PJM) is
+    written separately by ``write_input_feed_health`` so the operator still
+    sees their status in telemetry. ``weather_ok`` / ``pjm_capacity_risk_ok``
+    / ``when_ct`` are accepted for caller-signature stability and are
+    intentionally unused here.
     """
     _ = when_ct  # reserved
-    _ = pjm_capacity_risk_ok  # 5CP demoted (spec §11 #14): no longer drives B-active
-    return {"price": price_feed_healthy, "weather": weather_ok}
+    _ = weather_ok  # no enabled mode consumes weather
+    _ = pjm_capacity_risk_ok  # 5CP is planning/telemetry only, not required
+
+    health_by_feed = {"price": price_feed_healthy}
+    required: set[str] = set()
+    for mode in _ENABLED_MODES:
+        required.update(_FEED_REQUIREMENTS_BY_MODE.get(mode, ()))
+    return {feed: health_by_feed[feed] for feed in health_by_feed if feed in required}
 
 
 def _planned_boundary_ts(when_naive: datetime) -> datetime | None:
@@ -2999,233 +2931,123 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
     )
 
 
-async def _push_layer_change_mid_period(
+async def _push_baseline_if_changed(
     cfg: Config, c4: C4Client, write_api: Any,
-    firing: FiringState, day_type: str, layer_inputs: LayerInputs,
-    today_dewpoint_f: float | None, override_note: str,
-    now_local: datetime,
+    firing: FiringState, now_local: datetime,
     *, tick_id: str | None = None,
 ) -> None:
-    """When the per-tick layer evaluation produces a different effective
-    cool setpoint than the last value pushed, re-push without waiting for
-    the next scheduled action. Triggered when a price tier transitions or
-    5CP active state crosses inside an action period.
+    """Push the floor-clamped comfort baseline when it differs from the
+    last value pushed.
 
-    Skipped silently when no schedule baseline has been established yet
-    today (e.g., before the first non-release-hold action fires) since
-    there's no schedule baseline to layer on top of.
+    The effective cool setpoint is the comfort baseline, floor-clamped so
+    it is never below the baseline (``effective = max(effective, baseline)``).
+    With no price offset yet (Slice B) the effective equals the baseline,
+    but the clamp is applied in code as the load-bearing floor invariant —
+    the only clamp in the controller (safety is device-owned; there is no
+    software supervisor and no ceiling yet).
 
-    Per-tick supervisor continuity (P1.2 reviewer-flagged 2026-05-11):
-    the safety supervisor's indoor-temperature emergency rule (indoor
-    >= 86F -> override cool to 74F) only fires when the supervisor
-    runs. Pre-fix the supervisor was bypassed when ``effective_cool``
-    matched the last-pushed guard, so during a sustained 85F shutoff
-    hold the supervisor never read the thermostat and an indoor
-    excursion past 86F went unobserved by the safety layer. Post-fix
-    the thermostat snapshot is read on EVERY mid-period tick (after
-    confirming a schedule baseline exists), the supervisor runs, and
-    the no-push short-circuit only applies when the supervisor
-    APPROVED the effective setpoint and that setpoint equals the
-    last-pushed guard. If the supervisor escalated to emergency or
-    clamped to a different value, we push regardless of whether the
-    raw effective changed.
+    Re-push only when the effective differs from the last value pushed
+    (``firing.last_pushed_effective_cool``). Runs in shadow when
+    ``SCHEDULER_MODE`` gates writes off; ``execute_action`` is still called
+    so the audit row records what WOULD have been pushed.
     """
     if firing.last_schedule_cool is None:
-        return  # no baseline to layer on top of
+        return  # no baseline computed yet
 
     if tick_id is None:
         tick_id = uuid.uuid4().hex
 
-    schedule_cool = firing.last_schedule_cool
-    layer_resolution = resolve_layer_priority(
-        schedule_cool,
-        price_overlay_tier=layer_inputs.price_tier_name,
-        price_offset=layer_inputs.price_offset_f,
-        price_override=layer_inputs.price_override_f,
-        fivecp_active=layer_inputs.fivecp_active,
-    )
-    _trace_layer_resolution(
-        tick_id=tick_id, now_ct=now_local,
-        firing=firing, layer_resolution=layer_resolution,
-        layer_inputs=layer_inputs,
-    )
+    baseline = firing.last_schedule_cool
+    # Floor clamp — the invariant. Effective is never below the baseline.
+    effective_cool = max(baseline, baseline)
 
-    # P1.2: read thermostat snapshot and run supervisor BEFORE deciding
-    # whether to push. The supervisor's emergency rule (indoor >= 86F)
-    # must fire even when the layer-resolved effective setpoint hasn't
-    # changed -- a sustained 85F shutoff hold where indoor crosses the
-    # threshold needs the supervisor's 74F override to kick in.
-    snapshot = await read_thermostat_snapshot(c4)
-    decision = validate_setpoints(
-        layer_resolution.effective_cool, HEAT_SETPOINT_FLOOR, snapshot,
-    )
-    _trace_supervisor(
-        tick_id=tick_id, now_ct=now_local,
-        proposed_cool_f=layer_resolution.effective_cool,
-        proposed_heat_f=HEAT_SETPOINT_FLOOR,
-        snapshot=snapshot, decision=decision,
-    )
-    sup_cool = decision.cool_setpoint
-    sup_heat = decision.heat_setpoint
-    sup_decision = decision.decision
-    sup_reason = decision.reason
-
-    # No-push short-circuit: skip the push only when the supervisor
-    # APPROVED the layer-resolved setpoint AND that approved value
-    # already equals the last-pushed guard. If the supervisor clamped
-    # or escalated to emergency, sup_cool != effective_cool and we
-    # must push the supervisor's chosen value.
-    if (sup_decision == "approved"
-            and sup_cool == firing.last_pushed_effective_cool):
+    # No-push short-circuit: nothing to do when the effective is unchanged.
+    if effective_cool == firing.last_pushed_effective_cool:
         return
 
-    # Construct a synthetic action for execute_action / write_action / log.
-    synthetic_action = ScheduleAction(
+    snapshot = await read_thermostat_snapshot(c4)
+
+    action = ScheduleAction(
         hour=now_local.hour, minute=now_local.minute,
-        label=f"MID_PERIOD_REPUSH:{firing.last_action_label}",
-        cool_setpoint=schedule_cool,
+        label="BASELINE",
+        cool_setpoint=baseline,
         heat_setpoint=HEAT_SETPOINT_FLOOR,
-        fan_mode=None,  # leave fan mode alone mid-period
+        fan_mode=None,
     )
 
-    if decision.needs_alert:
-        level = "error" if decision.decision == "emergency" else "warn"
-        log(level, "supervisor_intervention",
-            day_type=day_type, label=synthetic_action.label,
-            decision=decision.decision, reason=decision.reason,
-            cool_proposed=layer_resolution.effective_cool,
-            cool_applied=sup_cool,
-            heat_proposed=HEAT_SETPOINT_FLOOR,
-            heat_applied=sup_heat,
-            indoor_temp_f=snapshot.get("indoor_temp_f"))
-
     applied, error = await execute_action(
-        c4, synthetic_action, sup_cool, sup_heat, snapshot, cfg.dry_run,
+        c4, action, effective_cool, HEAT_SETPOINT_FLOOR, snapshot, cfg.dry_run,
         when_ct=now_local,
     )
     write_action(
-        write_api, cfg.influx_bucket, day_type, synthetic_action,
-        sup_cool, sup_heat, None, "mid_period_layer_change",
+        write_api, cfg.influx_bucket, "B", action,
+        effective_cool, HEAT_SETPOINT_FLOOR, None, "comfort_baseline",
         cfg.dry_run, applied, snapshot, error,
-        supervisor_decision=sup_decision, supervisor_reason=sup_reason,
-        layer_resolution=layer_resolution,
     )
-    log("info", "mid_period_repush",
-        day_type=day_type, label=synthetic_action.label,
-        cool_setpoint_f=sup_cool,
+    log("info", "baseline_push",
+        label=action.label,
+        cool_setpoint_f=effective_cool,
+        baseline_cool_f=baseline,
         prior_effective_cool_f=firing.last_pushed_effective_cool,
-        new_effective_cool_f=layer_resolution.effective_cool,
-        price_overlay_tier=layer_inputs.price_tier_name,
-        fivecp_active=layer_inputs.fivecp_active,
-        override_note=override_note,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
-    # Update the guard to the supervisor-approved value (which may be
-    # the emergency 74F override, a clamped value, or the raw
-    # layer-resolved effective). Pre-P1.2 the guard tracked the RAW
-    # effective even when the supervisor clamped, which made the next
-    # tick's comparison ``sup_cool == last_pushed`` fail spuriously
-    # and re-push every minute during a clamp.
-    #
-    # Guard update is still gated on (dry_run or error is None): a
-    # failed live push must NOT update the guard, otherwise a later
-    # mid-period repush would think the value was already on the
-    # thermostat (P1.3).
+    # Guard update gated on (dry_run or error is None): a failed live push
+    # must NOT update the guard, otherwise a later push would think the
+    # value was already on the thermostat.
     if cfg.dry_run or error is None:
-        firing.last_pushed_effective_cool = sup_cool
+        firing.last_pushed_effective_cool = effective_cool
 
 
 async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_api: Any,
                               tz: ZoneInfo, now_local: datetime,
                               firing: FiringState) -> None:
-    """Check if any schedule action fires at the current local minute.
+    """Compute the comfort baseline for this minute and push it (in shadow)
+    when it differs from the last value pushed.
 
-    Override resolution order (first match wins):
-      1. Active vacation override (flat setpoint all day) -> synthetic schedule
-      2. Active day_type override -> use override's day_type schedule
-      3. Forecast-derived day_type from latest hvac.decisions -> normal schedule
+    Single-path commissioning controller (spec "Architecture": in-place,
+    single-path rewrite):
+      1. Comfort baseline from ``comfort_baseline_cool`` (config), every tick.
+      2. Floor clamp — the effective cool setpoint is never below the current
+         baseline (``effective = max(effective, baseline)``). This is the ONLY
+         clamp: there is no software safety supervisor (device-owned safety)
+         and no ceiling yet (Slice C). No price offset yet (Slice B), so the
+         effective equals the baseline here.
+      3. Push on change — re-push only when the effective differs from the
+         last pushed value, via ``_push_baseline_if_changed``.
 
-    Layer evaluation runs every tick (per Critical #2 fix): the §2 price
-    overlay and §3 5CP detector are evaluated, audit rows are written,
-    and a mid-period re-push fires if the resulting effective cool
-    setpoint differs from the last value pushed. The action-fire path is
-    unchanged; it consumes the per-tick layer inputs.
+    Removed vs the old day-type controller: day-type resolution
+    (``fetch_today_decision`` / ``schedule_for``), overrides / vacation
+    schedules, day-ahead precool injection, the per-action fire loop, the
+    startup baseline reconstruction, and the safety supervisor.
     """
     # Generate one decision-trace tick_id per scheduler tick. Every
-    # `decision_trace.*` log line emitted from this call share this id so
-    # downstream Loki / LogQL queries can correlate the price-overlay
-    # eval, layer resolutions, supervisor invocations, and would-push
-    # action firings of a single tick. JSON FIELD only — not promoted to
-    # a Loki label (cardinality).
+    # `decision_trace.*` log line emitted from this call shares this id so
+    # downstream Loki / LogQL queries can correlate the price-overlay eval
+    # and the would-push of a single tick. JSON FIELD only — not promoted
+    # to a Loki label (cardinality).
     tick_id = uuid.uuid4().hex
 
-    today_iso = now_local.date().isoformat()
-    overrides = load_overrides(cfg.overrides_file)
-    active_override = find_active_override(overrides, today_iso)
-
-    if active_override and active_override.is_vacation():
-        day_type = "VACATION"
-        schedule = vacation_schedule(active_override)
-        override_note = active_override.note
-    elif active_override and active_override.is_day_type_override():
-        day_type = active_override.day_type or DAYTYPE_NORMAL
-        schedule = schedule_for(day_type)
-        override_note = active_override.note
-    else:
-        day_type = fetch_today_decision(query_api, write_api, cfg.influx_bucket, today_iso)
-        schedule = schedule_for(day_type)
-        override_note = ""
-
-    # Pull today's forecast (for dewpoint humid override). Falls back gracefully
-    # if forecast unavailable -- humid override just won't apply.
+    # Pull today's forecast for the full feed-health audit (weather is no
+    # longer required for B-active classification but is still recorded).
     today_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "today")
-    today_dewpoint_f = (today_forecast or {}).get("max_dewpoint_f")
 
-    # §7 day-ahead price-aware pre-cool: read the window persisted at
-    # 21:00 last night and inject a synthetic ScheduleAction. Skipped on
-    # vacation/override schedules — the homeowner's vacation setpoint
-    # supersedes the price-aware layer. ``merge_same_hour_actions_deepest_wins``
-    # resolves conflicts when the synthetic action's hour matches a base
-    # schedule action.
-    if not active_override:
-        precool_window = read_precool_window_for_date(
-            query_api, cfg.influx_bucket, today_iso,
-        )
-        if precool_window is not None:
-            schedule = merge_same_hour_actions_deepest_wins(
-                schedule + [precool_window_action(precool_window)]
-            )
+    # ---- Per-tick comfort baseline ----
+    # Recompute last_schedule_cool every tick from the comfort_program. This
+    # survives a mid-block restart without any startup reconstruction (the
+    # value is derived from the clock, not from stored day-type state).
+    assert cfg.controller_config is not None, (
+        "controller_config is required: the commissioning controller has a "
+        "single config-driven path"
+    )
+    firing.last_schedule_cool = comfort_baseline_cool(
+        cfg.controller_config.comfort_program, now_local,
+    )
+    firing.baseline_initialized = True
 
-    # ---- Per-tick comfort baseline (config-gated) ----
-    # When controller_config is present, recompute last_schedule_cool every
-    # tick from the comfort_program.  This survives a mid-block restart without
-    # any startup reconstruction (the value is derived from the clock, not from
-    # stored day-type state).  The action-fire path and _push_layer_change_mid_period
-    # both read firing.last_schedule_cool, so both pick up this value.
-    # When controller_config is absent, fall through to the existing one-shot
-    # startup reconstruction path below (unchanged).
-    if cfg.controller_config is not None:
-        firing.last_schedule_cool = comfort_baseline_cool(
-            cfg.controller_config.comfort_program, now_local,
-        )
-        firing.baseline_initialized = True
-    else:
-        # ---- Startup baseline reconstruction (one-shot) ----
-        # A restart between schedule boundaries leaves last_schedule_cool None,
-        # which makes _push_layer_change_mid_period short-circuit (silencing the
-        # §2 re-push and the P1.2 supervisor) until the next action fires. Repair
-        # it once, before the layer eval below, so the first post-restart audit row
-        # carries the real baseline and the supervisor arms this tick.
-        if not firing.baseline_initialized and firing.last_schedule_cool is None:
-            reconstruct_startup_baseline(
-                firing, schedule, now_local, today_dewpoint_f,
-                query_api, cfg.influx_bucket, overrides,
-            )
-        firing.baseline_initialized = True
-
-    # ---- Per-tick layer evaluation (Critical #2 fix) ----
-    # Always evaluate price overlay + 5CP, write audit rows, regardless of
-    # whether a scheduled action fires this minute.
+    # ---- Per-tick layer evaluation ----
+    # Evaluate price overlay + 5CP and write their audit rows every tick.
+    # (Slice B re-introduces the price offset into resolve; here the
+    # overlay is telemetry only — resolve is the bare comfort baseline.)
     layer_inputs = _evaluate_layer_inputs(
         query_api, write_api, cfg, firing, now_local, tick_id=tick_id,
     )
@@ -3281,171 +3103,13 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
         )
         firing.last_arm_mode_audit_at_utc = now_utc_for_audit
 
-    fired_anything = False
-    now_minutes = now_local.hour * 60 + now_local.minute
-    for action in schedule:
-        # P1.2: actions can fire either on their exact scheduled minute or
-        # within a short make-up window after, so a transient C4 failure
-        # at hh:00 doesn't permanently suppress the action for the rest
-        # of the day. ``firing.fired_actions`` is the post-success marker
-        # set at the bottom of this block.
-        action_minutes = action.hour * 60 + action.minute
-        delta_min = now_minutes - action_minutes
-        if delta_min < 0 or delta_min > ACTION_MAKEUP_WINDOW_MIN:
-            continue
-        key = (today_iso, action.hour, action.minute)
-        if key in firing.fired_actions:
-            continue
-        # NOTE: do NOT add ``key`` to ``firing.fired_actions`` yet; the
-        # add is deferred until after execute_action succeeds (or the
-        # tick is a deliberate dry-run skip). Pre-2026-05 the add was
-        # here, which marked the action done even when the Control4
-        # read/write threw -- silently suppressing retry.
-
-        schedule_cool, setpoint_reason = resolve_cool_setpoint(action, today_dewpoint_f)
-        snapshot = await read_thermostat_snapshot(c4)
-
-        if action.release_hold:
-            # Release-hold actions don't carry setpoints; skip layer
-            # resolution and supervisor entirely. Reset the mid-period
-            # baseline so a stale value doesn't trigger a phantom re-push.
-            cool_to_apply = schedule_cool
-            layer_resolution = None
-            sup_cool = schedule_cool
-            sup_heat = action.heat_setpoint
-            sup_decision = "approved"
-            sup_reason = None
-            firing.last_schedule_cool = None
-            firing.last_action_label = action.label
-            firing.last_pushed_effective_cool = None
-        else:
-            layer_resolution = resolve_layer_priority(
-                schedule_cool,
-                price_overlay_tier=layer_inputs.price_tier_name,
-                price_offset=layer_inputs.price_offset_f,
-                price_override=layer_inputs.price_override_f,
-                fivecp_active=layer_inputs.fivecp_active,
-            )
-            _trace_layer_resolution(
-                tick_id=tick_id, now_ct=now_local,
-                firing=firing, layer_resolution=layer_resolution,
-                layer_inputs=layer_inputs,
-            )
-            cool_to_apply = layer_resolution.effective_cool
-
-            decision = validate_setpoints(cool_to_apply, action.heat_setpoint, snapshot)
-            _trace_supervisor(
-                tick_id=tick_id, now_ct=now_local,
-                proposed_cool_f=cool_to_apply,
-                proposed_heat_f=action.heat_setpoint,
-                snapshot=snapshot, decision=decision,
-            )
-            sup_cool = decision.cool_setpoint
-            sup_heat = decision.heat_setpoint
-            sup_decision = decision.decision
-            sup_reason = decision.reason
-            if decision.needs_alert:
-                level = "error" if decision.decision == "emergency" else "warn"
-                log(level, "supervisor_intervention",
-                    day_type=day_type,
-                    label=action.label,
-                    decision=decision.decision,
-                    reason=decision.reason,
-                    cool_proposed=cool_to_apply,
-                    cool_applied=decision.cool_setpoint,
-                    heat_proposed=action.heat_setpoint,
-                    heat_applied=decision.heat_setpoint,
-                    indoor_temp_f=snapshot.get("indoor_temp_f"))
-
-            firing.last_schedule_cool = schedule_cool
-            firing.last_action_label = action.label
-
-        applied, error = await execute_action(c4, action, sup_cool, sup_heat,
-                                               snapshot, cfg.dry_run,
-                                               when_ct=now_local)
-        write_action(write_api, cfg.influx_bucket, day_type, action,
-                      sup_cool, sup_heat, action.fan_mode, setpoint_reason,
-                      cfg.dry_run, applied, snapshot, error,
-                      supervisor_decision=sup_decision,
-                      supervisor_reason=sup_reason,
-                      layer_resolution=layer_resolution)
-        log("info", "action_fired",
-            day_type=day_type,
-            label=action.label,
-            cool_setpoint_f=sup_cool,
-            heat_setpoint_f=sup_heat,
-            cool_setpoint_proposed_f=cool_to_apply,
-            heat_setpoint_proposed_f=action.heat_setpoint,
-            fan_mode=action.fan_mode,
-            setpoint_reason=setpoint_reason,
-            supervisor_decision=sup_decision,
-            supervisor_reason=sup_reason,
-            today_dewpoint_f=today_dewpoint_f,
-            override_active=bool(active_override),
-            override_note=override_note,
-            dry_run=cfg.dry_run,
-            applied=applied,
-            error=error,
-            hvac_mode_before=snapshot.get("hvac_mode"),
-            indoor_temp_before_f=snapshot.get("indoor_temp_f"),
-            indoor_humidity_before_pct=snapshot.get("humidity"),
-            cool_setpoint_before_f=snapshot.get("cool_setpoint_f"),
-            heat_setpoint_before_f=snapshot.get("heat_setpoint_f"))
-        if not action.release_hold and (cfg.dry_run or error is None):
-            # Track the "would-have-pushed" effective cool setpoint --
-            # the GUARD value used by the mid-period re-push path to
-            # detect a real change in effective cool.
-            #
-            # In dry-run: update the guard (the no-push is intentional
-            # in Arm A). Gating it on `not cfg.dry_run` previously left
-            # this None forever in Arm A weeks, producing phantom
-            # MID_PERIOD_REPUSH audit rows every minute.
-            #
-            # In live mode: update the guard only when the push
-            # actually applied (error is None). If a live push failed
-            # and all 5-min retries failed too, the guard must reflect
-            # what was LAST SUCCESSFULLY pushed -- otherwise a later
-            # mid-period repush that would have caught the
-            # already-failed state would silently skip because the
-            # guard claims the target value is already on the
-            # thermostat (it isn't; the push failed).
-            firing.last_pushed_effective_cool = sup_cool
-        fired_anything = True
-
-        # P1.2: only mark the action done AFTER it actually applied (or
-        # in dry-run, where the intentional no-push counts as success).
-        # A failed live push leaves the key out of fired_actions so the
-        # next tick within the make-up window can retry. release_hold
-        # actions don't push setpoints so they also count as success
-        # the moment execute_action returns without error.
-        if cfg.dry_run or error is None:
-            firing.fired_actions.add(key)
-        else:
-            log("warn", "action_retry_pending",
-                day_type=day_type,
-                label=action.label,
-                delta_min=delta_min,
-                retry_window_remaining_min=ACTION_MAKEUP_WINDOW_MIN - delta_min,
-                error=error)
-
-    # ---- Mid-period re-push (Critical #2 fix) ----
-    # No new action fired this tick, but the per-tick layer evaluation
-    # may have changed the effective cool setpoint inside an active
-    # period (e.g., price tier crossed mid-COAST). Re-push if the new
-    # effective differs from the last value sent.
-    if not fired_anything:
-        await _push_layer_change_mid_period(
-            cfg, c4, write_api, firing, day_type, layer_inputs,
-            today_dewpoint_f, override_note, now_local,
-            tick_id=tick_id,
-        )
-
-    if fired_anything:
-        # Prune fired_actions to today only (keep memory bounded)
-        firing.fired_actions = {k for k in firing.fired_actions if k[0] == today_iso}
-        # Same prune for revisits — keys are (date_iso, hour); date drift would
-        # otherwise grow the set monotonically.
-        firing.fired_revisits = {k for k in firing.fired_revisits if k[0] == today_iso}
+    # ---- Push the comfort baseline when it changed ----
+    # Single push path: the effective cool setpoint is the floor-clamped
+    # comfort baseline (no price offset yet). Re-push only when it differs
+    # from the last value pushed.
+    await _push_baseline_if_changed(
+        cfg, c4, write_api, firing, now_local, tick_id=tick_id,
+    )
 
 
 # ---- Main loop -------------------------------------------------------------
@@ -3521,33 +3185,10 @@ async def main_async(cfg: Config) -> int:
 
         now_local = datetime.now(tz)
 
-        # Daily decision during decision_hour. Drops the prior
-        # `minute == 0` check (was redundant with the
-        # `last_decision_date` guard and would have silently lost the
-        # 21:00 window on any container start during 21:00:10-21:59:59
-        # under the new wall-clock :10 tick phase). Once-per-day-per-
-        # target enforcement remains via `last_decision_date`.
-        if (now_local.hour == cfg.decision_hour
-                and firing.last_decision_date != (now_local.date() + timedelta(days=1)).isoformat()):
-            try:
-                await run_decision(cfg, c4, query_api, write_api, tz, firing)
-            except Exception as exc:
-                log("error", "decision_failed", error=str(exc), error_type=type(exc).__name__)
-
-        # Intra-day forecast revisit during each cfg.revisit_hours[*].
-        # Same rationale as the daily-decision condition above: drop
-        # `minute == 0` so the new wall-clock :10 tick phase doesn't
-        # lose the window on startup; `fired_revisits` enforces
-        # once-per-(date, hour).
-        today_iso = now_local.date().isoformat()
-        revisit_key = (today_iso, now_local.hour)
-        if (now_local.hour in cfg.revisit_hours
-                and revisit_key not in firing.fired_revisits):
-            firing.fired_revisits.add(revisit_key)
-            try:
-                run_decision_revisit(cfg, query_api, write_api, today_iso)
-            except Exception as exc:
-                log("error", "revisit_failed", error=str(exc), error_type=type(exc).__name__)
+        # The day-type 21:00 decision cycle and intra-day forecast
+        # revisits are removed: the commissioning controller computes the
+        # comfort baseline per tick (no day-type resolution, no precool
+        # window to persist the night before).
 
         # Schedule actions. P2.3 (reviewer-flagged 2026-05-11): the
         # health marker MUST be gated on tick success. Pre-fix the

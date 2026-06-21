@@ -41,7 +41,6 @@ from .app import (
     ScheduleAction,
     _classify_one_day,
     _evaluate_layer_inputs,
-    _push_layer_change_mid_period,
     decide_day_type,
     execute_action,
     fetch_day_ahead_prices_for_date,
@@ -414,38 +413,6 @@ def test_scheduler_tick_second_is_after_poller_zero():
     assert SCHEDULER_TICK_SECOND > 0
     # And below 60 (must be a valid second-of-minute).
     assert SCHEDULER_TICK_SECOND < 60
-
-
-def test_decision_and_revisit_guards_dont_require_minute_zero():
-    """Regression guard for the startup-after-HH:00:SCHEDULER_TICK_SECOND
-    edge case: with the wall-clock :10 tick phase, a container starting
-    at 21:00:30 has its first tick at 21:01:10. The decision_hour /
-    revisit_hours guards MUST NOT require `now_local.minute == 0` —
-    otherwise the day-ahead decision would be silently lost whenever
-    the container starts between :10 and :59 of the decision hour.
-
-    Source-inspection test (matches the existing pattern at
-    test_health_marker_only_touched_when_tick_succeeds): asserts the
-    `minute == 0` substring is absent from the decision/revisit
-    branches AND that the guards themselves (`last_decision_date`,
-    `fired_revisits`) are still referenced so once-per-day semantics
-    remain intact."""
-    import inspect
-    main_src = inspect.getsource(app.main_async)
-    # The decision branch must reference decision_hour and the
-    # last_decision_date guard, but NOT the strict-minute check.
-    decision_idx = main_src.index("cfg.decision_hour")
-    decision_block_end = main_src.index("decision_failed")
-    decision_branch = main_src[decision_idx:decision_block_end]
-    assert "now_local.minute == 0" not in decision_branch
-    assert "last_decision_date" in decision_branch
-
-    # Same for the revisit branch.
-    revisit_idx = main_src.index("cfg.revisit_hours")
-    revisit_block_end = main_src.index("revisit_failed")
-    revisit_branch = main_src[revisit_idx:revisit_block_end]
-    assert "now_local.minute == 0" not in revisit_branch
-    assert "fired_revisits" in revisit_branch
 
 
 def test_decide_day_type_multi_day_streak_path_still_works():
@@ -1033,103 +1000,6 @@ def test_revisit_handles_no_stored_decision_yet(monkeypatch):
 
 
 
-# ---- safety supervisor ----------------------------------------------------
-
-from .safety_supervisor import (  # noqa: E402
-    DECISION_APPROVED,
-    DECISION_CLAMPED,
-    DECISION_EMERGENCY,
-    EMERGENCY_COOL_TARGET,
-    EMERGENCY_INDOOR,
-    SAFE_COOL_MAX,
-    SAFE_COOL_MIN,
-    SupervisorDecision,
-    validate_setpoints,
-)
-
-
-def test_supervisor_approves_in_range_setpoints():
-    """Happy path: setpoints within bounds + indoor temp comfortable."""
-    d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.5})
-    assert d.decision == DECISION_APPROVED
-    assert d.cool_setpoint == 75
-    assert d.heat_setpoint == 60
-    assert d.reason is None
-    assert not d.needs_alert
-
-
-def test_supervisor_clamps_cool_setpoint_too_low():
-    """A controller bug producing cool=55 must not reach the thermostat."""
-    d = validate_setpoints(55, 60, snapshot={"indoor_temp_f": 73.0})
-    assert d.decision == DECISION_CLAMPED
-    assert d.cool_setpoint == SAFE_COOL_MIN
-    assert "cool_55_to_65" in (d.reason or "")
-    assert d.needs_alert
-
-
-def test_supervisor_clamps_cool_setpoint_too_high():
-    """cool=95 would leave AC sitting idle; clamp to safe upper bound."""
-    d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 73.0})
-    assert d.decision == DECISION_CLAMPED
-    assert d.cool_setpoint == SAFE_COOL_MAX
-    assert "cool_95_to_86" in (d.reason or "")
-
-
-def test_supervisor_clamps_heat_setpoint():
-    """Heat-side bounds are also enforced."""
-    d = validate_setpoints(75, 80, snapshot={"indoor_temp_f": 73.0})
-    assert d.decision == DECISION_CLAMPED
-    assert d.heat_setpoint == 75  # SAFE_HEAT_MAX
-
-
-def test_supervisor_emergency_overrides_when_indoor_too_hot():
-    """Even if a layer (price scarcity tier or 5CP detector) pushes
-    cool=85, if indoor temp is already 87°F, force the AC to engage at
-    the emergency target."""
-    d = validate_setpoints(85, 60, snapshot={"indoor_temp_f": 87.0})
-    assert d.decision == DECISION_EMERGENCY
-    assert d.cool_setpoint == EMERGENCY_COOL_TARGET
-    assert "indoor_87.0" in (d.reason or "")
-    assert d.needs_alert
-
-
-def test_supervisor_emergency_threshold_inclusive():
-    """Boundary check: indoor exactly at the emergency threshold triggers."""
-    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR})
-    assert d.decision == DECISION_EMERGENCY
-
-
-def test_supervisor_no_emergency_below_threshold():
-    """Just below the emergency threshold means clamping/approving normally."""
-    d = validate_setpoints(80, 60, snapshot={"indoor_temp_f": EMERGENCY_INDOOR - 0.1})
-    assert d.decision == DECISION_APPROVED
-
-
-def test_supervisor_handles_missing_indoor_temp():
-    """If the C4 read failed and indoor_temp_f is None, we can't fire the
-    emergency rule but we still validate range bounds."""
-    d = validate_setpoints(75, 60, snapshot={})
-    assert d.decision == DECISION_APPROVED
-    d2 = validate_setpoints(55, 60, snapshot={"indoor_temp_f": None})
-    assert d2.decision == DECISION_CLAMPED
-
-
-def test_supervisor_emergency_takes_precedence_over_clamp():
-    """If both rules would apply (out-of-range cool setpoint AND indoor too
-    hot), emergency wins so the AC actually engages aggressively."""
-    d = validate_setpoints(95, 60, snapshot={"indoor_temp_f": 88.0})
-    assert d.decision == DECISION_EMERGENCY
-    assert d.cool_setpoint == EMERGENCY_COOL_TARGET
-
-
-def test_supervisor_decision_is_immutable():
-    """SupervisorDecision is frozen; downstream code can't accidentally mutate
-    it after the fact."""
-    d = validate_setpoints(75, 60, snapshot={"indoor_temp_f": 73.0})
-    with pytest.raises((AttributeError, Exception)):
-        d.cool_setpoint = 99   # type: ignore[misc]
-
-
 # ---- §7 price-aware pre-cool wire-up -------------------------------------
 
 
@@ -1654,274 +1524,6 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
     assert transition_count == 1
 
 
-# ---- §P1.2 dry-run mid-period repush spam regression ----------------------
-
-
-async def test_dry_run_mid_period_repush_writes_once_then_skips_when_layer_unchanged(monkeypatch):
-    """P1.2 regression: in dry-run mode the mid-period re-push guard
-    must update last_pushed_effective_cool even though execute_action
-    skipped the real Control4 call. Otherwise the guard compares the
-    new effective_cool_f to None forever and writes a phantom
-    MID_PERIOD_REPUSH row every scheduler tick.
-
-    Reproducer: two consecutive _push_layer_change_mid_period calls in
-    dry-run with the same layer inputs. First call writes one
-    hvac.actions row (effective changed from None). Second call must
-    skip (effective unchanged) — pre-fix it wrote another row."""
-    from .app import LayerInputs
-
-    cfg = MagicMock()
-    cfg.influx_bucket = "energy"
-    cfg.dry_run = True
-
-    c4, climate = _mock_c4_client()
-    write_api = MagicMock()
-    firing = FiringState(
-        last_schedule_cool=79,           # COAST action fired earlier
-        last_action_label="COAST",
-        last_pushed_effective_cool=None,  # post-firing state in dry-run pre-fix
-    )
-    layer_inputs = LayerInputs(
-        price_tier_name="normal",
-        price_offset_f=0,
-        price_override_f=None,
-        price_prev_tier="normal",
-        current_price_cents=5.0,
-        fivecp_active=False,
-        fivecp_scopes_fired=(),
-        fivecp_load_mw=0.0,
-        fivecp_derivative=0.0,
-        fivecp_forecast_peak=0.0,
-        fivecp_season_5th_mw=20375.0,
-        fivecp_data_available=False,
-    )
-    now_local = datetime(2026, 7, 15, 13, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    # First call: effective_cool_f=79 != last_pushed=None -> writes one
-    # hvac.actions audit row.
-    await _push_layer_change_mid_period(
-        cfg, c4, write_api, firing, "NORMAL",
-        layer_inputs, today_dewpoint_f=60.0, override_note="",
-        now_local=now_local,
-    )
-    first_rows = sum(
-        1 for c in write_api.write.call_args_list
-        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
-    )
-    assert first_rows == 1
-    # After the first call, the guard variable should be updated.
-    assert firing.last_pushed_effective_cool == 79
-
-    # Second call, identical inputs, 1 minute later: must skip silently.
-    await _push_layer_change_mid_period(
-        cfg, c4, write_api, firing, "NORMAL",
-        layer_inputs, today_dewpoint_f=60.0, override_note="",
-        now_local=now_local + timedelta(minutes=1),
-    )
-    second_rows = sum(
-        1 for c in write_api.write.call_args_list
-        if "hvac.actions" in c.kwargs.get("record").to_line_protocol()
-    )
-    # Pre-fix: this asserted 2 (the spam bug). Post-fix: still 1.
-    assert second_rows == 1, (
-        "P1.2 regression: dry-run mid-period push wrote a phantom row "
-        "on a tick where the effective cool setpoint did not change"
-    )
-
-
-# ---- P1.2: failed-action retry (run_schedule_check integration) ----------
-
-
-def _drive_run_schedule_check(
-    monkeypatch: Any,
-    *,
-    now_local: datetime,
-    firing: FiringState,
-    execute_result: tuple[bool, str | None] = (True, None),
-    day_type: str = "NORMAL",
-    dry_run: bool = False,
-    price_cents: float | None = 5.0,
-) -> tuple[Any, Any, Any]:
-    """Drive ``app.run_schedule_check`` end-to-end with the IO stubbed.
-    ``execute_result`` controls the (applied, error) tuple returned by
-    the patched ``execute_action``. Returns the cfg/c4/write_api so
-    callers can inspect side effects."""
-    import asyncio
-
-    _stub_layer_eval_io(monkeypatch, price_cents=price_cents,
-                         zone_load=14000.0, derivative=0.0,
-                         forecast_peak=17000.0, season_5th=20375.0)
-
-    # The rest of the run_schedule_check dependency surface:
-    monkeypatch.setattr(app, "fetch_today_decision",
-                        lambda q, w, b, t: day_type)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: None)  # no dewpoint -> no humid override
-    monkeypatch.setattr(app, "read_precool_window_for_date",
-                        lambda q, b, d: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
-    monkeypatch.setattr(app, "read_thermostat_snapshot",
-                        AsyncMock(return_value={
-                            "indoor_temp_f": 73.0,
-                            "hvac_mode": "Cool",
-                            "cool_setpoint_f": 78,
-                            "heat_setpoint_f": 65,
-                        }))
-    monkeypatch.setattr(app, "execute_action",
-                        AsyncMock(return_value=execute_result))
-    monkeypatch.setattr(app, "write_action", MagicMock())
-
-    cfg = _make_schedule_check_cfg(dry_run=dry_run)
-    cfg.overrides_file = "/nonexistent"
-    c4, _climate = _mock_c4_client()
-    query_api = MagicMock()
-    write_api = MagicMock()
-    asyncio.run(app.run_schedule_check(
-        cfg, c4, query_api, write_api,
-        ZoneInfo(cfg.tz_name), now_local, firing,
-    ))
-    return cfg, c4, write_api
-
-
-def test_mild_day_scarcity_spike_pushes_85(monkeypatch):
-    """NORTH STAR: a >=20c ComEd 5-min print on a MILD day must drive the
-    thermostat to the 85F scarcity setpoint via the MID-PERIOD re-push (the
-    real dormancy gate). Fresh state, no pre-seeded tier -- the 46.4c price
-    itself upgrades the overlay to scarcity (immediate, no min-hold) and the
-    mid-period push must fire. 14:00 is a NON-action minute, so this exercises
-    _push_layer_change_mid_period, not the action-fire path. Today MILD's only
-    action is the 00:05 release_hold, so reconstruct_startup_baseline sets
-    last_schedule_cool=None and the mid-period push short-circuits -> no 85
-    -> strict-xfail. After MILD gets a real schedule, 13:00 MILD_DAY is in
-    effect (baseline 78), the push fires, warmer-wins gives 85."""
-    firing = FiringState()  # price_overlay_state defaults to "normal"
-    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        price_cents=46.4, day_type="MILD",
-        execute_result=(True, None), dry_run=False,
-    )
-    execute_mock = app.execute_action
-    assert isinstance(execute_mock, AsyncMock)  # patched by the harness
-    pushed_cools = [c.args[2] for c in execute_mock.await_args_list]
-    assert 85 in pushed_cools, f"expected an 85F mid-period push, got {pushed_cools}"
-
-
-def test_successful_action_marks_done(monkeypatch):
-    """Happy path: live mode, execute_action succeeds, key IS added
-    to firing.fired_actions so the action won't refire."""
-    firing = FiringState()
-    # NORMAL_SCHEDULE has PRE_COOL at 06:00.
-    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(True, None), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) in firing.fired_actions
-
-
-def test_failed_action_in_live_mode_does_not_mark_done(monkeypatch):
-    """P1.2 invariant: when execute_action returns an error in live
-    mode, the key is NOT added to fired_actions. The next tick within
-    the make-up window must be able to retry the action."""
-    firing = FiringState()
-    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(False, "Control4 timeout"), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) not in firing.fired_actions
-
-
-def test_dry_run_marks_done_regardless_of_apply_flag(monkeypatch):
-    """Dry-run mode is an intentional no-push; the action is treated
-    as 'handled' once the per-tick orchestration completes. Without
-    this, every dry-run tick within the make-up window would replay
-    the same action."""
-    firing = FiringState()
-    now_local = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
-    # In dry-run, execute_action returns (False, None) by convention --
-    # nothing was pushed but no error occurred.
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(False, None), dry_run=True,
-    )
-    assert ("2026-07-15", 6, 0) in firing.fired_actions
-
-
-def test_failed_action_retries_within_makeup_window(monkeypatch):
-    """A failed action at hh:00 can refire at hh:01-hh:05. This is the
-    behavior the make-up window enables. The pre-fix code would have
-    permanently suppressed the action after the first failure because
-    (a) the key was added before the I/O and (b) the time-match check
-    only allowed firing on the exact-minute tick."""
-    firing = FiringState()
-    base = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
-
-    # Tick 1: 06:00 fails.
-    _drive_run_schedule_check(
-        monkeypatch, now_local=base, firing=firing,
-        execute_result=(False, "Control4 timeout"), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) not in firing.fired_actions
-
-    # Tick 2: 06:03, still inside make-up window, this time succeeds.
-    _drive_run_schedule_check(
-        monkeypatch, now_local=base + timedelta(minutes=3), firing=firing,
-        execute_result=(True, None), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) in firing.fired_actions
-
-
-def test_failed_action_stops_retrying_after_makeup_window(monkeypatch):
-    """Beyond the make-up window (5 min by default), the time-match
-    check stops firing the action even if it never succeeded. This
-    is the design choice that bounds the retry to "near scheduled
-    time" rather than letting an action fire arbitrarily late."""
-    firing = FiringState()
-    base = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("America/Chicago"))
-
-    # Tick 1: 06:00 fails.
-    _drive_run_schedule_check(
-        monkeypatch, now_local=base, firing=firing,
-        execute_result=(False, "Control4 timeout"), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) not in firing.fired_actions
-
-    # Tick 2: 06:06, BEYOND the 5-minute make-up window. Action no
-    # longer matches the time check, so it cannot refire today even
-    # if the underlying problem is now resolved. Operator must wait
-    # for tomorrow's schedule (or manually re-fire).
-    _drive_run_schedule_check(
-        monkeypatch, now_local=base + timedelta(minutes=6), firing=firing,
-        execute_result=(True, None), dry_run=False,
-    )
-    assert ("2026-07-15", 6, 0) not in firing.fired_actions
-
-
-def test_already_fired_action_does_not_refire_within_window(monkeypatch):
-    """Once an action has succeeded and been marked done, ticks within
-    the make-up window must NOT refire it (the fired_actions set is
-    the de-duplication guard)."""
-    # baseline_initialized=True: models a mid-session tick (the 6:00 action
-    # already fired in this session, so the startup hook already ran and the
-    # mid-period guard was set by the prior tick's push).
-    firing = FiringState(fired_actions={("2026-07-15", 6, 0)},
-                         baseline_initialized=True,
-                         last_schedule_cool=70,
-                         last_pushed_effective_cool=70)
-    base = datetime(2026, 7, 15, 6, 2, tzinfo=ZoneInfo("America/Chicago"))
-
-    _, _, _ = _drive_run_schedule_check(
-        monkeypatch, now_local=base, firing=firing,
-        execute_result=(True, None), dry_run=False,
-    )
-    # execute_action should NOT have been awaited: the fired_actions
-    # short-circuit kicks in BEFORE the action body runs.
-    assert app.execute_action.await_count == 0  # type: ignore[attr-defined]
-
-
 # ---- P1.3: _read_stored_decision multi-revision Flux semantics ------------
 
 
@@ -2111,274 +1713,6 @@ def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
     assert inputs.price_tier_name == "normal"
     assert inputs.price_offset_f == 0
     assert inputs.price_override_f is None
-
-
-# ---- P1.3 (reviewer-flagged 2026-05-11): failed-push guard gating ----------
-
-
-def test_failed_action_does_not_update_pushed_guard(monkeypatch):
-    """Reviewer-flagged 2026-05-11: when a live scheduled push fails,
-    ``firing.last_pushed_effective_cool`` MUST NOT be updated to the
-    target setpoint. Otherwise a later mid-period repush sees
-    ``effective == last_pushed`` and silently skips, leaving the
-    thermostat at whatever value WAS successfully pushed (which is
-    the stale prior schedule action's setpoint).
-
-    Reproducer: starting with last_pushed=78 (prior schedule action's
-    successful push), the 19:00 HOT_RECOVER action targets 75 but
-    ``execute_action`` returns ``(False, "C4 timeout")``. The guard
-    must stay at 78, not move to 75."""
-    firing = FiringState(
-        last_pushed_effective_cool=78,
-        last_schedule_cool=78,
-        last_action_label="HOT_COAST",
-    )
-    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(False, "Control4 timeout"), dry_run=False,
-    )
-    # Guard MUST stay at the last successfully-pushed value, not the
-    # failed-target value.
-    assert firing.last_pushed_effective_cool == 78
-
-
-def test_successful_action_updates_pushed_guard(monkeypatch):
-    """Symmetric: a successful live scheduled push DOES update the
-    guard to the supervisor-approved cool setpoint, so the next
-    mid-period evaluation has the correct reference."""
-    firing = FiringState(
-        last_pushed_effective_cool=78,
-        last_schedule_cool=78,
-        last_action_label="HOT_COAST",
-    )
-    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(True, None), dry_run=False,
-    )
-    # NORMAL_SCHEDULE at 19:00 has RECOVER 75. So the guard moves to 75.
-    # But schedule_for here is determined by day_type stub (NORMAL),
-    # which has RECOVER at 19:00 with cool=75 -- so sup_cool == 75.
-    assert firing.last_pushed_effective_cool == 75
-
-
-def test_dry_run_action_updates_pushed_guard(monkeypatch):
-    """Dry-run mode is an intentional no-push; the guard MUST still
-    update to keep the mid-period re-push path's Arm-A guard
-    correctly populated. Pre-PR #50 the guard was gated on
-    ``not cfg.dry_run`` and left None across dry-run weeks, producing
-    phantom MID_PERIOD_REPUSH audit rows every tick. This test pins
-    that dry-run still moves the guard."""
-    firing = FiringState(
-        last_pushed_effective_cool=None,
-        last_action_label="",
-    )
-    now_local = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing,
-        execute_result=(False, None),  # dry-run: no error, no apply
-        dry_run=True,
-    )
-    assert firing.last_pushed_effective_cool == 75
-
-
-# ---- P1.2 (reviewer-flagged 2026-05-11): per-tick supervisor continuity ---
-
-
-async def test_emergency_supervisor_fires_during_sustained_hold(monkeypatch):
-    """P1.2 (reviewer-flagged 2026-05-11): the safety supervisor's
-    emergency rule (indoor >= 86F -> override cool to 74F) MUST fire
-    even when the layer-resolved effective setpoint hasn't changed.
-
-    Pre-fix the mid-period path skipped the thermostat read when
-    ``effective == last_pushed``, so during a sustained 85F shutoff
-    hold the supervisor never observed the indoor temp climbing past
-    the emergency threshold. House could sit at 85F effective with
-    indoor 87F+ for hours.
-
-    Post-fix: snapshot read happens every tick. Supervisor runs every
-    tick. If indoor >= 86F during a no-change tick, the supervisor
-    escalates to emergency 74F and we push the override.
-    """
-    from .app import LayerInputs
-
-    # Stub read_thermostat_snapshot to return indoor=87 (emergency
-    # threshold = 86, so this triggers the override).
-    monkeypatch.setattr(app, "read_thermostat_snapshot",
-                        AsyncMock(return_value={
-                            "indoor_temp_f": 87.0,
-                            "hvac_mode": "Cool",
-                            "cool_setpoint_f": 85,
-                            "heat_setpoint_f": 65,
-                        }))
-    monkeypatch.setattr(app, "execute_action",
-                        AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(app, "write_action", MagicMock())
-
-    cfg = MagicMock()
-    cfg.influx_bucket = "energy"
-    cfg.dry_run = False
-
-    c4, _climate = _mock_c4_client()
-    write_api = MagicMock()
-    firing = FiringState(
-        last_schedule_cool=80,           # HOT_COAST baseline
-        last_action_label="HOT_COAST",
-        last_pushed_effective_cool=85,    # scarcity tier active, last push was 85
-    )
-    # Scarcity tier still active -- layer-resolved effective stays at 85.
-    layer_inputs = LayerInputs(
-        price_tier_name="scarcity",
-        price_offset_f=0,
-        price_override_f=85,                # scarcity override
-        price_prev_tier="scarcity",
-        current_price_cents=25.0,
-        fivecp_active=False,
-        fivecp_scopes_fired=(),
-        fivecp_load_mw=0.0,
-        fivecp_derivative=0.0,
-        fivecp_forecast_peak=0.0,
-        fivecp_season_5th_mw=20375.0,
-        fivecp_data_available=True,
-    )
-    now_local = datetime(2026, 7, 15, 16, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    await _push_layer_change_mid_period(
-        cfg, c4, write_api, firing, "NORMAL",
-        layer_inputs, today_dewpoint_f=60.0, override_note="",
-        now_local=now_local,
-    )
-
-    # The push MUST have fired: supervisor escalated to emergency 74F,
-    # which differs from the last_pushed guard (85), so the no-push
-    # short-circuit doesn't apply.
-    assert app.execute_action.await_count == 1   # type: ignore[attr-defined]
-    # The pushed value was the supervisor's emergency cool=74, not the
-    # raw layer-resolved 85.
-    push_call = app.execute_action.await_args   # type: ignore[attr-defined]
-    sup_cool_pushed = push_call.args[2]  # third positional arg
-    assert sup_cool_pushed == 74
-    # Guard tracks the supervisor's chosen value, not the raw effective.
-    assert firing.last_pushed_effective_cool == 74
-
-
-async def test_no_push_when_supervisor_approves_unchanged_layer(monkeypatch):
-    """Symmetric guard: the no-push short-circuit DOES apply when the
-    supervisor approves the layer-resolved effective AND it matches
-    the last-pushed value. P1.2 fix must not over-eagerly push every
-    tick during a normal sustained period."""
-    from .app import LayerInputs
-
-    monkeypatch.setattr(app, "read_thermostat_snapshot",
-                        AsyncMock(return_value={
-                            "indoor_temp_f": 73.0,   # comfortable
-                            "hvac_mode": "Cool",
-                            "cool_setpoint_f": 79,
-                            "heat_setpoint_f": 65,
-                        }))
-    monkeypatch.setattr(app, "execute_action",
-                        AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(app, "write_action", MagicMock())
-
-    cfg = MagicMock()
-    cfg.influx_bucket = "energy"
-    cfg.dry_run = False
-
-    c4, _climate = _mock_c4_client()
-    write_api = MagicMock()
-    firing = FiringState(
-        last_schedule_cool=79,
-        last_action_label="COAST",
-        last_pushed_effective_cool=79,
-    )
-    layer_inputs = LayerInputs(
-        price_tier_name="normal",
-        price_offset_f=0,
-        price_override_f=None,
-        price_prev_tier="normal",
-        current_price_cents=5.0,
-        fivecp_active=False,
-        fivecp_scopes_fired=(),
-        fivecp_load_mw=0.0,
-        fivecp_derivative=0.0,
-        fivecp_forecast_peak=0.0,
-        fivecp_season_5th_mw=20375.0,
-        fivecp_data_available=True,
-    )
-    now_local = datetime(2026, 7, 15, 13, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    await _push_layer_change_mid_period(
-        cfg, c4, write_api, firing, "NORMAL",
-        layer_inputs, today_dewpoint_f=60.0, override_note="",
-        now_local=now_local,
-    )
-
-    # Supervisor approved 79 (same as last_pushed), no push fired.
-    assert app.execute_action.await_count == 0   # type: ignore[attr-defined]
-    # Guard stays at 79.
-    assert firing.last_pushed_effective_cool == 79
-
-
-async def test_supervisor_runs_thermostat_read_every_mid_period_tick(monkeypatch):
-    """Belt-and-braces: the thermostat snapshot read MUST happen on
-    every mid-period tick (after the baseline-exists check), even
-    when the layer-resolved effective hasn't changed. Pre-fix the
-    read was conditional on a setpoint change and the emergency rule
-    could not observe indoor temperature during long shutoff holds."""
-    from .app import LayerInputs
-
-    read_mock = AsyncMock(return_value={
-        "indoor_temp_f": 73.0,
-        "hvac_mode": "Cool",
-        "cool_setpoint_f": 79,
-        "heat_setpoint_f": 65,
-    })
-    monkeypatch.setattr(app, "read_thermostat_snapshot", read_mock)
-    monkeypatch.setattr(app, "execute_action",
-                        AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(app, "write_action", MagicMock())
-
-    cfg = MagicMock()
-    cfg.influx_bucket = "energy"
-    cfg.dry_run = False
-
-    c4, _climate = _mock_c4_client()
-    write_api = MagicMock()
-    firing = FiringState(
-        last_schedule_cool=79,
-        last_action_label="COAST",
-        last_pushed_effective_cool=79,   # nothing will change this tick
-    )
-    layer_inputs = LayerInputs(
-        price_tier_name="normal",
-        price_offset_f=0,
-        price_override_f=None,
-        price_prev_tier="normal",
-        current_price_cents=5.0,
-        fivecp_active=False,
-        fivecp_scopes_fired=(),
-        fivecp_load_mw=0.0,
-        fivecp_derivative=0.0,
-        fivecp_forecast_peak=0.0,
-        fivecp_season_5th_mw=20375.0,
-        fivecp_data_available=True,
-    )
-    now_local = datetime(2026, 7, 15, 13, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    await _push_layer_change_mid_period(
-        cfg, c4, write_api, firing, "NORMAL",
-        layer_inputs, today_dewpoint_f=60.0, override_note="",
-        now_local=now_local,
-    )
-
-    # Even though no push happened, the thermostat snapshot WAS read.
-    # This is the supervisor-continuity invariant: the safety layer
-    # MUST observe the thermostat every tick to catch emergencies.
-    assert read_mock.await_count == 1
 
 
 # ---- P2.3 (reviewer-flagged 2026-05-11): health marker gating -------------
@@ -2754,30 +2088,31 @@ def test_write_arm_mode_accepts_tz_aware_datetime(monkeypatch):
 # ---- Required-feeds-for-arm-mode helper (spec §5 + §5.1) ------------------
 
 
-def test_required_feeds_never_includes_pjm_after_5cp_demotion():
-    """Binding spec §11 #14: 5CP demoted from live-setpoint authority,
-    so PJM capacity-risk health is no longer a required input for B-active
-    classification — at ANY date, inside or outside the cooling-season
-    window. Live control depends on price + weather only. PJM health is
+def test_required_feeds_never_includes_pjm_or_weather():
+    """A4 (spec "Telemetry": required_feeds derived from the enabled-mode
+    set): the reactive warm-only overlay is the sole enabled mode and
+    consumes the live price feed only. PJM capacity-risk and weather are
+    NOT required for B-active classification — at ANY date, inside or
+    outside the (former) cooling-season window. PJM + weather health are
     still logged in the FULL feed-health audit (write_input_feed_health),
     just not used to down-classify B-active."""
-    # Inside the (former) capacity-risk window: still not required.
+    # Inside the (former) capacity-risk window: only price required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
-    assert feeds == {"price": True, "weather": True}
-    # Outside the window: still not required.
+    assert feeds == {"price": True}
+    # Outside the window: only price required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 15, 13, 0),
         price_feed_healthy=True,
         weather_ok=True,
         pjm_capacity_risk_ok=False,
     )
-    assert feeds == {"price": True, "weather": True}
-    # September 30 boundary: still not required.
+    assert feeds == {"price": True}
+    # September 30 boundary: neither pjm nor weather required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 9, 30, 23, 59),
         price_feed_healthy=True,
@@ -2785,7 +2120,8 @@ def test_required_feeds_never_includes_pjm_after_5cp_demotion():
         pjm_capacity_risk_ok=False,
     )
     assert "pjm_capacity_risk" not in feeds
-    # October 1 boundary: still not required.
+    assert "weather" not in feeds
+    # October 1 boundary: neither pjm nor weather required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 1, 0, 0),
         price_feed_healthy=True,
@@ -2793,19 +2129,20 @@ def test_required_feeds_never_includes_pjm_after_5cp_demotion():
         pjm_capacity_risk_ok=False,
     )
     assert "pjm_capacity_risk" not in feeds
+    assert "weather" not in feeds
 
 
 def test_required_feeds_propagates_unhealthy_flags():
-    """Unhealthy price/weather flags propagate through to the feed dict
-    used for B-active classification (PJM no longer in the dict per
-    §11 #14)."""
+    """Unhealthy price flag propagates through to the feed dict used for
+    B-active classification (weather + PJM no longer in the dict — A4
+    derives required feeds from the enabled-mode set)."""
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=False,
         weather_ok=True,
         pjm_capacity_risk_ok=True,
     )
-    assert feeds == {"price": False, "weather": True}
+    assert feeds == {"price": False}
 
 
 # ---- hvac.switch_event boundary logging (spec §11 #3) ---------------------
@@ -2994,8 +2331,8 @@ def _all_schedule_actions() -> list[Any]:
         for action in sched:
             cool = action.cool_setpoint if action.cool_setpoint is not None else 0
             out.append((action.label, action, cool, "Cool"))
-    # Synthetic mid-period repush (constructed in
-    # _push_layer_change_mid_period at line ~2002)
+    # Synthetic mid-period repush action label (covers the write-gate path
+    # for a non-schedule synthetic action).
     repush = app.ScheduleAction(13, 0, "MID_PERIOD_REPUSH:COAST",
                                   cool_setpoint=82, fan_mode=None)
     out.append(("MID_PERIOD_REPUSH:COAST", repush, 82, "Cool"))
@@ -4157,43 +3494,6 @@ def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
     assert firing.last_pushed_effective_cool is None
 
 
-# ---- Task 5: one-shot hook wiring in run_schedule_check -------------------
-
-
-def test_run_schedule_check_sets_baseline_initialized_and_reconstructs(monkeypatch):
-    """First tick with fresh FiringState (baseline_initialized=False,
-    last_schedule_cool=None) at a daytime hour where a NORMAL schedule
-    action is in effect: hook runs, baseline_initialized becomes True,
-    and last_schedule_cool is populated (not None)."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
-    firing = FiringState()
-    # 14:00 on a NORMAL day -> COAST action in effect (setpoint 79)
-    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
-    )
-    assert firing.baseline_initialized is True
-    assert firing.last_schedule_cool is not None
-
-
-def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick(monkeypatch):
-    """Idempotence: with baseline_initialized=True, the hook must NOT
-    call reconstruct_startup_baseline even when last_schedule_cool is
-    None (e.g. after a release_hold). The None baseline must remain None."""
-    reconstruct_called = []
-
-    def _fake_reconstruct(*args, **kwargs):
-        reconstruct_called.append(True)
-
-    monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
-    firing = FiringState(baseline_initialized=True, last_schedule_cool=None)
-    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
-    _drive_run_schedule_check(
-        monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
-    )
-    assert not reconstruct_called, "reconstruct must not run after baseline_initialized=True"
-
-
 # ---- A2: per-tick comfort baseline sourced from controller_config ----------
 #
 # These tests cover the config-gated per-tick baseline path added in A2.
@@ -4382,47 +3682,76 @@ def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
     assert firing.last_schedule_cool == 78.0
 
 
-def test_a2_config_none_preserves_existing_reconstruction_path(monkeypatch):
-    """A2: when controller_config is None, the existing startup reconstruction
-    path runs unchanged. Behavior must match the pre-A2 baseline exactly."""
+# ---- A4: resolve = comfort baseline, floor-clamped; supervisor deleted ------
+#
+# The pivotal slice. With controller_config present (the single path now), the
+# effective cool setpoint is the per-tick comfort baseline, clamped never below
+# the baseline (the floor invariant). The software safety supervisor is gone:
+# no validate_setpoints, no supervisor fields on hvac.actions. The loop no
+# longer consults day-type resolution (fetch_today_decision / schedule_for) or
+# the 21:00 decision cycle (run_decision).
+
+
+def test_a4_effective_equals_baseline_floor_clamped_shadow(monkeypatch):
+    """A4 acceptance: a config-present tick in shadow pushes the comfort
+    baseline as the effective cool setpoint (floor-clamped, never below the
+    baseline), writes a shadow hvac.actions row with NO supervisor fields,
+    and consults neither the day-type resolution (fetch_today_decision /
+    schedule_for) nor the safety supervisor (validate_setpoints)."""
     import asyncio
 
-    reconstruct_called = []
+    # Trip-wires: these MUST NOT be called on the config path anymore.
+    called: dict[str, int] = {
+        "validate_setpoints": 0,
+        "fetch_today_decision": 0,
+        "schedule_for": 0,
+    }
 
-    original_reconstruct = app.reconstruct_startup_baseline
+    def _trip(name: str, ret: Any) -> Any:
+        def _stub(*a: Any, **k: Any) -> Any:
+            called[name] += 1
+            return ret
+        return _stub
 
-    def _spy_reconstruct(*args, **kwargs):
-        reconstruct_called.append(True)
-        original_reconstruct(*args, **kwargs)
+    # validate_setpoints was deleted with the supervisor; setattr only if a
+    # regression re-introduces it (then the trip-wire catches the call).
+    if hasattr(app, "validate_setpoints"):
+        monkeypatch.setattr(app, "validate_setpoints",
+                            _trip("validate_setpoints", None))
+    if hasattr(app, "fetch_today_decision"):
+        monkeypatch.setattr(app, "fetch_today_decision",
+                            _trip("fetch_today_decision", "NORMAL"))
+    if hasattr(app, "schedule_for"):
+        monkeypatch.setattr(app, "schedule_for",
+                            _trip("schedule_for", []))
 
-    monkeypatch.setattr(app, "reconstruct_startup_baseline", _spy_reconstruct)
-    _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_today_decision",
-                        lambda q, w, b, t: "NORMAL")
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: None)
-    monkeypatch.setattr(app, "read_precool_window_for_date",
-                        lambda q, b, d: None)
+    _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal tier
+    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
     monkeypatch.setattr(app, "load_overrides", lambda path: [])
+
+    captured: dict[str, Any] = {}
+
+    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+        captured["cool"] = cool
+        captured["label"] = action.label
+        return (False, None)  # shadow: not applied, no error
+    monkeypatch.setattr(app, "execute_action", AsyncMock(side_effect=_exec))
+
+    write_action_mock = MagicMock()
+    monkeypatch.setattr(app, "write_action", write_action_mock)
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
                             "hvac_mode": "Cool",
-                            "cool_setpoint_f": 78,
+                            "cool_setpoint_f": 75,
                             "heat_setpoint_f": 65,
                         }))
-    monkeypatch.setattr(app, "execute_action",
-                        AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(app, "write_action", MagicMock())
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: "NORMAL")
 
-    firing = FiringState()  # fresh: baseline_initialized=False
-    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+    firing = FiringState()
+    # 13:30 is inside the 13:00-19:00 block (cool=78 in _A2_PROGRAM_F).
+    now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
 
-    # Explicitly set controller_config=None so the reconstruction path runs
-    cfg = _make_schedule_check_cfg()
-    cfg.controller_config = None
+    cfg = _make_cfg_with_controller_config()
     cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
@@ -4430,6 +3759,71 @@ def test_a2_config_none_preserves_existing_reconstruction_path(monkeypatch):
         cfg, c4, MagicMock(), MagicMock(),
         ZoneInfo(cfg.tz_name), now_local, firing,
     ))
-    # The day-type reconstruction must still run (config=None path unchanged)
-    assert reconstruct_called, "reconstruct must run when controller_config is None"
-    assert firing.baseline_initialized is True
+
+    # Baseline for 13:30 is 78 (the 13:00-19:00 block). Effective == baseline,
+    # floor-clamped (never below baseline).
+    assert firing.last_schedule_cool == 78.0
+    assert captured.get("cool") == 78.0, (
+        f"effective must equal the comfort baseline 78, got {captured.get('cool')}"
+    )
+
+    # A shadow hvac.actions row was written.
+    assert write_action_mock.call_count >= 1
+
+    # No supervisor fields in any write_action call.
+    for c in write_action_mock.call_args_list:
+        assert "supervisor_decision" not in c.kwargs
+        assert "supervisor_reason" not in c.kwargs
+
+    # Day-type resolution + supervisor were NOT consulted.
+    assert called["validate_setpoints"] == 0, "validate_setpoints must not be called"
+    assert called["fetch_today_decision"] == 0, "fetch_today_decision must not be called"
+    assert called["schedule_for"] == 0, "schedule_for must not be called"
+
+
+def test_a4_floor_clamp_holds_effective_at_or_above_baseline(monkeypatch):
+    """A4 floor invariant: across the day's comfort blocks the effective cool
+    setpoint is never below the active block's baseline."""
+    import asyncio
+
+    _stub_layer_eval_io(monkeypatch, price_cents=5.0)
+    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 75, "heat_setpoint_f": 65,
+                        }))
+
+    cfg = _make_cfg_with_controller_config()
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+
+    for hh, expected in [(2, 73.0), (10, 75.0), (15, 78.0), (20, 75.0)]:
+        firing = FiringState()
+        now_local = datetime(2026, 7, 15, hh, 30,
+                             tzinfo=ZoneInfo("America/Chicago"))
+        asyncio.run(app.run_schedule_check(
+            cfg, c4, MagicMock(), MagicMock(),
+            ZoneInfo(cfg.tz_name), now_local, firing,
+        ))
+        assert firing.last_schedule_cool == expected
+        # Floor invariant: whatever the loop pushed, it is >= baseline.
+        if firing.last_pushed_effective_cool is not None:
+            assert firing.last_pushed_effective_cool >= expected
+
+
+def test_a4_required_feeds_excludes_weather():
+    """A4: required_feeds_for_arm_mode is derived from the enabled-mode set
+    and no longer includes weather (no enabled mode consumes it)."""
+    feeds = app.required_feeds_for_arm_mode(
+        when_ct=datetime(2026, 7, 15, 13, 0),
+        price_feed_healthy=True,
+        weather_ok=True,
+        pjm_capacity_risk_ok=True,
+    )
+    assert "weather" not in feeds
+    assert feeds == {"price": True}
