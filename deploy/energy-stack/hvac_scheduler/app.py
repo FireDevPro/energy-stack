@@ -93,6 +93,7 @@ from pyControl4.director import C4Director
 from pyControl4.climate import C4Climate
 
 from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
+from .controller_config import ControllerConfig, load_controller_config
 from .pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
@@ -714,6 +715,9 @@ class Config:
     token_file: Path
     overrides_file: Path
     revisit_hours: tuple[int, ...]
+    # Set when CONTROLLER_CONFIG_FILE env var is present; None otherwise.
+    # Nothing in the control loop consumes this yet — later tasks wire it in.
+    controller_config: ControllerConfig | None = None
 
     @staticmethod
     def from_env() -> "Config":
@@ -757,6 +761,19 @@ class Config:
             "SCHEDULER_DECISION_TRACE_VERBOSE", "false"
         ).lower() in ("1", "true", "yes")
 
+        # CONTROLLER_CONFIG_FILE: when set, load and attach the parsed
+        # ControllerConfig. When unset, leave None — default behavior
+        # is unchanged (nothing in the control loop consumes it yet).
+        controller_config_path = os.environ.get("CONTROLLER_CONFIG_FILE")
+        controller_config: ControllerConfig | None = None
+        if controller_config_path:
+            try:
+                controller_config = load_controller_config(controller_config_path)
+            except Exception as exc:
+                log("error", "controller_config_load_failed",
+                    path=controller_config_path, error=str(exc))
+                sys.exit(2)
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
@@ -792,6 +809,7 @@ class Config:
             # (per NSSL/Brooks public-forecast verification); the day-ahead-only
             # commitment leaves that error in place all day. Empty = disabled.
             revisit_hours=revisit_hours,
+            controller_config=controller_config,
         )
 
 

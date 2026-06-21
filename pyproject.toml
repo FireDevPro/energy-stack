@@ -32,6 +32,13 @@ mypy_path = "deploy/energy-stack"
 module = "pyControl4.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# PyYAML ships without py.typed; types-PyYAML is the stub package.
+# Suppressed here because types-PyYAML is not yet in requirements-dev.lock.
+# Add types-PyYAML to requirements-dev.in + re-lock to recover type safety.
+module = "yaml"
+ignore_missing_imports = true
+
 # Test-file relaxation. Mypy override `module` patterns must be
 # fully-qualified dotted module names (NOT filename globs). The list
 # below is populated per-service as migrations land. Each service PR
@@ -82,6 +89,9 @@ module = [
     "ecowitt_ingest.test_ecowitt_ingest",
     # telegram-notifier test modules (added in PR 14)
     "telegram_notifier.test_telegram_notifier",
+    # commissioning-controller test modules (added in A1)
+    "hvac_scheduler.test_controller_config",
+    "hvac_scheduler.test_controller_core",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
