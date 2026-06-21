@@ -2813,3 +2813,207 @@ def test_a4_floor_clamp_is_max_effective_baseline(monkeypatch):
     )
     # Floor invariant holds: effective is never below baseline.
     assert firing.last_pushed_effective_cool >= baseline
+
+
+# ---- C1: humidity-release guard (spec §"Guards") ----------------------------
+#
+# The guard is an EFFECTIVE-layer override applied in _push_baseline_if_changed.
+# When indoor RH crosses rh_max_pct (or is missing) the warm overlay is gated
+# OFF — the effective falls back to the comfort baseline — overriding both the
+# tier offset AND the spike-hold min-hold. Re-enables only below rh_clear_pct
+# (hysteresis band holds the prior state). Never below baseline; no DEHUM. The
+# price-overlay state machine is untouched (temp rides; humidity releases).
+# Stub config: rh_max_pct=65, rh_clear_pct=62, warm_band=2, spike_extra=2,
+# comfort_max=85; midday baseline 78.
+
+_C1_MIDDAY = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+
+
+def _run_push_with_gate(
+    monkeypatch: Any,
+    *,
+    tier: str,
+    humidity: float | None,
+    firing: FiringState | None = None,
+) -> tuple[float | None, dict[str, Any], FiringState]:
+    """Drive one _push_baseline_if_changed call at the given active tier with
+    the given indoor humidity. Returns (pushed_effective, write_action_kwargs,
+    firing). The snapshot's ``humidity`` key is omitted entirely when
+    ``humidity is None`` (simulates a missing reading)."""
+    import asyncio
+
+    captured: dict[str, Any] = {}
+
+    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+        captured["cool"] = cool
+        return (False, None)  # shadow
+    monkeypatch.setattr(app, "execute_action", AsyncMock(side_effect=_exec))
+
+    wa_kwargs: dict[str, Any] = {}
+
+    def _write(*args: Any, **kwargs: Any) -> None:
+        wa_kwargs.update(kwargs)
+        wa_kwargs["_cool_applied"] = args[3]  # cool_applied is positional arg 3
+        wa_kwargs["_baseline_cool"] = kwargs["baseline_cool"]
+    monkeypatch.setattr(app, "write_action", _write)
+
+    snap: dict[str, Any] = {
+        "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+        "cool_setpoint_f": 75, "heat_setpoint_f": 65,
+    }
+    if humidity is not None:
+        snap["humidity"] = humidity
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value=snap))
+
+    cfg = _make_cfg_with_controller_config()
+    c4, _ = _mock_c4_client()
+    if firing is None:
+        firing = FiringState()
+    # Pin the per-tick baseline (the push reads firing.last_schedule_cool).
+    firing.last_schedule_cool = 78.0
+
+    asyncio.run(app._push_baseline_if_changed(
+        cfg, c4, MagicMock(), firing, _C1_MIDDAY, tier,
+    ))
+    return captured.get("cool"), wa_kwargs, firing
+
+
+def test_c1_gate_engages_at_rh_max_overrides_active_tier(monkeypatch):
+    """RH >= rh_max_pct (65) gates the overlay OFF even on an active extreme
+    tier: the effective drops to the baseline (78), not the ceiling (85)."""
+    cool, _wa, firing = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=65.0)
+    assert cool == 78.0, f"gated effective must be baseline 78, got {cool}"
+    assert firing.overlay_humidity_gated is True
+
+
+def test_c1_gate_does_not_engage_in_dry_air(monkeypatch):
+    """RH below rh_clear_pct: the overlay rides — extreme snaps to the ceiling
+    (85), the gate stays disengaged."""
+    cool, _wa, firing = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=45.0)
+    assert cool == 85.0, f"dry air must ride the ceiling 85, got {cool}"
+    assert firing.overlay_humidity_gated is False
+
+
+def test_c1_hysteresis_band_holds_prior_state(monkeypatch):
+    """A reading inside the band (rh_clear=62 <= RH < rh_max=65) keeps the
+    PRIOR gate state — it neither engages nor releases on its own."""
+    # Prior gated=True + a band reading -> still gated (effective stays baseline).
+    f_gated = FiringState(overlay_humidity_gated=True)
+    cool_g, _wa_g, fg = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=63.0, firing=f_gated)
+    assert fg.overlay_humidity_gated is True
+    assert cool_g == 78.0, "band reading must HOLD the prior gated state"
+
+    # Prior gated=False + a band reading -> still not gated (effective rides).
+    f_open = FiringState(overlay_humidity_gated=False)
+    cool_o, _wa_o, fo = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=63.0, firing=f_open)
+    assert fo.overlay_humidity_gated is False
+    assert cool_o == 85.0, "band reading must HOLD the prior un-gated state"
+
+
+def test_c1_reenables_only_below_rh_clear(monkeypatch):
+    """A gated controller re-enables the overlay only when RH drops strictly
+    below rh_clear_pct (62) — not merely below rh_max (65)."""
+    # Was gated; RH now 61 (< 62 clear) -> release: rides to the ceiling again.
+    f = FiringState(overlay_humidity_gated=True)
+    cool, _wa, firing = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=61.0, firing=f)
+    assert firing.overlay_humidity_gated is False
+    assert cool == 85.0, f"below rh_clear must re-enable the overlay, got {cool}"
+
+
+def test_c1_missing_humidity_is_conservative_gated(monkeypatch):
+    """Missing humidity -> treat as humid -> gated (effective = baseline)."""
+    cool, _wa, firing = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=None)
+    assert firing.overlay_humidity_gated is True
+    assert cool == 78.0, f"missing humidity must gate to baseline, got {cool}"
+
+
+def test_c1_gate_overrides_spike_hold_min_hold(monkeypatch):
+    """The humidity release is immediate: a gated tick mid-min-hold (the tier
+    was triggered seconds ago, well inside the hold window) still drops the
+    effective to baseline. The gate overrides the spike-hold min-hold."""
+    from .price_overlay import PriceOverlayState
+    f = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="extreme",
+            triggered_at_utc=_C1_MIDDAY.astimezone(timezone.utc),  # just fired
+        ),
+    )
+    cool, _wa, firing = _run_push_with_gate(
+        monkeypatch, tier="extreme", humidity=70.0, firing=f)
+    assert cool == 78.0, "gate must override the min-hold and drop to baseline"
+    # The price-overlay state machine is UNTOUCHED — the tier keeps tracking
+    # price underneath (temp rides; humidity releases).
+    assert firing.price_overlay_state.current_tier == "extreme"
+
+
+def test_c1_never_below_baseline_when_gated(monkeypatch):
+    """When gated the effective is exactly the baseline — never below it
+    (warm-only floor invariant; no DEHUM)."""
+    _cool, wa, _firing = _run_push_with_gate(
+        monkeypatch, tier="scarcity", humidity=80.0)
+    assert wa["_cool_applied"] == wa["_baseline_cool"]
+    assert wa["_cool_applied"] >= wa["_baseline_cool"]
+
+
+def test_c1_gated_action_row_telemetry(monkeypatch):
+    """A gated tick's hvac.actions row shows humidity_gated=1, drift=0, and
+    commanded_cool == baseline_cool (the gate is unambiguously observable)."""
+    captured = _capture_write_point(monkeypatch)
+    import asyncio
+
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                            "humidity": 70.0,  # >= rh_max -> gated
+                        }))
+    cfg = _make_cfg_with_controller_config()
+    c4, _ = _mock_c4_client()
+    firing = FiringState()
+    firing.last_schedule_cool = 78.0
+    asyncio.run(app._push_baseline_if_changed(
+        cfg, c4, MagicMock(), firing, _C1_MIDDAY, "extreme",
+    ))
+
+    rows = [r for r in captured if r["measurement"] == "hvac.actions"]
+    assert rows, "expected an hvac.actions row"
+    f = rows[-1]["fields"]
+    assert f["humidity_gated"] == 1
+    assert f["drift"] == 0.0
+    assert f["commanded_cool"] == f["baseline_cool"] == 78.0
+
+
+def test_c1_ungated_action_row_humidity_gated_zero(monkeypatch):
+    """A normal (un-gated) spike tick's row carries humidity_gated=0."""
+    captured = _capture_write_point(monkeypatch)
+    import asyncio
+
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                            "humidity": 45.0,  # dry -> not gated
+                        }))
+    cfg = _make_cfg_with_controller_config()
+    c4, _ = _mock_c4_client()
+    firing = FiringState()
+    firing.last_schedule_cool = 78.0
+    asyncio.run(app._push_baseline_if_changed(
+        cfg, c4, MagicMock(), firing, _C1_MIDDAY, "scarcity",
+    ))
+
+    rows = [r for r in captured if r["measurement"] == "hvac.actions"]
+    assert rows, "expected an hvac.actions row"
+    f = rows[-1]["fields"]
+    assert f["humidity_gated"] == 0

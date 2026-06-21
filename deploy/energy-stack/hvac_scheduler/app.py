@@ -80,7 +80,11 @@ from influxdb_client import InfluxDBClient  # type: ignore[attr-defined]  # infl
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
-from .controller_config import ControllerConfig, load_controller_config
+from .controller_config import (
+    ControllerConfig,
+    HumidityGuard,
+    load_controller_config,
+)
 from .controller_core import comfort_baseline_cool
 from .price_overlay import (
     NORMAL_TIER_NAME,
@@ -568,6 +572,13 @@ class FiringState:
     last_schedule_cool: float | None = None
     last_action_label: str = ""
     last_pushed_effective_cool: float | None = None
+    # Humidity-release guard hysteresis state (spec §"Guards": humidity guard).
+    # True once indoor RH crosses rh_max_pct (or is missing); cleared only when
+    # RH drops below rh_clear_pct. While True the warm overlay is gated OFF at
+    # the EFFECTIVE layer (effective falls back to baseline) — the price-overlay
+    # tier keeps tracking price underneath. Survives across ticks, not restarts;
+    # a cold start re-derives it from the first snapshot read on an active tier.
+    overlay_humidity_gated: bool = False
     # One-shot guard for startup baseline reconstruction. False only on a
     # fresh process. Flipped True on the first run_schedule_check tick; after
     # that the normal action-fire / release-hold flow owns the baseline
@@ -645,6 +656,7 @@ def write_action(write_api: Any, bucket: str, action: ScheduleAction,
                  setpoint_reason: str, dry_run: bool, applied: bool,
                  thermostat_state_before: dict[str, Any],
                  *, unit: str, tier: str, baseline_cool: float, config_id: str,
+                 humidity_gated: int = 0,
                  error: str | None = None) -> None:
     """Write one ``hvac.actions`` row.
 
@@ -653,6 +665,9 @@ def write_action(write_api: Any, bucket: str, action: ScheduleAction,
     ("F"/"C"). NO conversion — values stay in whatever scale the controller
     runs in. ``drift = commanded_cool - baseline_cool`` (native-scale warm
     drift magnitude). ``config_id`` is the loaded config's SHA256.
+    ``humidity_gated`` (0/1) records whether the humidity-release guard fired
+    this tick (spec §"Guards"); when 1, the effective was forced to baseline so
+    ``commanded_cool == baseline_cool`` and ``drift == 0``.
     """
     commanded_cool = float(cool_applied)
     baseline = float(baseline_cool)
@@ -667,6 +682,7 @@ def write_action(write_api: Any, bucket: str, action: ScheduleAction,
         "commanded_heat": float(heat_applied),
         "baseline_cool": baseline,
         "drift": commanded_cool - baseline,
+        "humidity_gated": int(humidity_gated),
         "fan_mode": fan_mode_applied or "",
         "setpoint_reason": setpoint_reason,
         "applied": int(applied),
@@ -1253,6 +1269,24 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
     )
 
 
+def _next_humidity_gate(
+    *, humidity: float | None, prior_gated: bool, guard: HumidityGuard,
+) -> bool:
+    """Stateful hysteresis for the humidity-release guard (spec §"Guards").
+
+    - missing humidity OR humidity >= rh_max_pct -> gated (missing ->
+      conservative: treat as humid);
+    - humidity < rh_clear_pct -> not gated;
+    - rh_clear_pct <= humidity < rh_max_pct -> hold the prior state (the
+      hysteresis band). ``rh_clear_pct < rh_max_pct`` is loader-enforced.
+    """
+    if humidity is None or humidity >= guard.rh_max_pct:
+        return True
+    if humidity < guard.rh_clear_pct:
+        return False
+    return prior_gated  # inside the hysteresis band: hold prior state
+
+
 async def _push_baseline_if_changed(
     cfg: Config, c4: ThermostatClient, write_api: Any,
     firing: FiringState, now_local: datetime, active_tier_name: str,
@@ -1277,6 +1311,14 @@ async def _push_baseline_if_changed(
     (``firing.last_pushed_effective_cool``). Runs in shadow when
     ``SCHEDULER_MODE`` gates writes off; ``execute_action`` is still called
     so the audit row records what WOULD have been pushed.
+
+    Humidity-release guard (spec §"Guards"): an EFFECTIVE-layer override. When
+    the overlay would warm (active tier != normal) the indoor-RH snapshot is
+    read early; if the hysteresis gate is engaged the effective falls back to
+    baseline (overriding the tier offset AND the spike-hold min-hold — the
+    humidity release is immediate), never below baseline, no DEHUM. The
+    price-overlay state machine is untouched, so the tier keeps tracking price
+    underneath (temp rides; humidity releases).
     """
     if firing.last_schedule_cool is None:
         return  # no baseline computed yet
@@ -1288,18 +1330,39 @@ async def _push_baseline_if_changed(
     assert cfg.controller_config is not None  # caller guarantees config-present path
     heat_floor = cfg.controller_config.heat_floor  # native temp_scale; no conversion
 
-    # Apply the active price tier's warm offset via the pinned formula
-    # (config-driven; clamped to [baseline, comfort_max]).
-    effective_cool = effective_cool_for_tier(
-        active_tier_name, baseline, cfg.controller_config,
-    )
-    effective_cool = max(effective_cool, baseline)  # defensive floor invariant
-
-    # No-push short-circuit: nothing to do when the effective is unchanged.
-    if effective_cool == firing.last_pushed_effective_cool:
-        return
-
-    snapshot = await read_thermostat_snapshot(c4)
+    if active_tier_name == NORMAL_TIER_NAME:
+        # No overlay this tick: the humidity gate is irrelevant. Reset it so a
+        # return-to-normal clears any prior gated state, and read the snapshot
+        # only when actually pushing (avoid a needless thermostat read).
+        firing.overlay_humidity_gated = False
+        humidity_gated = False
+        effective_cool = baseline  # normal tier: effective IS the baseline
+        if effective_cool == firing.last_pushed_effective_cool:
+            return  # no-push short-circuit
+        snapshot = await read_thermostat_snapshot(c4)
+    else:
+        # The overlay would warm. Read the snapshot EARLY for the humidity
+        # reading, update the hysteresis gate, then resolve the effective.
+        snapshot = await read_thermostat_snapshot(c4)
+        humidity_raw = snapshot.get("humidity")
+        humidity = float(humidity_raw) if humidity_raw is not None else None
+        humidity_gated = _next_humidity_gate(
+            humidity=humidity,
+            prior_gated=firing.overlay_humidity_gated,
+            guard=cfg.controller_config.humidity_guard,
+        )
+        firing.overlay_humidity_gated = humidity_gated
+        if humidity_gated:
+            # Release: drop the overlay to baseline (overrides the tier offset
+            # AND the spike-hold min-hold). Never below baseline; no DEHUM.
+            effective_cool = baseline
+        else:
+            effective_cool = effective_cool_for_tier(
+                active_tier_name, baseline, cfg.controller_config,
+            )
+        effective_cool = max(effective_cool, baseline)  # defensive floor invariant
+        if effective_cool == firing.last_pushed_effective_cool:
+            return  # no-push short-circuit (after the effective is finalized)
 
     action = ScheduleAction(
         hour=now_local.hour, minute=now_local.minute,
@@ -1321,12 +1384,14 @@ async def _push_baseline_if_changed(
         tier=active_tier_name,
         baseline_cool=baseline,
         config_id=cfg.controller_config.config_id,
+        humidity_gated=int(humidity_gated),
         error=error,
     )
     log("info", "baseline_push",
         label=action.label,
         commanded_cool=effective_cool,
         baseline_cool=baseline,
+        humidity_gated=humidity_gated,
         prior_commanded_cool=firing.last_pushed_effective_cool,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
