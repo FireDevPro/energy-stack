@@ -1949,6 +1949,227 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
     assert firing.nonfresh_after_hold_started_at_utc is None
 
 
+# ---- Slice B2: the four feed-gap behaviors under the 4-tier overlay ---------
+# These prove the EXISTING feed-gap mechanism (freshness gate + safety-release
+# timer in _evaluate_layer_inputs, reused as-is) still holds the four spec
+# behaviors under B1's config-driven 4-tier overlay, including `extreme` and
+# the held *effective setpoint* (re-derived from the held tier via the same
+# `effective_cool_for_tier` formula the push path uses). Spec
+# §"Feed-gap behavior — reuse as-is". No mechanism logic is changed here.
+
+# Baseline used for the effective-setpoint assertions: the 13:00-19:00 midday
+# block (78F) of _A2_PROGRAM_F, which _make_controller_config_stub() carries.
+_B2_BASELINE_F = 78.0
+
+
+def test_b2_brief_gap_holds_tier_and_effective_setpoint(monkeypatch):
+    """Behavior 1: a brief feed gap (timer below PRICE_FEED_STALE_THRESHOLD)
+    in an active tier holds BOTH the tier and the re-derived warm effective
+    setpoint — it rides out a routine ~5-min publish gap, not collapses to
+    baseline.
+
+    Scarcity tier, min-hold elapsed, sample missing this tick, last fresh
+    bucket only 2 min ago (no safety-release timer yet). The tier label is
+    carried forward and `effective_cool_for_tier` re-derives the same warm
+    setpoint (baseline + warm_band + spike_extra), NOT the comfort baseline.
+    """
+    from .app import _evaluate_layer_inputs, FiringState
+    from .price_overlay import PriceOverlayState, effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr("hvac_scheduler.app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: None)  # brief gap: no sample
+    cfg = _make_cfg_with_controller_config()
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        ),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=2),  # brief gap only
+    )
+
+    inputs = _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing,
+                                    now_local=now)
+
+    # Tier held.
+    assert inputs.price_tier_name == "scarcity"
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    # Effective setpoint held (re-derived warm, not baseline). The held tier
+    # would have started the safety-release timer (post-min-hold + non-fresh)
+    # but it is nowhere near the 30-min threshold, so no release.
+    eff = effective_cool_for_tier(inputs.price_tier_name, _B2_BASELINE_F,
+                                  cfg.controller_config)
+    assert eff == _B2_BASELINE_F + 2.0 + 2.0  # 78 + warm_band + spike_extra = 82
+    assert eff > _B2_BASELINE_F, "must hold warm, not collapse to baseline"
+
+
+def test_b2_stale_spike_upgrades_into_extreme(monkeypatch):
+    """Behavior 2: a stale-but-present extreme-price sample drives a warm
+    UPGRADE into the new top tier `extreme` despite staleness (upgrades are
+    NOT freshness-gated; only downgrades are). The effective snaps to the
+    comfort ceiling.
+
+    Elevated tier, min-hold elapsed, sample at >= extreme_at (50c) with a
+    `warn` (non-fresh) freshness label -> upgrades straight to `extreme`,
+    effective = comfort_max.
+    """
+    from .app import PriceSample
+    from .price_overlay import effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=55.0,            # >= 50c extreme trigger
+        source_ts=now - timedelta(minutes=10),  # warn -> non-fresh
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    # Upgrade fired despite staleness, all the way to extreme.
+    assert firing.price_overlay_state.current_tier == "extreme"
+    po_traces = [t for t in traces
+                 if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_UPGRADED_TO_EXTREME"
+    # Effective snaps to the comfort ceiling (comfort_max=85 in the stub).
+    eff = effective_cool_for_tier("extreme", _B2_BASELINE_F,
+                                  _make_controller_config_stub())
+    assert eff == 85.0
+
+
+def test_b2_stale_downgrade_refused_holds_scarcity_and_effective(monkeypatch):
+    """Behavior 3: in an active tier, a stale lower-price sample does NOT
+    downgrade — the recency gate holds the tier (downgrade_gate_held) and the
+    warm effective setpoint stays held. Covered at the `scarcity` tier (the
+    elevated case is already covered) to confirm the gate is tier-agnostic
+    under the 4-tier overlay.
+
+    Scarcity, min-hold elapsed, sample 2.5c (below scarcity release of 18c)
+    with a `warn` (non-fresh) label -> the state machine would downgrade but
+    the gate refuses; tier and effective held.
+    """
+    from .app import PriceSample
+    from .price_overlay import effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,             # below scarcity release (18c)
+        source_ts=now - timedelta(minutes=10),  # warn -> non-fresh
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="scarcity",
+        triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    # Tier held by the recency gate.
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    po_traces = [t for t in traces
+                 if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces[-1]["outcome"] == "held"
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+    # Effective setpoint still the held warm value, not baseline.
+    eff = effective_cool_for_tier("scarcity", _B2_BASELINE_F,
+                                  _make_controller_config_stub())
+    assert eff == _B2_BASELINE_F + 2.0 + 2.0  # 82, held warm
+
+
+def test_b2_sustained_staleness_releases_after_min_hold_plus_threshold(monkeypatch):
+    """Behavior 4: sustained staleness releases to baseline only after the
+    minimum-hold window AND PRICE_FEED_STALE_THRESHOLD of sustained non-fresh
+    observation — the EXISTING compound timing (~hold_ttl_minutes +
+    PRICE_FEED_STALE_THRESHOLD), NOT a flat 30 min. This is the reused
+    mechanism; the test asserts the compound contract as a tick-by-tick
+    narrative (no mechanism change).
+
+    With hold_ttl_minutes=30 and PRICE_FEED_STALE_THRESHOLD=30:
+      * the stale-release timer does not even start until the 30-min min-hold
+        has elapsed (it resets to None every tick before then), so
+      * a flat-30-min release (T0 + 30) does NOT fire — the controller is
+        still in tier, and
+      * the release fires only ~T0 + 60 (30 min-hold + 30 stale threshold).
+    """
+    from .app import (
+        _evaluate_layer_inputs, FiringState, PriceSample,
+        PRICE_FEED_STALE_THRESHOLD,
+    )
+    from .price_overlay import PriceOverlayState
+
+    assert PRICE_FEED_STALE_THRESHOLD == timedelta(minutes=30)  # contract anchor
+
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    cfg = _make_cfg_with_controller_config()
+    min_hold = cfg.controller_config.hold_ttl_minutes  # 30
+    assert min_hold == 30
+
+    monkeypatch.setattr("hvac_scheduler.app._trace", lambda *a, **k: None)
+    monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health",
+                        lambda *a, **k: None)
+
+    # Every tick from here on returns a stale (non-fresh) sample whose price
+    # still sits above the scarcity release (so the only thing that can end the
+    # tier is the safety-release timer, never a price-driven downgrade).
+    def _stale_sample(q, b, *, now_utc):
+        return PriceSample(
+            cents_per_kwh=25.0,                      # above scarcity release (18c)
+            source_ts=now_utc - timedelta(minutes=20),  # stale -> non-fresh
+            freshness="stale",
+        )
+    monkeypatch.setattr("hvac_scheduler.app.fetch_latest_comed", _stale_sample)
+
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=t0,                     # tier entered at t0
+        ),
+        last_fresh_bucket_source_ts=t0,
+    )
+
+    def _tick(minutes_after_t0: int) -> None:
+        _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing,
+                               now_local=t0 + timedelta(minutes=minutes_after_t0))
+
+    # During min-hold: tier held, timer never starts (resets to None each tick).
+    _tick(10)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc is None
+    _tick(29)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc is None
+
+    # First post-min-hold tick: NOW the stale-release timer starts (at t0+31),
+    # NOT back-dated to the start of the gap.
+    _tick(31)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc == t0 + timedelta(minutes=31)
+
+    # A "flat 30 min" interpretation would release here (T0 + 30 already past).
+    # The compound mechanism does NOT — only ~1 min of stale-release time has
+    # accumulated since the timer started at t0+31.
+    _tick(40)
+    assert firing.price_overlay_state.current_tier == "scarcity", (
+        "Released on flat ~30 min — the compound timing (min-hold + threshold) "
+        "was mis-driven or the mechanism changed."
+    )
+
+    # Just before timer + PRICE_FEED_STALE_THRESHOLD (t0+31 + 30 = t0+61): held.
+    _tick(60)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+
+    # At timer + PRICE_FEED_STALE_THRESHOLD (t0+61): release fires to baseline.
+    _tick(61)
+    assert firing.price_overlay_state.current_tier == "normal", (
+        "Release should fire at min-hold + PRICE_FEED_STALE_THRESHOLD "
+        "(~t0+61), the existing compound timing."
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None  # cleared on release
+
+
 # ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
 
 # Synthetic schedule (the day-type schedules were removed): PRE_COOL 06:00,
