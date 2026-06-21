@@ -37,10 +37,15 @@ class PriceOverlayCode(str, Enum):
     # the latest bucket is older than the 7-min fresh threshold.
     HELD_DOWNGRADE_BUCKET_AGE = "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
 
-    # Tier changed this tick.
+    # Tier changed this tick. Classified by priority comparison of
+    # prev vs new tier (NOT per-name branches), so the 4th `extreme`
+    # tier is first-class: e.g. extreme->scarcity is a DOWNGRADE, not a
+    # mislabelled release-to-normal.
     UPGRADED_TO_ELEVATED = "PRICE_OVERLAY_UPGRADED_TO_ELEVATED"
     UPGRADED_TO_SCARCITY = "PRICE_OVERLAY_UPGRADED_TO_SCARCITY"
+    UPGRADED_TO_EXTREME = "PRICE_OVERLAY_UPGRADED_TO_EXTREME"
     DOWNGRADED_TO_ELEVATED = "PRICE_OVERLAY_DOWNGRADED_TO_ELEVATED"
+    DOWNGRADED_TO_SCARCITY = "PRICE_OVERLAY_DOWNGRADED_TO_SCARCITY"
     RELEASED_TO_NORMAL = "PRICE_OVERLAY_RELEASED_TO_NORMAL"
 
     # Feed-unavailable branches.

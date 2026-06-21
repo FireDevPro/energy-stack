@@ -31,15 +31,43 @@ from pathlib import Path
 
 import pytest
 
+from .controller_config import (
+    Ceiling,
+    ControllerConfig,
+    Flexibility,
+    HumidityGuard,
+    Modes,
+    PriceTiersCents,
+    Stage1Ramp,
+)
 from .price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
+    build_price_tiers,
     evaluate_price_overlay,
 )
 
 
 FIXTURES = Path(__file__).parent / "tests" / "fixtures"
 COMED_HOURLY_CSV = FIXTURES / "comed_2025_hourly.csv"
+
+# Config-driven tiers matching the locked 2025 thresholds (elevated 10c,
+# scarcity 20c, extreme 50c) with the 2c hysteresis and a 30-min hold.
+_REPLAY_CFG = ControllerConfig(
+    temp_scale="C",
+    comfort_program=({"from": "00:00", "to": "00:00", "cool": 25.5},),
+    heat_floor=18.5,
+    flexibility=Flexibility(warm_band=1.0, spike_extra=1.0),
+    price_tiers_cents=PriceTiersCents(
+        elevated_at=10.0, scarcity_at=20.0, extreme_at=50.0, hysteresis_cents=2.0,
+    ),
+    humidity_guard=HumidityGuard(rh_max_pct=65, rh_clear_pct=62),
+    ceiling=Ceiling(comfort_max=29.0),
+    hold_ttl_minutes=30,
+    modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+)
+_REPLAY_TIERS = build_price_tiers(_REPLAY_CFG)
+_REPLAY_HOLD = _REPLAY_CFG.hold_ttl_minutes
 
 
 def _load_fixture() -> list[tuple[datetime, float]]:
@@ -96,27 +124,34 @@ def test_replay_state_machine_active_hours_in_expected_band(hourly_2025):
     state = PriceOverlayState()
     elevated_active_hours = 0
     scarcity_active_hours = 0
+    extreme_active_hours = 0
     transitions = 0
     last_tier = NORMAL_TIER_NAME
 
     for ts, price in hourly_2025:
-        active_tier, state = evaluate_price_overlay(price, state, ts)
+        active_tier, state = evaluate_price_overlay(
+            price, state, ts, _REPLAY_TIERS, _REPLAY_HOLD,
+        )
         current = state.current_tier
         if current == "elevated":
             elevated_active_hours += 1
         elif current == "scarcity":
             scarcity_active_hours += 1
+        elif current == "extreme":
+            extreme_active_hours += 1
         if current != last_tier:
             transitions += 1
             last_tier = current
 
     # Hold + hysteresis means active counts shift up vs naive threshold
-    # counts; the order-of-magnitude check is what matters here. With ~38
-    # scarcity events and a 30-min hold, scarcity-active hours should
-    # remain in the 30-50 range.
-    assert 30 <= scarcity_active_hours <= 60, scarcity_active_hours
+    # counts; the order-of-magnitude check is what matters here. The 4-tier
+    # split peels the >= 50c hours (7 in the fixture) off into `extreme`, so
+    # scarcity-active hours sit below the old 30-50 band.
+    assert 20 <= scarcity_active_hours <= 55, scarcity_active_hours
+    # Extreme catches the >= 50c hours (7 in the fixture) plus any hold tail.
+    assert 5 <= extreme_active_hours <= 25, extreme_active_hours
     # Elevated catches any hour at the elevated threshold or higher
-    # post-scarcity downgrade; expect the band 100-180.
+    # post-scarcity downgrade; expect the band 100-200.
     assert 100 <= elevated_active_hours <= 200, elevated_active_hours
     # Sanity: at least a couple dozen tier transitions across 5 months
     # (otherwise the state machine isn't actually firing).
@@ -136,7 +171,9 @@ def test_normal_to_active_transitions_below_naive_threshold_crossings(hourly_202
     last_above_10c = False
 
     for ts, price in hourly_2025:
-        active_tier, state = evaluate_price_overlay(price, state, ts)
+        active_tier, state = evaluate_price_overlay(
+            price, state, ts, _REPLAY_TIERS, _REPLAY_HOLD,
+        )
         is_normal = state.current_tier == NORMAL_TIER_NAME
         if is_normal != last_was_normal:
             normal_to_active_transitions += 1

@@ -6,7 +6,7 @@ comfort_program:         # blocks {from, to, cool}; supports midnight wrap
   - {from: "18:00", to: "22:00", cool: 24.5}
 heat_floor: 18.5
 flexibility:     {warm_band: 1.0, spike_extra: 1.0}
-price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
 humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
 ceiling:         {comfort_max: 29.0}
 hold_ttl_minutes: 60

@@ -37,7 +37,7 @@ comfort_program:
   - {from: "18:00", to: "22:00", cool: 24.5}
 heat_floor: 18.5
 flexibility:     {warm_band: 1.0, spike_extra: 1.0}
-price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
 humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
 ceiling:         {comfort_max: 29.0}
 hold_ttl_minutes: 60
@@ -62,6 +62,7 @@ def test_parse_well_formed(tmp_path: Path) -> None:
     assert cfg.price_tiers_cents.elevated_at == 10
     assert cfg.price_tiers_cents.scarcity_at == 20
     assert cfg.price_tiers_cents.extreme_at == 50
+    assert cfg.price_tiers_cents.hysteresis_cents == 2
     assert cfg.humidity_guard.rh_max_pct == 65
     assert cfg.humidity_guard.rh_clear_pct == 62
     assert cfg.ceiling.comfort_max == 29.0
@@ -127,7 +128,7 @@ comfort_program:
   - {from: "18:00", to: "22:00", cool: 75}
 heat_floor: 65
 flexibility:     {warm_band: 2, spike_extra: 2}
-price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
 humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
 ceiling:         {comfort_max: 85}
 hold_ttl_minutes: 60
@@ -187,6 +188,32 @@ def test_hold_ttl_positive_accepted(tmp_path: Path) -> None:
     path = _write_yaml(tmp_path, VALID_YAML)
     cfg = load_controller_config(path)
     assert cfg.hold_ttl_minutes == 60
+
+
+# ---------------------------------------------------------------------------
+# 5b. hysteresis_cents must be > 0 and < elevated_at (release-threshold sense)
+# ---------------------------------------------------------------------------
+
+def test_hysteresis_cents_zero_rejected(tmp_path: Path) -> None:
+    bad = VALID_YAML.replace("hysteresis_cents: 2", "hysteresis_cents: 0")
+    path = _write_yaml(tmp_path, bad)
+    with pytest.raises(ValueError, match="hysteresis_cents"):
+        load_controller_config(path)
+
+
+def test_hysteresis_cents_at_or_above_elevated_rejected(tmp_path: Path) -> None:
+    """A release threshold at/above the elevated trigger (hyst >= elevated_at)
+    would make the elevated tier impossible to leave — must raise."""
+    bad = VALID_YAML.replace("hysteresis_cents: 2", "hysteresis_cents: 10")
+    path = _write_yaml(tmp_path, bad)
+    with pytest.raises(ValueError, match="hysteresis_cents"):
+        load_controller_config(path)
+
+
+def test_hysteresis_cents_valid_accepted(tmp_path: Path) -> None:
+    path = _write_yaml(tmp_path, VALID_YAML)
+    cfg = load_controller_config(path)
+    assert cfg.price_tiers_cents.hysteresis_cents == 2
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +323,7 @@ comfort_program:
   - {from: "18:00", to: "22:00", cool: 75}
 heat_floor: 65
 flexibility:     {warm_band: 2, spike_extra: 2}
-price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
 humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
 ceiling:         {comfort_max: 85}
 hold_ttl_minutes: 60
