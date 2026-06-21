@@ -347,15 +347,13 @@ Build: `./hvac-scheduler` · Cycle: 1-min ticker · Volume: `hvac_scheduler_data
 
 Decides tomorrow's day-type at 21:00 local, then fires schedule actions throughout the next day. Each action sets cool + heat setpoints (heat always paired for Auto-mode safety), optionally sets fan mode, then pins `Hold = Permanent` so the thermostat baseline doesn't override.
 
-Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in the [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
+Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Safety is being moved into the device (thermostat min/max + timed holds) per the [commissioning-controller spec, Safety section](superpowers/specs/2026-06-20-commissioning-controller-design.md#safety--device-owned-no-software-supervisor); the software supervisor is slated for removal there.
 
-**Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Amana CTK04AE via Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
+**Device client:** the Control4/pyControl4 path has been retired. The device client is now a stubbed `ThermostatClient` seam; TCC/`aiosomecomfort` wiring is deferred (see the [Control4→TCC actuation swap](superpowers/specs/2026-06-20-commissioning-controller-design.md)).
 
 **Env:**
-- `CONTROL4_EMAIL`, `CONTROL4_PASSWORD` — Control4 cloud login
-- `CONTROL4_CONTROLLER_IP` — local Director (default `192.168.1.30`)
-- `CONTROL4_THERMOSTAT_ID` — item ID of the THERMOSTAT proxy (default `3231` — **NOT** `3230` which is the Cinegration backing driver)
-- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid). Accepted values: `shadow` (never writes, logs decisions only — safe pre-experiment default), `experiment` (writes only during Arm B periods inside the locked 2026-06-01..2026-11-16 calendar; outside that window or during Arm A periods = no writes), `production` (writes always, ignores A/B calendar — deliberate non-study operation only). Replaces the retired `SCHEDULER_DRY_RUN` env var per binding spec §3 + the SCED rebaseline plan.
+- `CONTROL4_THERMOSTAT_ID` — thermostat identifier carried through the stubbed `ThermostatClient` seam (default `3231`). Flagged for rename at TCC wire-up.
+- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid). Accepted values: `shadow` (never writes, logs decisions only — safe pre-experiment default), `experiment` (writes only during Arm B periods inside the locked 2026-06-01..2026-11-16 calendar; outside that window or during Arm A periods = no writes), `production` (writes always, ignores A/B calendar — deliberate non-study operation only). Replaces the retired `SCHEDULER_DRY_RUN` env var.
 - `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)
 - `INFLUXDB_*`
 
@@ -372,11 +370,11 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 | `hvac.switch_event` | — | `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary crossings. |
 | `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller each tick. |
 
-**Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in the [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
+**Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in the [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 **Healthcheck:** `/tmp/last_tick_ok` touched every minute regardless of whether actions fired — failure means the scheduler is wedged.
 
-**Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
+**Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 ---
 
@@ -412,7 +410,7 @@ Source: [`deploy/energy-stack/hvac_scheduler_watchdog/check.py`](../deploy/energ
 
 Build: `./thermostat-poller` · Cycle: `THERMOSTAT_POLL_INTERVAL` (default 600 s = 10 min, the TCC rate-limit floor) · Volume: `thermostat_poller_data` (`/data`)
 
-Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-scheduler` — has its own persisted Control4 token at `/data/director_token.json`. The two services sharing the same Control4 account is fine; the bearer token is per-token, not per-process.
+Continuous reads of CTK04AE state through the device client. Independent of `hvac-scheduler`. The Control4/pyControl4 read path has been retired; reads now go through the stubbed `ThermostatClient` seam (TCC/`aiosomecomfort` deferred).
 
 **Two outputs:**
 
@@ -429,7 +427,7 @@ Continuous reads of CTK04AE state via Control4 EA-5. Independent of `hvac-schedu
    | `thermostat_id`, `source="manual_override"` | `expected_cool_setpoint_f`, `actual_cool_setpoint_f`, `delta_cool_f`, `expected_heat_setpoint_f`, `actual_heat_setpoint_f`, `delta_heat_f`, `last_action_label`, `minutes_since_last_action`, `indoor_temp_f`, `humidity_pct`, `hvac_mode` | One row per poll cycle while overridden. v1 doesn't dedupe — at 10-min cadence, the data volume is tiny. |
 
 **Env:**
-- `CONTROL4_EMAIL`, `CONTROL4_PASSWORD`, `CONTROL4_CONTROLLER_IP`, `CONTROL4_THERMOSTAT_ID` — same as `hvac-scheduler`
+- `CONTROL4_THERMOSTAT_ID` — same as `hvac-scheduler` (flagged for rename at TCC wire-up)
 - `THERMOSTAT_POLL_INTERVAL` — seconds (default 600)
 - `OVERRIDE_GRACE_MIN` — minutes after a scheduler action before counting setpoint mismatch as an override (default 5)
 - `INFLUXDB_*` — standard

@@ -80,7 +80,7 @@ After several manual runs have been validated, log nightly output only:
 ## randomize_arms.py — DEPRECATED (pre-rebaseline historical artifact)
 
 > [!WARNING]
-> **Retired 2026-05-13** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](../../../docs/plans/sced-rebaseline-spec-2026-05-13.md) §2 + §0. The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
+> **Retired 2026-05-13** by the SCED rebaseline (its spec doc has since been removed in the controller demolition). The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
 >
 > The canonical arm calendar is now generated programmatically by [`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). The original `randomize_arms.py` script and its output `docs/experiment-assignments-summer-2026.csv` are preserved in-tree as historical artifacts (and to keep `tests/test_randomize_arms.py` pinning the original algorithm for audit traceability) but **should not be run** for any current operation. Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137).
 

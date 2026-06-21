@@ -10,7 +10,7 @@ role-label: code-team
 Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafana + 19 pollers/services (16 always-on + 3 under the `mqtt` profile for the ComfortNet pipeline) + log aggregation, optimizing residential energy use against ComEd Hourly Pricing and PJM 5CP windows.
 
 > **Per-service detail:** [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
-> **HVAC scheduler logic + thermostat fallback:** [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
+> **HVAC controller logic:** [`../../docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](../../docs/superpowers/specs/2026-06-20-commissioning-controller-design.md)
 > **Backup/restore:** [`backup/RESTORE.md`](backup/RESTORE.md)
 
 ## Services at a glance
@@ -25,9 +25,9 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `refoss-poller` | Refoss EM16P 18 channels, 30 s | — | [SERVICES.md#refoss-poller](../../docs/SERVICES.md#refoss-poller) |
 | `nws-poller` | NWS forecast (today/tomorrow/day2) + alerts, 30 min | — | [SERVICES.md#nws-poller](../../docs/SERVICES.md#nws-poller) |
 | `pjm-dm2-poller` | PJM DataMiner 2 zonal feeds (DA LMP, load forecast, metered, peak, NSPL), per-feed schedule | — | [SERVICES.md#pjm-dm2-poller](../../docs/SERVICES.md#pjm-dm2-poller) |
-| `hvac-scheduler` | Day-type decision @ 21:00 + Control4 setpoint pushes (with safety supervisor) | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
+| `hvac-scheduler` | Price-reactive comfort controller (comfort baseline + warm-only RTP drift); device writes via stubbed `ThermostatClient` seam | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
 | `hvac-scheduler-watchdog` | Out-of-band controller-liveness beacon (writes `hvac.heartbeat controller_alive=false` when no `hvac.arm_mode` row appears in 10 min) | — | [SERVICES.md#hvac-scheduler-watchdog](../../docs/SERVICES.md#hvac-scheduler-watchdog) |
-| `thermostat-poller` | Continuous 10-min Control4 reads + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
+| `thermostat-poller` | Continuous 10-min thermostat reads (stubbed `ThermostatClient` seam) + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
 | `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
 | `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → `ch1_*` (canonical analysis field per spec §6) + gateway alias `outdoor_*` (descriptive), WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
@@ -165,7 +165,7 @@ bash deploy/energy-stack/run_typecheck.sh
 
 The wrapper invokes mypy per-target (each service in `service_dirs`, plus `cockpit/backend` in `repo_targets`) so an error in one service doesn't mask errors in another. Final step runs `import-linter` against the active contract.
 
-**Contract currently enforced**: `Only influx_adapter may import influxdb_client`. Direct use of `influxdb_client.*` outside `hvac_scheduler/influx_adapter.py` is a build failure. Adapter pattern documented in `docs/type-debt-backlog.md` (which also tracks future adapter candidates like `pyControl4`).
+**Contract currently enforced**: `Only influx_adapter may import influxdb_client`. Direct use of `influxdb_client.*` outside `hvac_scheduler/influx_adapter.py` is a build failure. Adapter pattern documented in `docs/type-debt-backlog.md` (which also tracks future adapter candidates like the `ThermostatClient` device-client seam).
 
 **Test-relaxation overrides**: each service's `test_*.py` module appears in the `[[tool.mypy.overrides]]` block of `pyproject.toml` with `disallow_untyped_defs = false` + `disallow_untyped_decorators = false`. Production code is strict; tests get a controlled relaxation per spec §5.6. Other strict-mode flags (`disallow_incomplete_defs`, `disallow_any_generics`) still apply to tests — partial annotations must be completed.
 
@@ -239,8 +239,8 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | `influxdb_data` | influxdb | All time-series data (organizations, buckets, points) |
 | `influxdb_config` | influxdb | InfluxDB config |
 | `grafana_data` | grafana | Dashboards (only modifications; provisioned dashboards are read-only mounts), users, alerts state |
-| `hvac_scheduler_data` | hvac-scheduler | `/data/director_token.json` (Control4 token), `/data/overrides.json` (manual day-type / vacation overrides) |
-| `thermostat_poller_data` | thermostat-poller | `/data/director_token.json` (its own Control4 token, independent of hvac-scheduler) |
+| `hvac_scheduler_data` | hvac-scheduler | `/data/overrides.json` (manual / vacation overrides). (`/data/director_token.json` was the Control4 token of the retired pyControl4 path — no longer written behind the `ThermostatClient` seam.) |
+| `thermostat_poller_data` | thermostat-poller | (`/data/director_token.json` was its own Control4 token under the retired pyControl4 path — no longer written behind the `ThermostatClient` seam.) |
 | `haven_ingest_data` | haven-ingest | `/data/haven_token.json` (path overridable via `HAVEN_TOKEN_FILE`) — HAVEN Auth0 refresh token, rotates on every refresh and persisted across restarts |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
@@ -305,6 +305,6 @@ The broker stays up across `compose up -d` runs. To stop: `docker compose --prof
 - Top-level project: [`../../README.md`](../../README.md)
 - Project history & decisions: [`../../docs/PROJECT.md`](../../docs/PROJECT.md)
 - Per-service detail: [`../../docs/SERVICES.md`](../../docs/SERVICES.md)
-- HVAC scheduler logic: [`../../docs/HVAC_LOGIC.md`](../../docs/HVAC_LOGIC.md)
+- HVAC controller logic: [`../../docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](../../docs/superpowers/specs/2026-06-20-commissioning-controller-design.md)
 - Backup/restore: [`backup/RESTORE.md`](backup/RESTORE.md)
 - Infra context (VLAN/ZBF/Pi-lab state): `D:\Projects\Network_Management\CLAUDE.md`

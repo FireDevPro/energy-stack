@@ -3,7 +3,7 @@ date: 2026-06-20
 owner: chris
 status: draft (revision 3 — post context-fed review)
 role-label: code-team
-supersedes_intent_of: docs/HVAC_LOGIC.md (day-type / deep-precool model)
+supersedes_intent_of: the now-removed day-type / deep-precool controller model (its docs were deleted in the demolition)
 depends_on: Control4->TCC actuation swap (spec + plan on branch design/control4-to-tcc-swap, not yet merged)
 ---
 
@@ -223,9 +223,9 @@ Prerequisites (verify in the swap / operational checklist): the thermostat's
 setpoint min/max are set appropriately; **the CTK04 onboard fallback schedule is
 a known-safe cool schedule, captured as an authoritative current snapshot** — it
 is the safety fallback a lapsed hold reverts to, so it is *operationally current*,
-not historical. `docs/THERMOSTAT_ARM_A_SCHEDULE.md` is its home and must be
-refreshed to the deployed CTK04 program. `aiosomecomfort` exposes a time-based
-hold.
+not historical. Its dedicated schedule doc was deleted in the demolition; capture
+an authoritative snapshot of the deployed CTK04 onboard program (a new home for it
+is TBD). `aiosomecomfort` exposes a time-based hold.
 
 ## Telemetry
 

@@ -7,7 +7,7 @@ role-label: binding-reference
 extracted_from: archive/EXPERIMENT_DESIGN.md (§O2)
 extraction_pr: docs/plans/pre-osf-doc-audit-execution-2026-05-18.md PR6
 related:
-  - plans/sced-rebaseline-spec-2026-05-13.md
+  - superpowers/specs/2026-06-20-commissioning-controller-design.md
   - ../tools/o2_capacity_reconstruction/tariff_snapshot.md
 ---
 

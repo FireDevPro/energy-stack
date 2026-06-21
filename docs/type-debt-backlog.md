@@ -31,13 +31,13 @@ backlog tracks high-value surfaces where adapter wrapping pays off.
 
 **Operator follow-up (PR 1 acceptance):** VERIFIED 2026-05-21 — `influxdb_client==1.48.0` ships `py.typed`. The `[[tool.mypy.overrides]] ignore_missing_imports = true` block for `influxdb_client.*` has been removed from pyproject.toml; upstream stubs are now authoritative. The adapter pattern in PR 3 still applies as a projection seam.
 
-### pyControl4 (`pyControl4.*`) — Priority: P1
+### Device client (`ThermostatClient` seam) — Priority: P1
 
-**Status:** Not yet scheduled.
+**Status:** Not yet scheduled. The Control4/`pyControl4` client this entry originally tracked has been retired; the device client is now a stubbed `ThermostatClient` seam, with TCC/`aiosomecomfort` wiring deferred.
 
 **Surface:** HVAC command API used by the scheduler to drive setpoint changes. Smaller surface than influxdb-client; bugs here surface as commanded-setpoint mismatches.
 
-**Adapter scope (future):** wrap the `pyControl4` client's command-issuance methods (`set_temperature_offset`, `set_mode`, etc.) with typed dataclasses for inputs and a typed result for outputs.
+**Adapter scope (future):** the `ThermostatClient` seam is already the typed projection point — wrap the eventual TCC (`aiosomecomfort`) command-issuance methods with typed dataclasses for inputs and a typed result for outputs.
 
 ### Other libraries
 
