@@ -356,8 +356,6 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 - `CONTROL4_CONTROLLER_IP` — local Director (default `192.168.1.30`)
 - `CONTROL4_THERMOSTAT_ID` — item ID of the THERMOSTAT proxy (default `3231` — **NOT** `3230` which is the Cinegration backing driver)
 - `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid). Accepted values: `shadow` (never writes, logs decisions only — safe pre-experiment default), `experiment` (writes only during Arm B periods inside the locked 2026-06-01..2026-11-16 calendar; outside that window or during Arm A periods = no writes), `production` (writes always, ignores A/B calendar — deliberate non-study operation only). Replaces the retired `SCHEDULER_DRY_RUN` env var per binding spec §3 + the SCED rebaseline plan.
-- `SCHEDULER_DECISION_HOUR` — hour-of-day for daily decision (default 21)
-- `SCHEDULER_REVISIT_HOURS` — comma-separated local hours for intra-day forecast revisit (default `6,11`). Each revisit re-classifies today and overwrites the stored `hvac.decisions` row if the day-type shifted. See [`HVAC_LOGIC.md#decision-flow`](HVAC_LOGIC.md#decision-flow).
 - `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)
 - `INFLUXDB_*`
 
