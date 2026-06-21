@@ -35,6 +35,15 @@ mypy_path = "deploy/energy-stack"
 module = "yaml"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# aiosomecomfort (the maintained Total Connect Comfort scrape client, the
+# dep HA's honeywell integration ships) is untyped — no py.typed, no stubs.
+# tcc_client.py is the single typed adapter boundary that wraps it (see the
+# import-linter forbidden contract below), mirroring the influxdb_client /
+# influx_adapter pattern.
+module = "aiosomecomfort.*"
+ignore_missing_imports = true
+
 # Test-file relaxation. Mypy override `module` patterns must be
 # fully-qualified dotted module names (NOT filename globs). The list
 # below is populated per-service as migrations land. Each service PR
@@ -86,6 +95,9 @@ module = [
     # commissioning-controller test modules (added in A1)
     "hvac_scheduler.test_controller_config",
     "hvac_scheduler.test_controller_core",
+    # TCC adapter test modules (Control4 -> TCC swap)
+    "hvac_scheduler.test_tcc_client",
+    "thermostat_poller.test_tcc_client",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
@@ -122,4 +134,19 @@ ignore_imports = [
     # the adapter too, eliminating this exemption; PR 3b leaves it
     # as a bounded exception.
     "hvac_scheduler.app -> influxdb_client",
+]
+
+[[tool.importlinter.contracts]]
+name = "Only tcc_client may import aiosomecomfort"
+type = "forbidden"
+source_modules = ["hvac_scheduler"]
+forbidden_modules = ["aiosomecomfort"]
+ignore_imports = [
+    # tcc_client.py is the single typed adapter boundary wrapping the
+    # untyped aiosomecomfort library (mirrors influx_adapter). app.py
+    # imports TCCClient from tcc_client, never aiosomecomfort directly.
+    "hvac_scheduler.tcc_client -> aiosomecomfort",
+    # The adapter's own unit test imports the SessionTimedOut exception
+    # class to drive the reauth path — a test-only boundary exception.
+    "hvac_scheduler.test_tcc_client -> aiosomecomfort",
 ]

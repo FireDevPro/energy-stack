@@ -211,7 +211,9 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
+      TCC_USERNAME: ${TCC_USERNAME}
+      TCC_PASSWORD: ${TCC_PASSWORD}
+      TCC_DEVICE_ID: ${TCC_DEVICE_ID:-4750378}
       # SCHEDULER_MODE replaces the retired SCHEDULER_DRY_RUN env var
       # (spec §3 + plan standing rule). Module-import sys.exit(2) on
       # missing/invalid; default `shadow` keeps behavior safe-by-default
@@ -254,7 +256,9 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
+      TCC_USERNAME: ${TCC_USERNAME}
+      TCC_PASSWORD: ${TCC_PASSWORD}
+      TCC_DEVICE_ID: ${TCC_DEVICE_ID:-4750378}
       THERMOSTAT_POLL_INTERVAL: ${THERMOSTAT_POLL_INTERVAL:-600}
       OVERRIDE_GRACE_MIN: ${OVERRIDE_GRACE_MIN:-5}
       INFLUXDB_URL: http://influxdb:8086

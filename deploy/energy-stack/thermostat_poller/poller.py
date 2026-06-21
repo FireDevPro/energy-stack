@@ -1,22 +1,24 @@
 """CTK04 Thermostat → InfluxDB poller via a ThermostatClient device seam.
 
-The concrete device client (Control4 -> TCC swap) is deferred:
-``StubThermostatClient`` raises ``NotImplementedError`` for every method
-until the TCC (aiosomecomfort) read implementation is wired at go-active.
+The device client is the direct Total Connect Comfort (aiosomecomfort)
+``TCCClient`` (see tcc_client.py). When TCC creds are absent the poller
+keeps the inert ``StubThermostatClient`` (fail-loud on a read) so a
+credential-less deploy stays in the known not-yet-wired state.
 
 Reads thermostat state every THERMOSTAT_POLL_INTERVAL seconds (default 600 s =
 10 min, the TCC rate-limit floor) and writes:
 
   Measurement `hvac.thermostat`:
-    Tags:   thermostat_id (str)
+    Tags:   thermostat_id (str)  -- carries the TCC device id (cfg.device_id)
     Fields: indoor_temp_f, indoor_temp_f_hires, humidity_pct, cool_setpoint_f,
             heat_setpoint_f, hvac_mode (str), hvac_state (str), fan_mode (str),
             hold_mode (str)
 
-    indoor_temp_f_hires is derived from the Director's TEMPERATURE_C variable
-    (0.1°C resolution = ~0.18°F effective) vs indoor_temp_f's whole-degree
-    quantization from TEMPERATURE_F. Same underlying CTK04AE sensor. See
-    docs/THERMAL_ROUGH_CUT_2026-05-26.md for why both fields exist.
+    indoor_temp_f_hires == indoor_temp_f under TCC: TCC exposes only the single
+    whole-display-unit DispTemperature; there is no separate finer value. (The
+    Control4 "hi-res" came from the Director's separate TEMPERATURE_C variable,
+    which no longer exists.) Non-load-bearing; Ecowitt is the canonical finer
+    indoor source. The field is retained for schema continuity.
 
   Measurement `hvac.overrides` (only when manual override detected):
     Tags:   thermostat_id, source ("manual_override")
@@ -32,15 +34,14 @@ the thermostat time to acknowledge the scheduler's push), an override
 event is logged. No dedup in v1 — each poll cycle while overridden writes
 a new row, which is fine at 10-min cadence.
 
-Independent of hvac-scheduler: this poller owns its own device client
-and its own persisted token at /data/director_token.json (the concrete
-auth/token lifecycle lands with the deferred TCC implementation).
+Independent of hvac-scheduler: this poller owns its own TCC device client
+(aiosomecomfort manages its own session; no persisted token file).
 
 Environment variables:
-    CONTROL4_THERMOSTAT_ID      Thermostat device id (default 3231). The
-                                Control4-era value is dead; the TCC client
-                                will reuse this field with a Honeywell device
-                                id and a renamed env var at go-active.
+    TCC_DEVICE_ID               Honeywell TCC device id (default 4750378).
+    TCC_USERNAME                TCC account username. When unset (with
+                                TCC_PASSWORD) the poller stays inert (Stub).
+    TCC_PASSWORD                TCC account password.
     THERMOSTAT_POLL_INTERVAL    Seconds between polls (default 600)
     OVERRIDE_GRACE_MIN          Minutes after last action before counting
                                 a setpoint mismatch as an override (default 5)
@@ -48,7 +49,6 @@ Environment variables:
     INFLUXDB_TOKEN              Admin or write token
     INFLUXDB_ORG                InfluxDB organization
     INFLUXDB_BUCKET             Target bucket
-    DIRECTOR_TOKEN_FILE         Persisted Control4 token (default /data/director_token.json)
 """
 from __future__ import annotations
 
@@ -65,6 +65,8 @@ from typing import Any, Awaitable, Callable, Protocol
 from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
 
+from .tcc_client import TCCClient
+
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
 
 
@@ -76,16 +78,20 @@ def log(level: str, msg: str, **fields: Any) -> None:
 
 @dataclass(frozen=True)
 class Config:
-    # Thermostat device id. Kept for the Control4 -> TCC swap: the TCC
-    # client will reuse this field (with a Honeywell device id) once wired.
-    thermostat_id: int
+    # Honeywell Total Connect Comfort device id (the aiosomecomfort DeviceID).
+    device_id: int
+    # TCC credentials. Optional: when both are absent the poller keeps the
+    # inert StubThermostatClient (fail-loud on a device call) rather than
+    # constructing a TCCClient with no creds. Real values land via SOPS/.env
+    # at go-active.
+    email: str | None
+    password: str | None
     poll_interval: float
     override_grace_min: int
     influx_url: str
     influx_token: str
     influx_org: str
     influx_bucket: str
-    token_file: Path
 
     @staticmethod
     def from_env() -> "Config":
@@ -96,14 +102,15 @@ class Config:
                 sys.exit(2)
             return v
         return Config(
-            thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
+            device_id=int(os.environ.get("TCC_DEVICE_ID", "4750378")),
+            email=os.environ.get("TCC_USERNAME"),
+            password=os.environ.get("TCC_PASSWORD"),
             poll_interval=float(os.environ.get("THERMOSTAT_POLL_INTERVAL", "600")),
             override_grace_min=int(os.environ.get("OVERRIDE_GRACE_MIN", "5")),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
             influx_bucket=required("INFLUXDB_BUCKET"),
-            token_file=Path(os.environ.get("DIRECTOR_TOKEN_FILE", "/data/director_token.json")),
         )
 
 
@@ -124,7 +131,6 @@ class ClimateDevice(Protocol):
     ``read_snapshot`` calls — nothing more. All methods are async."""
 
     async def get_current_temperature_f(self) -> float: ...
-    async def get_current_temperature_c(self) -> float: ...
     async def get_cool_setpoint_f(self) -> float: ...
     async def get_heat_setpoint_f(self) -> float: ...
     async def get_hvac_mode(self) -> str: ...
@@ -172,10 +178,11 @@ async def read_snapshot(c4: ThermostatClient) -> dict[str, Any]:
     climate = await c4.get_climate()
     snap: dict[str, Any] = {}
     snap["indoor_temp_f"] = await c4.call_with_reauth(climate.get_current_temperature_f)
-    # The Director's TEMPERATURE_C variable carries 0.1°C resolution (~0.18°F
-    # effective) vs TEMPERATURE_F's whole-degree quantization. See
-    # docs/THERMAL_ROUGH_CUT_2026-05-26.md for why this matters.
-    snap["indoor_temp_c"] = await c4.call_with_reauth(climate.get_current_temperature_c)
+    # TCC exposes only the single whole-display-unit DispTemperature; there is
+    # no separate finer value, so indoor_temp_f_hires collapses to the whole
+    # reading in write_snapshot. (The Control4 "hi-res" came from the
+    # Director's separate TEMPERATURE_C variable, which no longer exists.
+    # Ecowitt is the canonical finer indoor source.)
     snap["cool_setpoint_f"] = await c4.call_with_reauth(climate.get_cool_setpoint_f)
     snap["heat_setpoint_f"] = await c4.call_with_reauth(climate.get_heat_setpoint_f)
     snap["hvac_mode"] = await c4.call_with_reauth(climate.get_hvac_mode)
@@ -189,13 +196,12 @@ async def read_snapshot(c4: ThermostatClient) -> dict[str, Any]:
 def write_snapshot(write_api: Any, cfg: Config, snap: dict[str, Any]) -> None:
     # `p: Any` lets the Point()/.tag()/.field() chain (untyped in
     # influxdb_client stubs) flow through without per-call ignores.
-    indoor_c = snap.get("indoor_temp_c")
-    indoor_f_hires = (float(indoor_c) * 9.0 / 5.0 + 32.0
-                      if indoor_c is not None
-                      else float(snap.get("indoor_temp_f") or 0))
+    # TCC has no finer-than-whole value: indoor_temp_f_hires == indoor_temp_f
+    # (the one deliberate behavior change; non-load-bearing, Ecowitt canonical).
+    indoor_f_hires = float(snap.get("indoor_temp_f") or 0)
     p: Any = (
         Point("hvac.thermostat")  # type: ignore[no-untyped-call]
-        .tag("thermostat_id", str(cfg.thermostat_id))
+        .tag("thermostat_id", str(cfg.device_id))
         .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
         .field("indoor_temp_f_hires", indoor_f_hires)
         .field("humidity_pct", float(snap.get("humidity_pct") or 0))
@@ -295,7 +301,7 @@ def detect_and_write_override(query_api: Any, write_api: Any, cfg: Config, snap:
     # influxdb_client stubs) flow through without per-call ignores.
     p: Any = (
         Point("hvac.overrides")  # type: ignore[no-untyped-call]
-        .tag("thermostat_id", str(cfg.thermostat_id))
+        .tag("thermostat_id", str(cfg.device_id))
         .tag("source", "manual_override")
         .field("expected_cool_setpoint_f", float(summary["expected_cool_f"]))
         .field("actual_cool_setpoint_f", float(summary["actual_cool_f"]))
@@ -315,7 +321,7 @@ def detect_and_write_override(query_api: Any, write_api: Any, cfg: Config, snap:
 
 async def main_async(cfg: Config) -> int:
     log("info", "startup",
-        thermostat_id=cfg.thermostat_id,
+        device_id=cfg.device_id,
         poll_interval_s=cfg.poll_interval,
         override_grace_min=cfg.override_grace_min,
         bucket=cfg.influx_bucket)
@@ -323,7 +329,16 @@ async def main_async(cfg: Config) -> int:
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
     query_api = influx.query_api()
     write_api = influx.write_api(write_options=SYNCHRONOUS)
-    c4 = StubThermostatClient(cfg)
+    # Construct the real TCC client when creds are present; otherwise keep the
+    # inert StubThermostatClient (fail-loud on a device call) so a credential-
+    # less deploy stays in the known not-yet-wired state rather than crashing.
+    c4: ThermostatClient
+    if cfg.email and cfg.password:
+        c4 = TCCClient(cfg.email, cfg.password, cfg.device_id)
+    else:
+        log("warn", "tcc_creds_absent_using_stub",
+            message="TCC_USERNAME/TCC_PASSWORD unset; thermostat reads inert")
+        c4 = StubThermostatClient(cfg)
 
     stop = asyncio.Event()
 
