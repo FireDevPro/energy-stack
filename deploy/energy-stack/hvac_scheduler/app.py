@@ -1192,8 +1192,7 @@ def action_in_effect_at(
 
 # Locked per EXPERIMENT_DESIGN.md Appendix A. Effective cool setpoint applied
 # during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
-# enough to functionally shut the AC off while staying inside the safety
-# supervisor's [65, 86]F clamp.
+# enough to functionally shut the AC off while still being a valid cool setpoint.
 COOL_SHUTOFF = 85
 
 
@@ -1205,8 +1204,8 @@ class LayerResolution:
 
     The resolution rule is "warmer wins": the schedule baseline and the
     price-overlay layer each propose a cool setpoint, and the effective
-    setpoint is the max of those proposals (capped later by the safety
-    supervisor's 86F upper bound).
+    setpoint is the max of those proposals (ceiling enforcement is Slice C;
+    no software supervisor exists — safety is device-owned).
 
     5CP is preserved as telemetry (``fivecp_active``, ``fivecp_cool``)
     so post-hoc analysis can reconstruct when 5CP would have fired, but
@@ -1234,8 +1233,9 @@ def resolve_layer_priority(
 ) -> LayerResolution:
     """Resolve the effective cool setpoint across schedule / price layers.
 
-    Layers (warmer-wins; safety supervisor enforces the 65-86F floor/ceiling
-    after this function returns):
+    Layers (warmer-wins; the floor clamp in ``_push_baseline_if_changed``
+    ensures the effective never falls below the baseline; no ceiling yet —
+    that is Slice C; no software supervisor — safety is device-owned):
 
       1. **Schedule baseline** -- the day-type schedule's cool_setpoint_f
          after `resolve_cool_setpoint` applies humid-override logic.
@@ -2099,8 +2099,8 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
     """Apply the action to the thermostat. Returns (applied, error).
 
     Both setpoints are passed in explicitly (rather than read from
-    `action.heat_setpoint` / etc.) because the safety supervisor may
-    have clamped or overridden them before this call.
+    `action.heat_setpoint` / etc.) so the caller controls what is applied
+    (e.g. the floor-clamped effective from ``_push_baseline_if_changed``).
 
     Two execution paths:
       * release_hold action: clears the Permanent hold so the thermostat's
@@ -2958,8 +2958,17 @@ async def _push_baseline_if_changed(
         tick_id = uuid.uuid4().hex
 
     baseline = firing.last_schedule_cool
-    # Floor clamp — the invariant. Effective is never below the baseline.
-    effective_cool = max(baseline, baseline)
+    assert cfg.controller_config is not None  # caller guarantees config-present path
+    heat_floor = cfg.controller_config.heat_floor  # native temp_scale; no conversion
+
+    # Floor clamp — the load-bearing invariant. Effective is never below the
+    # baseline. In Slice A there is no price offset so effective_cool == baseline
+    # after the clamp (the clamp is defensive/no-op this slice). Slice B sets
+    # effective_cool = baseline + price_offset before this line and inherits a
+    # working floor invariant.
+    # NOTE: a clamp test with teeth (effective < baseline) comes in Slice B.
+    effective_cool = baseline  # Slice A: no offset yet
+    effective_cool = max(effective_cool, baseline)  # floor invariant
 
     # No-push short-circuit: nothing to do when the effective is unchanged.
     if effective_cool == firing.last_pushed_effective_cool:
@@ -2971,17 +2980,17 @@ async def _push_baseline_if_changed(
         hour=now_local.hour, minute=now_local.minute,
         label="BASELINE",
         cool_setpoint=baseline,
-        heat_setpoint=HEAT_SETPOINT_FLOOR,
+        heat_setpoint=heat_floor,
         fan_mode=None,
     )
 
     applied, error = await execute_action(
-        c4, action, effective_cool, HEAT_SETPOINT_FLOOR, snapshot, cfg.dry_run,
+        c4, action, effective_cool, heat_floor, snapshot, cfg.dry_run,
         when_ct=now_local,
     )
     write_action(
         write_api, cfg.influx_bucket, "B", action,
-        effective_cool, HEAT_SETPOINT_FLOOR, None, "comfort_baseline",
+        effective_cool, heat_floor, None, "comfort_baseline",
         cfg.dry_run, applied, snapshot, error,
     )
     log("info", "baseline_push",

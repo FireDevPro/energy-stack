@@ -3510,10 +3510,15 @@ _A2_PROGRAM_F = [
 ]
 
 
-def _make_controller_config_stub() -> MagicMock:
-    """Minimal ControllerConfig stub for A2 tests (config-present path)."""
+def _make_controller_config_stub(heat_floor: float = 65.0) -> MagicMock:
+    """Minimal ControllerConfig stub for A2/A4 tests (config-present path).
+
+    ``heat_floor`` defaults to 65.0 (F-scale baseline); pass 18.5 for the
+    Celsius-config case.
+    """
     cc = MagicMock()
     cc.comfort_program = _A2_PROGRAM_F
+    cc.heat_floor = heat_floor
     return cc
 
 
@@ -3827,3 +3832,116 @@ def test_a4_required_feeds_excludes_weather():
     )
     assert "weather" not in feeds
     assert feeds == {"price": True}
+
+
+def test_a4_heat_setpoint_comes_from_config_heat_floor(monkeypatch):
+    """A4 Fix 1: heat setpoint pushed to execute_action / write_action comes
+    from cfg.controller_config.heat_floor, not the hardcoded HEAT_SETPOINT_FLOOR.
+
+    Tests both the F case (heat_floor=65.0) and the C case (heat_floor=18.5).
+    Under a Celsius config, pushing 65 would be a unit-correctness bug (65°C
+    is above the cool setpoint); 18.5 is the correct value.
+    """
+    import asyncio
+
+    def _run_one(heat_floor: float) -> dict[str, Any]:
+        _stub_layer_eval_io(monkeypatch, price_cents=5.0)
+        monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
+        monkeypatch.setattr(app, "load_overrides", lambda path: [])
+        monkeypatch.setattr(app, "read_thermostat_snapshot",
+                            AsyncMock(return_value={
+                                "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+                                "cool_setpoint_f": 75, "heat_setpoint_f": 65,
+                            }))
+
+        captured: dict[str, Any] = {}
+
+        async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+            captured["cool"] = cool
+            captured["heat"] = heat
+            return (False, None)
+        monkeypatch.setattr(app, "execute_action", AsyncMock(side_effect=_exec))
+
+        write_calls: list[Any] = []
+
+        def _write(*args: Any, **kwargs: Any) -> None:
+            write_calls.append(args)
+        monkeypatch.setattr(app, "write_action", _write)
+
+        cfg = _make_cfg_with_controller_config()
+        cfg.controller_config = _make_controller_config_stub(heat_floor=heat_floor)
+        cfg.overrides_file = "/nonexistent"
+        c4, _ = _mock_c4_client()
+
+        firing = FiringState()
+        now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+        asyncio.run(app.run_schedule_check(
+            cfg, c4, MagicMock(), MagicMock(),
+            ZoneInfo(cfg.tz_name), now_local, firing,
+        ))
+        captured["write_calls"] = write_calls
+        return captured
+
+    # F case: heat_floor=65.0 → pushed heat must be 65.0
+    result_f = _run_one(heat_floor=65.0)
+    assert result_f.get("heat") == 65.0, (
+        f"F-config: expected heat 65.0, got {result_f.get('heat')}"
+    )
+
+    # C case: heat_floor=18.5 → pushed heat must be 18.5, NOT 65
+    result_c = _run_one(heat_floor=18.5)
+    assert result_c.get("heat") == 18.5, (
+        f"C-config: expected heat 18.5, got {result_c.get('heat')} "
+        f"(65 would be a unit-correctness bug — 65°C above the cool setpoint)"
+    )
+    # Sanity: the cool (effective) is still the comfort baseline 78
+    assert result_c.get("cool") == 78.0, (
+        f"C-config: effective cool should be 78, got {result_c.get('cool')}"
+    )
+
+
+def test_a4_floor_clamp_is_max_effective_baseline(monkeypatch):
+    """A4 Fix 2: the floor clamp is structurally max(effective_cool, baseline)
+    rather than a self-comparison no-op.  In Slice A, effective_cool starts as
+    the baseline, so the clamp is still baseline-valued — but the code path is
+    correct and Slice B will inherit a working invariant.
+
+    This test verifies: last_pushed_effective_cool == baseline (the clamp did
+    not drop below baseline; in Slice A it equals baseline exactly).
+    A clamp test with teeth (effective < baseline before clamping) comes in
+    Slice B when the price offset is introduced.
+    """
+    import asyncio
+
+    _stub_layer_eval_io(monkeypatch, price_cents=5.0)
+    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 75, "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    cfg = _make_cfg_with_controller_config()
+    cfg.overrides_file = "/nonexistent"
+    c4, _ = _mock_c4_client()
+
+    firing = FiringState()
+    now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+
+    baseline = 78.0  # 13:00-19:00 block in _A2_PROGRAM_F
+    assert firing.last_schedule_cool == baseline
+    # Slice A: effective == baseline (clamp is no-op with no offset).
+    assert firing.last_pushed_effective_cool == baseline, (
+        f"effective must equal baseline {baseline}, "
+        f"got {firing.last_pushed_effective_cool}"
+    )
+    # Floor invariant holds: effective is never below baseline.
+    assert firing.last_pushed_effective_cool >= baseline
