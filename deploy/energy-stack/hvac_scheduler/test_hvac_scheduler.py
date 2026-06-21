@@ -17,16 +17,6 @@ import pytest
 from . import app
 
 
-@pytest.fixture(autouse=True)
-def _stub_pjm_inputs(monkeypatch):
-    """Default §7 PJM input fetch to (None, 130000.0) so the
-    decide_day_type callers don't try to query a MagicMock InfluxDB
-    every test. Tests that exercise the §7 escalation path override
-    this with explicit values."""
-    monkeypatch.setattr(
-        app, "_fetch_pjm_inputs_for_target_date",
-        lambda query_api, bucket, target_date_iso, tz: (None, 130000.0),
-    )
 from .app import (
     COOL_SHUTOFF,
     DAYTYPE_HOT,
@@ -44,13 +34,11 @@ from .app import (
     decide_day_type,
     execute_action,
     fetch_day_ahead_prices_for_date,
-    fetch_today_decision,
     action_in_effect_at,
     merge_same_hour_actions_deepest_wins,
     precool_window_action,
     resolve_cool_setpoint,
     resolve_layer_priority,
-    run_decision_revisit,
 )
 
 
@@ -698,308 +686,6 @@ async def test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_
     climate.set_cool_setpoint_f.assert_not_awaited()
 
 
-# ---- fetch_today_decision: lazy recompute on missing/stale decision -------
-
-
-def test_fetch_today_decision_returns_stored_value(monkeypatch):
-    """Happy path: decision was written at 21:00 yesterday, present today."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_HOT)
-    # Recompute path must NOT be touched.
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda *a, **kw: (_ for _ in ()).throw(
-                            AssertionError("forecast should not be queried when stored")))
-    write_api = MagicMock()
-
-    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
-
-    assert result == DAYTYPE_HOT
-    write_api.write.assert_not_called()  # no recompute, no write
-
-
-def test_fetch_today_decision_recomputes_when_stored_missing(monkeypatch):
-    """If the 21:00 decision didn't run, today's first schedule check
-    pulls today's live forecast and decides — the actual P2 fix."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-    today_forecast = {"high_f": 97.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
-
-    def _forecast(query_api, bucket, period):
-        # Tomorrow NORMAL (80F) so today is plain HOT, not HOT_STREAK.
-        return today_forecast if period == "today" else {"high_f": 80.0}
-
-    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.5, now_utc=now_utc))
-    write_api = MagicMock()
-
-    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
-
-    # Forecast high 97 → HOT_5CP_RISK.
-    assert result == DAYTYPE_HOT
-    # Recomputed decision was persisted so subsequent calls find it.
-    write_api.write.assert_called_once()
-
-
-def test_fetch_today_decision_falls_back_to_normal_when_no_forecast(monkeypatch):
-    """When BOTH the stored decision AND today's forecast are missing,
-    return NORMAL but do NOT persist (avoid writing a junk sentinel)."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-    monkeypatch.setattr(app, "fetch_latest_forecast", lambda *a, **kw: None)
-    write_api = MagicMock()
-
-    result = fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
-
-    assert result == DAYTYPE_NORMAL
-    # Critical: don't persist a fallback decision — it'd hide the real
-    # issue (missing forecast) on every subsequent check.
-    write_api.write.assert_not_called()
-
-
-def test_fetch_today_decision_passes_day2_forecast_for_streak_detection(monkeypatch):
-    """Recompute must include the day-after forecast so today can be
-    correctly classified as HOT_STREAK_DAY1 when tomorrow is also HOT."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-
-    captured: dict[str, list[str]] = {}
-
-    def _forecast(query_api: Any, bucket: str, period: str) -> Any:
-        captured.setdefault("queried", []).append(period)
-        if period == "today":
-            return {"high_f": 96.0}
-        if period == "tomorrow":
-            return {"high_f": 97.0}
-        return None
-
-    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: None)
-    write_api = MagicMock()
-
-    fetch_today_decision(MagicMock(), write_api, "energy", "2026-07-15")
-
-    # Both today AND tomorrow must be queried so streak detection works.
-    assert "today" in captured["queried"]
-    assert "tomorrow" in captured["queried"]
-
-
-# ---- run_decision_revisit: intra-day forecast re-evaluation ---------------
-
-
-def _make_revisit_cfg(bucket: str = "energy", tz_name: str = "America/Chicago") -> MagicMock:
-    """Build a Config-shaped object with just what run_decision_revisit reads.
-    Avoids constructing the full Config (which would need every env-var
-    field). app's frozen=True keeps mutability honest; using a Mock for the
-    attributes we need."""
-    cfg = MagicMock()
-    cfg.influx_bucket = bucket
-    cfg.tz_name = tz_name
-    return cfg
-
-
-def test_revisit_no_change_does_not_overwrite(monkeypatch):
-    """When the live forecast still classifies as the stored day_type,
-    revisit must NOT write a new decision (no-op log only)."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_NORMAL)
-    # 80F max -- inside the 75-85F NORMAL band under the recalibrated
-    # thresholds, so the live forecast still classifies as NORMAL.
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 80.0,
-                                          "max_dewpoint_f": 60.0,
-                                          "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_not_called()
-
-
-def test_revisit_escalates_normal_to_hot_when_forecast_busts_up(monkeypatch):
-    """The bug-the-research-flagged scenario: 21:00 yesterday committed
-    NORMAL based on 88°F forecast; morning forecast now says 96°F. Revisit
-    must overwrite the stored decision so the noon coast and 14:00 shutoff
-    fire under HOT_SCHEDULE."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_NORMAL)
-    # Today HOT (96F), tomorrow NORMAL (80F under the recalibrated 75-85F
-    # NORMAL band) -- plain HOT, not streak.
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, period: (
-                            {"high_f": 96.0, "max_dewpoint_f": 70.0,
-                             "is_heat_advisory": 0}
-                            if period == "today"
-                            else {"high_f": 80.0, "max_dewpoint_f": 60.0,
-                                  "is_heat_advisory": 0}
-                        ))
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_called_once()
-    # The Point passed to write should carry the new HOT day_type as a tag.
-    point = write_api.write.call_args.kwargs.get("record")
-    assert point is not None
-    assert dict(point._tags).get("day_type") == DAYTYPE_HOT
-
-
-def test_revisit_de_escalates_hot_to_normal_when_forecast_cools(monkeypatch):
-    """Symmetric: forecast yesterday said 96 (HOT), this morning's update
-    says 80 (NORMAL under the recalibrated 75-85F band). Revisit overwrites
-    so we don't unnecessarily run the aggressive HOT shutoff."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_HOT)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 80.0,
-                                          "max_dewpoint_f": 60.0,
-                                          "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_called_once()
-    point = write_api.write.call_args.kwargs.get("record")
-    assert dict(point._tags).get("day_type") == DAYTYPE_NORMAL
-
-
-def test_revisit_no_forecast_does_not_overwrite(monkeypatch):
-    """If today's forecast can't be read (NWS poller down, fresh deploy),
-    revisit logs a warning and does NOT touch the stored decision —
-    the 21:00 commitment stands."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_NORMAL)
-    monkeypatch.setattr(app, "fetch_latest_forecast", lambda *a, **kw: None)
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_not_called()
-
-
-def test_revisit_promotes_to_hot_streak_when_tomorrow_also_hot(monkeypatch):
-    """Streak detection must work in the revisit path too — if today
-    becomes HOT and tomorrow's forecast is also HOT, today should
-    re-classify as HOT_STREAK_DAY1, not just HOT, so we get the deeper
-    pre-cool tomorrow morning."""
-    from .app import DAYTYPE_HOT_STREAK_DAY1
-
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_NORMAL)
-
-    def _forecast(q, b, period):
-        if period == "today":
-            return {"high_f": 96.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
-        if period == "tomorrow":
-            return {"high_f": 97.0, "max_dewpoint_f": 71.0, "is_heat_advisory": 0}
-        return None
-
-    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_called_once()
-    point = write_api.write.call_args.kwargs.get("record")
-    assert dict(point._tags).get("day_type") == DAYTYPE_HOT_STREAK_DAY1
-
-
-def test_revisit_promotes_to_hot_streak_when_pjm_forecast_5cp_risk(monkeypatch):
-    """§7 single-day forecast 5CP-risk path through run_decision_revisit:
-    today is HOT (95F), tomorrow is NORMAL (so the multi-day path
-    doesn't fire), and PJM's published forecast peak for today exceeds
-    the season-to-date 5th highest by >5%. Revisit must escalate to
-    HOT_STREAK_DAY1 with reason='forecast_5cp_risk_single_day'.
-
-    This is the wire-up test: it exercises the production caller
-    feeding the §7 inputs into decide_day_type, not just the function's
-    kwargs in isolation."""
-    from .app import DAYTYPE_HOT_STREAK_DAY1
-
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_HOT)
-
-    def _forecast(q, b, period):
-        if period == "today":
-            return {"high_f": 95.0, "max_dewpoint_f": 70.0, "is_heat_advisory": 0}
-        if period == "tomorrow":
-            return {"high_f": 80.0, "max_dewpoint_f": 60.0, "is_heat_advisory": 0}
-        return None
-
-    monkeypatch.setattr(app, "fetch_latest_forecast", _forecast)
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    # Override the autouse fixture: today's PJM peak forecast 145000 MW,
-    # season-to-date 5th 130000 MW -- ratio 1.115 > 1.05, so §7 fires.
-    monkeypatch.setattr(
-        app, "_fetch_pjm_inputs_for_target_date",
-        lambda q, b, d, tz: (145000.0, 130000.0),
-    )
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_called_once()
-    point = write_api.write.call_args.kwargs.get("record")
-    assert dict(point._tags).get("day_type") == DAYTYPE_HOT_STREAK_DAY1
-    line = point.to_line_protocol()
-    assert "forecast_5cp_risk_single_day" in line
-
-
-def test_revisit_does_not_escalate_when_pjm_inputs_unavailable(monkeypatch):
-    """§7 graceful degradation: when PJM forecast peak is None (e.g.,
-    21:00 ran before tomorrow's load forecast was posted), the revisit
-    falls back to plain HOT, not HOT_STREAK_DAY1."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_NORMAL)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 95.0, "max_dewpoint_f": 70.0,
-                                          "is_heat_advisory": 0}
-                        if p == "today" else
-                        {"high_f": 80.0, "max_dewpoint_f": 60.0,
-                         "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    # PJM forecast unavailable; helper returns (None, season_5th).
-    monkeypatch.setattr(
-        app, "_fetch_pjm_inputs_for_target_date",
-        lambda q, b, d, tz: (None, 130000.0),
-    )
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    write_api.write.assert_called_once()
-    point = write_api.write.call_args.kwargs.get("record")
-    assert dict(point._tags).get("day_type") == DAYTYPE_HOT  # plain HOT, not streak
-
-
-def test_revisit_handles_no_stored_decision_yet(monkeypatch):
-    """First-run case: no decision was ever written, but a forecast
-    arrived. Revisit treats stored=None as 'differs from new', writes
-    the decision."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: {"high_f": 90.0,
-                                          "max_dewpoint_f": 65.0,
-                                          "is_heat_advisory": 0})
-    monkeypatch.setattr(app, "fetch_latest_comed",
-                        lambda q, b, *, now_utc: _fresh_sample(4.0, now_utc=now_utc))
-    write_api = MagicMock()
-
-    run_decision_revisit(_make_revisit_cfg(), MagicMock(), write_api, "2026-07-15")
-
-    # Wrote the freshly-classified decision.
-    write_api.write.assert_called_once()
-
-
-
 # ---- §7 price-aware pre-cool wire-up -------------------------------------
 
 
@@ -1522,117 +1208,6 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
         if "hvac.price_overlay" in c.kwargs.get("record").to_line_protocol()
     )
     assert transition_count == 1
-
-
-# ---- P1.3: _read_stored_decision multi-revision Flux semantics ------------
-
-
-def _mock_query_api_for_decisions(records: list[dict[str, Any]]) -> MagicMock:
-    """Build a query_api mock whose ``.query(flux)`` returns a list of
-    tables. ``records`` is a flat list of dicts, each mapped to one
-    Flux record's ``.values``. All records appear in a single table
-    (matching what the fixed ``group() |> sort |> limit 1`` pipeline
-    produces -- one flattened table with the chosen rows).
-
-    Side effect: the mock stores the Flux query string at ``.last_flux``
-    for regression assertions against the pipeline structure.
-    """
-    mock = MagicMock()
-    mock.last_flux = None
-
-    def _query(flux: str) -> list[Any]:
-        mock.last_flux = flux
-
-        class _Rec:
-            def __init__(self, values: dict[str, Any]) -> None:
-                self.values = values
-
-        class _Table:
-            def __init__(self, recs: list[dict[str, Any]]) -> None:
-                self.records = [_Rec(r) for r in recs]
-
-        return [_Table(records)]
-
-    mock.query = _query
-    return mock
-
-
-def test_read_stored_decision_returns_day_type_when_present():
-    """Happy path: one decision row exists, function returns its
-    day_type tag value."""
-    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
-    assert app._read_stored_decision(q, "energy", "2026-07-15") == "HOT"
-
-
-def test_read_stored_decision_returns_none_when_empty():
-    """No decision rows in bucket -> None. fetch_today_decision's lazy
-    recompute path depends on this being None, not raising."""
-    q = _mock_query_api_for_decisions([])
-    assert app._read_stored_decision(q, "energy", "2026-07-15") is None
-
-
-def test_read_stored_decision_flux_query_flattens_series_with_group():
-    """Regression guard: the Flux pipeline MUST include ``group()`` to
-    flatten tag-keyed series before picking the latest. Without it,
-    a NORMAL->HOT revisit creates two series (different day_type tag
-    values), and ``last()`` per-series + Python iteration in
-    unspecified order can return the older NORMAL day_type and silently
-    defeat the 06:00/11:00 forecast-bust correction path."""
-    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
-    app._read_stored_decision(q, "energy", "2026-07-15")
-    assert "|> group()" in q.last_flux
-
-
-def test_read_stored_decision_flux_filters_by_single_field_before_group():
-    """Regression guard for the 2026-05-11 production incident:
-    ``group()`` without a prior ``_field`` filter triggers an Influx
-    runtime error ``schema collision: cannot group string and float
-    types together`` because ``hvac.decisions`` carries fields of
-    mixed types (high_f float, dry_run string, etc.) and flattening
-    collides them in the ``_value`` column.
-
-    The Flux MUST filter to a single ``_field`` BEFORE ``group()`` so
-    the flattened table has a homogeneous ``_value`` type. ``high_f``
-    is the canonical choice because every ``write_decision`` call
-    writes it -- one row per decision write, one per
-    (decision_for_date, day_type) pair, which is exactly what the
-    rank-by-time path needs."""
-    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
-    app._read_stored_decision(q, "energy", "2026-07-15")
-    flux = q.last_flux
-    assert 'r._field == "high_f"' in flux
-    field_pos = flux.index('r._field == "high_f"')
-    group_pos = flux.index("|> group()")
-    assert field_pos < group_pos
-
-
-def test_read_stored_decision_flux_query_picks_latest_by_time():
-    """Regression guard: after ``group()``, the query MUST sort
-    descending by ``_time`` and ``limit(n: 1)`` so the most recent
-    decision wins. Returning an older row when a newer revisit
-    exists is the P1.3 bug class."""
-    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
-    app._read_stored_decision(q, "energy", "2026-07-15")
-    flux = q.last_flux
-    assert "sort(columns: [\"_time\"], desc: true)" in flux
-    assert "limit(n: 1)" in flux
-
-
-def test_read_stored_decision_handles_record_without_day_type():
-    """Defensive: if a row somehow lacks ``day_type`` (corrupt tag
-    state, partial write), continue iterating rather than crash.
-    Returns None when no row carries a non-empty day_type."""
-    q = _mock_query_api_for_decisions([{"day_type": None}, {"day_type": ""}])
-    assert app._read_stored_decision(q, "energy", "2026-07-15") is None
-
-
-def test_read_stored_decision_targets_correct_decision_for_date():
-    """The decision_for_date filter must appear verbatim in the Flux
-    so a query for 2026-07-15 doesn't accidentally pull 2026-07-14's
-    last decision."""
-    q = _mock_query_api_for_decisions([{"day_type": "HOT"}])
-    app._read_stored_decision(q, "energy", "2026-07-15")
-    assert 'r.decision_for_date == "2026-07-15"' in q.last_flux
 
 
 # ---- P2: price tier preservation across feed gap --------------------------
@@ -3311,189 +2886,6 @@ def test_action_in_effect_returns_release_hold_when_it_is_latest():
     assert act.label == "RELEASE_HOLD" and act.release_hold is True
 
 
-# ---- resolve_schedule_for_date_readonly (Task 3: restart baseline reconstruction) --
-
-
-def test_resolve_schedule_for_date_readonly_uses_stored_decision(monkeypatch):
-    """No active override -> falls through to _read_stored_decision; returns
-    the schedule for the stored day-type."""
-    monkeypatch.setattr(app, "_read_stored_decision",
-                        lambda q, b, d: DAYTYPE_HOT)
-
-    result = app.resolve_schedule_for_date_readonly(
-        "2026-07-15", MagicMock(), "energy", []
-    )
-
-    assert result == app.HOT_SCHEDULE
-
-
-def test_resolve_schedule_for_date_readonly_vacation_override_wins(monkeypatch):
-    """A vacation override takes precedence over any stored decision."""
-    # _read_stored_decision must NOT be called when vacation wins.
-    monkeypatch.setattr(
-        app, "_read_stored_decision",
-        lambda q, b, d: (_ for _ in ()).throw(
-            AssertionError("_read_stored_decision must not be called for vacation override"))
-    )
-    vac_override = app.Override(
-        from_date="2026-07-14",
-        to_date="2026-07-16",
-        cool_setpoint_f=82,
-        heat_setpoint_f=60,
-    )
-
-    result = app.resolve_schedule_for_date_readonly(
-        "2026-07-15", MagicMock(), "energy", [vac_override]
-    )
-
-    # vacation_schedule returns ScheduleAction instances with VACATION_AFFIRM label
-    assert len(result) > 0
-    assert all(a.label == "VACATION_AFFIRM" for a in result)
-
-
-def test_resolve_schedule_for_date_readonly_returns_empty_when_no_override_and_no_decision(
-    monkeypatch,
-):
-    """No override AND no stored decision -> returns [] (caller treats as no baseline)."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-
-    result = app.resolve_schedule_for_date_readonly(
-        "2026-07-15", MagicMock(), "energy", []
-    )
-
-    assert result == []
-
-
-def test_resolve_schedule_for_date_readonly_day_type_override_parity(monkeypatch):
-    """A day_type override short-circuits to the matching schedule without
-    touching _read_stored_decision."""
-    monkeypatch.setattr(
-        app, "_read_stored_decision",
-        lambda q, b, d: (_ for _ in ()).throw(
-            AssertionError("_read_stored_decision must not be called for day_type override"))
-    )
-    dt_override = app.Override(
-        from_date="2026-07-14",
-        to_date="2026-07-16",
-        day_type=app.DAYTYPE_HOT,
-        # cool_setpoint_f intentionally absent (None) so is_vacation() is False
-    )
-
-    result = app.resolve_schedule_for_date_readonly(
-        "2026-07-15", MagicMock(), "energy", [dt_override]
-    )
-
-    assert result == app.HOT_SCHEDULE
-
-
-def test_resolve_schedule_for_date_readonly_does_not_call_fetch_today_decision(monkeypatch):
-    """Stored-decision branch must use _read_stored_decision, never the
-    write-capable fetch_today_decision (P1-B read-only invariant)."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: app.DAYTYPE_NORMAL)
-    monkeypatch.setattr(
-        app, "fetch_today_decision",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            AssertionError("fetch_today_decision must not be called by the read-only path"))
-    )
-
-    result = app.resolve_schedule_for_date_readonly(
-        "2026-07-15", MagicMock(), "energy", []
-    )
-
-    assert result == app.NORMAL_SCHEDULE
-
-
-# ---- reconstruct_startup_baseline (Task 4) ------------------------------------
-
-CT = ZoneInfo("America/Chicago")
-
-
-def test_reconstruct_startup_baseline_daytime_coast_normal(monkeypatch):
-    """Daytime restart mid-COAST on a NORMAL day -> baseline 79 (COAST), label COAST."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    assert firing.last_schedule_cool == 79
-    assert firing.last_action_label == "COAST"
-
-
-def test_reconstruct_startup_baseline_overnight_yesterday_normal(monkeypatch):
-    """Overnight (03:00), today NORMAL (no action <= 03:00), yesterday NORMAL ->
-    yesterday's last action is SLEEP (73)."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    # NORMAL_SCHEDULE's last action by minute is SLEEP at 21:00 -> 73
-    assert firing.last_schedule_cool == 73
-    assert firing.last_action_label == "SLEEP"
-
-
-def test_reconstruct_startup_baseline_overnight_yesterday_mild(monkeypatch):
-    """Overnight (03:00), yesterday MILD -> yesterday's last action is now
-    SLEEP=73 (MILD is a real Pi-owned schedule), so the baseline carries 73."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    assert firing.last_schedule_cool == 73
-    assert firing.last_action_label == "SLEEP"
-
-
-def test_reconstruct_startup_baseline_mild_today_at_1000(monkeypatch):
-    """Restart during a MILD day at 10:00 -> MILD_MORNING (06:00) is in effect
-    (MILD is now Pi-owned), so the baseline carries 73."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_MILD)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 10, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, MILD_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    assert firing.last_schedule_cool == 73
-    assert firing.last_action_label == "MILD_MORNING"
-
-
-def test_reconstruct_startup_baseline_overnight_no_yesterday_decision(monkeypatch):
-    """Overnight (03:00), yesterday has no stored decision -> baseline None."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: None)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 3, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    assert firing.last_schedule_cool is None
-
-
-def test_reconstruct_startup_baseline_leaves_last_pushed_untouched(monkeypatch):
-    """After daytime reconstruction, last_pushed_effective_cool is still None."""
-    monkeypatch.setattr(app, "_read_stored_decision", lambda q, b, d: DAYTYPE_NORMAL)
-    firing = FiringState()
-    now = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
-
-    app.reconstruct_startup_baseline(
-        firing, NORMAL_SCHEDULE, now, None, MagicMock(), "energy", []
-    )
-
-    assert firing.last_pushed_effective_cool is None
-
-
 # ---- A2: per-tick comfort baseline sourced from controller_config ----------
 #
 # These tests cover the config-gated per-tick baseline path added in A2.
@@ -3540,12 +2932,8 @@ def test_a2_block_boundary_baseline_matches_new_block(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_today_decision",
-                        lambda q, w, b, t: "NORMAL")
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "read_precool_window_for_date",
-                        lambda q, b, d: None)
     monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
@@ -3589,19 +2977,9 @@ def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeyp
     reconstruction -- so last_schedule_cool is not None on the first tick."""
     import asyncio
 
-    reconstruct_called = []
-
-    def _fake_reconstruct(*args, **kwargs):
-        reconstruct_called.append(True)
-
-    monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_today_decision",
-                        lambda q, w, b, t: "NORMAL")
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "read_precool_window_for_date",
-                        lambda q, b, d: None)
     monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
@@ -3631,13 +3009,10 @@ def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeyp
         ZoneInfo(cfg.tz_name), now_local, firing,
     ))
 
-    # Key assertion: baseline recomputed from config, not startup reconstruction
+    # Key assertion: baseline recomputed from config (the startup
+    # reconstruction path no longer exists; the config path is the only path).
     assert firing.last_schedule_cool == 78.0, (
         f"mid-block restart should recompute 78.0 from config, got {firing.last_schedule_cool}"
-    )
-    # startup reconstruction must NOT have been called (config path bypasses it)
-    assert not reconstruct_called, (  # type: ignore[unreachable]
-        "reconstruct_startup_baseline must not run when controller_config is present"
     )
 
 
@@ -3649,12 +3024,8 @@ def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_today_decision",
-                        lambda q, w, b, t: "MILD")
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "read_precool_window_for_date",
-                        lambda q, b, d: None)
     monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
