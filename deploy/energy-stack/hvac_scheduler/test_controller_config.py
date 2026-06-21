@@ -8,12 +8,14 @@ Run: cd deploy/energy-stack/hvac_scheduler && python -m pytest test_controller_c
 from __future__ import annotations
 
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from . import app
 from .controller_config import ControllerConfig, load_controller_config
+from .controller_core import comfort_baseline_cool
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +255,8 @@ def test_from_env_with_controller_config_file_set(
     for k, v in _BASE_ENV.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("CONTROLLER_CONFIG_FILE", yaml_path)
+    # A3: VALID_YAML has temp_scale: C — env must agree or fail-fast fires.
+    monkeypatch.setenv("TEMP_SCALE", "C")
 
     cfg = app.Config.from_env()
 
@@ -272,3 +276,117 @@ def test_from_env_without_controller_config_file(
     cfg = app.Config.from_env()
 
     assert cfg.controller_config is None
+
+
+# ---------------------------------------------------------------------------
+# 10. A3 — temp_scale coherence: fail-fast on mismatch + end-to-end on-grid
+# ---------------------------------------------------------------------------
+#
+# Two unit sources must agree:
+#   - Config.temp_scale  (from env TEMP_SCALE, default "F")
+#   - ControllerConfig.temp_scale  (from YAML — the experimental surface)
+#
+# When they disagree the controller would operate in one unit while config
+# values are authored in another (silent unit bug). A3 fails fast at load.
+
+_VALID_YAML_F = """\
+temp_scale: F
+comfort_program:
+  - {from: "22:00", to: "06:00", cool: 73}
+  - {from: "06:00", to: "12:00", cool: 75}
+  - {from: "12:00", to: "18:00", cool: 78}
+  - {from: "18:00", to: "22:00", cool: 75}
+heat_floor: 65
+flexibility:     {warm_band: 2, spike_extra: 2}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
+ceiling:         {comfort_max: 85}
+hold_ttl_minutes: 60
+modes:           {stage1_ramp: {enabled: false}}
+"""
+
+
+def test_a3_temp_scale_mismatch_fails_fast(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A3: YAML temp_scale: C with env TEMP_SCALE=F must fail fast (sys.exit)."""
+    # VALID_YAML has temp_scale: C; env says F — mismatch must cause sys.exit(2).
+    yaml_path = _write_yaml(tmp_path, VALID_YAML)
+    for k, v in _BASE_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("CONTROLLER_CONFIG_FILE", yaml_path)
+    monkeypatch.setenv("TEMP_SCALE", "F")  # deliberately disagrees with YAML C
+
+    with pytest.raises(SystemExit) as exc_info:
+        app.Config.from_env()
+    assert exc_info.value.code == 2
+
+
+def test_a3_temp_scale_mismatch_reverse_fails_fast(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A3: YAML temp_scale: F with env TEMP_SCALE=C must also fail fast."""
+    yaml_path = _write_yaml(tmp_path, _VALID_YAML_F)
+    for k, v in _BASE_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("CONTROLLER_CONFIG_FILE", yaml_path)
+    monkeypatch.setenv("TEMP_SCALE", "C")  # deliberately disagrees with YAML F
+
+    with pytest.raises(SystemExit) as exc_info:
+        app.Config.from_env()
+    assert exc_info.value.code == 2
+
+
+def test_a3_celsius_config_baseline_on_half_degree_grid(tmp_path: Path) -> None:
+    """A3 end-to-end: C config with 0.5-step values → baseline always on 0.5 grid.
+
+    Drives config temp_scale through load_controller_config → comfort_baseline_cool
+    and asserts every block's setpoint is a multiple of 0.5. Reuses _on_grid from
+    controller_config (indirectly via the loaded ControllerConfig) without
+    duplicating the grid math.
+    """
+    yaml_path = _write_yaml(tmp_path, VALID_YAML)
+    cfg = load_controller_config(yaml_path)
+
+    assert cfg.temp_scale == "C"
+    # Sample one time per block; assert returned baseline is on the 0.5 grid.
+    sample_times = [
+        datetime(2026, 6, 20, 3, 0),   # 22:00-06:00 block → 23.5
+        datetime(2026, 6, 20, 9, 0),   # 06:00-12:00 block → 24.5
+        datetime(2026, 6, 20, 15, 0),  # 12:00-18:00 block → 25.5
+        datetime(2026, 6, 20, 20, 0),  # 18:00-22:00 block → 24.5
+    ]
+    for when in sample_times:
+        baseline = comfort_baseline_cool(cfg.comfort_program, when)
+        # On the C grid: value * 2 must be an integer.
+        assert (baseline * 2) == round(baseline * 2), (
+            f"baseline {baseline} at {when.strftime('%H:%M')} is not on the "
+            f"0.5°C grid (temp_scale={cfg.temp_scale})"
+        )
+
+
+def test_a3_fahrenheit_config_baseline_on_whole_degree_grid(tmp_path: Path) -> None:
+    """A3 end-to-end: F config with whole-number values → baseline always whole degrees.
+
+    Mirrors the C test but for the F scale: every block setpoint must be
+    a whole number (no fractional degrees).
+    """
+    yaml_path = _write_yaml(tmp_path, _VALID_YAML_F)
+    cfg = load_controller_config(yaml_path)
+
+    assert cfg.temp_scale == "F"
+    sample_times = [
+        datetime(2026, 6, 20, 3, 0),   # 22:00-06:00 block → 73
+        datetime(2026, 6, 20, 9, 0),   # 06:00-12:00 block → 75
+        datetime(2026, 6, 20, 15, 0),  # 12:00-18:00 block → 78
+        datetime(2026, 6, 20, 20, 0),  # 18:00-22:00 block → 75
+    ]
+    for when in sample_times:
+        baseline = comfort_baseline_cool(cfg.comfort_program, when)
+        # On the F grid: value must be a whole number.
+        assert baseline == round(baseline), (
+            f"baseline {baseline} at {when.strftime('%H:%M')} is not a whole "
+            f"degree (temp_scale={cfg.temp_scale})"
+        )

@@ -775,6 +775,28 @@ class Config:
                     path=controller_config_path, error=str(exc))
                 sys.exit(2)
 
+            # A3: unit coherence — controller logic runs in the env unit
+            # (TEMP_SCALE); config values are authored in the YAML unit.
+            # If they disagree the controller operates in one unit while
+            # setpoints are authored in another — a silent unit bug.
+            # Fail fast with a clear error so misconfiguration is visible
+            # immediately rather than producing subtly wrong setpoints.
+            env_temp_scale = os.environ.get("TEMP_SCALE", "F")
+            if controller_config.temp_scale != env_temp_scale:
+                log(
+                    "error",
+                    "temp_scale_mismatch",
+                    env_temp_scale=env_temp_scale,
+                    config_temp_scale=controller_config.temp_scale,
+                    message=(
+                        f"TEMP_SCALE env ({env_temp_scale!r}) disagrees with "
+                        f"controller_config.temp_scale ({controller_config.temp_scale!r}). "
+                        "Set TEMP_SCALE to match the YAML temp_scale or update the "
+                        "YAML. Refusing to start."
+                    ),
+                )
+                sys.exit(2)
+
         return Config(
             email=required("CONTROL4_EMAIL"),
             password=required("CONTROL4_PASSWORD"),
