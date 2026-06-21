@@ -15,7 +15,7 @@ Use-case reference for the `Promithius-DR/comfortnet` HVAC sniffer. Captures *wh
 
 ## Context
 
-ComfortNet sniffs the CT-485 communicating bus between the Amana CTK04AE thermostat, the AMVM971005CN modulating gas furnace, and the ASXC160481BE 2-stage AC. It decodes data the equipment talks to itself but the stock thermostat / cloud APIs (Honeywell TCC, Control4) don't expose:
+ComfortNet sniffs the CT-485 communicating bus between the Amana CTK04AE thermostat, the AMVM971005CN modulating gas furnace, and the ASXC160481BE 2-stage AC. It decodes data the equipment talks to itself but the stock thermostat / cloud API (Honeywell TCC) doesn't expose:
 
 - Furnace firing rate at high resolution (modulation %, not just stage 1/2)
 - Blower CFM
@@ -25,7 +25,7 @@ ComfortNet sniffs the CT-485 communicating bus between the Amana CTK04AE thermos
 - Currently-selected dealer settings
 - Outdoor unit stage transitions
 
-The CTK04 thermostat itself does **not** publish live state on CT-485 (returns a static fingerprint to coordinator polls). Room temp / setpoints / humidity continue to come from the existing `thermostat-poller` (Control4 EA-5 → `pyControl4.C4Climate` → `hvac.thermostat`). Consolidation happens in Grafana.
+The CTK04 thermostat itself does **not** publish live state on CT-485 (returns a static fingerprint to coordinator polls). Room temp / setpoints / humidity continue to come from the existing `thermostat-poller` (now reading through the stubbed `ThermostatClient` device-client seam; the Control4/`pyControl4` path was retired) → `hvac.thermostat`. Consolidation happens in Grafana.
 
 ## Capabilities this unlocks
 
@@ -74,7 +74,7 @@ What you'd see:
 
 ### 4. Fault and demand-vs-actual events to n8n / Telegram
 
-What the existing TCC / Control4 path doesn't expose:
+What the existing thermostat cloud/device path (TCC) doesn't expose:
 
 - Furnace IFC fault history with descriptive labels (`B3 MOTOR LIMITS`, `B6 MOTOR VOLTS`, `B4 MOTOR TRIPS`) via the user-menu decoder DIAG page
 - Demand vs. actual mismatch (thermostat asks for 50% heat, furnace responds with 35% — lockout? anti-cycling delay? capacity limit?)

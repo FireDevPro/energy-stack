@@ -13,7 +13,7 @@ Companion to the bespoke Python services in `../energy-stack/`. Use n8n for:
 - Threshold alerts → Telegram / email
 - Anything that's "fetch JSON, transform a bit, push elsewhere"
 
-Keep bespoke Python for: complex stateful logic (the HVAC scheduler), SDK integrations (pyControl4), tight cost-integration math, sub-minute polling.
+Keep bespoke Python for: complex stateful logic (the HVAC scheduler), SDK integrations (the thermostat device client), tight cost-integration math, sub-minute polling.
 
 First planned workflow: **Ecowitt receiver** (when GW1200 hardware arrives) — accept HTTP POST from the gateway every 60 s, parse, write to `ecowitt.outdoor` measurement in InfluxDB.
 

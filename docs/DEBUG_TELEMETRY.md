@@ -23,7 +23,7 @@ Arm A is the thermostat's autonomous 4-event daily schedule. Identical Mon–Sun
 | Return | 7:00 PM  | 68 | 75 | Automatic |
 | Sleep  | 10:00 PM | 65 | 73 | Automatic |
 
-Source of truth: [`docs/THERMOSTAT_ARM_A_SCHEDULE.md`](THERMOSTAT_ARM_A_SCHEDULE.md) + the TCC screenshot it cites. The locked spec doc is canonical — these values are reproduced here for at-a-glance reference only.
+Source of truth: the deployed CTK04 onboard program + the TCC screenshot it is captured from. These values are reproduced here for at-a-glance reference only. (The dedicated Arm A schedule doc was retired in the controller demolition; the CTK04 onboard schedule's role as the device-owned safety fallback is described in the [commissioning-controller spec, Safety section](superpowers/specs/2026-06-20-commissioning-controller-design.md#safety--device-owned-no-software-supervisor).)
 
 ## §2 — Arm B scheduler inputs
 
@@ -96,7 +96,6 @@ Every measurement currently in the `energy` bucket, with consumption status. **F
 
 - Behavior contract: [`AGENTS.md`](../AGENTS.md)
 - Doc map: [`INDEX.md`](../INDEX.md)
-- Binding spec: [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md)
-- Arm B scheduler logic: [`docs/HVAC_LOGIC.md`](HVAC_LOGIC.md)
+- Controller spec: [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md)
 - Per-service detail: [`docs/SERVICES.md`](SERVICES.md)
 - Knowledge graph: `.understand-anything/knowledge-graph.json` (grep before grepping the live tree for cross-file questions)

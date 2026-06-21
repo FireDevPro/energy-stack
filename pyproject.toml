@@ -29,7 +29,10 @@ mypy_path = "deploy/energy-stack"
 # Upstream stubs are authoritative. See docs/type-debt-backlog.md.
 
 [[tool.mypy.overrides]]
-module = "pyControl4.*"
+# PyYAML ships without py.typed; types-PyYAML is the stub package.
+# Suppressed here because types-PyYAML is not yet in requirements-dev.lock.
+# Add types-PyYAML to requirements-dev.in + re-lock to recover type safety.
+module = "yaml"
 ignore_missing_imports = true
 
 # Test-file relaxation. Mypy override `module` patterns must be
@@ -52,8 +55,6 @@ module = [
     "hvac_scheduler.test_hvac_scheduler",
     "hvac_scheduler.test_decision_trace",
     "hvac_scheduler.test_freshness",
-    "hvac_scheduler.test_pjm_5cp",
-    "hvac_scheduler.test_precool",
     "hvac_scheduler.test_price_overlay",
     "hvac_scheduler.test_integration_2025_replay",
     "hvac_scheduler.test_influx_adapter",
@@ -82,6 +83,9 @@ module = [
     "ecowitt_ingest.test_ecowitt_ingest",
     # telegram-notifier test modules (added in PR 14)
     "telegram_notifier.test_telegram_notifier",
+    # commissioning-controller test modules (added in A1)
+    "hvac_scheduler.test_controller_config",
+    "hvac_scheduler.test_controller_core",
 ]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
