@@ -1,2 +1,3 @@
 influxdb-client==1.48.0
 PyYAML==6.0.2
+aiosomecomfort==0.0.36

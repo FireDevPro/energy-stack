@@ -29,18 +29,18 @@ Run mode (write-gating):
 
 Actuation: COOL_SETPOINT + HOLD_MODE='Permanent' are pushed to the
 Honeywell thermostat via a ``ThermostatClient`` device seam. The concrete
-device client (Control4 -> TCC swap) is deferred: ``StubThermostatClient``
-raises ``NotImplementedError`` for every method until the TCC
-(aiosomecomfort) implementation is wired at go-active. Pi failure mode:
-the thermostat keeps its last-set setpoint (degraded scheduling, not a
-safety issue).
+device client is the direct Total Connect Comfort (aiosomecomfort)
+``TCCClient`` (see tcc_client.py). When TCC creds are absent the scheduler
+keeps the inert ``StubThermostatClient`` (fail-loud on a device call) so a
+credential-less deploy stays in the known not-yet-wired state. Pi failure
+mode: the thermostat keeps its last-set setpoint (degraded scheduling, not
+a safety issue).
 
 Environment variables:
-    CONTROL4_THERMOSTAT_ID      Thermostat device id (default 3231). The
-                                Control4-era value (a C4 item id) is dead;
-                                the TCC (aiosomecomfort) client will reuse
-                                this field with a Honeywell device id and a
-                                renamed env var at go-active.
+    TCC_DEVICE_ID               Honeywell TCC device id (default 4750378).
+    TCC_USERNAME                TCC account username. When unset (with
+                                TCC_PASSWORD) the scheduler stays inert (Stub).
+    TCC_PASSWORD                TCC account password.
     SCHEDULER_MODE              "shadow" | "production" (REQUIRED; no default).
                                 shadow = never writes; production = writes
                                 always. Module refuses to start (sys.exit(2))
@@ -60,7 +60,6 @@ Environment variables:
     INFLUXDB_TOKEN              admin or write token
     INFLUXDB_ORG                org
     INFLUXDB_BUCKET             bucket
-    DIRECTOR_TOKEN_FILE         path to persisted token (default /data/director_token.json)
 """
 from __future__ import annotations
 
@@ -99,6 +98,7 @@ from .price_overlay import (
 from .decision_codes import (
     PriceOverlayCode,
 )
+from .tcc_client import TCCClient
 
 
 # ---- Config ----------------------------------------------------------------
@@ -266,9 +266,14 @@ def _writes_allowed(when_ct: datetime) -> bool:
 
 @dataclass(frozen=True)
 class Config:
-    # Thermostat device id. Kept for the Control4 -> TCC swap: the TCC
-    # client will reuse this field (with a Honeywell device id) once wired.
-    thermostat_id: int
+    # Honeywell Total Connect Comfort device id (the aiosomecomfort DeviceID).
+    device_id: int
+    # TCC credentials. Optional: when both are absent the scheduler keeps the
+    # inert StubThermostatClient (fail-loud on a device call) rather than
+    # constructing a TCCClient with no creds. Real values land via SOPS/.env
+    # at go-active.
+    email: str | None
+    password: str | None
     dry_run: bool
     mode: str
     temp_scale: str
@@ -278,7 +283,6 @@ class Config:
     influx_token: str
     influx_org: str
     influx_bucket: str
-    token_file: Path
     # Set when CONTROLLER_CONFIG_FILE env var is present; None otherwise.
     # Nothing in the control loop consumes this yet — later tasks wire it in.
     controller_config: ControllerConfig | None = None
@@ -352,7 +356,11 @@ class Config:
                 sys.exit(2)
 
         return Config(
-            thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
+            device_id=int(os.environ.get("TCC_DEVICE_ID", "4750378")),
+            # Optional creds: None when unset. main_async keeps the inert
+            # StubThermostatClient if either is missing (fail-loud, not crash).
+            email=os.environ.get("TCC_USERNAME"),
+            password=os.environ.get("TCC_PASSWORD"),
             # dry_run derived from mode — defense in depth alongside the
             # SCHEDULER_MODE gate inside execute_action.
             dry_run=(mode == "shadow"),
@@ -372,7 +380,6 @@ class Config:
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
             influx_bucket=required("INFLUXDB_BUCKET"),
-            token_file=Path(os.environ.get("DIRECTOR_TOKEN_FILE", "/data/director_token.json")),
             controller_config=controller_config,
         )
 
@@ -1522,14 +1529,23 @@ SCHEDULER_TICK_SECOND = 10
 async def main_async(cfg: Config) -> int:
     tz = ZoneInfo(cfg.tz_name)
     log("info", "startup",
-        thermostat_id=cfg.thermostat_id,
+        device_id=cfg.device_id,
         dry_run=cfg.dry_run,
         tz=cfg.tz_name)
 
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
     query_api = influx.query_api()
     write_api = influx.write_api(write_options=SYNCHRONOUS)
-    c4 = StubThermostatClient(cfg)
+    # Construct the real TCC client when creds are present; otherwise keep the
+    # inert StubThermostatClient (fail-loud on a device call) so a credential-
+    # less deploy stays in the known not-yet-wired state rather than crashing.
+    c4: ThermostatClient
+    if cfg.email and cfg.password:
+        c4 = TCCClient(cfg.email, cfg.password, cfg.device_id)
+    else:
+        log("warn", "tcc_creds_absent_using_stub",
+            message="TCC_USERNAME/TCC_PASSWORD unset; thermostat I/O inert")
+        c4 = StubThermostatClient(cfg)
 
     # Sanity check at startup: prove we can talk to Director
     try:
