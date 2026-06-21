@@ -118,6 +118,15 @@ warmer-or-equal to baseline; thresholds and offsets are config:
 | scarcity | float toward the ceiling |
 | extreme | snap to the ceiling |
 
+**Setpoint formula (fixed step per tier, held):**
+`effective_cool = clamp(baseline + offset, floor = baseline, ceiling = comfort_max)`,
+where `offset` = `0` (normal) / `warm_band` (elevated) / `warm_band + spike_extra`
+(scarcity) / →`comfort_max` (extreme snaps straight to the ceiling). Scarcity
+"floats toward" the ceiling (lands partway via the two offsets, then clamped);
+extreme "snaps to" it. Every number is config (`comfort_program`, `flexibility`,
+`ceiling`); code owns only the two clamps and the warm-only direction — no
+hardcoded setpoints.
+
 `extreme` is a first-class 4th tier everywhere; its reason-classifier branch
 exists (else it mislabels as release-to-normal). **Extreme rationale:** an
 extreme-price hour carries tail probability of being a 5CP hour worth a year of
@@ -189,12 +198,16 @@ comfort_program:         # blocks {from, to, cool}; supports midnight wrap
   - {from: "18:00", to: "22:00", cool: 24.5}
 heat_floor: 18.5
 flexibility:     {warm_band: 1.0, spike_extra: 1.0}
-price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50}
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
 humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}
 ceiling:         {comfort_max: 29.0}        # the warm-drift ceiling the controller rides (tuned in 2026)
 hold_ttl_minutes: 60
 modes:           {stage1_ramp: {enabled: false}}
 ```
+
+Tier **release** thresholds derive as `trigger − hysteresis_cents` (anti-thrash
+buffer, was a hardcoded 2¢); the overlay **minimum-hold** is `hold_ttl_minutes`
+(was a hardcoded 30 min). No hardcoded numbers in the overlay.
 
 No `cheap` tier, no `runtime.mode` key, no `supervisor` block. `SCHEDULER_MODE`
 (env) is the sole write gate; secrets stay in env.
