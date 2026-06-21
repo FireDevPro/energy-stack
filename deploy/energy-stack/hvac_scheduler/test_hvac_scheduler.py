@@ -19,24 +19,12 @@ from . import app
 
 from .app import (
     COOL_SHUTOFF,
-    DAYTYPE_HOT,
-    DAYTYPE_MILD,
-    DAYTYPE_NORMAL,
     FiringState,
     LayerResolution,
-    MILD_SCHEDULE,
-    NORMAL_SCHEDULE,
-    HOT_SCHEDULE,
-    HOT_STREAK_DAY1_SCHEDULE,
     ScheduleAction,
-    _classify_one_day,
     _evaluate_layer_inputs,
-    decide_day_type,
     execute_action,
-    fetch_day_ahead_prices_for_date,
     action_in_effect_at,
-    merge_same_hour_actions_deepest_wins,
-    precool_window_action,
     resolve_cool_setpoint,
     resolve_layer_priority,
 )
@@ -173,249 +161,6 @@ def test_resolve_layer_priority_returns_layer_resolution_dataclass():
     assert isinstance(r, LayerResolution)
 
 
-# ---- Day-type classifier (recalibrated thresholds, EXPERIMENT_DESIGN App. A)
-
-
-def test_classify_high_88_apparent_88_is_hot():
-    """Pre-§1 this would be NORMAL (82-94F band); under the recalibrated
-    thresholds 88F crosses the HOT >=85F line and triggers HOT."""
-    assert _classify_one_day({"high_f": 88.0, "apparent_max_f": 88.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_HOT
-
-
-def test_classify_high_82_apparent_92_is_hot():
-    """Apparent-temperature path: dry-bulb is below the 85F floor but
-    apparent crosses 90F (humidity-driven), so HOT triggers regardless."""
-    assert _classify_one_day({"high_f": 82.0, "apparent_max_f": 92.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_HOT
-
-
-def test_classify_high_84_no_advisory_no_apparent_is_normal():
-    """Edge case: 84F is on the inside of NORMAL (75-85F band); 85F would
-    flip to HOT. Without apparent_max_f or heat advisory, stays NORMAL."""
-    assert _classify_one_day({"high_f": 84.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
-
-
-def test_classify_high_84_with_apparent_88_stays_normal():
-    """Apparent below the 90F threshold doesn't bump 84F dry-bulb to HOT;
-    the apparent path requires apparent_max_f >= 90F."""
-    assert _classify_one_day({"high_f": 84.0, "apparent_max_f": 88.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
-
-
-def test_classify_high_76_apparent_88_is_normal():
-    """76F dry-bulb stays in the 75-85F NORMAL band; apparent 88F is below
-    the 90F apparent threshold so no HOT trigger."""
-    assert _classify_one_day({"high_f": 76.0, "apparent_max_f": 88.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_NORMAL
-
-
-def test_classify_high_70_is_mild():
-    """Below the 75F NORMAL threshold -> MILD."""
-    assert _classify_one_day({"high_f": 70.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_MILD
-
-
-def test_classify_heat_advisory_overrides_temp():
-    """Even at 70F, an active heat advisory (sustained high-humidity event)
-    is treated as HOT for safety. Behaviour preserved from pre-§1."""
-    assert _classify_one_day({"high_f": 70.0, "is_heat_advisory": 1}) == DAYTYPE_HOT
-
-
-def test_classify_apparent_alone_can_trigger_hot():
-    """If high_f is missing entirely (degraded fixture) but apparent_max_f
-    is >= 90F, HOT still triggers — graceful behaviour when one variable
-    drops out of the upstream forecast."""
-    assert _classify_one_day({"apparent_max_f": 91.0,
-                              "is_heat_advisory": 0}) == DAYTYPE_HOT
-
-
-def test_classify_partial_forecast_no_temps_falls_back_to_normal(capsys):
-    """P2.7 regression: a forecast row that's present but missing both
-    high_f and apparent_max_f (degraded NWS parse / API failure)
-    previously fell through to DAYTYPE_MILD, whose schedule has no
-    pre-cool. That under-protects an actually-hot day. Now falls back
-    to DAYTYPE_NORMAL with a warn log so the standard pre-cool/coast
-    schedule still runs."""
-    forecast = {
-        "period_date": "2026-07-15",
-        "is_heat_advisory": 0,
-        "alert_summary": "",
-        # No high_f, no apparent_max_f — degraded parse path
-    }
-    assert _classify_one_day(forecast) == DAYTYPE_NORMAL
-    captured = capsys.readouterr().out
-    assert "forecast_no_temperature_fields_falling_back_to_normal" in captured
-
-
-def test_classify_empty_forecast_dict_is_normal_not_mild():
-    """An empty dict (vs None) is treated like None: missing forecast,
-    NORMAL fallback. Tests the dict-empty edge case along with the
-    None case both falling into the safe NORMAL bucket."""
-    # Empty dict is falsy in Python so the `if not forecast` short-circuit
-    # handles it the same as None.
-    assert _classify_one_day({}) == DAYTYPE_NORMAL
-
-
-def test_decide_day_type_carries_apparent_in_reasons():
-    """Per §1 the reasons dict surfaces apparent_max_f for audit so the
-    hvac.decisions InfluxDB row records which threshold fired."""
-    day_type, reasons = decide_day_type(
-        {"high_f": 82.0, "apparent_max_f": 92.0, "is_heat_advisory": 0}
-    )
-    assert day_type == DAYTYPE_HOT
-    assert reasons["apparent_max_f"] == 92.0
-    assert reasons["reason"].startswith("apparent_ge_")
-
-
-def test_decide_day_type_escalates_to_streak_on_single_day_5cp_risk():
-    """§7 single-day path: tomorrow HOT (95F), tomorrow's PJM peak forecast
-    >5% above season-to-date 5th highest. Even without a multi-day heat
-    streak, escalate to HOT_STREAK_DAY1 to bank deeper thermal mass before
-    the grid-stress hour."""
-    from .app import DAYTYPE_HOT_STREAK_DAY1
-    day_type, reasons = decide_day_type(
-        {"high_f": 95.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
-        tomorrow_peak_load_mw=145000,
-        season_5th_highest_mw=130000,
-    )
-    assert day_type == DAYTYPE_HOT_STREAK_DAY1
-    assert reasons["reason"] == "forecast_5cp_risk_single_day"
-
-
-def test_decide_day_type_no_streak_when_pjm_inputs_absent():
-    """§7 escalation requires both PJM inputs. If either is None (e.g.,
-    pre-season tick), fall back to plain HOT classification."""
-    day_type, _ = decide_day_type(
-        {"high_f": 95.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
-        tomorrow_peak_load_mw=None,
-        season_5th_highest_mw=130000,
-    )
-    assert day_type == DAYTYPE_HOT
-
-
-def test_decide_day_type_tape_distinguishes_insufficient_baseline_vs_missing_forecast():
-    """Binding spec §11 #14: when the §7 forecast 5CP-risk path falls
-    back, the evaluation_tape must record WHY — distinguishing the
-    'insufficient_current_season_history' case from 'missing_pjm_forecast'
-    so the audit trail explains the non-fire reason without spelunking."""
-    # season_5th=None (baseline insufficient) -> status records that
-    _, reasons = decide_day_type(
-        {"high_f": 95.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
-        tomorrow_peak_load_mw=145000,
-        season_5th_highest_mw=None,
-    )
-    risk_entry = next(
-        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
-    )
-    assert risk_entry["fired"] is False
-    assert risk_entry["status"] == "insufficient_current_season_history"
-
-    # tomorrow_peak=None (forecast missing) -> different status
-    _, reasons = decide_day_type(
-        {"high_f": 95.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
-        tomorrow_peak_load_mw=None,
-        season_5th_highest_mw=130000,
-    )
-    risk_entry = next(
-        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
-    )
-    assert risk_entry["fired"] is False
-    assert risk_entry["status"] == "missing_pjm_forecast"
-
-    # Both inputs present -> status="ok". HOT base_type so the §7
-    # branch actually runs and produces a streak_5cp_risk tape entry.
-    _, reasons = decide_day_type(
-        {"high_f": 95.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 80.0, "is_heat_advisory": 0},
-        tomorrow_peak_load_mw=145000,
-        season_5th_highest_mw=130000,
-    )
-    risk_entry = next(
-        e for e in reasons["evaluation_tape"] if e["rule"] == "streak_5cp_risk"
-    )
-    assert risk_entry["status"] == "ok"
-
-
-# NB: P1 fix (cooling-season gate on _fetch_pjm_inputs_for_target_date)
-# is not unit-tested here because the module-level autouse fixture
-# `_stub_pjm_inputs` replaces that function for every test in this file,
-# making direct calls return the stub's fixed value rather than exercising
-# the real gate. `in_cooling_season()` already has full unit-test coverage
-# in test_pjm_5cp.py, and the in-place gate is a one-liner visible in the
-# diff. Adding a class-scoped fixture override here for one test would be
-# more ceremony than the change warrants.
-
-
-# ---- Wall-clock tick-phase alignment (main_async loop) -------------------
-
-
-def test_scheduler_tick_target_lands_on_next_wall_clock_second():
-    """Phase-alignment invariant (main_async loop): for any wall-clock
-    ``now``, ``target = now.replace(second=SCHEDULER_TICK_SECOND,
-    microsecond=0); if target <= now: target += 1 minute`` always
-    lands on the next XX:XX:SCHEDULER_TICK_SECOND boundary in the
-    future. Pins the math against accidental edits and against
-    accidental drift of SCHEDULER_TICK_SECOND vs the poller's wall-
-    clock :00 alignment."""
-    from .app import SCHEDULER_TICK_SECOND
-    tz = ZoneInfo("America/Chicago")
-    base = datetime(2026, 7, 15, 14, 30, tzinfo=tz)
-    # Same-minute "now" values spanning all 60 seconds + sub-second cases.
-    test_seconds = [0, 1, 5, 9, SCHEDULER_TICK_SECOND - 1, SCHEDULER_TICK_SECOND,
-                    SCHEDULER_TICK_SECOND + 1, 30, 50, 59]
-    for sec in test_seconds:
-        now = base.replace(second=sec)
-        target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
-        if target <= now:
-            target += timedelta(minutes=1)
-        # Target lands on SCHEDULER_TICK_SECOND
-        assert target.second == SCHEDULER_TICK_SECOND
-        assert target.microsecond == 0
-        # And is strictly in the future
-        assert target > now
-        # And within 60s of now (one cycle max)
-        delta = (target - now).total_seconds()
-        assert 0 < delta <= 60.0, f"sec={sec}: delta={delta}"
-
-    # Microsecond-precision now: target must still be strictly after now.
-    now = base.replace(second=SCHEDULER_TICK_SECOND, microsecond=1)
-    target = now.replace(second=SCHEDULER_TICK_SECOND, microsecond=0)
-    if target <= now:
-        target += timedelta(minutes=1)
-    assert target > now
-    assert (target - now).total_seconds() <= 60.0
-
-
-def test_scheduler_tick_second_is_after_poller_zero():
-    """The whole point of the wall-clock phase alignment: scheduler
-    ticks must fall AFTER the poller's :00 boundary so the scheduler
-    reads the same minute's freshest ComEd bucket rather than the
-    previous minute's. Pin SCHEDULER_TICK_SECOND > 0."""
-    from .app import SCHEDULER_TICK_SECOND
-    assert SCHEDULER_TICK_SECOND > 0
-    # And below 60 (must be a valid second-of-minute).
-    assert SCHEDULER_TICK_SECOND < 60
-
-
-def test_decide_day_type_multi_day_streak_path_still_works():
-    """Existing multi-day path (§7 added an alternative escalation path,
-    didn't replace this one). When BOTH days HOT, still escalates to
-    HOT_STREAK_DAY1 with the older reason string for backwards-compat."""
-    from .app import DAYTYPE_HOT_STREAK_DAY1
-    day_type, reasons = decide_day_type(
-        {"high_f": 96.0, "is_heat_advisory": 0},
-        day2_forecast={"high_f": 97.0, "is_heat_advisory": 0},
-    )
-    assert day_type == DAYTYPE_HOT_STREAK_DAY1
-    assert reasons["reason"] == "hot_streak_starting"
-
-
 # ---- ScheduleAction & schedules -------------------------------------------
 
 
@@ -426,59 +171,6 @@ def test_release_hold_action_has_no_setpoint():
     assert a.cool_setpoint is None
     assert a.release_hold is True
     assert a.fan_mode is None
-
-
-def test_mild_schedule_is_pi_owned():
-    """MILD is now a real Pi-owned schedule (no release_hold) so the price
-    overlay can actuate on mild days — this is the mild-full-controller fix."""
-    assert [a.label for a in MILD_SCHEDULE] == [
-        "MILD_MORNING", "MILD_DAY", "MILD_RECOVER", "SLEEP"]
-    assert all(a.cool_setpoint is not None for a in MILD_SCHEDULE)
-    assert all(a.release_hold is False for a in MILD_SCHEDULE)
-
-
-def test_existing_schedules_still_have_setpoints():
-    """Sanity check: the optional cool_setpoint_f default doesn't accidentally
-    leave NORMAL/HOT actions setpoint-less."""
-    for action in NORMAL_SCHEDULE + HOT_SCHEDULE:
-        assert action.release_hold is False
-        assert action.cool_setpoint is not None
-        assert action.cool_setpoint > 0
-
-
-def test_hot_schedules_do_not_carry_fixed_5cp_shutoff_window():
-    """Prereg compliance (EXPERIMENT_DESIGN.md §3): the fixed 14:00-
-    18:00 CT shutoff window is dropped from Arm B. The 85°F shutoff
-    timing comes from dynamic layers (§2 price-scarcity tier + §3
-    dual-scope 5CP detector), NOT from schedule entries.
-
-    This test pins the schedule so a future regression (someone
-    re-adding the hard 14:00 / 18:00 hardcoded actions) fails
-    loudly. The dynamic layers still produce 85°F effective cool
-    via 'warmer wins' priority when real conditions warrant -- the
-    layer evaluation is exercised separately by the dual-scope and
-    price-overlay test families."""
-    dropped_labels = {"HOT_5CP_SHUTOFF", "HOT_RECOVER_LOW"}
-    hot_labels = {a.label for a in HOT_SCHEDULE}
-    streak_labels = {a.label for a in HOT_STREAK_DAY1_SCHEDULE}
-    assert not (hot_labels & dropped_labels), (
-        f"HOT_SCHEDULE still carries fixed-window actions: "
-        f"{hot_labels & dropped_labels}"
-    )
-    assert not (streak_labels & dropped_labels), (
-        f"HOT_STREAK_DAY1_SCHEDULE still carries fixed-window actions: "
-        f"{streak_labels & dropped_labels}"
-    )
-    # No schedule entry should pin cool >= 85 on a HOT day -- those
-    # are dynamic-layer territory now.
-    for a in HOT_SCHEDULE + HOT_STREAK_DAY1_SCHEDULE:
-        if a.cool_setpoint is not None:
-            assert a.cool_setpoint < 85, (
-                f"HOT-day schedule action {a.label} pins cool="
-                f"{a.cool_setpoint}; that's the dynamic-layer "
-                f"shutoff range and should not appear in the locked "
-                f"schedule baseline."
-            )
 
 
 # ---- resolve_cool_setpoint ------------------------------------------------
@@ -684,192 +376,6 @@ async def test_execute_setpoint_action_dry_run_skips_even_when_layer_resolution_
     assert applied is False
     assert error is None
     climate.set_cool_setpoint_f.assert_not_awaited()
-
-
-# ---- §7 price-aware pre-cool wire-up -------------------------------------
-
-
-def test_merge_same_hour_actions_deepest_wins_picks_lower_setpoint():
-    """When the §7 price-aware-precool action lands on the same hour as
-    a base-schedule action, deepest setpoint wins per the spec."""
-    base = ScheduleAction(12, 0, "HOT_COAST", cool_setpoint=80,
-                           fan_mode="Circulate")
-    price_aware = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL",
-                                  cool_setpoint=66)
-    merged = merge_same_hour_actions_deepest_wins([base, price_aware])
-    assert len(merged) == 1
-    assert merged[0].cool_setpoint == 66
-    assert merged[0].label == "PRICE_AWARE_PRECOOL"
-
-
-def test_merge_same_hour_actions_keeps_distinct_hours():
-    """Actions at different hours don't merge — both fire at their
-    scheduled times."""
-    a = ScheduleAction(12, 0, "PRICE_AWARE_PRECOOL", cool_setpoint=66)
-    # Synthetic fixture: just a different-hour action with any label.
-    # HOT_5CP_SHUTOFF was the pre-prereg fixed-window action; kept here
-    # as a label string only because the test logic is opaque to it.
-    b = ScheduleAction(14, 0, "SYNTHETIC_AFTERNOON", cool_setpoint=85)
-    merged = merge_same_hour_actions_deepest_wins([a, b])
-    assert len(merged) == 2
-    assert sorted(m.hour for m in merged) == [12, 14]
-
-
-def test_merge_same_hour_setpoint_action_wins_over_release_hold():
-    """A release_hold + setpoint conflict at the same hour resolves in
-    favour of the setpoint (running a setpoint is more conservative
-    than clearing the hold). The MILD schedule's 00:05 release_hold
-    plus a hypothetical 00:05 setpoint action gives the setpoint."""
-    rh = ScheduleAction(0, 5, "MILD_RELEASE_HOLD", release_hold=True)
-    setpoint = ScheduleAction(0, 5, "PRICE_AWARE_PRECOOL", cool_setpoint=66)
-    merged = merge_same_hour_actions_deepest_wins([rh, setpoint])
-    assert len(merged) == 1
-    assert merged[0].label == "PRICE_AWARE_PRECOOL"
-
-
-def test_precool_window_action_synthesizes_correct_shape():
-    """The synthetic action injected by run_schedule_check uses the
-    window's hour_ct + depth_f, leaves fan_mode None, and clamps the
-    heat setpoint to the floor."""
-    a = precool_window_action({"hour_ct": 12, "depth_f": 67})
-    assert a.hour == 12
-    assert a.minute == 0
-    assert a.label == "PRICE_AWARE_PRECOOL"
-    assert a.cool_setpoint == 67
-    assert a.fan_mode is None
-
-
-def _build_da_lmp_query_result(
-    hour_to_price_per_mwh: dict[int, float],
-    target_date_iso: str = "2026-07-15",
-    tz_name: str = "America/Chicago",
-) -> list[MagicMock]:
-    """Build a MagicMock query_api result list mirroring the InfluxDB
-    Flux response for ``pjm.lmp_da_hourly`` rows. Each record carries an
-    explicit ``get_time()`` returning the UTC instant corresponding to
-    the requested CT hour, so the function under test can map the row
-    back to its CT-hour-of-day for the EPT-vs-CT boundary logic."""
-    tz = ZoneInfo(tz_name)
-    table = MagicMock()
-    table.records = []
-    target_local = datetime.fromisoformat(target_date_iso).replace(tzinfo=tz)
-    for hour in sorted(hour_to_price_per_mwh):
-        ct_time = target_local.replace(hour=hour, minute=0, second=0, microsecond=0)
-        utc_time = ct_time.astimezone(timezone.utc)
-        record = MagicMock()
-        record.get_value.return_value = hour_to_price_per_mwh[hour]
-        record.get_time.return_value = utc_time
-        table.records.append(record)
-    return [table]
-
-
-def test_fetch_day_ahead_prices_converts_dollars_per_mwh_to_cents_per_kwh(monkeypatch):
-    """The poller stores total_lmp_da in $/MWh; the §7 decision rule
-    needs cents/kWh (the unit the locked tier thresholds use). $50/MWh
-    must come out as 5c/kWh."""
-    api = MagicMock()
-    api.query.return_value = _build_da_lmp_query_result({h: 50.0 for h in range(24)})
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
-                                           tz=ZoneInfo("America/Chicago"))
-    assert out is not None
-    assert len(out) == 24
-    assert all(p == 5.0 for p in out)
-
-
-def test_fetch_day_ahead_prices_accepts_ept_ct_boundary_only_hour_23_missing(monkeypatch):
-    """EPT-vs-CT day-boundary case (NOT DST-specific — EPT is 1 hour
-    ahead of CT year-round). At a 21:00 CT day-D decision for tomorrow,
-    PJM's "tomorrow EPT day" publish covers CT hours 0-22 of CT-tomorrow
-    but not CT hour 23 (which belongs to "EPT day D+2", unpublished
-    until 17:00 CT day D+1). Function pads hour 23 with hour 22's value
-    so the precool decision can fire on the boundary case. Hours 6-14
-    (cheap-window search) and 10-22 (typical spike search) — the
-    operationally-required range — are real PJM data."""
-    api = MagicMock()
-    # 23 hours present, hour 23 missing. Distinct value at hour 22 so
-    # we can verify padding.
-    hours = {h: (50.0 if h != 22 else 75.0) for h in range(23)}
-    api.query.return_value = _build_da_lmp_query_result(hours)
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
-                                           tz=ZoneInfo("America/Chicago"))
-    assert out is not None
-    assert len(out) == 24
-    # Hour 22 in cents/kWh: $75/MWh = 7.5c/kWh
-    assert out[22] == 7.5
-    # Hour 23 padded with hour 22's value -> same 7.5c/kWh
-    assert out[23] == 7.5
-
-
-def test_fetch_day_ahead_prices_rejects_interior_gap(monkeypatch):
-    """Genuine insufficient coverage — an interior hour missing is NOT
-    the structural EPT-vs-CT boundary case. The function must reject
-    rather than pad, so the §7 decision short-circuits."""
-    api = MagicMock()
-    # 23 hours, but hour 7 (interior, not hour 23) is missing.
-    hours = {h: 50.0 for h in range(24) if h != 7}
-    api.query.return_value = _build_da_lmp_query_result(hours)
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
-                                           tz=ZoneInfo("America/Chicago"))
-    assert out is None
-
-
-def test_fetch_day_ahead_prices_rejects_partial_coverage(monkeypatch):
-    """Substantial coverage gap (e.g., only the first 18 hours posted)
-    must reject. Catches missed polls, market-cancelled days, and
-    queries-before-publish."""
-    api = MagicMock()
-    hours = {h: 50.0 for h in range(18)}  # hours 18-23 all missing
-    api.query.return_value = _build_da_lmp_query_result(hours)
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
-                                           tz=ZoneInfo("America/Chicago"))
-    assert out is None
-
-
-def test_fetch_day_ahead_prices_rejects_empty_result(monkeypatch):
-    """No DA LMP rows at all -> None. (Pre-publish query, market-
-    cancelled day, etc.)"""
-    api = MagicMock()
-    api.query.return_value = _build_da_lmp_query_result({})
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15",
-                                           tz=ZoneInfo("America/Chicago"))
-    assert out is None
-
-
-def test_fetch_day_ahead_prices_skips_rows_from_other_ct_dates(monkeypatch):
-    """Rows that land in the requested UTC range but actually belong to
-    a different CT calendar date (e.g., PJM-EPT-day-X's hour 00:00 EPT =
-    CT 23:00 day-before) must be filtered out — they're for a different
-    precool decision, not this one. Without the filter, a row at CT
-    23:00 day-before could occupy the dict's hour-23 slot and mask the
-    structural boundary case."""
-    api = MagicMock()
-    # All 23 hours of the target CT date + one stray hour 23 of the
-    # previous CT date (CT 23:00 2026-07-14 = the EPT 00:00 boundary
-    # of EPT day 2026-07-15). The function should ignore the stray and
-    # treat the result as the boundary case (pad hour 23 with hour 22).
-    tz = ZoneInfo("America/Chicago")
-    table = MagicMock()
-    table.records = []
-    for hour in range(23):
-        ct_time = datetime.fromisoformat("2026-07-15").replace(tzinfo=tz, hour=hour)
-        rec = MagicMock()
-        rec.get_value.return_value = 50.0
-        rec.get_time.return_value = ct_time.astimezone(timezone.utc)
-        table.records.append(rec)
-    # Stray record from the previous CT date (different precool decision).
-    stray_ct = datetime.fromisoformat("2026-07-14").replace(tzinfo=tz, hour=23)
-    stray = MagicMock()
-    stray.get_value.return_value = 999.0
-    stray.get_time.return_value = stray_ct.astimezone(timezone.utc)
-    table.records.append(stray)
-    api = MagicMock()
-    api.query.return_value = [table]
-    out = fetch_day_ahead_prices_for_date(api, "energy", "2026-07-15", tz=tz)
-    assert out is not None
-    assert len(out) == 24
-    # The 999 value MUST NOT appear; hour 23 is padded with hour 22 (50).
-    assert 99.9 not in out
-    assert out[23] == 5.0
 
 
 # ---- §Critical #2: per-tick layer evaluation ------------------------------
@@ -1892,28 +1398,27 @@ def test_write_input_feed_health_empty_dict_is_noop():
 
 
 def _all_schedule_actions() -> list[Any]:
-    """Every ScheduleAction across every locked schedule, plus
-    synthetic actions used in mid-period repush and vacation paths.
-    Each entry is (label, action, cool_setpoint_to_apply, hvac_mode).
+    """A representative set of ScheduleAction shapes the dry-run gate must
+    block. Each entry is (label, action, cool_setpoint_to_apply, hvac_mode).
+    Synthetic actions stand in for the (now-removed) day-type schedules; the
+    dry-run gate is shape-agnostic so a handful of representative setpoint
+    actions exercise the same code path.
     """
     out = []
-    for sched in (
-        app.NORMAL_SCHEDULE,
-        app.HOT_SCHEDULE,
-        app.MILD_SCHEDULE,
-        app.HOT_STREAK_DAY1_SCHEDULE,
+    for label, cool, fan in (
+        ("PRE_COOL", 70, None),
+        ("COAST", 79, "Circulate"),
+        ("BASELINE", 78, None),
+        ("HOT_PRE_COOL", 68, None),
+        ("SLEEP", 73, None),
     ):
-        for action in sched:
-            cool = action.cool_setpoint if action.cool_setpoint is not None else 0
-            out.append((action.label, action, cool, "Cool"))
+        action = app.ScheduleAction(13, 0, label, cool_setpoint=cool, fan_mode=fan)
+        out.append((label, action, cool, "Cool"))
     # Synthetic mid-period repush action label (covers the write-gate path
     # for a non-schedule synthetic action).
     repush = app.ScheduleAction(13, 0, "MID_PERIOD_REPUSH:COAST",
                                   cool_setpoint=82, fan_mode=None)
     out.append(("MID_PERIOD_REPUSH:COAST", repush, 82, "Cool"))
-    # Synthetic vacation action (vacation_schedule helper)
-    vac = app.ScheduleAction(0, 0, "VACATION_HOLD", cool_setpoint=80)
-    out.append(("VACATION_HOLD", vac, 80, "Cool"))
     # Auto mode hits the same setpoint branch
     auto_action = app.ScheduleAction(13, 0, "COAST", cool_setpoint=79)
     out.append(("COAST_AUTO_MODE", auto_action, 79, "Auto"))
@@ -2862,18 +2367,27 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
 
 # ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
 
+# Synthetic schedule (the day-type schedules were removed): PRE_COOL 06:00,
+# COAST 13:00, RECOVER 19:00, SLEEP 21:00.
+_SAMPLE_SCHEDULE = [
+    ScheduleAction(6, 0, "PRE_COOL", cool_setpoint=70),
+    ScheduleAction(13, 0, "COAST", cool_setpoint=79),
+    ScheduleAction(19, 0, "RECOVER", cool_setpoint=75),
+    ScheduleAction(21, 0, "SLEEP", cool_setpoint=73),
+]
+
+
 def test_action_in_effect_returns_latest_action_at_or_before_minute():
-    # NORMAL: PRE_COOL 06:00, COAST 13:00, RECOVER 19:00, SLEEP 21:00
-    act = action_in_effect_at(NORMAL_SCHEDULE, 14 * 60)
+    act = action_in_effect_at(_SAMPLE_SCHEDULE, 14 * 60)
     assert act is not None and act.label == "COAST"
 
 
 def test_action_in_effect_none_before_first_action():
-    assert action_in_effect_at(NORMAL_SCHEDULE, 3 * 60) is None  # 03:00, first is 06:00
+    assert action_in_effect_at(_SAMPLE_SCHEDULE, 3 * 60) is None  # 03:00, first is 06:00
 
 
 def test_action_in_effect_returns_last_action_at_end_of_day():
-    act = action_in_effect_at(NORMAL_SCHEDULE, 24 * 60 - 1)
+    act = action_in_effect_at(_SAMPLE_SCHEDULE, 24 * 60 - 1)
     assert act is not None and act.label == "SLEEP"
 
 
