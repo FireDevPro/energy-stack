@@ -35,7 +35,6 @@ from .test_hvac_scheduler import (  # noqa: E402
 )
 
 PRICE_OVERLAY_EVENT = "decision_trace.price_overlay_eval"
-LAYER_RESOLUTION_EVENT = "decision_trace.layer_resolution"
 
 
 def _parse_trace_lines(stdout: str, msg_filter: str | None = None) -> list[dict[str, Any]]:

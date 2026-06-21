@@ -5,12 +5,13 @@ OSF commit hash. Existing codes never change meaning; new codes can be
 added in subsequent phases without breaking downstream Loki / LogQL
 consumers.
 
-Phase 1 shipped `PriceOverlayCode`. Phase 2 shipped `LayerResolutionCode`.
-(Phase 3's `SupervisorCode`, Phase 4's `PrecoolCode`, and Phase 5's
-`DayTypeCode` were removed in the commissioning-controller rewrite along
-with the software safety supervisor, the day-ahead precool path, and
-day-type classification — safety is now device-owned and the controller
-is a single config-driven comfort baseline.)
+Phase 1 shipped `PriceOverlayCode`, which is the only enum that survives.
+(Phase 2's `LayerResolutionCode`, Phase 3's `SupervisorCode`, Phase 4's
+`PrecoolCode`, and Phase 5's `DayTypeCode` were removed in the
+commissioning-controller rewrite along with the layer-priority resolver,
+the software safety supervisor, the day-ahead precool path, and day-type
+classification — safety is now device-owned and the controller is a single
+config-driven comfort baseline.)
 
 The codes are derived from caller-observable state (prev tier, new tier,
 current price, stale-feed flag) — NOT from the internal price-overlay
@@ -48,21 +49,3 @@ class PriceOverlayCode(str, Enum):
     # at release time. Spec §3.5 / §3.7 forensic-split.
     RELEASED_NO_DATA = "PRICE_OVERLAY_RELEASED_NO_DATA"
     RELEASED_PERSISTENT_STALE = "PRICE_OVERLAY_RELEASED_PERSISTENT_STALE"
-
-
-class LayerResolutionCode(str, Enum):
-    """Reason codes for one `resolve_layer_priority` invocation, classified
-    at the caller side from the LayerResolution dataclass.
-
-    "Warmer wins" — the schedule baseline, the price overlay, and the
-    5CP shutoff each propose a cool setpoint; effective is `max` across
-    them. The winning layer is the one whose proposal equals the
-    effective cool setpoint. When more than one layer proposes the same
-    value (tie at the warmest), `TIE_WARMER_WINS` records that the
-    resolution was over-determined (multiple layers agreed)."""
-
-    SCHEDULE_WINS = "LAYER_RESOLUTION_SCHEDULE_WINS"
-    PRICE_OVERLAY_WINS = "LAYER_RESOLUTION_PRICE_OVERLAY_WINS"
-    FIVECP_WINS = "LAYER_RESOLUTION_5CP_WINS"
-    TIE_WARMER_WINS = "LAYER_RESOLUTION_TIE_WARMER_WINS"
-

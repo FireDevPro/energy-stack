@@ -18,15 +18,12 @@ from . import app
 
 
 from .app import (
-    COOL_SHUTOFF,
     FiringState,
-    LayerResolution,
     ScheduleAction,
     _evaluate_layer_inputs,
     execute_action,
     action_in_effect_at,
     resolve_cool_setpoint,
-    resolve_layer_priority,
 )
 
 
@@ -52,113 +49,6 @@ def _fresh_sample(cents: float, *, now_utc: datetime,
         source_ts=now_utc - timedelta(minutes=age_min),
         freshness="fresh",
     )
-
-
-# ---- Layer priority resolution (§4) ---------------------------------------
-
-
-def test_resolve_layer_priority_no_overlay_no_5cp_returns_schedule_unchanged():
-    """The default passthrough: nothing fires, schedule baseline wins.
-    Same shape that runs while §2 (price overlay) and §3 (5CP) modules
-    haven't wired in yet."""
-    r = resolve_layer_priority(schedule_cool=79)
-    assert r.effective_cool == 79
-    assert r.schedule_cool == 79
-    assert r.price_cool == 79
-    assert r.fivecp_cool == 79
-    assert r.price_overlay_tier == "normal"
-    assert r.fivecp_active is False
-
-
-def test_resolve_layer_priority_elevated_offset_pulls_setpoint_warmer():
-    """Spec §4 case 2: schedule 79°F, elevated price (+3°F offset)
-    -> effective 82°F."""
-    r = resolve_layer_priority(
-        schedule_cool=79,
-        price_overlay_tier="elevated",
-        price_offset=3,
-    )
-    assert r.effective_cool == 82
-    assert r.price_cool == 82
-
-
-def test_resolve_layer_priority_scarcity_override_replaces_schedule():
-    """Spec §4 case 3: schedule 73°F (sleep), scarcity tier (override
-    to 85°F) -> effective 85°F (override wins, far warmer than 73°F+offset)."""
-    r = resolve_layer_priority(
-        schedule_cool=73,
-        price_overlay_tier="scarcity",
-        price_override=85,
-    )
-    assert r.effective_cool == 85
-    assert r.price_cool == 85
-
-
-def test_fivecp_active_does_not_change_effective_cool_f():
-    """Binding spec §11 #14: 5CP is demoted from live-setpoint authority
-    to planning/telemetry only. A bare ``fivecp_active=True`` with normal
-    prices does NOT raise the effective cool setpoint above the schedule
-    baseline — that's the core behavior change. Telemetry fields
-    (``fivecp_active``, ``fivecp_cool_f``) are preserved on the
-    LayerResolution so post-hoc analysis can reconstruct when 5CP would
-    have fired."""
-    r = resolve_layer_priority(
-        schedule_cool=80,
-        fivecp_active=True,
-    )
-    # Effective stays at schedule baseline; 5CP does NOT push to 85F.
-    assert r.effective_cool == 80
-    # Telemetry preserved: fivecp_active is still True, fivecp_cool
-    # records what 5CP WOULD have proposed (85F) — but it didn't win.
-    assert r.fivecp_active is True
-    assert r.fivecp_cool == COOL_SHUTOFF
-
-
-def test_scarcity_still_overrides_when_fivecp_active():
-    """Severe price events still drive shutoff after the §11 #14 demotion:
-    scarcity tier (>= 20¢/kWh) overrides to 85°F via the price overlay,
-    independent of 5CP. With both scarcity and 5CP active, effective is
-    85°F from the PRICE overlay (the only live-authority layer at the
-    warm end); 5CP does not contribute."""
-    r = resolve_layer_priority(
-        schedule_cool=80,
-        price_overlay_tier="scarcity",
-        price_override=85,
-        fivecp_active=True,
-    )
-    assert r.effective_cool == 85
-    assert r.price_cool == 85  # price overlay is the one that pushed it
-
-
-def test_resolve_layer_priority_precool_with_elevated_pushes_to_71_not_85():
-    """Spec §4 case 6: schedule 68°F (HOT pre-cool), elevated price at 4am
-    (+3°F offset) -> effective 71°F. Importantly, elevated tier does NOT
-    blow pre-cool to 85°F; that requires the scarcity override or 5CP."""
-    r = resolve_layer_priority(
-        schedule_cool=68,
-        price_overlay_tier="elevated",
-        price_offset=3,
-    )
-    assert r.effective_cool == 71
-
-
-def test_resolve_layer_priority_warmer_wins_when_offset_below_baseline():
-    """Defensive: a buggy negative offset must not make the house cooler
-    than the schedule intended. ``effective = max(schedule, price, ...)``
-    enforces 'warmer wins' even if the price layer mis-computes."""
-    r = resolve_layer_priority(
-        schedule_cool=79,
-        price_overlay_tier="elevated",
-        price_offset=-5,
-    )
-    assert r.effective_cool == 79  # schedule baseline still wins
-
-
-def test_resolve_layer_priority_returns_layer_resolution_dataclass():
-    """Caller-facing contract: the return value is a LayerResolution with
-    fields that map 1:1 onto the new hvac.actions audit fields."""
-    r = resolve_layer_priority(schedule_cool=78)
-    assert isinstance(r, LayerResolution)
 
 
 # ---- ScheduleAction & schedules -------------------------------------------

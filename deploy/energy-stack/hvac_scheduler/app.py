@@ -115,7 +115,6 @@ from .price_overlay import (
     tier_priority,
 )
 from .decision_codes import (
-    LayerResolutionCode,
     PriceOverlayCode,
 )
 
@@ -307,82 +306,6 @@ def _price_overlay_hold_minutes_remaining(
     elapsed = (now_utc - state.triggered_at_utc).total_seconds() / 60.0
     remaining = DEFAULT_MINIMUM_HOLD_MINUTES - elapsed
     return max(0.0, remaining)
-
-
-def _classify_layer_resolution(
-    lr: "LayerResolution",
-) -> tuple[LayerResolutionCode, str]:
-    """Return (reason_code, winning_layer) from a LayerResolution.
-
-    "Warmer wins" — schedule and price overlay each propose a cool
-    setpoint; effective is `max` across them. A layer contributes when its
-    own proposal matches effective AND it is actually active:
-      * Price overlay contributes when the tier is non-normal AND
-        `price_cool` equals effective.
-      * Schedule contributes when `schedule_cool` equals effective.
-
-    **5CP is excluded from this classification** (binding spec §11 #14):
-    5CP no longer contributes to ``effective_cool`` so it cannot be a
-    `winning_layer`. The ``LayerResolutionCode.FIVECP_WINS`` and
-    ``TIE_WARMER_WINS`` enum values are preserved for back-compat with
-    existing dashboards / archived trace rows but are no longer emitted.
-    Post-hoc analysis of when 5CP WOULD have fired uses the preserved
-    ``fivecp_active`` / ``fivecp_cool`` fields on the trace row, plus
-    ``hvac.5cp_state`` and ``fivecp_eval`` telemetry.
-    """
-    eff = lr.effective_cool
-    price_overlay_contributes = (
-        lr.price_overlay_tier != NORMAL_TIER_NAME
-        and lr.price_cool == eff
-    )
-    schedule_matches = lr.schedule_cool == eff
-
-    if price_overlay_contributes:
-        return LayerResolutionCode.PRICE_OVERLAY_WINS, "price_overlay"
-    if schedule_matches:
-        return LayerResolutionCode.SCHEDULE_WINS, "schedule"
-    # Defense in depth: should be unreachable since effective = max of
-    # schedule and price. Fall back to SCHEDULE_WINS rather than raise
-    # from a diagnostic helper.
-    return LayerResolutionCode.SCHEDULE_WINS, "schedule"
-
-
-def _trace_layer_resolution(
-    *,
-    tick_id: str, now_ct: datetime,
-    firing: FiringState, layer_resolution: "LayerResolution",
-    layer_inputs: "LayerInputs | None" = None,
-) -> None:
-    """Emit one `decision_trace.layer_resolution` line per
-    `resolve_layer_priority` call. Caller passes the `LayerResolution`
-    plus optional `LayerInputs` (used for the 5CP scope detail field).
-    `firing` is mutated to update `last_eval_effective_cool`."""
-    reason_code, winning_layer = _classify_layer_resolution(layer_resolution)
-    prev_eff = firing.last_eval_effective_cool
-    new_eff = layer_resolution.effective_cool
-    # info on effective change (operator-visible event); debug on
-    # no-change (suppressed unless verbose=true).
-    level = "info" if prev_eff != new_eff else "debug"
-    _trace(
-        "decision_trace.layer_resolution",
-        level=level,
-        tick_id=tick_id,
-        now_ct=now_ct,
-        schedule_cool_f=layer_resolution.schedule_cool,
-        price_overlay_tier=layer_resolution.price_overlay_tier,
-        price_cool_f=layer_resolution.price_cool,
-        fivecp_active=layer_resolution.fivecp_active,
-        fivecp_scopes_fired=(
-            list(layer_inputs.fivecp_scopes_fired)
-            if layer_inputs is not None else []
-        ),
-        fivecp_cool_f=layer_resolution.fivecp_cool,
-        effective_cool_f=new_eff,
-        prev_effective_cool_f=prev_eff,
-        winning_layer=winning_layer,
-        reason_code=reason_code.value,
-    )
-    firing.last_eval_effective_cool = new_eff
 
 
 # ---- SCHEDULER_MODE (spec §3) ---------------------------------------------
@@ -733,92 +656,6 @@ def action_in_effect_at(
     return in_effect
 
 
-# Locked per EXPERIMENT_DESIGN.md Appendix A. Effective cool setpoint applied
-# during a 5CP-eligibility window or scarcity-tier price spike; 85F is high
-# enough to functionally shut the AC off while still being a valid cool setpoint.
-COOL_SHUTOFF = 85
-
-
-@dataclass(frozen=True)
-class LayerResolution:
-    """Audit-grade record of the layer-priority resolution applied to one
-    scheduler tick. Fields populate hvac.actions so the operator can replay
-    why the effective setpoint differs from the schedule baseline.
-
-    The resolution rule is "warmer wins": the schedule baseline and the
-    price-overlay layer each propose a cool setpoint, and the effective
-    setpoint is the max of those proposals (ceiling enforcement is Slice C;
-    no software supervisor exists — safety is device-owned).
-
-    5CP is preserved as telemetry (``fivecp_active``, ``fivecp_cool``)
-    so post-hoc analysis can reconstruct when 5CP would have fired, but
-    per binding spec §11 #14 it is NOT included in the ``effective_cool``
-    max — 5CP does not independently force live setpoint changes.
-
-    Setpoint fields are in the controller's ``temp_scale`` (default "F").
-    """
-    schedule_cool: float
-    price_overlay_tier: str           # "normal" | "elevated" | "scarcity"
-    price_cool: float                 # Schedule baseline if no tier active
-    fivecp_active: bool               # Telemetry only; not part of effective_cool
-    fivecp_cool: float                # Telemetry only: what 5CP WOULD have proposed
-    effective_cool: float             # max(schedule, price) -- 5CP excluded
-
-
-def resolve_layer_priority(
-    schedule_cool: float,
-    *,
-    price_overlay_tier: str = "normal",
-    price_offset: float = 0,
-    price_override: float | None = None,
-    fivecp_active: bool = False,
-    fivecp_shutoff: float = COOL_SHUTOFF,
-) -> LayerResolution:
-    """Resolve the effective cool setpoint across schedule / price layers.
-
-    Layers (warmer-wins; the floor clamp in ``_push_baseline_if_changed``
-    ensures the effective never falls below the baseline; no ceiling yet —
-    that is Slice C; no software supervisor — safety is device-owned):
-
-      1. **Schedule baseline** -- the day-type schedule's cool_setpoint_f
-         after `resolve_cool_setpoint` applies humid-override logic.
-      2. **Price overlay** (§2) -- elevated tier adds ``price_offset`` to
-         the schedule baseline; scarcity tier replaces it with
-         ``price_override``. ``price_overlay_tier="normal"`` means no
-         overlay is active.
-
-    **5CP is NOT a live layer** (binding spec §11 #14): ``fivecp_active`` and
-    ``fivecp_cool`` are preserved on the returned ``LayerResolution`` for
-    telemetry / post-hoc analysis of when 5CP would have fired, but they
-    do not contribute to ``effective_cool``. A bare ``fivecp_active=True``
-    with normal prices does not change the effective cool setpoint. Severe
-    price events still drive shutoff via the price overlay (scarcity tier
-    override to 85F).
-
-    The function is a pure transform; it doesn't read any global state. §2
-    evaluates its condition and passes the resulting arguments in;
-    ``fivecp_active``/``fivecp_shutoff`` are accepted for telemetry only.
-    """
-    if price_override is not None:
-        price_cool = price_override
-    else:
-        price_cool = schedule_cool + price_offset
-
-    # 5CP is telemetry-only: compute what it WOULD have proposed, but
-    # exclude it from the effective_cool max. (Binding spec §11 #14.)
-    fivecp_cool = fivecp_shutoff if fivecp_active else price_cool
-    effective_cool = max(schedule_cool, price_cool)
-
-    return LayerResolution(
-        schedule_cool=schedule_cool,
-        price_overlay_tier=price_overlay_tier,
-        price_cool=price_cool,
-        fivecp_active=fivecp_active,
-        fivecp_cool=fivecp_cool,
-        effective_cool=effective_cool,
-    )
-
-
 def resolve_cool_setpoint(action: ScheduleAction, today_dewpoint_f: float | None) -> tuple[float, str]:
     """Return (setpoint_to_apply, reason) — picks the humid override if dewpoint
     is high enough and an override is defined for this action.
@@ -966,13 +803,6 @@ class FiringState:
     # that the normal action-fire / release-hold flow owns the baseline
     # (including its legitimate Nones, which must NOT be reconstructed).
     baseline_initialized: bool = False
-    # Phase 2 decision-trace: the effective cool setpoint computed at the
-    # last layer-resolution evaluation. Distinct from
-    # ``last_pushed_effective_cool`` (post-supervisor + actually-pushed) —
-    # this is the pre-supervisor effective for the per-eval trace's
-    # info/debug level gating. None until the first resolve_layer_priority
-    # call lands.
-    last_eval_effective_cool: float | None = None
     # Throttle for hvac.5cp_state audit writes. Spec calls for ~every-5-min
     # cadence (288 rows/day) so dashboards can plot the ratio + derivative
     # trace without flooding the bucket at the 1-min scheduler tick rate.
@@ -1077,8 +907,7 @@ def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAct
                  cool_applied_f: float, heat_applied_f: float,
                  fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
-                 thermostat_state_before: dict[str, Any], error: str | None = None,
-                 layer_resolution: LayerResolution | None = None) -> None:
+                 thermostat_state_before: dict[str, Any], error: str | None = None) -> None:
     tags: dict[str, str] = {
         "day_type": day_type,
         "action_label": action.label,
@@ -1099,16 +928,6 @@ def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAct
         "heat_setpoint_before_f": float(thermostat_state_before.get("heat_setpoint_f") or 0),
         "indoor_humidity_before_pct": float(thermostat_state_before.get("humidity") or 0),
     }
-    if layer_resolution is not None:
-        # Layer-priority audit fields (§4). Always emitted when the
-        # resolution is computed so dashboards can answer "why was the
-        # effective setpoint different from the schedule baseline?"
-        tags["price_overlay_tier"] = layer_resolution.price_overlay_tier
-        tags["fivecp_active"] = "true" if layer_resolution.fivecp_active else "false"
-        fields["schedule_cool_f"] = float(layer_resolution.schedule_cool)
-        fields["price_cool_f"] = float(layer_resolution.price_cool)
-        fields["fivecp_cool_f"] = float(layer_resolution.fivecp_cool)
-        fields["effective_cool_f"] = float(layer_resolution.effective_cool)
     write_point(write_api, bucket, "hvac.actions", tags=tags, fields=fields)
 
 
@@ -1412,9 +1231,9 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
 
 @dataclass(frozen=True)
 class LayerInputs:
-    """Per-tick output of `_evaluate_layer_inputs`. Captures everything
-    needed to call `resolve_layer_priority` plus the audit context for
-    `hvac.price_overlay` and `hvac.5cp_state` writes.
+    """Per-tick output of `_evaluate_layer_inputs`. Captures the resolved
+    price-overlay tier/offset (re-consumed by the Slice B price path) plus
+    the audit context for `hvac.price_overlay` and `hvac.5cp_state` writes.
 
     ``fivecp_active`` is the OR across both detector scopes (ComEd zone
     and PJM RTO). ``fivecp_scopes_fired`` lists the scope names that
