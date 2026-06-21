@@ -302,7 +302,7 @@ def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
     A call at any minute populates a LayerInputs return value with the
     current price tier."""
     _stub_layer_eval_io(monkeypatch, price_cents=12.0)  # elevated tier
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 23,  # arbitrary non-action minute
@@ -310,14 +310,13 @@ def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
-    assert inputs.price_offset_f == 3
 
 
 def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
     """Two consecutive ticks: first triggers elevated, second stays
     elevated due to the 30-min hold even with a brief price dip."""
     _stub_layer_eval_io(monkeypatch, price_cents=12.0)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -338,7 +337,7 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
     """A price-tier transition writes a hvac.price_overlay row. Same-tier
     ticks don't (the measurement is event-driven)."""
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal initially
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -365,19 +364,16 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
 # ---- P2: price tier preservation across feed gap --------------------------
 
 
-def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
+def test_price_tier_carries_label_when_feed_drops(monkeypatch):
     """P2 review fix: when ``fetch_latest_comed`` returns None mid-tick,
-    the price-overlay tier label was carried forward but the
-    setpoint contributions (offset/override) were silently zeroed.
-    Result: logs labeled the tier as ``scarcity`` while the
-    effective setpoint fell back to the schedule baseline.
-
-    Post-fix: when the feed is unavailable, the active tier's
-    locked offset/override are looked up from PRICE_TIERS and
-    carried forward to the layer-priority resolver."""
+    the active price-overlay tier label is carried forward (so the pinned
+    formula re-derives the same warm effective setpoint next push) rather
+    than collapsing to baseline. Slice B1: the effective setpoint is now
+    derived from this tier label via ``effective_cool_for_tier``, so a
+    preserved label is the whole carry-forward contract."""
     from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     now_local = datetime(2026, 7, 15, 14, 30,
                           tzinfo=ZoneInfo("America/Chicago"))
     now_utc = now_local.astimezone(timezone.utc)
@@ -393,20 +389,15 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
     write_api = MagicMock()
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    # Label preserved (was already correct).
+    # Tier label preserved across the gap.
     assert inputs.price_tier_name == "scarcity"
-    # Setpoint contribution preserved (the fix): scarcity tier has
-    # cool_setpoint_override_f=85 in PRICE_TIERS.
-    assert inputs.price_override_f == 85
-    # Offset is 0 for scarcity (since it uses override, not offset).
-    assert inputs.price_offset_f == 0
 
 
-def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
-    """Symmetric for the elevated tier (offset=+3, override=None)."""
+def test_price_tier_elevated_label_preserved_across_feed_gap(monkeypatch):
+    """Symmetric for the elevated tier."""
     from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     now_local = datetime(2026, 7, 15, 14, 30,
                           tzinfo=ZoneInfo("America/Chicago"))
     now_utc = now_local.astimezone(timezone.utc)
@@ -421,16 +412,14 @@ def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
-    assert inputs.price_offset_f == 3   # locked elevated offset
-    assert inputs.price_override_f is None
 
 
 def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
-    """Normal tier produces zero contribution regardless of feed
-    availability -- the fix should not introduce a phantom offset
-    when there was no active tier to begin with."""
+    """Normal tier stays normal regardless of feed availability -- the
+    carry-forward must not introduce a phantom active tier when there was
+    no active tier to begin with."""
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()   # default state: tier=normal
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 30,
@@ -438,8 +427,6 @@ def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "normal"
-    assert inputs.price_offset_f == 0
-    assert inputs.price_override_f is None
 
 
 # ---- P2.3 (reviewer-flagged 2026-05-11): health marker gating -------------
@@ -1127,6 +1114,7 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app._trace", _capture_trace)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(
             current_tier="elevated",
@@ -1262,6 +1250,7 @@ def test_last_fresh_bucket_source_ts_updates_on_fresh_read(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(current_tier="normal"),
     )
@@ -1294,6 +1283,7 @@ def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     seeded = now - timedelta(hours=1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(current_tier="normal"),
@@ -1415,6 +1405,7 @@ def _run_evaluate_with(monkeypatch: Any, sample: Any, *, current_tier: Any, trig
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(
             current_tier=current_tier,
@@ -1958,6 +1949,408 @@ def test_timer_clear_on_upgrade_is_noop_during_min_hold(monkeypatch):
     assert firing.nonfresh_after_hold_started_at_utc is None
 
 
+# ---- Slice B2: the four feed-gap behaviors under the 4-tier overlay ---------
+# These prove the EXISTING feed-gap mechanism (freshness gate + safety-release
+# timer in _evaluate_layer_inputs, reused as-is) still holds the four spec
+# behaviors under B1's config-driven 4-tier overlay, including `extreme` and
+# the held *effective setpoint* (re-derived from the held tier via the same
+# `effective_cool_for_tier` formula the push path uses). Spec
+# §"Feed-gap behavior — reuse as-is". No mechanism logic is changed here.
+
+# Baseline used for the effective-setpoint assertions: the 13:00-19:00 midday
+# block (78F) of _A2_PROGRAM_F, which _make_controller_config_stub() carries.
+_B2_BASELINE_F = 78.0
+
+
+def test_b2_brief_gap_holds_tier_and_effective_setpoint(monkeypatch):
+    """Behavior 1: a brief feed gap (timer below PRICE_FEED_STALE_THRESHOLD)
+    in an active tier holds BOTH the tier and the re-derived warm effective
+    setpoint — it rides out a routine ~5-min publish gap, not collapses to
+    baseline.
+
+    Scarcity tier, min-hold elapsed, sample missing this tick, last fresh
+    bucket only 2 min ago (no safety-release timer yet). The tier label is
+    carried forward and `effective_cool_for_tier` re-derives the same warm
+    setpoint (baseline + warm_band + spike_extra), NOT the comfort baseline.
+    """
+    from .app import _evaluate_layer_inputs, FiringState
+    from .price_overlay import PriceOverlayState, effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr("hvac_scheduler.app.fetch_latest_comed",
+                        lambda q, b, *, now_utc: None)  # brief gap: no sample
+    cfg = _make_cfg_with_controller_config()
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        ),
+        last_fresh_bucket_source_ts=now - timedelta(minutes=2),  # brief gap only
+    )
+
+    inputs = _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing,
+                                    now_local=now)
+
+    # Tier held.
+    assert inputs.price_tier_name == "scarcity"
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    # Effective setpoint held (re-derived warm, not baseline). The held tier
+    # would have started the safety-release timer (post-min-hold + non-fresh)
+    # but it is nowhere near the 30-min threshold, so no release.
+    eff = effective_cool_for_tier(inputs.price_tier_name, _B2_BASELINE_F,
+                                  cfg.controller_config)
+    assert eff == _B2_BASELINE_F + 2.0 + 2.0  # 78 + warm_band + spike_extra = 82
+    assert eff > _B2_BASELINE_F, "must hold warm, not collapse to baseline"
+
+
+def test_b2_stale_spike_upgrades_into_extreme(monkeypatch):
+    """Behavior 2: a stale-but-present extreme-price sample drives a warm
+    UPGRADE into the new top tier `extreme` despite staleness (upgrades are
+    NOT freshness-gated; only downgrades are). The effective snaps to the
+    comfort ceiling.
+
+    Elevated tier, min-hold elapsed, sample at >= extreme_at (50c) with a
+    `warn` (non-fresh) freshness label -> upgrades straight to `extreme`,
+    effective = comfort_max.
+    """
+    from .app import PriceSample
+    from .price_overlay import effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=55.0,            # >= 50c extreme trigger
+        source_ts=now - timedelta(minutes=10),  # warn -> non-fresh
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="elevated",
+        triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    # Upgrade fired despite staleness, all the way to extreme.
+    assert firing.price_overlay_state.current_tier == "extreme"
+    po_traces = [t for t in traces
+                 if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_UPGRADED_TO_EXTREME"
+    # Effective snaps to the comfort ceiling (comfort_max=85 in the stub).
+    eff = effective_cool_for_tier("extreme", _B2_BASELINE_F,
+                                  _make_controller_config_stub())
+    assert eff == 85.0
+
+
+def test_b2_stale_downgrade_refused_holds_scarcity_and_effective(monkeypatch):
+    """Behavior 3: in an active tier, a stale lower-price sample does NOT
+    downgrade — the recency gate holds the tier (downgrade_gate_held) and the
+    warm effective setpoint stays held. Covered at the `scarcity` tier (the
+    elevated case is already covered) to confirm the gate is tier-agnostic
+    under the 4-tier overlay.
+
+    Scarcity, min-hold elapsed, sample 2.5c (below scarcity release of 18c)
+    with a `warn` (non-fresh) label -> the state machine would downgrade but
+    the gate refuses; tier and effective held.
+    """
+    from .app import PriceSample
+    from .price_overlay import effective_cool_for_tier
+
+    now = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)
+    sample = PriceSample(
+        cents_per_kwh=2.5,             # below scarcity release (18c)
+        source_ts=now - timedelta(minutes=10),  # warn -> non-fresh
+        freshness="warn",
+    )
+    firing, traces = _run_evaluate_with(
+        monkeypatch, sample,
+        current_tier="scarcity",
+        triggered_at_utc=now - timedelta(minutes=31),  # min-hold elapsed
+        last_fresh_bucket_source_ts=now - timedelta(minutes=10),
+        now_utc=now,
+    )
+    # Tier held by the recency gate.
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    po_traces = [t for t in traces
+                 if t.get("_event") == "decision_trace.price_overlay_eval"]
+    assert po_traces[-1]["outcome"] == "held"
+    assert po_traces[-1]["reason_code"] == "PRICE_OVERLAY_HELD_DOWNGRADE_BUCKET_AGE"
+    # Effective setpoint still the held warm value, not baseline.
+    eff = effective_cool_for_tier("scarcity", _B2_BASELINE_F,
+                                  _make_controller_config_stub())
+    assert eff == _B2_BASELINE_F + 2.0 + 2.0  # 82, held warm
+
+
+def test_b2_sustained_staleness_releases_after_min_hold_plus_threshold(monkeypatch):
+    """Behavior 4: sustained staleness releases to baseline only after the
+    minimum-hold window AND PRICE_FEED_STALE_THRESHOLD of sustained non-fresh
+    observation — the EXISTING compound timing (~hold_ttl_minutes +
+    PRICE_FEED_STALE_THRESHOLD), NOT a flat 30 min. This is the reused
+    mechanism; the test asserts the compound contract as a tick-by-tick
+    narrative (no mechanism change).
+
+    With hold_ttl_minutes=30 and PRICE_FEED_STALE_THRESHOLD=30:
+      * the stale-release timer does not even start until the 30-min min-hold
+        has elapsed (it resets to None every tick before then), so
+      * a flat-30-min release (T0 + 30) does NOT fire — the controller is
+        still in tier, and
+      * the release fires only ~T0 + 60 (30 min-hold + 30 stale threshold).
+    """
+    from .app import (
+        _evaluate_layer_inputs, FiringState, PriceSample,
+        PRICE_FEED_STALE_THRESHOLD,
+    )
+    from .price_overlay import PriceOverlayState
+
+    assert PRICE_FEED_STALE_THRESHOLD == timedelta(minutes=30)  # contract anchor
+
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    cfg = _make_cfg_with_controller_config()
+    min_hold = cfg.controller_config.hold_ttl_minutes  # 30
+    assert min_hold == 30
+
+    monkeypatch.setattr("hvac_scheduler.app._trace", lambda *a, **k: None)
+    monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health",
+                        lambda *a, **k: None)
+
+    # Every tick from here on returns a stale (non-fresh) sample whose price
+    # still sits above the scarcity release (so the only thing that can end the
+    # tier is the safety-release timer, never a price-driven downgrade).
+    def _stale_sample(q, b, *, now_utc):
+        return PriceSample(
+            cents_per_kwh=25.0,                      # above scarcity release (18c)
+            source_ts=now_utc - timedelta(minutes=20),  # stale -> non-fresh
+            freshness="stale",
+        )
+    monkeypatch.setattr("hvac_scheduler.app.fetch_latest_comed", _stale_sample)
+
+    firing = FiringState(
+        price_overlay_state=PriceOverlayState(
+            current_tier="scarcity",
+            triggered_at_utc=t0,                     # tier entered at t0
+        ),
+        last_fresh_bucket_source_ts=t0,
+    )
+
+    def _tick(minutes_after_t0: int) -> None:
+        _evaluate_layer_inputs(MagicMock(), MagicMock(), cfg, firing,
+                               now_local=t0 + timedelta(minutes=minutes_after_t0))
+
+    # During min-hold: tier held, timer never starts (resets to None each tick).
+    _tick(10)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc is None
+    _tick(29)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc is None
+
+    # First post-min-hold tick: NOW the stale-release timer starts (at t0+31),
+    # NOT back-dated to the start of the gap.
+    _tick(31)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+    assert firing.nonfresh_after_hold_started_at_utc == t0 + timedelta(minutes=31)
+
+    # A "flat 30 min" interpretation would release here (T0 + 30 already past).
+    # The compound mechanism does NOT — only ~1 min of stale-release time has
+    # accumulated since the timer started at t0+31.
+    _tick(40)
+    assert firing.price_overlay_state.current_tier == "scarcity", (
+        "Released on flat ~30 min — the compound timing (min-hold + threshold) "
+        "was mis-driven or the mechanism changed."
+    )
+
+    # Just before timer + PRICE_FEED_STALE_THRESHOLD (t0+31 + 30 = t0+61): held.
+    _tick(60)
+    assert firing.price_overlay_state.current_tier == "scarcity"
+
+    # At timer + PRICE_FEED_STALE_THRESHOLD (t0+61): release fires to baseline.
+    _tick(61)
+    assert firing.price_overlay_state.current_tier == "normal", (
+        "Release should fire at min-hold + PRICE_FEED_STALE_THRESHOLD "
+        "(~t0+61), the existing compound timing."
+    )
+    assert firing.nonfresh_after_hold_started_at_utc is None  # cleared on release
+
+
+# ---- B3: scale-neutral telemetry schema (hvac.actions / hvac.price_overlay) --
+#
+# Spec §"Telemetry" + §"Units": scale-neutral field names + a `unit` tag.
+# hvac.actions: drop day_type; tags = unit/tier/action_label/dry_run; fields
+# carry commanded_cool/commanded_heat/baseline_cool/drift/actual_indoor_temp/
+# actual_humidity/actual_cool_before/actual_heat_before/config_id. Values are
+# in native temp_scale (NO conversion); the `unit` tag records the scale.
+# drift == commanded_cool - baseline_cool.
+
+
+def _capture_write_point(monkeypatch: Any) -> list[dict[str, Any]]:
+    """Patch app.write_point and return the list of captured calls as dicts
+    {measurement, tags, fields} so a test can assert the schema directly."""
+    captured: list[dict[str, Any]] = []
+
+    def _wp(write_api: Any, bucket: str, measurement: str, *,
+            tags: Any, fields: Any, **kwargs: Any) -> None:
+        captured.append({"measurement": measurement,
+                         "tags": dict(tags), "fields": dict(fields)})
+    monkeypatch.setattr(app, "write_point", _wp)
+    return captured
+
+
+def test_b3_write_action_schema_normal_tick(monkeypatch):
+    """hvac.actions carries the scale-neutral schema on a normal tick: a `unit`
+    tag (no `day_type`), a `tier` tag, and commanded/baseline/drift/actual/
+    config_id fields. drift == commanded - baseline (0 at normal tier)."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=78.0,
+                            heat_setpoint=65.0)
+    snapshot = {
+        "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+        "cool_setpoint_f": 75.0, "heat_setpoint_f": 65.0, "humidity": 51.0,
+    }
+    app.write_action(
+        MagicMock(), "energy", action,
+        78.0, 65.0, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="F", tier="normal", baseline_cool=78.0, config_id="abc123",
+    )
+
+    row = captured[-1]
+    assert row["measurement"] == "hvac.actions"
+    # Tags: unit + tier present; day_type GONE.
+    assert row["tags"]["unit"] == "F"
+    assert row["tags"]["tier"] == "normal"
+    assert row["tags"]["action_label"] == "BASELINE"
+    assert row["tags"]["dry_run"] == "true"
+    assert "day_type" not in row["tags"]
+    # Fields: scale-neutral names; old *_f names GONE.
+    f = row["fields"]
+    assert f["commanded_cool"] == 78.0
+    assert f["commanded_heat"] == 65.0
+    assert f["baseline_cool"] == 78.0
+    assert f["drift"] == 0.0  # normal tier: commanded == baseline
+    assert f["actual_indoor_temp"] == 74.0
+    assert f["actual_humidity"] == 51.0
+    assert f["actual_cool_before"] == 75.0
+    assert f["actual_heat_before"] == 65.0
+    assert f["config_id"] == "abc123"
+    for gone in ("cool_setpoint_f", "heat_setpoint_f", "indoor_temp_before_f",
+                 "indoor_humidity_before_pct", "cool_setpoint_proposed_f",
+                 "heat_setpoint_proposed_f", "cool_setpoint_before_f",
+                 "heat_setpoint_before_f"):
+        assert gone not in f
+
+
+def test_b3_write_action_drift_on_spike_tick(monkeypatch):
+    """A spike (scarcity) tick: commanded_cool > baseline_cool and
+    drift == warm_band + spike_extra (the warm-drift magnitude). Native scale,
+    no conversion."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=78.0,
+                            heat_setpoint=65.0)
+    snapshot = {"indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                "humidity": 55.0}
+    # scarcity effective = baseline + warm_band(2) + spike_extra(2) = 82.
+    app.write_action(
+        MagicMock(), "energy", action,
+        82.0, 65.0, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="F", tier="scarcity", baseline_cool=78.0, config_id="abc123",
+    )
+
+    f = captured[-1]["fields"]
+    assert captured[-1]["tags"]["tier"] == "scarcity"
+    assert f["commanded_cool"] == 82.0
+    assert f["baseline_cool"] == 78.0
+    assert f["commanded_cool"] > f["baseline_cool"]
+    assert f["drift"] == 4.0  # warm_band + spike_extra
+
+
+def test_b3_write_action_celsius_unit_no_conversion(monkeypatch):
+    """Under a Celsius config the values are emitted native (no F conversion)
+    and the unit tag reads "C"."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=25.5,
+                            heat_setpoint=18.5)
+    snapshot = {"indoor_temp_f": 24.0, "cool_setpoint_f": 25.5,
+                "heat_setpoint_f": 18.5, "humidity": 50.0, "hvac_mode": "Cool"}
+    app.write_action(
+        MagicMock(), "energy", action,
+        26.5, 18.5, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="C", tier="elevated", baseline_cool=25.5, config_id="def456",
+    )
+    row = captured[-1]
+    assert row["tags"]["unit"] == "C"
+    assert row["fields"]["commanded_cool"] == 26.5  # native C, not converted
+    assert row["fields"]["baseline_cool"] == 25.5
+    assert row["fields"]["drift"] == 1.0  # warm_band in C
+
+
+def test_b3_price_overlay_transition_schema(monkeypatch):
+    """hvac.price_overlay is scale-neutral: a `unit` tag plus baseline_cool /
+    commanded_cool (renamed from schedule_cool_f / effective_cool_f). The
+    prev_tier/new_tier tags (carrying `extreme`) and current_price_cents /
+    triggered_at_utc are unchanged."""
+    captured = _capture_write_point(monkeypatch)
+    app.write_price_overlay_transition(
+        MagicMock(), "energy",
+        prev_tier="scarcity", new_tier="extreme", unit="F",
+        current_price_cents=55.0,
+        baseline_cool=78.0, commanded_cool=85.0,
+        triggered_at_utc=datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc),
+    )
+    row = captured[-1]
+    assert row["measurement"] == "hvac.price_overlay"
+    assert row["tags"]["unit"] == "F"
+    assert row["tags"]["prev_tier"] == "scarcity"
+    assert row["tags"]["new_tier"] == "extreme"
+    f = row["fields"]
+    assert f["baseline_cool"] == 78.0
+    assert f["commanded_cool"] == 85.0
+    assert f["current_price_cents"] == 55.0
+    assert f["triggered_at_utc"]  # non-empty iso string
+    assert "schedule_cool_f" not in f
+    assert "effective_cool_f" not in f
+
+
+def test_b3_run_schedule_check_writes_config_id_and_unit(monkeypatch):
+    """Integration: a spike tick driven through run_schedule_check emits an
+    hvac.actions row whose config_id equals the loaded config's id, whose unit
+    tag is the config temp_scale, and whose commanded_cool > baseline_cool with
+    tier == the spike tier."""
+    import asyncio
+
+    captured = _capture_write_point(monkeypatch)
+    _stub_layer_eval_io(monkeypatch, price_cents=25.0)  # scarcity (>= 20c)
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                            "humidity": 55.0,
+                        }))
+
+    cfg = _make_cfg_with_controller_config()
+    c4, _ = _mock_c4_client()
+    firing = FiringState()
+    now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+
+    action_rows = [r for r in captured if r["measurement"] == "hvac.actions"]
+    assert action_rows, "expected at least one hvac.actions row"
+    row = action_rows[-1]
+    assert row["tags"]["unit"] == cfg.controller_config.temp_scale
+    assert row["tags"]["tier"] == "scarcity"
+    assert row["fields"]["config_id"] == _STUB_CONFIG_ID
+    # Baseline 78 (midday block) + warm_band 2 + spike_extra 2 = 82 commanded.
+    assert row["fields"]["baseline_cool"] == 78.0
+    assert row["fields"]["commanded_cool"] == 82.0
+    assert row["fields"]["commanded_cool"] > row["fields"]["baseline_cool"]
+    assert row["fields"]["drift"] == 4.0
+
+
 # ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
 
 # Synthetic schedule (the day-type schedules were removed): PRE_COOL 06:00,
@@ -2008,17 +2401,40 @@ _A2_PROGRAM_F = [
     {"from": "19:00", "to": "22:00", "cool": 75.0},
 ]
 
+# Sentinel config_id for the A2/A4/B1 config-present test stub. The B3
+# hvac.actions schema test asserts the written config_id equals this value.
+_STUB_CONFIG_ID = "stub-config-sha"
 
-def _make_controller_config_stub(heat_floor: float = 65.0) -> MagicMock:
-    """Minimal ControllerConfig stub for A2/A4 tests (config-present path).
 
-    ``heat_floor`` defaults to 65.0 (F-scale baseline); pass 18.5 for the
-    Celsius-config case.
+def _make_controller_config_stub(heat_floor: float = 65.0) -> Any:
+    """Real ControllerConfig for A2/A4/B1 tests (config-present path).
+
+    F-scale, on-grid values. ``heat_floor`` defaults to 65.0 (F baseline);
+    pass 18.5 for the Celsius-heat-floor case. The price tiers / flexibility
+    / ceiling / hold are real so the config-driven overlay (Slice B1) can
+    read them: warm_band=2, spike_extra=2, comfort_max=85 (above the 78
+    midday baseline so an extreme spike rides to the ceiling), and
+    hold_ttl_minutes=30 to preserve the gate tests' 30-min hold semantics.
     """
-    cc = MagicMock()
-    cc.comfort_program = _A2_PROGRAM_F
-    cc.heat_floor = heat_floor
-    return cc
+    from .controller_config import (
+        Ceiling, ControllerConfig, Flexibility, HumidityGuard, Modes,
+        PriceTiersCents, Stage1Ramp,
+    )
+    return ControllerConfig(
+        temp_scale="F",
+        comfort_program=tuple(_A2_PROGRAM_F),
+        heat_floor=heat_floor,
+        flexibility=Flexibility(warm_band=2.0, spike_extra=2.0),
+        price_tiers_cents=PriceTiersCents(
+            elevated_at=10.0, scarcity_at=20.0, extreme_at=50.0,
+            hysteresis_cents=2.0,
+        ),
+        humidity_guard=HumidityGuard(rh_max_pct=65, rh_clear_pct=62),
+        ceiling=Ceiling(comfort_max=85.0),
+        hold_ttl_minutes=30,
+        modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+        config_id=_STUB_CONFIG_ID,
+    )
 
 
 def _make_cfg_with_controller_config(

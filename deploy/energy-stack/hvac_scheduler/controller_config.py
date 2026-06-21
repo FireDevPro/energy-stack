@@ -35,6 +35,7 @@ class PriceTiersCents:
     elevated_at: float
     scarcity_at: float
     extreme_at: float
+    hysteresis_cents: float
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class ControllerConfig:
     ceiling: Ceiling
     hold_ttl_minutes: int
     modes: Modes
+    config_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +150,30 @@ def _validate(raw: dict[str, Any]) -> None:
             f"hold_ttl_minutes must be positive, got {ttl}."
         )
 
+    # 6. price-tier hysteresis is a positive cent delta below the lowest
+    # trigger. A release at/below 0c is nonsense; a release at/above the
+    # elevated trigger would make the elevated tier impossible to leave.
+    pt = raw.get("price_tiers_cents", {})
+    hyst = float(pt.get("hysteresis_cents", 0))
+    elevated_at = float(pt.get("elevated_at", 0))
+    if not (0 < hyst < elevated_at):
+        raise ValueError(
+            f"price_tiers_cents.hysteresis_cents ({hyst}) must be > 0 and "
+            f"< elevated_at ({elevated_at})."
+        )
+
+    # 7. comfort ceiling must sit at or above the warmest comfort baseline.
+    # Otherwise the warm-drift ceiling is below the floor (baseline) and the
+    # effective formula clamp [baseline, comfort_max] is degenerate.
+    cool_values = [float(b["cool"]) for b in raw.get("comfort_program", [])]
+    comfort_max = float(raw.get("ceiling", {}).get("comfort_max", 0))
+    if cool_values and comfort_max < max(cool_values):
+        raise ValueError(
+            f"ceiling.comfort_max ({comfort_max}) must be >= the warmest "
+            f"comfort_program cool setpoint ({max(cool_values)}); the warm-drift "
+            f"ceiling cannot sit below the comfort baseline."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Public loader
@@ -189,6 +215,7 @@ def load_controller_config(path: str) -> ControllerConfig:
         elevated_at=float(pt_raw["elevated_at"]),
         scarcity_at=float(pt_raw["scarcity_at"]),
         extreme_at=float(pt_raw["extreme_at"]),
+        hysteresis_cents=float(pt_raw["hysteresis_cents"]),
     )
 
     hg_raw = raw["humidity_guard"]
@@ -223,4 +250,5 @@ def load_controller_config(path: str) -> ControllerConfig:
         ceiling=ceiling,
         hold_ttl_minutes=int(raw["hold_ttl_minutes"]),
         modes=modes,
+        config_id=sha256,
     )
