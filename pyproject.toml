@@ -29,10 +29,6 @@ mypy_path = "deploy/energy-stack"
 # Upstream stubs are authoritative. See docs/type-debt-backlog.md.
 
 [[tool.mypy.overrides]]
-module = "pyControl4.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 # PyYAML ships without py.typed; types-PyYAML is the stub package.
 # Suppressed here because types-PyYAML is not yet in requirements-dev.lock.
 # Add types-PyYAML to requirements-dev.in + re-lock to recover type safety.

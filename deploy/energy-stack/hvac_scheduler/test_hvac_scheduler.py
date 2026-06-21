@@ -92,8 +92,8 @@ def test_resolve_cool_setpoint_standard_path_unchanged():
 
 
 def _mock_c4_client() -> tuple[MagicMock, MagicMock]:
-    """Build a C4Client mock whose call_with_reauth simply awaits the supplied
-    callable. Captures the chain so the test can assert what was called."""
+    """Build a ThermostatClient mock whose call_with_reauth simply awaits the
+    supplied callable. Captures the chain so the test can assert what was called."""
     c4 = MagicMock()
 
     climate = MagicMock()
