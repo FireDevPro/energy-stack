@@ -19,3 +19,4 @@ mypy
 pydantic
 import-linter
 types-requests
+types-PyYAML

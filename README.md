@@ -43,18 +43,6 @@ experiment** — deferred, not active in 2026.
 Controller design: [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](docs/superpowers/specs/2026-06-20-commissioning-controller-design.md)
 Commissioning plan: [`docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md`](docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md)
 
-> **Historical / superseded:** `docs/HVAC_LOGIC.md`, `docs/CONTROLLER_CONSTANTS.md`,
-> `docs/OSF_FILING_MECHANICS.md`, and `docs/plans/sced-rebaseline-spec-2026-05-13.md`
-> describe the old OSF-preregistered SCED experiment design (offline, retracted).
-> Retained as historical record only.
->
-> **Onboard fallback schedule (⚠ stale — refresh before go-active):**
-> `docs/THERMOSTAT_ARM_A_SCHEDULE.md` is the designated home for the CTK04AE onboard
-> fallback schedule — the device-native safety fallback a lapsed timed-hold reverts
-> to. Its CONTENT is stale (old OSF-era schedule + Permanent-hold/day-type language)
-> and must be refreshed to the deployed program before go-active; not yet
-> authoritative.
-
 ## What's in this repo
 
 - **Controller** — `hvac-scheduler` service. Current spec/plan linked above.
@@ -63,10 +51,8 @@ Commissioning plan: [`docs/superpowers/plans/2026-06-20-commissioning-controller
 - **Telemetry pipeline** — Docker Compose stack of pollers + InfluxDB + Grafana +
   Loki, under [`deploy/energy-stack/`](deploy/energy-stack/). Per-service detail in
   [`docs/SERVICES.md`](docs/SERVICES.md).
-- **Analysis pipeline** — Flux query library and replay harness under
-  [`tools/analysis/`](tools/analysis/); historical bundles under
-  [`tools/comed_2025_analysis/`](tools/comed_2025_analysis/) and
-  [`tools/o2_capacity_reconstruction/`](tools/o2_capacity_reconstruction/).
+- **Analysis tooling** — shadow-validation ops check under
+  [`tools/analysis/`](tools/analysis/) (`run_shadow_validation.py` + helpers).
 - **5CP telemetry** — PJM capacity-peak data collected and retained for later
   analysis; not a live control input.
 

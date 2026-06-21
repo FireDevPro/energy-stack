@@ -10,7 +10,7 @@ role-label: code-team
 **Status**: Phases 1 + 2 shipped May 2026. `pjm-dm2-poller` running in production; backfill complete; 5CP PDF scraper ready for the Nov 2026 annual run. Forward work below.
 **Owner**: Chris dePaola
 **Depends on**: existing `energy-stack` (InfluxDB, Telegram notifier), Non-Member API key on `pi-lab`
-**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`plans/sced-rebaseline-spec-2026-05-13.md`](plans/sced-rebaseline-spec-2026-05-13.md) (binding spec for the field study this data feeds). Operational details in [`SERVICES.md#pjm-dm2-poller`](SERVICES.md#pjm-dm2-poller).
+**Companion docs**: [`PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md) (auto-generated feed catalog), [`superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md) (current controller spec). Operational details in [`SERVICES.md#pjm-dm2-poller`](SERVICES.md#pjm-dm2-poller).
 
 ---
 
@@ -22,7 +22,7 @@ Three open scheduler / experiment work items need PJM-zone data we don't current
 2. **Forecast bias correction for ComEd retail hourly pricing**: ComEd's retail hourly rate is derived from PJM zonal RT-LMP plus a retail markup. Having the raw zonal LMP lets us decompose retail-price spikes into "LMP movement" vs "retail markup tier change" and detect sustained mismatch.
 3. **Real-time peak-day signal**: PJM publishes its own daily projected peak load and projected peak hour. A scheduler-side cross-check against our day-type classifier catches days where PJM's signal disagrees with ours.
 
-All three are supporting work for the [field study](plans/sced-rebaseline-spec-2026-05-13.md) (binding spec). None is in the critical path for summer 2026 alternation start, but all should be in place before summer ramps in.
+All three are supporting work for the deferred 2027 cost-savings comparison (see the [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md)). None is in the critical path for 2026 commissioning, but all should be in place before the comparison runs.
 
 ## Goals
 
@@ -156,7 +156,7 @@ Lives in `deploy/energy-stack/.env` on `pi-lab` (chmod 600), placeholder in `.en
 headers = {"Ocp-Apim-Subscription-Key": os.environ["PJM_DM2_API_KEY"]}
 ```
 
-Same secret-handling pattern as `EAGLE_INSTALL_CODE`, `CONTROL4_PASSWORD`, etc.
+Same secret-handling pattern as `EAGLE_INSTALL_CODE`, `INFLUXDB_TOKEN`, etc.
 
 ## Error handling
 

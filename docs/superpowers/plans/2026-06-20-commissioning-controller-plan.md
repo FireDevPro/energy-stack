@@ -117,11 +117,11 @@ Replace day-type/schedule resolution with `comfort_baseline_cool`; resolve = bas
 - **Config deployment:** add `CONTROLLER_CONFIG_FILE` + a mounted config path + `TEMP_SCALE` to `docker-compose.yml`; put the validated config on Pi-lab.
 - **Remove heat-stretch + all forecast plumbing** (`fetch_latest_forecast` and the NWS-forecast wiring into the scheduler) — the controller has no weather input; don't leave forecast hooks "parked on standby." (NWS stays a *telemetry* poller; it just no longer feeds the controller.)
 - **Acceptance test:** remove xfail; full suite green (pytest + mypy), zero scaffolding.
-- **Docs:** rewrite `docs/HVAC_LOGIC.md`; update `docs/SERVICES.md#hvac-scheduler`; archive this plan on merge.
+- **Docs:** the controller-logic doc was deleted in the demolition — the design now lives in this spec/plan pair; update `docs/SERVICES.md#hvac-scheduler`; archive this plan on merge.
 
 ## Go-active (the flip to `production`)
 
-TCC swap landed incl. timed holds + thermostat setpoint min/max limits set + **the CTK04 onboard fallback schedule confirmed safe and captured as an authoritative current snapshot** (`docs/THERMOSTAT_ARM_A_SCHEDULE.md` refreshed to the deployed program — it is the safety fallback) + **hold-expiry-reverts-to-onboard-schedule** verified on hardware + format/readback round-trip + container-restart recompute + SOPS/`SCHEDULER_MODE` confirmation -> flip `shadow` -> `production`.
+TCC swap landed incl. timed holds + thermostat setpoint min/max limits set + **confirm the thermostat onboard program is a safe cool schedule (the timed-hold fallback); values live on the device, not the repo** + **hold-expiry-reverts-to-onboard-schedule** verified on hardware + format/readback round-trip + container-restart recompute + SOPS/`SCHEDULER_MODE` confirmation -> flip `shadow` -> `production`.
 
 ## Pre-execution gates
 

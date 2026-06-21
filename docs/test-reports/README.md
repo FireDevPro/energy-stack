@@ -22,6 +22,4 @@ specific run by file rather than by Telegram.
 
 The Python tool that previously rendered reports into this directory
 (`tools/decision_trace_report/`) was sunset after the n8n workflow
-proved out. Spec at
-`docs/superpowers/specs/2026-05-15-decision-trace-report-tool-design.md`
-is retained as superseded historical context.
+proved out.
