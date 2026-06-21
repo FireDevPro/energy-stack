@@ -51,10 +51,8 @@ Commissioning plan: [`docs/superpowers/plans/2026-06-20-commissioning-controller
 - **Telemetry pipeline** — Docker Compose stack of pollers + InfluxDB + Grafana +
   Loki, under [`deploy/energy-stack/`](deploy/energy-stack/). Per-service detail in
   [`docs/SERVICES.md`](docs/SERVICES.md).
-- **Analysis pipeline** — Flux query library and replay harness under
-  [`tools/analysis/`](tools/analysis/); historical bundles under
-  [`tools/comed_2025_analysis/`](tools/comed_2025_analysis/) and
-  [`tools/o2_capacity_reconstruction/`](tools/o2_capacity_reconstruction/).
+- **Analysis tooling** — shadow-validation ops check under
+  [`tools/analysis/`](tools/analysis/) (`run_shadow_validation.py` + helpers).
 - **5CP telemetry** — PJM capacity-peak data collected and retained for later
   analysis; not a live control input.
 

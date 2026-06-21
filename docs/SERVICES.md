@@ -64,7 +64,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `nws.alerts` | nws-poller | tag `event`, `severity`; one point per active alert with `active=1`, `expires_unix`, `headline` (≤200 chars). Granular per-alert detail. |
 | `pjm.lmp_da_hourly` | pjm-dm2-poller | day-ahead LMP for ComEd zonal pnode (`33092371`) — tagged `pnode_id`, `pnode_name`, `zone` |
 | `pjm.lmp_rt_hourly` | pjm-dm2-poller | real-time hourly LMP for ComEd zonal pnode — tagged `pnode_id`, `pnode_name`, `zone`. Scheduled at 12:00 CT (rt_hrl_lmps feed). |
-| `pjm.inst_load` | pjm-dm2-poller | 5-min instantaneous load, both scopes (`area=COMED` from `inst_load` feed + `area=PJM RTO` from `inst_load_rto`) — consumed by `hvac_scheduler/pjm_5cp.py` 5CP detector |
+| `pjm.inst_load` | pjm-dm2-poller | 5-min instantaneous load, both scopes (`area=COMED` from `inst_load` feed + `area=PJM RTO` from `inst_load_rto`) — retained as 5CP telemetry |
 | `pjm.load_forecast` | pjm-dm2-poller | 7-day load forecast for `forecast_area=COMED` — tagged `evaluated_at_iso` so revisions stay distinct |
 | `pjm.metered_load` | pjm-dm2-poller | weekly hrl_load_metered for `zone=CE` — tagged `is_verified` |
 | `pjm.peak_forecast_rto` | pjm-dm2-poller | RTO peak-day forecast (cooling season only) |

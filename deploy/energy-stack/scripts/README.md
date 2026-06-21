@@ -85,7 +85,7 @@ After several manual runs have been validated, log nightly output only:
 > The canonical arm calendar is now generated programmatically by [`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). The original `randomize_arms.py` script and its output `docs/experiment-assignments-summer-2026.csv` are preserved in-tree as historical artifacts (and to keep `tests/test_randomize_arms.py` pinning the original algorithm for audit traceability) but **should not be run** for any current operation. Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137).
 
 Generates the original Arm A / Arm B week-level assignment for the residential
-HVAC controls field study described in [`docs/EXPERIMENT_DESIGN.md`](../../../docs/EXPERIMENT_DESIGN.md).
+HVAC controls field study described in [`docs/archive/EXPERIMENT_DESIGN.md`](../../../docs/archive/EXPERIMENT_DESIGN.md).
 Block-of-2 randomization using a pre-committed seed (default `20260601` from
 EXPERIMENT_DESIGN.md §13). Same seed + same date range → same CSV, every time.
 
@@ -123,7 +123,7 @@ trace path left to exercise.
 This manual audit logger was removed. It was built on a per-arm AIR-toggle
 concept that was never the design (AIR is fixed OFF in both arms), was never
 run (its `hvac.arm_transitions` measurement has zero rows), and was redundant
-with the deterministic arm calendar. See `docs/EXPERIMENT_CHANGE_LOG.md`.
+with the deterministic arm calendar.
 
 **When to run:** every Monday at the arm-boundary crossover (2026-06-01,
 2026-06-15, 2026-06-29, ... per the canonical arm calendar at

@@ -150,6 +150,5 @@ Per memory `feedback_research_locks_parameters` and the lock policy, this is bel
 ## Related
 
 - `docs/archive/THERMAL_MODEL_DESIGN.md` — planned post-experiment Bacher-Madsen-anchored RC envelope fit. This rough cut is intentionally simpler.
-- `tools/comed_2025_analysis/` — Codex's frozen 2025 ComEd price analysis. The maintenance-vs-drift strategy debate that motivated this rough cut.
 - `docs/superpowers/specs/2026-06-20-commissioning-controller-design.md` and `deploy/energy-stack/hvac_scheduler/app.py` — the controller this analysis was sanity-checking. (The old hand-tuned day-type constants doc was removed in the demolition; the current controller is config-driven per the spec.)
 - `memory/feedback-no-epa-78-claim.md` — separate retraction made during the same conversation about EPA 78°F citation.

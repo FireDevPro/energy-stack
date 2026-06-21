@@ -68,12 +68,6 @@ out to analysis.
 
 The science layer: what counts as evidence, how it's validated.
 
-- [docs/REPLAY_VALIDATION.md](docs/REPLAY_VALIDATION.md) — replay
-  validation methodology and validation-bundle structure
-- [docs/DRY_RUN_VALIDATION.md](docs/DRY_RUN_VALIDATION.md) — dry-run
-  validation procedure for scheduler changes
-- [docs/O2_CAPACITY_RECONSTRUCTION.md](docs/O2_CAPACITY_RECONSTRUCTION.md)
-  — ComEd Attachment M-2 capacity reconstruction methodology
 - [docs/THERMAL_ROUGH_CUT_2026-05-26.md](docs/THERMAL_ROUGH_CUT_2026-05-26.md)
   — empirical fit (AC-off drift) sanity-checking hand-tuned constants;
   surfaced the wrong-variable choice in pyControl4 that motivated the
@@ -98,14 +92,10 @@ How to deploy, run, and tweak the running stack on Pi-lab.
 Workstation-local utilities and analysis scaffolds. Most are
 self-contained mini-projects with their own READMEs.
 
-- [tools/analysis/replay/README.md](tools/analysis/replay/README.md)
-  — replay framework for replaying historical telemetry against
-  current scheduler
-- [tools/comed_2025_analysis/README.md](tools/comed_2025_analysis/README.md)
-  — frozen analysis bundle for the 2025 ComEd RTP distribution
-  (reference for price threshold calibration)
-- [tools/o2_capacity_reconstruction/README.md](tools/o2_capacity_reconstruction/README.md)
-  — capacity-charge reconstruction script
+- [tools/n8n/README.md](tools/n8n/README.md)
+  — n8n workflow SDK source (canonical `.workflow.ts` authoring)
+- [tools/decision-trace-report/README.md](tools/decision-trace-report/README.md)
+  — daily decision-trace commissioning report tooling
 
 ---
 
@@ -117,14 +107,6 @@ content:
 - **`docs/archive/`** — superseded historical docs preserved for
   provenance. Reference these only when asking "what was the prior
   state of X" — not for current behavior.
-- **`docs/replay-validation/`** — per-event validation findings
-  (specific moments in time, not narrative reference).
-- **`docs/plans/pre-osf-doc-audit-*-2026-05-18.md`** — audit working
-  artifacts (codex review, findings, truth tables, execution log) from
-  the May 2026 doc audit pass. Historical context only.
-- **`docs/plans/public-flip-readiness-2026-05-19.md`** — GitHub
-  hardening checklist for the 2026-05-30 public flip. Superseded;
-  repo is going private.
 - **Vendored / generated artifacts** (`node_modules/`,
   `.pytest_cache/`, `site/`).
 - **Per-service code, configs, and tests** under
