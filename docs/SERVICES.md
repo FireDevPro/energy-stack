@@ -347,7 +347,7 @@ Build: `./hvac-scheduler` · Cycle: 1-min ticker · Volume: `hvac_scheduler_data
 
 Decides tomorrow's day-type at 21:00 local, then fires schedule actions throughout the next day. Each action sets cool + heat setpoints (heat always paired for Auto-mode safety), optionally sets fan mode, then pins `Hold = Permanent` so the thermostat baseline doesn't override.
 
-Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in [`HVAC_LOGIC.md#safety-supervisor-every-setpoint-push`](HVAC_LOGIC.md#safety-supervisor-every-setpoint-push).
+Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` before reaching Control4: clamps cool to `[65, 86]°F`, heat to `[55, 75]°F`, and overrides cool to 74°F if the thermostat snapshot reports indoor ≥ 86°F. Decision logged to `hvac.actions` (tag `supervisor_decision`, fields `supervisor_reason`, `cool_setpoint_proposed_f`). Detail in the [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
 
 **Auth path:** Pi → Control4 EA-5 (`192.168.1.30`) via pyControl4 v2.0.2 → Amana CTK04AE via Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat. Token persisted at `/data/director_token.json`. Reauth on 401 with fresh `get_account_bearer_token` → `get_director_bearer_token`.
 
@@ -372,11 +372,11 @@ Every proposed setpoint passes through `safety_supervisor.validate_setpoints()` 
 | `hvac.switch_event` | — | `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary crossings. |
 | `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller each tick. |
 
-**Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in [`HVAC_LOGIC.md`](HVAC_LOGIC.md#overrides).
+**Override mechanism** (`/data/overrides.json`): manual day-type forces (e.g., "today is a holiday, force NORMAL") or full vacation flat-setpoint mode. Format and examples documented in the [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
 
 **Healthcheck:** `/tmp/last_tick_ok` touched every minute regardless of whether actions fired — failure means the scheduler is wedged.
 
-**Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [`HVAC_LOGIC.md`](HVAC_LOGIC.md).
+**Detailed schedule logic, day-type decision tree, ASHRAE 55 humidity math, ISU settings:** [binding spec](plans/sced-rebaseline-spec-2026-05-13.md).
 
 ---
 
