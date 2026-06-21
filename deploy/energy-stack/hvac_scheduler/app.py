@@ -1325,9 +1325,9 @@ async def _push_baseline_if_changed(
     )
     log("info", "baseline_push",
         label=action.label,
-        cool_setpoint_f=effective_cool,
-        baseline_cool_f=baseline,
-        prior_effective_cool_f=firing.last_pushed_effective_cool,
+        commanded_cool=effective_cool,
+        baseline_cool=baseline,
+        prior_commanded_cool=firing.last_pushed_effective_cool,
         dry_run=cfg.dry_run, applied=applied, error=error)
 
     # Guard update gated on (dry_run or error is None): a failed live push
