@@ -95,16 +95,6 @@ from pyControl4.climate import C4Climate
 from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
 from .controller_config import ControllerConfig, load_controller_config
 from .controller_core import comfort_baseline_cool
-from .pjm_5cp import (
-    COMED_SCOPE,
-    RTO_SCOPE,
-    FiveCPState,
-    cooling_season_window_utc,
-    evaluate_for_scope,
-    fetch_forecast_peak_today,
-    in_cooling_season,
-    update_season_5th_highest,
-)
 from .price_overlay import (
     DEFAULT_MINIMUM_HOLD_MINUTES,
     NORMAL_TIER_NAME,
@@ -436,16 +426,6 @@ class PriceSample:
     freshness: Freshness  # "fresh" | "warn" | "stale" (never "missing" — that's the None return).
 
 
-def fq_latest_forecast(bucket: str, for_period: str) -> str:
-    return f'''
-from(bucket: "{bucket}")
-  |> range(start: -3h)
-  |> filter(fn: (r) => r._measurement == "nws.forecast" and r.for_period == "{for_period}")
-  |> last()
-  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-'''
-
-
 def fq_latest_comed_5min(bucket: str) -> str:
     return f'''
 from(bucket: "{bucket}")
@@ -455,17 +435,6 @@ from(bucket: "{bucket}")
                     and r.period_type == "5min")
   |> last()
 '''
-
-
-def fetch_latest_forecast(query_api: Any, bucket: str, for_period: str) -> dict[str, Any] | None:
-    rows: list[dict[str, Any]] = []
-    for table in query_api.query(fq_latest_forecast(bucket, for_period)):
-        for record in table.records:
-            rows.append(record.values)
-    if not rows:
-        return None
-    # After pivot we get one row with all fields as columns
-    return rows[0]
 
 
 def fetch_latest_comed(query_api: Any, bucket: str, *, now_utc: datetime) -> "PriceSample | None":
@@ -499,44 +468,6 @@ def fetch_latest_comed(query_api: Any, bucket: str, *, now_utc: datetime) -> "Pr
                 source_ts=rec.time_utc,
                 freshness=label,
             )
-    return None
-
-
-def fetch_rto_peak_forecast_today(query_api: Any, bucket: str) -> float | None:
-    """Read the latest PJM RTO projected daily-peak load from
-    ``pjm.peak_forecast_rto`` (sourced from PJM DM2's
-    ``ops_sum_frcst_peak_rto`` feed, area="PJM RTO"). PJM publishes
-    twice daily (06:00 + 13:00 CT, cooling-season only) and may revise
-    the same day's projection; we take the latest row generated since
-    midnight UTC of today's UTC date. The poller already tags rows
-    with the EPT generated_at, but for the gate-condition use we just
-    want the most recent scalar.
-
-    This replaces the cross-scale bug where the RTO scope was being
-    handed the COMED-area hourly forecast peak (~10-22 GW scale) as
-    its gate input -- a number that never exceeds RTO season-5th
-    (~150 GW) so the RTO scope could never fire. Now each scope reads
-    its own scope-appropriate projected peak.
-
-    Returns None when no row exists (off-season ticks, or the poller
-    hasn't run since midnight on the first cooling-season day).
-    """
-    flux = f"""
-        from(bucket: "{bucket}")
-          |> range(start: -24h)
-          |> filter(fn: (r) => r._measurement == "pjm.peak_forecast_rto"
-                                and r.area == "PJM RTO"
-                                and r._field == "load_forecast_mw")
-          |> sort(columns: ["_time"], desc: true)
-          |> limit(n: 1)
-    """
-    for table in query_api.query(flux):
-        for record in table.records:
-            try:
-                rec = project_record(record)
-            except ValueError:
-                continue
-            return rec.value
     return None
 
 
@@ -671,8 +602,8 @@ class C4Client:
 @dataclass
 class FiringState:
     """Track what's already fired today so we don't double-execute, plus
-    the persistent state for the price-overlay (§2) and 5CP-detection
-    (§3) state machines that span ticks."""
+    the persistent state for the price-overlay (§2) state machine that
+    spans ticks."""
     last_decision_date: str = ""
     fired_actions: set[tuple[str, int, int]] = field(default_factory=set)  # (date, hour, minute)
     # (date, revisit_hour) tuples for the intra-day forecast revisit checks.
@@ -682,13 +613,6 @@ class FiringState:
     # not container restarts; cold-start re-evaluates from current price
     # within the 30-min minimum-hold window so behaviour stabilizes fast.
     price_overlay_state: PriceOverlayState = field(default_factory=PriceOverlayState)
-    # 5CP-detector state machines (§3). Two scopes, one state each:
-    # ComEd zone (catches ComEd 5CPs) and PJM RTO (catches PJM 5CPs).
-    # Both contribute to next-year residential capacity charges; the
-    # scheduler ORs their triggers. Same persistence semantics as the
-    # price overlay; cold-start defaults to inactive for each.
-    fivecp_state_comed: FiveCPState = field(default_factory=FiveCPState)
-    fivecp_state_rto: FiveCPState = field(default_factory=FiveCPState)
     # Mid-period re-push tracking (§4 / Critical #2). The most recently
     # fired non-release-hold action's schedule-baseline setpoint and the
     # last effective cool setpoint pushed to the thermostat (in the
@@ -704,13 +628,9 @@ class FiringState:
     # that the normal action-fire / release-hold flow owns the baseline
     # (including its legitimate Nones, which must NOT be reconstructed).
     baseline_initialized: bool = False
-    # Throttle for hvac.5cp_state audit writes. Spec calls for ~every-5-min
-    # cadence (288 rows/day) so dashboards can plot the ratio + derivative
-    # trace without flooding the bucket at the 1-min scheduler tick rate.
-    last_5cp_audit_at_utc: datetime | None = None
     # Throttle for hvac.arm_mode + hvac.switch_event + hvac.input_feed_health
-    # writes. Same ~5-min cadence as 5cp_state so analysis sees a uniform
-    # 288-rows/day arm-mode trace per spec §11 #2.
+    # writes. ~5-min cadence so analysis sees a uniform 288-rows/day
+    # arm-mode trace per spec §11 #2.
     last_arm_mode_audit_at_utc: datetime | None = None
     # Track the most recently observed arm letter so switch-event logging
     # can detect transitions across ticks (spec §11 #3). ``arm_observed``
@@ -741,41 +661,6 @@ class FiringState:
     # §3.5 guard: "Do not use sample.source_ts or last_fresh_bucket_source_ts
     # as the safety-release clock."
     nonfresh_after_hold_started_at_utc: datetime | None = None
-
-
-def write_5cp_state(
-    write_api: Any, bucket: str,
-    *, scope: str,
-    is_active: bool,
-    current_load_mw: float,
-    season_5th_highest_mw: float,
-    load_derivative_mw_per_hour: float,
-    forecast_peak_today_mw: float,
-    zone: str,
-) -> None:
-    """Write one ``hvac.5cp_state`` row per scheduler tick per scope so
-    the detector's decisions are auditable. Tagged by ``scope``
-    (``comed_zone`` | ``rto``), ``zone`` (``CE`` | ``RTO``), and
-    ``is_active``. Up to two rows per audit interval (the caller
-    skips a scope whose data_status != "ok", so a transient PJM
-    inst_load gap for one scope still records the other rather than
-    fabricating audit rows from absent inputs)."""
-    ratio = current_load_mw / season_5th_highest_mw if season_5th_highest_mw > 0 else 0.0
-    write_point(
-        write_api, bucket, "hvac.5cp_state",
-        tags={
-            "scope": scope,
-            "zone": zone,
-            "is_active": "true" if is_active else "false",
-        },
-        fields={
-            "current_load_mw": float(current_load_mw),
-            "season_5th_highest_mw": float(season_5th_highest_mw),
-            "load_ratio": float(ratio),
-            "load_derivative_mw_per_hour": float(load_derivative_mw_per_hour),
-            "forecast_peak_today_mw": float(forecast_peak_today_mw),
-        },
-    )
 
 
 def write_price_overlay_transition(
@@ -871,9 +756,8 @@ _FEED_REQUIREMENTS_BY_MODE: dict[str, tuple[str, ...]] = {
 _ENABLED_MODES: tuple[str, ...] = ("price_overlay",)
 
 
-def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
-                                  weather_ok: bool,
-                                  pjm_capacity_risk_ok: bool) -> dict[str, bool]:
+def required_feeds_for_arm_mode(*, when_ct: datetime,
+                                  price_feed_healthy: bool) -> dict[str, bool]:
     """Return the dict of input-feed health flags REQUIRED for B-active
     classification, derived from the enabled-mode set (spec "Telemetry":
     required_feeds_for_arm_mode is derived from the enabled-mode set, not a
@@ -881,20 +765,14 @@ def required_feeds_for_arm_mode(*, when_ct: datetime, price_feed_healthy: bool,
 
     Only feeds consumed by an enabled mode are required. The reactive
     warm-only overlay is the sole enabled mode and consumes the live price
-    feed only, so the required set is ``{"price": ...}``. ``weather`` is
-    dropped: no enabled mode consumes it (day-types / forecasts / deep
-    precool are gone). PJM capacity-risk is likewise not required (5CP is
-    planning/telemetry only).
+    feed only, so the required set is ``{"price": ...}``. Weather and PJM
+    capacity-risk are not consumed by any enabled mode (day-types /
+    forecasts / deep precool / 5CP are gone) so they are not required.
 
-    The full feed-health audit (every feed, including weather and PJM) is
-    written separately by ``write_input_feed_health`` so the operator still
-    sees their status in telemetry. ``weather_ok`` / ``pjm_capacity_risk_ok``
-    / ``when_ct`` are accepted for caller-signature stability and are
+    ``when_ct`` is accepted for caller-signature stability and is
     intentionally unused here.
     """
     _ = when_ct  # reserved
-    _ = weather_ok  # no enabled mode consumes weather
-    _ = pjm_capacity_risk_ok  # 5CP is planning/telemetry only, not required
 
     health_by_feed = {"price": price_feed_healthy}
     required: set[str] = set()
@@ -1134,34 +1012,16 @@ async def execute_action(c4: C4Client, action: ScheduleAction,
 class LayerInputs:
     """Per-tick output of `_evaluate_layer_inputs`. Captures the resolved
     price-overlay tier/offset (re-consumed by the Slice B price path) plus
-    the audit context for `hvac.price_overlay` and `hvac.5cp_state` writes.
-
-    ``fivecp_active`` is the OR across both detector scopes (ComEd zone
-    and PJM RTO). ``fivecp_scopes_fired`` lists the scope names that
-    contributed -- ("comed_zone",), ("rto",), or both. Empty tuple
-    means no scope triggered. Downstream logs and audit rows use the
-    detail for attribution.
-
-    ``fivecp_load_mw`` / ``fivecp_derivative`` reflect the COMED scope
-    inputs for backward-compat with existing single-scope dashboards;
-    per-scope detail is in ``hvac.5cp_state`` rows tagged by scope.
+    the audit context for `hvac.price_overlay` writes.
     """
     price_tier_name: str
     price_offset_f: float
     price_override_f: float | None
     price_prev_tier: str
     current_price_cents: float | None
-    fivecp_active: bool
-    fivecp_scopes_fired: tuple[str, ...]
-    fivecp_load_mw: float
-    fivecp_derivative: float
-    fivecp_forecast_peak: float
-    fivecp_season_5th_mw: float
-    fivecp_data_available: bool
 
 
-_FIVECP_AUDIT_INTERVAL = timedelta(minutes=5)
-# Same 5-min cadence for arm-mode / feed-health / switch-event telemetry
+# 5-min cadence for arm-mode / feed-health / switch-event telemetry
 # (spec §11 #2-4) so analysis sees a uniform 288-rows/day trace.
 _ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 
@@ -1220,26 +1080,21 @@ ACTION_MAKEUP_WINDOW_MIN = 5
 def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
                             firing: FiringState, now_local: datetime,
                             *, tick_id: str | None = None) -> LayerInputs:
-    """Per-tick evaluation of the §2 price overlay and §3 5CP detector,
-    independent of whether a scheduled action is firing this minute.
+    """Per-tick evaluation of the §2 price overlay, independent of whether
+    a scheduled action is firing this minute.
 
     Side effects:
-      * Updates ``firing.price_overlay_state`` and both
-        ``firing.fivecp_state_comed`` / ``firing.fivecp_state_rto``.
+      * Updates ``firing.price_overlay_state``.
       * Writes ``hvac.price_overlay`` on tier transitions only.
-      * Writes ``hvac.5cp_state`` at most once every 5 min (throttled via
-        ``firing.last_5cp_audit_at_utc``) so dashboards see the ~288
-        rows/day cadence the validation procedure asserts.
 
     ``now_utc`` is derived from ``now_local`` rather than read from
     wall-clock so tests can drive the throttle window and so audit
     timestamps stay consistent with the rest of the scheduler tick.
 
     Per EXPERIMENT_DESIGN §3 item 5: "Continuous overlay on the active
-    scheduled setpoint, evaluated each scheduler tick" — and §3 item 6
-    similarly for 5CP. Pre-§Critical#2 this code lived inside the action-
-    fire loop body and only ran 4-6 times/day; mid-window price spikes
-    fell through unobserved.
+    scheduled setpoint, evaluated each scheduler tick". Pre-§Critical#2
+    this code lived inside the action-fire loop body and only ran 4-6
+    times/day; mid-window price spikes fell through unobserved.
     """
     now_utc = now_local.astimezone(timezone.utc)
     # tick_id is the JSON FIELD correlation id shared across every
@@ -1431,79 +1286,6 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         ),
     )
 
-    # ---- 5CP detection (§3) ----
-    # Two detectors run in parallel: ComEd-zone (catches ComEd 5CPs)
-    # and PJM RTO (catches PJM 5CPs). Both contribute to the next-year
-    # residential capacity charge per HVAC_LOGIC.md. is_5cp_risk is the
-    # OR; structured-log payload records per-scope inputs so a
-    # scale-mismatch regression (RTO fallback on ComEd path or vice
-    # versa) shows up immediately in logs, not silently in behavior.
-    #
-    # Cooling-season window (PJM Manual 19 / ComEd Att. M-2: Jun 1 -
-    # Sep 30) is the same for both scopes; off-season the detector
-    # short-circuits inside evaluate_for_scope and no Flux is issued
-    # for the season-5th. Forecast peaks are scope-specific:
-    #   * COMED uses pjm.load_forecast{forecast_area=COMED} max-for-today
-    #   * RTO   uses pjm.peak_forecast_rto{area="PJM RTO"} latest scalar
-    # Sharing one forecast across scopes (the original P1.1 mis-wire)
-    # silently disabled the RTO scope because a ComEd-scale forecast
-    # (~10-22 GW) never exceeds RTO season-5th (~150 GW).
-    season_start_utc, season_end_utc = cooling_season_window_utc(now_local)
-    capped_end_utc = (
-        min(season_end_utc, now_utc) if in_cooling_season(now_local)
-        else season_end_utc
-    )
-    comed_forecast_peak = fetch_forecast_peak_today(
-        query_api, cfg.influx_bucket, tz=ZoneInfo(cfg.tz_name),
-    )
-    rto_forecast_peak = fetch_rto_peak_forecast_today(
-        query_api, cfg.influx_bucket,
-    )
-    comed_eval = evaluate_for_scope(
-        COMED_SCOPE, query_api, cfg.influx_bucket,
-        season_start_utc, capped_end_utc,
-        comed_forecast_peak, firing.fivecp_state_comed, now_utc,
-    )
-    rto_eval = evaluate_for_scope(
-        RTO_SCOPE, query_api, cfg.influx_bucket,
-        season_start_utc, capped_end_utc,
-        rto_forecast_peak, firing.fivecp_state_rto, now_utc,
-    )
-    firing.fivecp_state_comed = comed_eval.new_state
-    firing.fivecp_state_rto = rto_eval.new_state
-
-    fivecp_active = comed_eval.is_active or rto_eval.is_active
-    fivecp_scopes_fired = tuple(
-        name for name, ev in (("comed_zone", comed_eval), ("rto", rto_eval))
-        if ev.is_active
-    )
-    fivecp_data_available = (
-        comed_eval.log_fields.get("data_status") == "ok"
-        or rto_eval.log_fields.get("data_status") == "ok"
-    )
-
-    log("info", "fivecp_eval", comed=comed_eval.log_fields,
-        rto=rto_eval.log_fields, is_active=fivecp_active,
-        scopes_fired=list(fivecp_scopes_fired))
-
-    # Backward-compat fields for LayerInputs / existing dashboards: use
-    # the ComEd-scope snapshot when available, else zeros. Per-scope
-    # detail is preserved in hvac.5cp_state rows tagged by scope.
-    fivecp_load_mw = (
-        comed_eval.snapshot.current_mw if comed_eval.snapshot is not None else 0.0
-    )
-    fivecp_derivative = (
-        comed_eval.snapshot.derivative_mw_per_hour
-        if comed_eval.snapshot is not None else 0.0
-    )
-    fivecp_forecast_peak = comed_forecast_peak if comed_forecast_peak is not None else 0.0
-    # comed_eval.season_5th_mw can be None when current-season official
-    # metered-load history is insufficient (binding spec §11 #14). The
-    # LayerInputs field is `float`; default to 0.0 so dashboards / dry-run
-    # paths get a stable value. `fivecp_data_available` is the right gate
-    # for "is the 5CP baseline real?" downstream.
-    season_5th_mw = comed_eval.season_5th_mw if comed_eval.season_5th_mw is not None else 0.0
-
     # ---- Audit writes ----
     new_tier = firing.price_overlay_state.current_tier
     if new_tier != prev_tier and current_price_cents is not None:
@@ -1520,51 +1302,12 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
             triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
         )
 
-    if fivecp_data_available and (
-        firing.last_5cp_audit_at_utc is None
-        or now_utc - firing.last_5cp_audit_at_utc >= _FIVECP_AUDIT_INTERVAL
-    ):
-        # Per-scope forecast peaks must be passed individually so the
-        # audit row records the actual value the detector saw. Sharing
-        # one forecast across scopes was the P1.1-post-merge bug: an
-        # RTO audit row tagged with a ComEd-scale forecast peak hid
-        # the cross-scale gate failure.
-        scope_forecast: dict[str, float | None] = {
-            COMED_SCOPE.name: comed_forecast_peak,
-            RTO_SCOPE.name:   rto_forecast_peak,
-        }
-        for scope, ev in (
-            (COMED_SCOPE, comed_eval), (RTO_SCOPE, rto_eval),
-        ):
-            if ev.log_fields.get("data_status") != "ok" or ev.season_5th_mw is None:
-                continue
-            write_5cp_state(
-                write_api, cfg.influx_bucket,
-                scope=scope.name,
-                zone=scope.metered_load_zone,
-                is_active=ev.is_active,
-                current_load_mw=ev.snapshot.current_mw if ev.snapshot else 0.0,
-                season_5th_highest_mw=ev.season_5th_mw,
-                load_derivative_mw_per_hour=(
-                    ev.snapshot.derivative_mw_per_hour if ev.snapshot else 0.0
-                ),
-                forecast_peak_today_mw=scope_forecast[scope.name] or 0.0,
-            )
-        firing.last_5cp_audit_at_utc = now_utc
-
     return LayerInputs(
         price_tier_name=price_tier_name,
         price_offset_f=price_offset_f,
         price_override_f=price_override_f,
         price_prev_tier=prev_tier,
         current_price_cents=current_price_cents,
-        fivecp_active=fivecp_active,
-        fivecp_scopes_fired=fivecp_scopes_fired,
-        fivecp_load_mw=fivecp_load_mw,
-        fivecp_derivative=fivecp_derivative,
-        fivecp_forecast_peak=fivecp_forecast_peak,
-        fivecp_season_5th_mw=season_5th_mw,
-        fivecp_data_available=fivecp_data_available,
     )
 
 
@@ -1673,10 +1416,6 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
     # to a Loki label (cardinality).
     tick_id = uuid.uuid4().hex
 
-    # Pull today's forecast for the full feed-health audit (weather is no
-    # longer required for B-active classification but is still recorded).
-    today_forecast = fetch_latest_forecast(query_api, cfg.influx_bucket, "today")
-
     # ---- Per-tick comfort baseline ----
     # Recompute last_schedule_cool every tick from the comfort_program. This
     # survives a mid-block restart without any startup reconstruction (the
@@ -1691,21 +1430,22 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
     firing.baseline_initialized = True
 
     # ---- Per-tick layer evaluation ----
-    # Evaluate price overlay + 5CP and write their audit rows every tick.
-    # (Slice B re-introduces the price offset into resolve; here the
-    # overlay is telemetry only — resolve is the bare comfort baseline.)
-    layer_inputs = _evaluate_layer_inputs(
+    # Evaluate the price overlay and write its audit rows every tick.
+    # (Slice B re-introduces the price offset into the effective setpoint;
+    # here the overlay is telemetry only — the effective is the bare
+    # comfort baseline.)
+    _evaluate_layer_inputs(
         query_api, write_api, cfg, firing, now_local, tick_id=tick_id,
     )
 
     # ---- Per-cycle arm-mode + switch-event + feed-health telemetry ----
     # (spec §11 #2-4)
     #
-    # arm_mode and input_feed_health share the 5-min cadence of
-    # hvac.5cp_state so analysis sees a uniform 288-rows/day trace.
-    # Outside the locked experiment window the arm_mode write is a
-    # no-op inside ``write_arm_mode``; input_feed_health still fires so
-    # feed-availability is audited across the whole observation period.
+    # arm_mode and input_feed_health share a 5-min cadence so analysis
+    # sees a uniform 288-rows/day trace. Outside the locked experiment
+    # window the arm_mode write is a no-op inside ``write_arm_mode``;
+    # input_feed_health still fires so feed-availability is audited
+    # across the whole observation period.
     #
     # ``maybe_log_arm_switch`` runs every tick (NOT throttled) so a
     # boundary crossing is captured at minute resolution. The function
@@ -1724,14 +1464,10 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
         # distinct from per-tick downgrade actionability (7-min) and the
         # safety-release timer (controller-observation wall clock).
         price_feed_healthy = derive_price_feed_healthy(firing, now_utc_for_audit)
-        weather_ok = today_forecast is not None
-        pjm_ok = layer_inputs.fivecp_data_available
-        # FULL feed-health dict, written for audit regardless of
-        # required-status (spec §5.1).
+        # FULL feed-health dict, written for audit. The reactive price
+        # overlay is the only enabled mode, so price is the only feed.
         all_feeds = {
             "price": price_feed_healthy,
-            "weather": weather_ok,
-            "pjm_capacity_risk": pjm_ok,
         }
         write_input_feed_health(
             write_api, cfg.influx_bucket, now_local, all_feeds,
@@ -1740,8 +1476,6 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
         required_feeds = required_feeds_for_arm_mode(
             when_ct=now_local,
             price_feed_healthy=price_feed_healthy,
-            weather_ok=weather_ok,
-            pjm_capacity_risk_ok=pjm_ok,
         )
         write_arm_mode(
             write_api, cfg.influx_bucket, now_local, required_feeds,

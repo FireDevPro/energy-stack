@@ -286,82 +286,22 @@ def _make_schedule_check_cfg(bucket: str = "energy",
 
 
 def _stub_layer_eval_io(monkeypatch: Any, *,
-                         price_cents: float | None = 5.0,
-                         zone_load: float | None = 14000.0,
-                         derivative: float = 0.0,
-                         forecast_peak: float | None = 17000.0,
-                         season_5th: float = 20375.0,
-                         rto_zone_load: float | None = None,
-                         rto_derivative: float = 0.0,
-                         rto_season_5th: float = 151525.0,
-                         rto_forecast_peak: float | None = None) -> None:
+                         price_cents: float | None = 5.0) -> None:
     """Stub the InfluxDB IO that _evaluate_layer_inputs makes. Lets tests
-    drive the price/load/forecast inputs without spinning up Flux.
-
-    Dual-scope after P1.1: the §3 detector runs once per scope
-    (comed_zone + rto). The stubs respect the area/zone tag passed by
-    ``evaluate_for_scope`` so the COMED snapshot doesn't pretend to be
-    RTO load and vice versa. Pass ``rto_zone_load=None`` (default) to
-    simulate no RTO data (poller hasn't backfilled yet); pass a value
-    to drive RTO detector inputs explicitly.
-
-    Per-scope forecast peaks (P1.1 post-merge fix): the ComEd scope
-    reads ``pjm.load_forecast{forecast_area=COMED}`` and the RTO
-    scope reads ``pjm.peak_forecast_rto{area="PJM RTO"}``. The two
-    feeds are independent in production. Pass ``rto_forecast_peak``
-    explicitly when driving RTO triggers in tests.
+    drive the ComEd price input without spinning up Flux. (The 5CP detector
+    was removed; the price overlay is the only IO this function makes.)
     """
     monkeypatch.setattr(app, "fetch_latest_comed",
                         lambda q, b, *, now_utc: (
                             None if price_cents is None
                             else _fresh_sample(price_cents, now_utc=now_utc)))
 
-    from .pjm_5cp import ZoneLoadSnapshot
-    from . import pjm_5cp
-
-    def _snap(mw: float, deriv: float) -> Any:
-        return ZoneLoadSnapshot(
-            current_mw=mw,
-            derivative_mw_per_hour=deriv,
-            observed_at_utc=datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc),
-        )
-
-    snapshots = {
-        "COMED":   _snap(zone_load, derivative) if zone_load is not None else None,
-        "PJM RTO": _snap(rto_zone_load, rto_derivative) if rto_zone_load is not None else None,
-    }
-    fallback_seasons = {"CE": season_5th, "RTO": rto_season_5th}
-
-    def _fetch_zone_live_stub(q, b, *, area="COMED"):
-        return snapshots[area]
-
-    def _update_season_5th_highest_stub(q, b, s, e, *, zone="CE"):
-        return fallback_seasons[zone]
-
-    # Patch in pjm_5cp so evaluate_for_scope picks up the stubs; also
-    # patch app.update_season_5th_highest so compute_5cp_inputs_for_date
-    # (the §7 pre-cool deepening night-before caller in app.py) sees the
-    # stub. fetch_zone_live is no longer imported in app.py since the
-    # scope-aware refactor; only patch it in pjm_5cp.
-    monkeypatch.setattr(pjm_5cp, "fetch_zone_live", _fetch_zone_live_stub)
-    monkeypatch.setattr(pjm_5cp, "update_season_5th_highest",
-                        _update_season_5th_highest_stub)
-    monkeypatch.setattr(app, "update_season_5th_highest",
-                        _update_season_5th_highest_stub)
-    # fetch_forecast_peak_today now takes a kwarg-only `tz` param (P2.5)
-    monkeypatch.setattr(app, "fetch_forecast_peak_today",
-                        lambda q, b, *, tz=None: forecast_peak)
-    monkeypatch.setattr(app, "fetch_rto_peak_forecast_today",
-                        lambda q, b: rto_forecast_peak)
-
 
 def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
     """The Critical #2 fix: layer eval is independent of action firing.
     A call at any minute populates a LayerInputs return value with the
-    current price tier and 5CP state."""
-    _stub_layer_eval_io(monkeypatch, price_cents=12.0,  # elevated tier
-                        zone_load=15000.0, derivative=200.0,
-                        forecast_peak=17000.0, season_5th=14000.0)
+    current price tier."""
+    _stub_layer_eval_io(monkeypatch, price_cents=12.0)  # elevated tier
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -371,15 +311,12 @@ def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
     assert inputs.price_offset_f == 3
-    assert inputs.fivecp_data_available is True
 
 
 def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
     """Two consecutive ticks: first triggers elevated, second stays
     elevated due to the 30-min hold even with a brief price dip."""
-    _stub_layer_eval_io(monkeypatch, price_cents=12.0,
-                        zone_load=10000.0, derivative=0.0,
-                        forecast_peak=11000.0, season_5th=14000.0)
+    _stub_layer_eval_io(monkeypatch, price_cents=12.0)
     cfg = _make_schedule_check_cfg()
     firing = FiringState()
     write_api = MagicMock()
@@ -395,187 +332,6 @@ def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
     inputs2 = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
                                        now_local + timedelta(minutes=10))
     assert inputs2.price_tier_name == "elevated"  # hold still active
-
-
-def test_5cp_audit_throttled_to_5min_intervals(monkeypatch):
-    """hvac.5cp_state writes throttle to once per 5 min so dashboards see
-    ~288 rows/day, not the 1440 rows/day a per-minute write would
-    produce."""
-    _stub_layer_eval_io(monkeypatch)
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
-
-    # First call writes the audit row.
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    first_count = sum(
-        1 for c in write_api.write.call_args_list
-        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
-    )
-    assert first_count == 1
-
-    # 1 minute later: throttle still in effect, no new audit row.
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
-                            now_local + timedelta(minutes=1))
-    second_count = sum(
-        1 for c in write_api.write.call_args_list
-        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
-    )
-    assert second_count == 1  # unchanged
-
-    # 5 minutes after first call: throttle elapsed, second audit row writes.
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing,
-                            now_local + timedelta(minutes=5))
-    third_count = sum(
-        1 for c in write_api.write.call_args_list
-        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
-    )
-    assert third_count == 2
-
-
-# ---- P1.1: dual-scope 5CP (ComEd OR RTO) ---------------------------------
-
-
-def test_dual_scope_audit_writes_two_rows_when_both_scopes_have_data(monkeypatch):
-    """With both detector scopes' inst_load feeds populated, each audit
-    cycle writes TWO hvac.5cp_state rows -- one per scope -- so the
-    dashboard can plot both ratios side-by-side. Tag-disambiguation is
-    via the `scope` tag (`comed_zone` | `rto`) carried on the row."""
-    _stub_layer_eval_io(monkeypatch,
-                         zone_load=14000.0, rto_zone_load=140000.0,
-                         season_5th=20375.0, rto_season_5th=151525.0,
-                         forecast_peak=17000.0,  # ComEd-scale forecast
-                         rto_forecast_peak=155000.0)  # RTO-scale forecast
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
-
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-
-    audit_lines = [
-        c.kwargs.get("record").to_line_protocol()
-        for c in write_api.write.call_args_list
-        if "hvac.5cp_state" in c.kwargs.get("record").to_line_protocol()
-    ]
-    assert len(audit_lines) == 2
-    # Tag presence: each row must carry both scope and zone tags.
-    assert any("scope=comed_zone" in line and "zone=CE" in line for line in audit_lines)
-    assert any("scope=rto" in line and "zone=RTO" in line for line in audit_lines)
-
-
-def test_dual_scope_or_fires_when_rto_alone_qualifies(monkeypatch):
-    """The OR semantics: even if ComEd-zone load is well below trigger,
-    an RTO-scale ramp-up alone is enough to push the §3 5CP layer to
-    its 85°F shutoff setpoint. This is the coverage P1.1 adds -- the
-    prior single-scope ComEd detector
-    would miss PJM 5CP hours that don't also coincide with ComEd zone
-    peaks (per HVAC_LOGIC.md, ComEd zone tends to peak earlier than
-    RTO; a late-afternoon RTO ramp without ComEd-zone elevation is
-    exactly the case the new detector catches)."""
-    _stub_layer_eval_io(monkeypatch,
-                         # ComEd well below trigger: 13k / 20.375k = 0.638
-                         zone_load=13000.0, derivative=0.0,
-                         season_5th=20375.0,
-                         # ComEd-scale forecast (low; would never satisfy
-                         # the cross-scale RTO gate in the pre-fix code)
-                         forecast_peak=15000.0,
-                         # RTO above trigger: 145k / 151.525k = 0.957 > 0.95
-                         rto_zone_load=145000.0, rto_derivative=400.0,
-                         rto_season_5th=151525.0,
-                         # RTO-scale forecast > RTO season_5th: satisfies gate
-                         rto_forecast_peak=160000.0)
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    # 14:30 CT == 19:30 UTC -- inside the 13:00-20:00 CT detector window.
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    assert inputs.fivecp_active is True
-    assert "rto" in inputs.fivecp_scopes_fired
-    assert "comed_zone" not in inputs.fivecp_scopes_fired
-
-
-def test_dual_scope_or_fires_when_comed_alone_qualifies(monkeypatch):
-    """Symmetric case: ComEd-zone scope qualifies, RTO doesn't. The OR
-    still trips the active state. Confirms neither scope is being
-    given precedence."""
-    _stub_layer_eval_io(monkeypatch,
-                         # ComEd above trigger: 19.6k / 20.375k = 0.962
-                         zone_load=19600.0, derivative=300.0,
-                         season_5th=20375.0,
-                         forecast_peak=22000.0,  # ComEd-scale, > ComEd season_5th
-                         # RTO well below trigger: 140k / 151.525k = 0.924
-                         rto_zone_load=140000.0, rto_derivative=0.0,
-                         rto_season_5th=151525.0,
-                         # RTO forecast below season_5th: gate fails
-                         rto_forecast_peak=148000.0)
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    assert inputs.fivecp_active is True
-    assert "comed_zone" in inputs.fivecp_scopes_fired
-
-
-def test_dual_scope_per_scope_state_is_independent(monkeypatch):
-    """The two scopes carry independent FiveCPState. A ComEd-only
-    trigger does NOT flip the RTO state machine (and vice versa) --
-    important so a ComEd release doesn't prematurely exit an RTO hold."""
-    _stub_layer_eval_io(monkeypatch,
-                         zone_load=19600.0, derivative=300.0,
-                         season_5th=20375.0,
-                         forecast_peak=22000.0,
-                         rto_zone_load=140000.0, rto_derivative=0.0,
-                         rto_season_5th=151525.0,
-                         rto_forecast_peak=148000.0)
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    now_local = datetime(2026, 7, 15, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    assert firing.fivecp_state_comed.is_active is True   # ComEd triggered
-    assert firing.fivecp_state_rto.is_active is False    # RTO did not
-
-
-def test_may_off_season_cannot_fire_against_bogus_low_baseline(monkeypatch):
-    """Reproducer for the 2026-05-11 production incident: sparse RTO
-    ingest of May 2026 rows produced an RTO 'season 5th' of 90,244 MW,
-    against which a real-time RTO load of 85,410 MW reached ratio
-    0.946 -- just below the 0.95 trigger. The summer-eligibility gate
-    (PJM Manual 19 / ComEd Att. M-2: Jun 1 - Sep 30) makes the
-    detector refuse to evaluate triggers outside cooling season, so
-    even a malformed off-season baseline cannot fire the layer."""
-    _stub_layer_eval_io(monkeypatch,
-                         # Drive the exact production-incident values:
-                         rto_zone_load=85410.0, rto_derivative=1294.0,
-                         rto_season_5th=90244.0,  # bogus, off-season
-                         rto_forecast_peak=156000.0,  # RTO-scale, would normally
-                                                       # exceed bogus baseline
-                         zone_load=14000.0, season_5th=20375.0,
-                         forecast_peak=10000.0)
-    cfg = _make_schedule_check_cfg()
-    firing = FiringState()
-    write_api = MagicMock()
-    # 2026-05-11 14:30 CT -- May, off-season per Manual 19.
-    now_local = datetime(2026, 5, 11, 14, 30,
-                          tzinfo=ZoneInfo("America/Chicago"))
-
-    inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    assert inputs.fivecp_active is False
-    assert inputs.fivecp_scopes_fired == ()
-    # State machines are reset across the off-season boundary (no
-    # carried hold from a prior in-season trigger).
-    assert firing.fivecp_state_comed.is_active is False
-    assert firing.fivecp_state_rto.is_active is False
 
 
 def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypatch):
@@ -942,7 +698,7 @@ def test_write_arm_mode_writes_a_active_during_arm_a(monkeypatch):
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 5, 13, 0)  # Arm 1 (A)
-    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     write_api.write.assert_called_once()
     line = _line_protocol(write_api)
@@ -956,7 +712,7 @@ def test_write_arm_mode_writes_b_active_when_all_feeds_healthy(monkeypatch):
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
-    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert "arm=B" in line
@@ -968,7 +724,7 @@ def test_write_arm_mode_writes_b_fallback_when_feed_stale(monkeypatch):
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)  # Arm 2 (B)
-    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    feeds = {"price": False}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert "arm=B" in line
@@ -979,7 +735,7 @@ def test_write_arm_mode_writes_b_down_when_controller_not_alive(monkeypatch):
     monkeypatch.setenv("SCHEDULER_MODE", "experiment")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)
-    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=False)
     line = _line_protocol(write_api)
     assert "arm=B" in line
@@ -997,7 +753,7 @@ def test_write_arm_mode_in_window_shadow_emits_off_protocol_shadow(monkeypatch):
     monkeypatch.setenv("SCHEDULER_MODE", "shadow")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)  # Arm B period, but mode=shadow
-    feeds = {"price": True, "weather": True, "pjm_capacity_risk": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert 'mode_actual="off-protocol-shadow"' in line
@@ -1011,7 +767,7 @@ def test_write_arm_mode_in_window_production_emits_off_protocol_production(monke
     monkeypatch.setenv("SCHEDULER_MODE", "production")
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 5, 13, 0)  # Arm A period, but mode=production
-    feeds = {"price": True, "weather": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert 'mode_actual="off-protocol-production"' in line
@@ -1049,7 +805,7 @@ def test_write_arm_mode_accepts_tz_aware_datetime(monkeypatch):
     write_api = MagicMock()
     tz = ZoneInfo("America/Chicago")
     when_ct = datetime(2026, 6, 5, 13, 0, tzinfo=tz)  # Arm 1 (A), tz-aware
-    feeds = {"price": True, "weather": True}
+    feeds = {"price": True}
     app.write_arm_mode(write_api, "energy", when_ct, feeds, controller_alive=True)
     line = _line_protocol(write_api)
     assert "arm=A" in line
@@ -1071,24 +827,18 @@ def test_required_feeds_never_includes_pjm_or_weather():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=True,
-        weather_ok=True,
-        pjm_capacity_risk_ok=True,
     )
     assert feeds == {"price": True}
     # Outside the window: only price required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 15, 13, 0),
         price_feed_healthy=True,
-        weather_ok=True,
-        pjm_capacity_risk_ok=False,
     )
     assert feeds == {"price": True}
     # September 30 boundary: neither pjm nor weather required.
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 9, 30, 23, 59),
         price_feed_healthy=True,
-        weather_ok=True,
-        pjm_capacity_risk_ok=False,
     )
     assert "pjm_capacity_risk" not in feeds
     assert "weather" not in feeds
@@ -1096,8 +846,6 @@ def test_required_feeds_never_includes_pjm_or_weather():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 10, 1, 0, 0),
         price_feed_healthy=True,
-        weather_ok=True,
-        pjm_capacity_risk_ok=False,
     )
     assert "pjm_capacity_risk" not in feeds
     assert "weather" not in feeds
@@ -1110,8 +858,6 @@ def test_required_feeds_propagates_unhealthy_flags():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=False,
-        weather_ok=True,
-        pjm_capacity_risk_ok=True,
     )
     assert feeds == {"price": False}
 
@@ -1232,39 +978,16 @@ def test_switch_event_includes_actual_timestamp():
 def test_write_input_feed_health_writes_one_row_per_feed():
     write_api = MagicMock()
     when_ct = datetime(2026, 6, 20, 13, 0)
-    feeds = {"price": True, "weather": False, "pjm_capacity_risk": True}
+    # The reactive price overlay is the only enabled mode, so price is the
+    # only feed the controller produces. write_input_feed_health writes one
+    # row per feed in the dict it is handed.
+    feeds = {"price": False}
     app.write_input_feed_health(write_api, "energy", when_ct, feeds)
-    assert write_api.write.call_count == 3
+    assert write_api.write.call_count == 1
 
-    lines = [
-        c.kwargs.get("record").to_line_protocol()
-        for c in write_api.write.call_args_list
-    ]
-    health_by_feed = {}
-    for line in lines:
-        # parse "hvac.input_feed_health,feed=NAME healthy=true|false ts"
-        assert line.startswith("hvac.input_feed_health,feed=")
-        feed = line.split("feed=", 1)[1].split(" ", 1)[0]
-        healthy = "healthy=true" in line
-        health_by_feed[feed] = healthy
-    assert health_by_feed == {"price": True, "weather": False, "pjm_capacity_risk": True}
-
-
-def test_write_input_feed_health_logs_pjm_outside_operating_window_too():
-    """Spec §5.1: PJM capacity-risk health is STILL logged in feed-health
-    provenance even outside the capacity-risk operating window. The
-    feed-health audit is independent of the B-active classification."""
-    write_api = MagicMock()
-    when_ct = datetime(2026, 10, 15, 13, 0)  # outside capacity-risk window
-    feeds = {"price": True, "weather": True, "pjm_capacity_risk": False}
-    app.write_input_feed_health(write_api, "energy", when_ct, feeds)
-    assert write_api.write.call_count == 3
-    lines = [
-        c.kwargs.get("record").to_line_protocol()
-        for c in write_api.write.call_args_list
-    ]
-    pjm_line = next(line for line in lines if "feed=pjm_capacity_risk" in line)
-    assert "healthy=false" in pjm_line
+    line = _line_protocol(write_api)
+    assert line.startswith("hvac.input_feed_health,feed=price")
+    assert "healthy=false" in line
 
 
 def test_write_input_feed_health_empty_dict_is_noop():
@@ -1277,10 +1000,9 @@ def test_write_input_feed_health_empty_dict_is_noop():
 #
 # Every execute_action branch MUST short-circuit before any Control4
 # write when dry_run=True, regardless of action label, hvac_mode, or
-# release-hold flag. This parametrized test enumerates every action
-# in every schedule (NORMAL/HOT/MILD/HOT_STREAK_DAY1) plus
-# synthetic mid-period-repush and vacation actions and asserts no
-# Control4 mutator was awaited.
+# release-hold flag. This parametrized test enumerates a representative
+# set of ScheduleAction shapes and asserts no Control4 mutator was
+# awaited.
 #
 # Tests run with SCHEDULER_MODE=production so the top-level mode gate
 # (Task 1.2) doesn't pre-empt the audit; the dry_run gate is what we
@@ -1542,11 +1264,6 @@ def test_last_fresh_bucket_source_ts_updates_on_fresh_read(monkeypatch):
                         lambda q, b, *, now_utc: sample)
     monkeypatch.setattr("hvac_scheduler.app._trace", lambda *a, **k: None)
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.write_5cp_state", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.evaluate_for_scope",
-                        lambda *a, **k: MagicMock(
-                            is_active=False, log_fields={"data_status": "none"},
-                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
     firing = FiringState(
@@ -1579,11 +1296,6 @@ def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
                         lambda q, b, *, now_utc: sample)
     monkeypatch.setattr("hvac_scheduler.app._trace", lambda *a, **k: None)
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.write_5cp_state", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.evaluate_for_scope",
-                        lambda *a, **k: MagicMock(
-                            is_active=False, log_fields={"data_status": "none"},
-                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
     seeded = now - timedelta(hours=1)
@@ -1705,11 +1417,6 @@ def _run_evaluate_with(monkeypatch: Any, sample: Any, *, current_tier: Any, trig
                         lambda q, b, *, now_utc: sample)
     monkeypatch.setattr("hvac_scheduler.app._trace", _capture_trace)
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.write_5cp_state", lambda *a, **k: None)
-    monkeypatch.setattr("hvac_scheduler.app.evaluate_for_scope",
-                        lambda *a, **k: MagicMock(
-                            is_active=False, log_fields={"data_status": "none"},
-                            snapshot=None, season_5th_mw=0.0, new_state=MagicMock()))
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
     firing = FiringState(
@@ -2336,8 +2043,6 @@ def test_a2_block_boundary_baseline_matches_new_block(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: None)
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2380,8 +2085,6 @@ def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeyp
     import asyncio
 
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: None)
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2424,8 +2127,6 @@ def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch)
-    monkeypatch.setattr(app, "fetch_latest_forecast",
-                        lambda q, b, p: None)
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2500,7 +2201,6 @@ def test_a4_effective_equals_baseline_floor_clamped_shadow(monkeypatch):
                             _trip("schedule_for", []))
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal tier
-    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
 
     captured: dict[str, Any] = {}
 
@@ -2559,7 +2259,6 @@ def test_a4_floor_clamp_holds_effective_at_or_above_baseline(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)
-    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
     monkeypatch.setattr(app, "execute_action",
                         AsyncMock(return_value=(False, None)))
     monkeypatch.setattr(app, "write_action", MagicMock())
@@ -2592,8 +2291,6 @@ def test_a4_required_feeds_excludes_weather():
     feeds = app.required_feeds_for_arm_mode(
         when_ct=datetime(2026, 7, 15, 13, 0),
         price_feed_healthy=True,
-        weather_ok=True,
-        pjm_capacity_risk_ok=True,
     )
     assert "weather" not in feeds
     assert feeds == {"price": True}
@@ -2611,7 +2308,6 @@ def test_a4_heat_setpoint_comes_from_config_heat_floor(monkeypatch):
 
     def _run_one(heat_floor: float) -> dict[str, Any]:
         _stub_layer_eval_io(monkeypatch, price_cents=5.0)
-        monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
         monkeypatch.setattr(app, "read_thermostat_snapshot",
                             AsyncMock(return_value={
                                 "indoor_temp_f": 74.0, "hvac_mode": "Cool",
@@ -2677,7 +2373,6 @@ def test_a4_floor_clamp_is_max_effective_baseline(monkeypatch):
     import asyncio
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)
-    monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0, "hvac_mode": "Cool",
