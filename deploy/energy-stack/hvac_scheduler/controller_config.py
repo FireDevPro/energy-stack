@@ -161,6 +161,18 @@ def _validate(raw: dict[str, Any]) -> None:
             f"< elevated_at ({elevated_at})."
         )
 
+    # 7. comfort ceiling must sit at or above the warmest comfort baseline.
+    # Otherwise the warm-drift ceiling is below the floor (baseline) and the
+    # effective formula clamp [baseline, comfort_max] is degenerate.
+    cool_values = [float(b["cool"]) for b in raw.get("comfort_program", [])]
+    comfort_max = float(raw.get("ceiling", {}).get("comfort_max", 0))
+    if cool_values and comfort_max < max(cool_values):
+        raise ValueError(
+            f"ceiling.comfort_max ({comfort_max}) must be >= the warmest "
+            f"comfort_program cool setpoint ({max(cool_values)}); the warm-drift "
+            f"ceiling cannot sit below the comfort baseline."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Public loader

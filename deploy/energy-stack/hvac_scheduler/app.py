@@ -947,15 +947,11 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
 
 @dataclass(frozen=True)
 class LayerInputs:
-    """Per-tick output of `_evaluate_layer_inputs`. Captures the post-gating
+    """Per-tick output of `_evaluate_layer_inputs`. Carries the post-gating
     active price-overlay tier name (consumed by `_push_baseline_if_changed`
-    via `effective_cool_for_tier`) plus the audit context for
-    `hvac.price_overlay` writes.
-
-    Slice B replaced the old per-tier offset/override (`price_offset_f`,
-    `price_override_f`) with the pinned setpoint formula: the effective
-    cool is now derived from `price_tier_name` + config, not from a
-    tier-carried offset.
+    via `effective_cool_for_tier`, which derives the effective cool from the
+    tier name + config) plus the audit context for `hvac.price_overlay`
+    writes.
     """
     price_tier_name: str
     price_prev_tier: str

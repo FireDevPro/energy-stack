@@ -217,6 +217,28 @@ def test_hysteresis_cents_valid_accepted(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5c. ceiling.comfort_max must be >= the warmest comfort baseline
+# ---------------------------------------------------------------------------
+
+def test_comfort_max_below_baseline_rejected(tmp_path: Path) -> None:
+    """A comfort ceiling below the warmest comfort baseline (25.5) makes the
+    warm-drift ceiling sit below the floor — degenerate; must raise."""
+    bad = VALID_YAML.replace("comfort_max: 29.0", "comfort_max: 25.0")
+    path = _write_yaml(tmp_path, bad)
+    with pytest.raises(ValueError, match="comfort_max"):
+        load_controller_config(path)
+
+
+def test_comfort_max_equal_baseline_accepted(tmp_path: Path) -> None:
+    """comfort_max == the warmest baseline is allowed (zero warm room, but
+    not degenerate — effective stays at baseline)."""
+    ok = VALID_YAML.replace("comfort_max: 29.0", "comfort_max: 25.5")
+    path = _write_yaml(tmp_path, ok)
+    cfg = load_controller_config(path)
+    assert cfg.ceiling.comfort_max == 25.5
+
+
+# ---------------------------------------------------------------------------
 # 6. ControllerConfig is frozen (immutable)
 # ---------------------------------------------------------------------------
 
