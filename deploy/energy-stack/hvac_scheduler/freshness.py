@@ -41,8 +41,6 @@ def _hr(n: float) -> int:
 THRESHOLDS: dict[str, Thresholds] = {
     "decision_trace.price_overlay_eval": Thresholds(_min(6), _min(10), _min(15)),
     "decision_trace.layer_resolution":   Thresholds(_min(6), _min(10), _min(15)),
-    "decision_trace.day_type_decision":  Thresholds(_hr(16), _hr(30), _hr(72)),
-    "decision_trace.precool_decision":   Thresholds(_hr(26), _hr(40), _hr(72)),
     "hvac.arm_mode":                     Thresholds(_min(6), _min(10), _min(15)),
     "hvac.thermostat":                   Thresholds(_min(12), _min(20), _min(30)),
     # 7-min fresh = controller's downgrade-recency cutoff. Cockpit mirrors

@@ -230,8 +230,14 @@ services:
       INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+      # Commissioning controller: the mounted YAML (below) is the experimental
+      # surface. TEMP_SCALE must match the YAML's temp_scale or the loader
+      # fail-fasts (A3 coherence check) — config is °C, so default °C here.
+      CONTROLLER_CONFIG_FILE: /config/commissioning-controller.yaml
+      TEMP_SCALE: ${TEMP_SCALE:-C}
     volumes:
       - hvac_scheduler_data:/data
+      - ./hvac_scheduler/commissioning-controller.yaml:/config/commissioning-controller.yaml:ro
 
   hvac-scheduler-watchdog:
     build: ./hvac_scheduler_watchdog

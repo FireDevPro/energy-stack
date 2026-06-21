@@ -1,0 +1,19 @@
+# Commissioning controller config — the experimental surface (edit here to tune).
+# Decided 2026-06-20 (74/76/78/76 °F schedule), confirmed 2026-06-21; authored
+# in °C on the device's native 0.5° grid (the thermostat is set to °C, so device
+# writes are format-only, no conversion). °F equivalents in comments for reference.
+# The loader validates on-grid + the invariants; config_id (SHA256) is recorded
+# in telemetry so refinements stay interpretable.
+temp_scale: C
+comfort_program:                               # blocks {from, to, cool}; midnight-wrap supported
+  - {from: "22:00", to: "06:00", cool: 23.5}   # sleep   (74°F)
+  - {from: "06:00", to: "12:00", cool: 24.5}   # morning (76°F)
+  - {from: "12:00", to: "18:00", cool: 25.5}   # midday  (78°F)
+  - {from: "18:00", to: "22:00", cool: 24.5}   # evening (76°F)
+heat_floor: 18.5                               # (65°F) heat pinned at/below this every push
+flexibility:     {warm_band: 1.0, spike_extra: 1.0}   # warm drift (≈2°F each) above baseline on price
+price_tiers_cents: {elevated_at: 10, scarcity_at: 20, extreme_at: 50, hysteresis_cents: 2}
+humidity_guard:  {rh_max_pct: 65, rh_clear_pct: 62}   # gate the overlay off (→ baseline) when humid
+ceiling:         {comfort_max: 28.0}           # (82°F) the warm-drift ceiling the controller rides
+hold_ttl_minutes: 60
+modes:           {stage1_ramp: {enabled: false}}
