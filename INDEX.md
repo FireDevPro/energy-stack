@@ -43,37 +43,6 @@ price-aware overlay on the Arm A comfort program).
 - [docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md](docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md)
   — implementation plan for the commissioning controller (shadow →
   active commissioning → 2027 A/B comparison)
-- [docs/THERMOSTAT_ARM_A_SCHEDULE.md](docs/THERMOSTAT_ARM_A_SCHEDULE.md)
-  — designated home for the CTK04AE onboard fallback schedule (the
-  device-native safety fallback a lapsed timed-hold reverts to).
-  ⚠ CONTENT IS STALE (old OSF-era schedule + Permanent-hold/day-type
-  language) — must be refreshed to the deployed program before
-  go-active; not yet authoritative.
-
-**Historical / superseded** (old controller design; do not treat as
-current source of truth):
-
-- [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md) — superseded: old Arm B
-  with day-types, DTOD bands, 5CP control, and software supervisor
-- [docs/CONTROLLER_CONSTANTS.md](docs/CONTROLLER_CONSTANTS.md) —
-  superseded: old locked thresholds from the SCED experiment era
-- [docs/SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md) — superseded:
-  Mermaid diagrams of old day-type/5CP/supervisor tick cadence (pending
-  rewrite for new controller)
-- [docs/ARM_B_IMPLEMENTATION.md](docs/ARM_B_IMPLEMENTATION.md) —
-  superseded: old Arm B implementation details (pending rewrite for
-  new controller)
-- [docs/ARM_TRANSITIONS.md](docs/ARM_TRANSITIONS.md) — superseded: old
-  SCED arm-transition procedure (Permanent holds,
-  SCHEDULER_MODE=experiment, Monday transitions); needs rewrite for
-  timed holds / 2027
-- [docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)
-  — superseded: original SCED binding spec (experiment retracted)
-- [docs/plans/sced-rebaseline-implementation-2026-05-13.md](docs/plans/sced-rebaseline-implementation-2026-05-13.md)
-  — superseded: SCED implementation plan
-- [docs/OSF_FILING_MECHANICS.md](docs/OSF_FILING_MECHANICS.md) —
-  superseded: OSF/Zenodo freeze procedure (experiment retracted; repo
-  going private)
 
 ## Data, telemetry, and integrations
 
@@ -105,8 +74,6 @@ The science layer: what counts as evidence, how it's validated.
   validation procedure for scheduler changes
 - [docs/O2_CAPACITY_RECONSTRUCTION.md](docs/O2_CAPACITY_RECONSTRUCTION.md)
   — ComEd Attachment M-2 capacity reconstruction methodology
-- [docs/ETHICS_FRAMING.md](docs/ETHICS_FRAMING.md) — single-occupant
-  household research ethics, consent posture, data minimization
 - [docs/THERMAL_ROUGH_CUT_2026-05-26.md](docs/THERMAL_ROUGH_CUT_2026-05-26.md)
   — empirical fit (AC-off drift) sanity-checking hand-tuned constants;
   surfaced the wrong-variable choice in pyControl4 that motivated the

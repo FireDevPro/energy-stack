@@ -126,7 +126,7 @@ Ecowitt GW1200 (push, ~60s) ────────┤    ecowitt / thermostat 
 Control4 → CTK04AE (10min) ─────────┘    hvac-scheduler + watchdog)
 ```
 
-Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), the read-only **Controller Cockpit** (`cockpit`, :8765), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. Per-service detail in [`docs/SERVICES.md`](SERVICES.md); 24-hour activity timeline in [`docs/SCHEDULER_TIMING.md`](SCHEDULER_TIMING.md).
+Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), the read-only **Controller Cockpit** (`cockpit`, :8765), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. Per-service detail in [`docs/SERVICES.md`](SERVICES.md).
 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
@@ -284,10 +284,9 @@ Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose 
 > 2027** and runs as private, in-house work. The **arm apparatus** (the
 > deterministic arm calendar, mode telemetry, switch-event logging) is **retained
 > for that 2027 comparison**; the binding-spec/decision-rule machinery is not.
-> The docs cited below (`sced-rebaseline-spec-2026-05-13.md`,
-> `sced-rebaseline-implementation-2026-05-13.md`, `CONTROLLER_CONSTANTS.md`) are
-> **historical** — they describe the retired day-type/precool/supervisor design,
-> not the current controller. Current design:
+> The retired day-type/precool/supervisor design (and the SCED binding spec,
+> implementation plan, and locked controller constants that described it) has
+> been removed from the repo. Current design:
 > [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 The retained apparatus describes a deterministic-alternation comparison of the CTK04AE programmed schedule (Arm A) against the price-aware Arm B overlay, 14-day arm-level alternation. The canonical arm calendar lives in [`tools/analysis/arm_calendar.py`](../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../deploy/energy-stack/hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked), replacing the retired `randomize_arms.py` + assignment CSV. Historical analysis-design context (now superseded) is preserved in [`docs/archive/EXPERIMENT_DESIGN.md`](archive/EXPERIMENT_DESIGN.md), with §O2 capacity reconstruction at [`docs/O2_CAPACITY_RECONSTRUCTION.md`](O2_CAPACITY_RECONSTRUCTION.md). The PJM 5CP capacity window (Jun–Sep) is retained for the 5CP **telemetry** signal, not for live control.
@@ -325,11 +324,7 @@ Read-only dashboard at [`deploy/energy-stack/cockpit/`](../deploy/energy-stack/c
 | **Controller (current)** | |
 | `docs/superpowers/specs/2026-06-20-commissioning-controller-design.md` | **Canonical controller design** — Arm B = Arm A comfort program + warm-only RTP price awareness; device-owned safety; config-as-experimental-surface |
 | `docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md` | Implementation plan for the commissioning controller |
-| `docs/HVAC_LOGIC.md` | ⚠ Historical — old day-type scheduler logic, schedules, ISU settings, safety supervisor, equipment. Superseded by the commissioning controller design (above); ISU/equipment notes still useful |
-| `docs/SCHEDULER_TIMING.md` | ⚠ Historical — Mermaid timing + decision diagrams for the old scheduler; companion to HVAC_LOGIC.md |
 | **Arm apparatus (retained for the deferred 2027 comparison)** | |
-| `docs/plans/sced-rebaseline-spec-2026-05-13.md` | ⚠ Historical — the old SCED spec (pre-registration retracted); describes the retired controller design |
-| `docs/plans/sced-rebaseline-implementation-2026-05-13.md` | ⚠ Historical — implementation plan for the old SCED spec |
 | `docs/EXPERIMENT_DESIGN.md` | Historical research-design context (analysis-design content superseded; retained for provenance) |
 | `tools/analysis/arm_calendar.py` + `deploy/energy-stack/hvac_scheduler/arm_calendar.py` | Canonical deterministic arm calendar (byte-identical, CI hash-sync checked). Replaces the retired `randomize_arms.py` + assignment CSV. Retained for the 2027 comparison. |
 | **Subsystem designs** | |
@@ -424,7 +419,7 @@ Honeywell's "Adaptive Intelligent Recovery" starts the AC 30-60 min BEFORE a sch
 2. Makes the Pi's setpoint pushes unpredictable — "set 78 at 13:00" should mean exactly that, not "AR starts cooling at 12:30 to hit 78 by 13:00"
 3. Fights the dynamic re-evaluation when the scheduler updates today's behavior from overrides
 
-Documented in [HVAC_LOGIC.md ISU table](HVAC_LOGIC.md#honeywell-isu-settings-the-set-once-stuff). Verify after any thermostat factory reset.
+Verify after any thermostat factory reset (the Honeywell ISU table that documented these lived in the now-removed HVAC_LOGIC.md).
 
 ### ComEd public API does NOT expose day-ahead forecast
 
@@ -453,7 +448,7 @@ Research review (May 2026, three agents, sources include NREL/Davis Energy Group
 - Coast on stage 1 with slightly lower setpoint (78-79°F) in humid weather rather than free-coasting to 80+ — leverages the 2-stage compressor for dehumidification
 - Humid override threshold could tighten 65→62°F per ASHRAE 55-2020 (humidity ratio 0.012 kg/kg)
 
-Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. Logged in [HVAC_LOGIC.md](HVAC_LOGIC.md) as a known re-tune opportunity, not yet applied.
+Open work: A/B test against a few HOT days in summer 2026, log results, decide whether to ship as the new default. (A known re-tune opportunity for the retired day-type design, not yet applied.)
 
 ### Haven IAQ ingest + thermostat-poller (May 2026)
 
@@ -485,7 +480,7 @@ Why this matters for the existing scheduler: the return-air mix is a **fundament
 - **OpenADR 3.x** — ComEd doesn't currently expose a residential VTN; revisit if/when they do
 - **Override logging** ✅ shipped May 2026 via `thermostat-poller` automatic override detection: writes `hvac.overrides` rows whenever current thermostat setpoints diverge ≥ 0.5°F from the last `hvac.actions` row by more than `OVERRIDE_GRACE_MIN` (default 5 min). Foundational training data for future ML/MPC layers.
 
-Full research output: agent reports retained in session transcripts; key findings summarized in [docs/HVAC_LOGIC.md](HVAC_LOGIC.md) and the open-questions section above.
+Full research output: agent reports retained in session transcripts; key findings summarized in the open-questions section above.
 
 ---
 

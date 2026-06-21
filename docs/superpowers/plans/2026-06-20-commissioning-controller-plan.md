@@ -121,7 +121,7 @@ Replace day-type/schedule resolution with `comfort_baseline_cool`; resolve = bas
 
 ## Go-active (the flip to `production`)
 
-TCC swap landed incl. timed holds + thermostat setpoint min/max limits set + **the CTK04 onboard fallback schedule confirmed safe and captured as an authoritative current snapshot** (`docs/THERMOSTAT_ARM_A_SCHEDULE.md` refreshed to the deployed program — it is the safety fallback) + **hold-expiry-reverts-to-onboard-schedule** verified on hardware + format/readback round-trip + container-restart recompute + SOPS/`SCHEDULER_MODE` confirmation -> flip `shadow` -> `production`.
+TCC swap landed incl. timed holds + thermostat setpoint min/max limits set + **confirm the thermostat onboard program is a safe cool schedule (the timed-hold fallback); values live on the device, not the repo** + **hold-expiry-reverts-to-onboard-schedule** verified on hardware + format/readback round-trip + container-restart recompute + SOPS/`SCHEDULER_MODE` confirmation -> flip `shadow` -> `production`.
 
 ## Pre-execution gates
 
