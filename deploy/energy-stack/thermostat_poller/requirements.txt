@@ -1,1 +1,2 @@
 influxdb-client==1.48.0
+aiosomecomfort==0.0.36
