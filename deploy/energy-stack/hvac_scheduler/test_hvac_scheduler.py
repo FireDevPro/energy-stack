@@ -2338,7 +2338,6 @@ def test_a2_block_boundary_baseline_matches_new_block(monkeypatch):
     _stub_layer_eval_io(monkeypatch)
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2360,7 +2359,6 @@ def test_a2_block_boundary_baseline_matches_new_block(monkeypatch):
     now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
     asyncio.run(app.run_schedule_check(
@@ -2384,7 +2382,6 @@ def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeyp
     _stub_layer_eval_io(monkeypatch)
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2405,7 +2402,6 @@ def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeyp
     now_local = datetime(2026, 7, 15, 15, 30, tzinfo=ZoneInfo("America/Chicago"))
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
     asyncio.run(app.run_schedule_check(
@@ -2430,7 +2426,6 @@ def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
     _stub_layer_eval_io(monkeypatch)
     monkeypatch.setattr(app, "fetch_latest_forecast",
                         lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0,
@@ -2448,7 +2443,6 @@ def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
     asyncio.run(app.run_schedule_check(
@@ -2507,7 +2501,6 @@ def test_a4_effective_equals_baseline_floor_clamped_shadow(monkeypatch):
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal tier
     monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
 
     captured: dict[str, Any] = {}
 
@@ -2532,7 +2525,6 @@ def test_a4_effective_equals_baseline_floor_clamped_shadow(monkeypatch):
     now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
     asyncio.run(app.run_schedule_check(
@@ -2568,7 +2560,6 @@ def test_a4_floor_clamp_holds_effective_at_or_above_baseline(monkeypatch):
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)
     monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "execute_action",
                         AsyncMock(return_value=(False, None)))
     monkeypatch.setattr(app, "write_action", MagicMock())
@@ -2579,7 +2570,6 @@ def test_a4_floor_clamp_holds_effective_at_or_above_baseline(monkeypatch):
                         }))
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _climate = _mock_c4_client()
 
     for hh, expected in [(2, 73.0), (10, 75.0), (15, 78.0), (20, 75.0)]:
@@ -2622,7 +2612,6 @@ def test_a4_heat_setpoint_comes_from_config_heat_floor(monkeypatch):
     def _run_one(heat_floor: float) -> dict[str, Any]:
         _stub_layer_eval_io(monkeypatch, price_cents=5.0)
         monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
-        monkeypatch.setattr(app, "load_overrides", lambda path: [])
         monkeypatch.setattr(app, "read_thermostat_snapshot",
                             AsyncMock(return_value={
                                 "indoor_temp_f": 74.0, "hvac_mode": "Cool",
@@ -2645,7 +2634,6 @@ def test_a4_heat_setpoint_comes_from_config_heat_floor(monkeypatch):
 
         cfg = _make_cfg_with_controller_config()
         cfg.controller_config = _make_controller_config_stub(heat_floor=heat_floor)
-        cfg.overrides_file = "/nonexistent"
         c4, _ = _mock_c4_client()
 
         firing = FiringState()
@@ -2690,7 +2678,6 @@ def test_a4_floor_clamp_is_max_effective_baseline(monkeypatch):
 
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)
     monkeypatch.setattr(app, "fetch_latest_forecast", lambda q, b, p: None)
-    monkeypatch.setattr(app, "load_overrides", lambda path: [])
     monkeypatch.setattr(app, "read_thermostat_snapshot",
                         AsyncMock(return_value={
                             "indoor_temp_f": 74.0, "hvac_mode": "Cool",
@@ -2701,7 +2688,6 @@ def test_a4_floor_clamp_is_max_effective_baseline(monkeypatch):
     monkeypatch.setattr(app, "write_action", MagicMock())
 
     cfg = _make_cfg_with_controller_config()
-    cfg.overrides_file = "/nonexistent"
     c4, _ = _mock_c4_client()
 
     firing = FiringState()

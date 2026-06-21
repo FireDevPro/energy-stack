@@ -152,103 +152,6 @@ class ScheduleAction:
     release_hold: bool = False
 
 
-# ---- Overrides -------------------------------------------------------------
-# Manual overrides live in /data/overrides.json on the persistent volume.
-# Two flavors:
-#
-#   1. day_type override -- force today to be MILD/NORMAL/HOT_5CP_RISK
-#      regardless of forecast. Useful for "today is a holiday and I'm home"
-#      (force NORMAL on a forecast-MILD day) or testing.
-#
-#   2. flat / vacation override -- ignore the schedule entirely. Apply one
-#      cool_setpoint_f + heat_setpoint_f all day. Useful for trips when
-#      maintaining tight comfort isn't worth the energy.
-#
-# Schema (JSON list, top-level array):
-#   [
-#     {
-#       "from_date": "2026-06-15",      # inclusive ISO date
-#       "to_date":   "2026-06-22",      # inclusive
-#       "day_type":  "NORMAL",          # set this OR setpoints, not both
-#       "cool_setpoint_f": null,
-#       "heat_setpoint_f": null,
-#       "fan_mode": null,
-#       "note": "test forced NORMAL day"
-#     },
-#     {
-#       "from_date": "2026-07-04",
-#       "to_date":   "2026-07-08",
-#       "day_type":  null,
-#       "cool_setpoint_f": 83,          # vacation: flat 83F all day
-#       "heat_setpoint_f": 60,
-#       "fan_mode": "Auto",
-#       "note": "lake trip - dogs at sitter"
-#     }
-#   ]
-#
-# Edit via: docker exec -it hvac-scheduler nano /data/overrides.json
-# Or: docker cp ... in/out for offline editing.
-
-OVERRIDES_FILE_DEFAULT = "/data/overrides.json"
-VACATION_PING_INTERVAL_HOURS = 6
-
-
-@dataclass(frozen=True)
-class Override:
-    from_date: str  # ISO date YYYY-MM-DD
-    to_date: str    # inclusive
-    day_type: str | None = None
-    cool_setpoint_f: int | None = None
-    heat_setpoint_f: int | None = None
-    fan_mode: str | None = None
-    note: str = ""
-
-    def applies_today(self, today_iso: str) -> bool:
-        return self.from_date <= today_iso <= self.to_date
-
-    def is_vacation(self) -> bool:
-        return self.cool_setpoint_f is not None
-
-    def is_day_type_override(self) -> bool:
-        return self.day_type is not None and not self.is_vacation()
-
-
-def load_overrides(path: Path) -> list[Override]:
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, list):
-            log("warn", "overrides_not_a_list", path=str(path))
-            return []
-        out = []
-        for item in data:
-            try:
-                out.append(Override(
-                    from_date=item["from_date"],
-                    to_date=item["to_date"],
-                    day_type=item.get("day_type"),
-                    cool_setpoint_f=item.get("cool_setpoint_f"),
-                    heat_setpoint_f=item.get("heat_setpoint_f"),
-                    fan_mode=item.get("fan_mode"),
-                    note=item.get("note", ""),
-                ))
-            except Exception as exc:
-                log("warn", "override_parse_failed", item=item, error=str(exc))
-        return out
-    except Exception as exc:
-        log("warn", "overrides_load_failed", path=str(path), error=str(exc))
-        return []
-
-
-def find_active_override(overrides: list[Override], today_iso: str) -> Override | None:
-    """Return the first override whose date range covers today, or None."""
-    for o in overrides:
-        if o.applies_today(today_iso):
-            return o
-    return None
-
-
 def log(level: str, msg: str, **fields: Any) -> None:
     rec = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg}
     rec.update(fields)
@@ -395,7 +298,6 @@ class Config:
     influx_org: str
     influx_bucket: str
     token_file: Path
-    overrides_file: Path
     revisit_hours: tuple[int, ...]
     # Set when CONTROLLER_CONFIG_FILE env var is present; None otherwise.
     # Nothing in the control loop consumes this yet — later tasks wire it in.
@@ -504,7 +406,6 @@ class Config:
             influx_org=required("INFLUXDB_ORG"),
             influx_bucket=required("INFLUXDB_BUCKET"),
             token_file=Path(os.environ.get("DIRECTOR_TOKEN_FILE", "/data/director_token.json")),
-            overrides_file=Path(os.environ.get("OVERRIDES_FILE", OVERRIDES_FILE_DEFAULT)),
             # Local hours at which to re-poll today's NWS forecast and re-classify
             # the day-type if it shifted enough to change the schedule. Default
             # 06:00 + 11:00 catches the morning forecast refresh AND the late-
@@ -1889,16 +1790,6 @@ async def main_async(cfg: Config) -> int:
     except Exception as exc:
         log("error", "startup_thermostat_unreachable", error=str(exc))
         # Don't exit -- keep retrying on schedule
-
-    # Log any active overrides so they're visible at startup
-    today_iso = datetime.now(tz).date().isoformat()
-    overrides = load_overrides(cfg.overrides_file)
-    log("info", "overrides_loaded",
-        path=str(cfg.overrides_file),
-        count=len(overrides),
-        active_today=bool(find_active_override(overrides, today_iso)),
-        all_windows=[(o.from_date, o.to_date, o.day_type, o.cool_setpoint_f, o.note)
-                      for o in overrides])
 
     firing = FiringState()
     stop = asyncio.Event()
