@@ -98,16 +98,12 @@ How to deploy, run, and tweak the running stack on Pi-lab.
 Workstation-local utilities and analysis scaffolds. Most are
 self-contained mini-projects with their own READMEs.
 
-- [tools/analysis/queries/README.md](tools/analysis/queries/README.md)
-  — Flux query library for analysis pipelines
 - [tools/analysis/replay/README.md](tools/analysis/replay/README.md)
   — replay framework for replaying historical telemetry against
   current scheduler
 - [tools/comed_2025_analysis/README.md](tools/comed_2025_analysis/README.md)
   — frozen analysis bundle for the 2025 ComEd RTP distribution
   (reference for price threshold calibration)
-- [tools/comed_price_imputation/README.md](tools/comed_price_imputation/README.md)
-  — ComEd 5-min RTP imputation for sparse-data periods
 - [tools/o2_capacity_reconstruction/README.md](tools/o2_capacity_reconstruction/README.md)
   — capacity-charge reconstruction script
 
