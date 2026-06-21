@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,20 +19,10 @@ from typing import Any
 
 import yaml  # PyYAML
 
-logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Sub-dataclasses (all frozen)
 # ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ComfortBlock:
-    """One time-range block in the comfort program."""
-    from_time: str  # "HH:MM"
-    to_time: str    # "HH:MM"  -- may be < from_time (midnight wrap)
-    cool: float
-
 
 @dataclass(frozen=True)
 class Flexibility:
@@ -182,7 +171,7 @@ def load_controller_config(path: str) -> ControllerConfig:
         "path": str(p.resolve()),
         "sha256": sha256,
     }
-    print(json.dumps(rec), flush=True)
+    print(json.dumps(rec, default=str), flush=True)
 
     raw: dict[str, Any] = yaml.safe_load(raw_bytes.decode()) or {}
 

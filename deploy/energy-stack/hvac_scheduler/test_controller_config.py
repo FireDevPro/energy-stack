@@ -7,12 +7,12 @@ Run: cd deploy/energy-stack/hvac_scheduler && python -m pytest test_controller_c
 """
 from __future__ import annotations
 
-import os
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from . import app
 from .controller_config import ControllerConfig, load_controller_config
 
 
@@ -142,7 +142,7 @@ modes:           {stage1_ramp: {enabled: false}}
 # ---------------------------------------------------------------------------
 
 def test_hysteresis_order_rejected(tmp_path: Path) -> None:
-    """rh_clear_pct >= rh_max_pct must raise."""
+    """Equal values (rh_clear_pct == rh_max_pct) must raise — strict < required."""
     bad = VALID_YAML.replace(
         "{rh_max_pct: 65, rh_clear_pct: 62}",
         "{rh_max_pct: 65, rh_clear_pct: 65}",
@@ -152,8 +152,8 @@ def test_hysteresis_order_rejected(tmp_path: Path) -> None:
         load_controller_config(path)
 
 
-def test_hysteresis_order_equal_rejected(tmp_path: Path) -> None:
-    """Equal values also violate strict inequality."""
+def test_hysteresis_order_inverted_rejected(tmp_path: Path) -> None:
+    """rh_clear_pct > rh_max_pct (inverted) must also raise."""
     bad = VALID_YAML.replace(
         "{rh_max_pct: 65, rh_clear_pct: 62}",
         "{rh_max_pct: 60, rh_clear_pct: 62}",  # clear > max
@@ -209,3 +209,66 @@ def test_no_supervisor_key(tmp_path: Path) -> None:
     assert not hasattr(cfg, "supervisor")
     assert not hasattr(cfg, "cheap")
     assert not hasattr(cfg, "runtime")
+
+
+# ---------------------------------------------------------------------------
+# 8. Off-grid flexibility delta rejected
+# ---------------------------------------------------------------------------
+
+def test_off_grid_flexibility_delta_rejected(tmp_path: Path) -> None:
+    """warm_band: 0.3 is not on the 0.5-step C grid — must raise.
+
+    The on-grid check covers temperature deltas (offsets) too, not just
+    absolute setpoints. This test proves it catches off-grid flex values.
+    """
+    bad = VALID_YAML.replace(
+        "flexibility:     {warm_band: 1.0, spike_extra: 1.0}",
+        "flexibility:     {warm_band: 0.3, spike_extra: 1.0}",
+    )
+    path = _write_yaml(tmp_path, bad)
+    with pytest.raises(ValueError, match="grid"):
+        load_controller_config(path)
+
+
+# ---------------------------------------------------------------------------
+# 9. Config.from_env CONTROLLER_CONFIG_FILE wiring
+# ---------------------------------------------------------------------------
+
+_BASE_ENV = {
+    "SCHEDULER_MODE": "shadow",
+    "CONTROL4_EMAIL": "x@example.com",
+    "CONTROL4_PASSWORD": "x",
+    "INFLUXDB_TOKEN": "x",
+    "INFLUXDB_ORG": "x",
+    "INFLUXDB_BUCKET": "x",
+}
+
+
+def test_from_env_with_controller_config_file_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CONTROLLER_CONFIG_FILE set to a valid file → Config.controller_config is a ControllerConfig."""
+    yaml_path = _write_yaml(tmp_path, VALID_YAML)
+    for k, v in _BASE_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("CONTROLLER_CONFIG_FILE", yaml_path)
+
+    cfg = app.Config.from_env()
+
+    assert cfg.controller_config is not None
+    assert isinstance(cfg.controller_config, ControllerConfig)
+    assert cfg.controller_config.temp_scale == "C"
+
+
+def test_from_env_without_controller_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONTROLLER_CONFIG_FILE unset → Config.controller_config is None (default behaviour unchanged)."""
+    for k, v in _BASE_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("CONTROLLER_CONFIG_FILE", raising=False)
+
+    cfg = app.Config.from_env()
+
+    assert cfg.controller_config is None

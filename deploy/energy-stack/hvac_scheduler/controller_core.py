@@ -7,12 +7,13 @@ Interface consumed by later tasks (names are load-bearing — do not rename):
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, time as dtime
 from typing import Any
 
 
 def comfort_baseline_cool(
-    program: list[dict[str, Any]],
+    program: Sequence[dict[str, Any]],
     when: datetime,
 ) -> float:
     """Return the cool setpoint for the comfort block active at `when`.
