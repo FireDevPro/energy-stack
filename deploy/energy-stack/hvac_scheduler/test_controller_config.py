@@ -443,3 +443,20 @@ def test_a3_fahrenheit_config_baseline_on_whole_degree_grid(tmp_path: Path) -> N
             f"baseline {baseline} at {when.strftime('%H:%M')} is not a whole "
             f"degree (temp_scale={cfg.temp_scale})"
         )
+
+
+# ---------------------------------------------------------------------------
+# 11. The deployed config file loads + validates (guards the real config)
+# ---------------------------------------------------------------------------
+
+def test_deployed_commissioning_config_loads_and_validates() -> None:
+    """The committed commissioning-controller.yaml (the real config mounted
+    into the container) must load + pass validation — a broken edit here would
+    crash the controller at startup via the config-required assert."""
+    cfg_path = Path(__file__).parent / "commissioning-controller.yaml"
+    cfg = load_controller_config(str(cfg_path))
+    assert cfg.temp_scale == "C"
+    assert len(cfg.comfort_program) == 4
+    assert cfg.comfort_program[0]["cool"] == 23.5      # sleep (74°F)
+    assert cfg.ceiling.comfort_max == 28.0             # 82°F operational cap
+    assert cfg.hold_ttl_minutes == 60
