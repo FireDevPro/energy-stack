@@ -630,8 +630,6 @@ def test_scheduler_dry_run_env_is_ignored_with_warning(monkeypatch, capsys):
     vars are present, SCHEDULER_DRY_RUN is ignored with a warning."""
     monkeypatch.setenv("SCHEDULER_MODE", "production")
     monkeypatch.setenv("SCHEDULER_DRY_RUN", "true")
-    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
-    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
     monkeypatch.setenv("INFLUXDB_TOKEN", "x")
     monkeypatch.setenv("INFLUXDB_ORG", "x")
     monkeypatch.setenv("INFLUXDB_BUCKET", "x")
@@ -649,8 +647,6 @@ def test_config_dry_run_derived_from_shadow_mode(monkeypatch):
     inside execute_action acts as defense in depth alongside the
     SCHEDULER_MODE gate)."""
     monkeypatch.setenv("SCHEDULER_MODE", "shadow")
-    monkeypatch.setenv("CONTROL4_EMAIL", "x@example.com")
-    monkeypatch.setenv("CONTROL4_PASSWORD", "x")
     monkeypatch.setenv("INFLUXDB_TOKEN", "x")
     monkeypatch.setenv("INFLUXDB_ORG", "x")
     monkeypatch.setenv("INFLUXDB_BUCKET", "x")

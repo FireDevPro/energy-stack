@@ -211,9 +211,6 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      CONTROL4_EMAIL: ${CONTROL4_EMAIL}
-      CONTROL4_PASSWORD: ${CONTROL4_PASSWORD}
-      CONTROL4_CONTROLLER_IP: ${CONTROL4_CONTROLLER_IP:-192.168.1.30}
       CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
       # SCHEDULER_MODE replaces the retired SCHEDULER_DRY_RUN env var
       # (spec §3 + plan standing rule). Module-import sys.exit(2) on
@@ -257,9 +254,6 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      CONTROL4_EMAIL: ${CONTROL4_EMAIL}
-      CONTROL4_PASSWORD: ${CONTROL4_PASSWORD}
-      CONTROL4_CONTROLLER_IP: ${CONTROL4_CONTROLLER_IP:-192.168.1.30}
       CONTROL4_THERMOSTAT_ID: ${CONTROL4_THERMOSTAT_ID:-3231}
       THERMOSTAT_POLL_INTERVAL: ${THERMOSTAT_POLL_INTERVAL:-600}
       OVERRIDE_GRACE_MIN: ${OVERRIDE_GRACE_MIN:-5}

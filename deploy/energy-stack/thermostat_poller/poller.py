@@ -37,10 +37,10 @@ and its own persisted token at /data/director_token.json (the concrete
 auth/token lifecycle lands with the deferred TCC implementation).
 
 Environment variables:
-    CONTROL4_EMAIL              Control4 cloud login email
-    CONTROL4_PASSWORD           Control4 cloud password
-    CONTROL4_CONTROLLER_IP      Local Director IP (default 192.168.1.30)
-    CONTROL4_THERMOSTAT_ID      Thermostat item ID (default 3231)
+    CONTROL4_THERMOSTAT_ID      Thermostat device id (default 3231). The
+                                Control4-era value is dead; the TCC client
+                                will reuse this field with a Honeywell device
+                                id and a renamed env var at go-active.
     THERMOSTAT_POLL_INTERVAL    Seconds between polls (default 600)
     OVERRIDE_GRACE_MIN          Minutes after last action before counting
                                 a setpoint mismatch as an override (default 5)
@@ -76,9 +76,8 @@ def log(level: str, msg: str, **fields: Any) -> None:
 
 @dataclass(frozen=True)
 class Config:
-    email: str
-    password: str
-    controller_ip: str
+    # Thermostat device id. Kept for the Control4 -> TCC swap: the TCC
+    # client will reuse this field (with a Honeywell device id) once wired.
     thermostat_id: int
     poll_interval: float
     override_grace_min: int
@@ -97,9 +96,6 @@ class Config:
                 sys.exit(2)
             return v
         return Config(
-            email=required("CONTROL4_EMAIL"),
-            password=required("CONTROL4_PASSWORD"),
-            controller_ip=os.environ.get("CONTROL4_CONTROLLER_IP", "192.168.1.30"),
             thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
             poll_interval=float(os.environ.get("THERMOSTAT_POLL_INTERVAL", "600")),
             override_grace_min=int(os.environ.get("OVERRIDE_GRACE_MIN", "5")),
@@ -319,7 +315,6 @@ def detect_and_write_override(query_api: Any, write_api: Any, cfg: Config, snap:
 
 async def main_async(cfg: Config) -> int:
     log("info", "startup",
-        controller_ip=cfg.controller_ip,
         thermostat_id=cfg.thermostat_id,
         poll_interval_s=cfg.poll_interval,
         override_grace_min=cfg.override_grace_min,

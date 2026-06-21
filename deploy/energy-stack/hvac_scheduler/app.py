@@ -36,10 +36,11 @@ the thermostat keeps its last-set setpoint (degraded scheduling, not a
 safety issue).
 
 Environment variables:
-    CONTROL4_EMAIL              Control4 account email
-    CONTROL4_PASSWORD           Control4 account password
-    CONTROL4_CONTROLLER_IP      Director IP (default 192.168.1.30)
-    CONTROL4_THERMOSTAT_ID      C4 item id (default 3231)
+    CONTROL4_THERMOSTAT_ID      Thermostat device id (default 3231). The
+                                Control4-era value (a C4 item id) is dead;
+                                the TCC (aiosomecomfort) client will reuse
+                                this field with a Honeywell device id and a
+                                renamed env var at go-active.
     SCHEDULER_MODE              "shadow" | "production" (REQUIRED; no default).
                                 shadow = never writes; production = writes
                                 always. Module refuses to start (sys.exit(2))
@@ -259,9 +260,8 @@ def _writes_allowed(when_ct: datetime) -> bool:
 
 @dataclass(frozen=True)
 class Config:
-    email: str
-    password: str
-    controller_ip: str
+    # Thermostat device id. Kept for the Control4 -> TCC swap: the TCC
+    # client will reuse this field (with a Honeywell device id) once wired.
     thermostat_id: int
     dry_run: bool
     mode: str
@@ -346,9 +346,6 @@ class Config:
                 sys.exit(2)
 
         return Config(
-            email=required("CONTROL4_EMAIL"),
-            password=required("CONTROL4_PASSWORD"),
-            controller_ip=os.environ.get("CONTROL4_CONTROLLER_IP", "192.168.1.30"),
             thermostat_id=int(os.environ.get("CONTROL4_THERMOSTAT_ID", "3231")),
             # dry_run derived from mode — defense in depth alongside the
             # SCHEDULER_MODE gate inside execute_action.
@@ -1430,7 +1427,6 @@ SCHEDULER_TICK_SECOND = 10
 async def main_async(cfg: Config) -> int:
     tz = ZoneInfo(cfg.tz_name)
     log("info", "startup",
-        controller_ip=cfg.controller_ip,
         thermostat_id=cfg.thermostat_id,
         dry_run=cfg.dry_run,
         tz=cfg.tz_name)

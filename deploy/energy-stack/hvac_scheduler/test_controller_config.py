@@ -238,8 +238,6 @@ def test_off_grid_flexibility_delta_rejected(tmp_path: Path) -> None:
 
 _BASE_ENV = {
     "SCHEDULER_MODE": "shadow",
-    "CONTROL4_EMAIL": "x@example.com",
-    "CONTROL4_PASSWORD": "x",
     "INFLUXDB_TOKEN": "x",
     "INFLUXDB_ORG": "x",
     "INFLUXDB_BUCKET": "x",
