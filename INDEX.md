@@ -1,5 +1,5 @@
 ---
-date: 2026-05-19
+date: 2026-06-20
 owner: chris
 status: active
 role-label: doc-index
@@ -25,42 +25,24 @@ and superseded plan-execution artifacts.
 
 Read these first if you're new to the repo.
 
-- [README.md](README.md) — public landing page; project summary and
-  pointers to the OSF deposit
+- [README.md](README.md) — landing page; project summary and stack
+  overview
 - [docs/PROJECT.md](docs/PROJECT.md) — project narrative, current
-  status, study trajectory, phase plan
-
-## Binding pre-registration (OSF freeze)
-
-These are the documents that lock at the OSF freeze tag. Changes after
-freeze are protocol deviations requiring an OSF amendment.
-
-- [docs/plans/sced-rebaseline-spec-2026-05-13.md](docs/plans/sced-rebaseline-spec-2026-05-13.md)
-  — **THE binding spec.** Hypotheses, arm definitions, calendar,
-  metrics, statistical analysis plan, decision rules. Source of truth
-  for what the experiment is.
-- [docs/plans/sced-rebaseline-implementation-2026-05-13.md](docs/plans/sced-rebaseline-implementation-2026-05-13.md)
-  — implementation plan tracking spec phases through code
+  status, phase plan
 
 ## Controller logic (Arm A and Arm B)
 
-The two arms of the SCED comparison and how each is configured.
+Current source of truth for the commissioning controller (warm-only
+price-aware overlay on the Arm A comfort program).
 
-- [docs/HVAC_LOGIC.md](docs/HVAC_LOGIC.md) — Arm B (active scheduler):
-  RTP overlays, DTOD bands, 5CP avoidance, safety supervisor, fallback
-  to thermostat schedule
-- [docs/CONTROLLER_CONSTANTS.md](docs/CONTROLLER_CONSTANTS.md) —
-  locked Arm B thresholds (price triggers, day-type cutoffs, PJM 5CP
-  parameters); pre-committed before OSF filing
-- [docs/SCHEDULER_TIMING.md](docs/SCHEDULER_TIMING.md) — Mermaid
-  diagrams of scheduler tick cadence and decision sequencing
-- [docs/THERMOSTAT_ARM_A_SCHEDULE.md](docs/THERMOSTAT_ARM_A_SCHEDULE.md)
-  — Arm A (CTK04AE programmed): autonomous 4-event daily schedule +
-  equipment-level settings
-- [docs/ARM_B_IMPLEMENTATION.md](docs/ARM_B_IMPLEMENTATION.md) — Arm
-  B implementation details (per-day-type behavior, transition logic)
-- [docs/ARM_TRANSITIONS.md](docs/ARM_TRANSITIONS.md) — operator
-  checklist for every Monday 00:00 CT arm-boundary transition
+- [docs/superpowers/specs/2026-06-20-commissioning-controller-design.md](docs/superpowers/specs/2026-06-20-commissioning-controller-design.md)
+  — **current controller spec.** Arm B = Arm A comfort baseline + RTP
+  warm-offset. Warm-only; device-owned safety (setpoint limits + timed
+  holds); no day-types, no 5CP control, no deep precool, no software
+  supervisor. Config is the experimental surface.
+- [docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md](docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md)
+  — implementation plan for the commissioning controller (shadow →
+  active commissioning → 2027 A/B comparison)
 
 ## Data, telemetry, and integrations
 
@@ -70,9 +52,9 @@ out to analysis.
 - [docs/SERVICES.md](docs/SERVICES.md) — per-service detail for every
   container in the deploy stack
 - [docs/DEBUG_TELEMETRY.md](docs/DEBUG_TELEMETRY.md) — quick-reference
-  catalog: Arm A schedule at a glance, Arm B scheduler inputs, and
-  per-measurement consumption status (FULL / PARTIAL / NONE) for every
-  Influx measurement in the `energy` bucket
+  catalog: per-measurement consumption status (FULL / PARTIAL / NONE)
+  for every Influx measurement in the `energy` bucket; includes 5CP
+  telemetry (retained for analysis; not a live control input)
 - [docs/INFLUXDB_RETENTION.md](docs/INFLUXDB_RETENTION.md) — bucket
   policies, downsampling rules, retention windows
 - [docs/PJM_DM2_FEEDS.md](docs/PJM_DM2_FEEDS.md) — PJM Data Miner 2
@@ -82,34 +64,17 @@ out to analysis.
 - [docs/COMFORTNET_USE_CASES.md](docs/COMFORTNET_USE_CASES.md) —
   ComfortNet bus integration scenarios
 
-## Methodology, validation, and ethics
+## Methodology, validation, and analysis
 
-The science layer: what counts as evidence, how it's validated, the
-ethical posture.
+The science layer: what counts as evidence, how it's validated.
 
-- [docs/REPLAY_VALIDATION.md](docs/REPLAY_VALIDATION.md) — replay
-  validation methodology and validation-bundle structure
-- [docs/DRY_RUN_VALIDATION.md](docs/DRY_RUN_VALIDATION.md) — dry-run
-  validation procedure for scheduler changes
-- [docs/O2_CAPACITY_RECONSTRUCTION.md](docs/O2_CAPACITY_RECONSTRUCTION.md)
-  — ComEd Attachment M-2 capacity reconstruction methodology
-- [docs/ETHICS_FRAMING.md](docs/ETHICS_FRAMING.md) — single-occupant
-  household research ethics, consent posture, data minimization
 - [docs/THERMAL_ROUGH_CUT_2026-05-26.md](docs/THERMAL_ROUGH_CUT_2026-05-26.md)
-  — pre-OSF empirical fit (AC-off drift) sanity-checking the
-  scheduler's hand-tuned constants. Disposition: no parameter
-  changes; surfaced the wrong-variable choice in pyControl4 that
-  motivated the `indoor_temp_f_hires` telemetry field
+  — empirical fit (AC-off drift) sanity-checking hand-tuned constants;
+  surfaced the wrong-variable choice in pyControl4 that motivated the
+  `indoor_temp_f_hires` telemetry field
 
-## OSF / Zenodo deposit and security
+## Security
 
-Operational mechanics for the academic publication track.
-
-- [docs/OSF_FILING_MECHANICS.md](docs/OSF_FILING_MECHANICS.md) —
-  12-step freeze-day procedure for OSF + Zenodo deposit
-- [docs/plans/public-flip-readiness-2026-05-19.md](docs/plans/public-flip-readiness-2026-05-19.md)
-  — GitHub-platform hardening checklist for the 2026-05-30 public
-  flip (active until flip complete, then archives)
 - [SECURITY.md](SECURITY.md) — security policy and private-reporting
   channel
 
@@ -127,18 +92,10 @@ How to deploy, run, and tweak the running stack on Pi-lab.
 Workstation-local utilities and analysis scaffolds. Most are
 self-contained mini-projects with their own READMEs.
 
-- [tools/analysis/queries/README.md](tools/analysis/queries/README.md)
-  — Flux query library for analysis pipelines
-- [tools/analysis/replay/README.md](tools/analysis/replay/README.md)
-  — replay framework for replaying historical telemetry against
-  current scheduler
-- [tools/comed_2025_analysis/README.md](tools/comed_2025_analysis/README.md)
-  — frozen analysis bundle for the 2025 ComEd RTP distribution that
-  anchors the Arm B threshold values
-- [tools/comed_price_imputation/README.md](tools/comed_price_imputation/README.md)
-  — ComEd 5-min RTP imputation for sparse-data periods
-- [tools/o2_capacity_reconstruction/README.md](tools/o2_capacity_reconstruction/README.md)
-  — capacity-charge reconstruction script
+- [tools/n8n/README.md](tools/n8n/README.md)
+  — n8n workflow SDK source (canonical `.workflow.ts` authoring)
+- [tools/decision-trace-report/README.md](tools/decision-trace-report/README.md)
+  — daily decision-trace commissioning report tooling
 
 ---
 
@@ -150,13 +107,6 @@ content:
 - **`docs/archive/`** — superseded historical docs preserved for
   provenance. Reference these only when asking "what was the prior
   state of X" — not for current behavior.
-- **`docs/replay-validation/`** — per-event validation findings
-  (specific moments in time, not narrative reference).
-- **`docs/plans/pre-osf-doc-audit-*-2026-05-18.md`** — audit working
-  artifacts (codex review, findings, truth tables, execution log) from
-  the May 2026 doc audit pass. Useful as historical context for why
-  the current doc state looks the way it does; not load-bearing for
-  ongoing work.
 - **Vendored / generated artifacts** (`node_modules/`,
   `.pytest_cache/`, `site/`).
 - **Per-service code, configs, and tests** under

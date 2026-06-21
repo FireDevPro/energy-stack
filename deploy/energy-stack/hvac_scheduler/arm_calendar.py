@@ -1,4 +1,4 @@
-"""Locked SCED arm calendar per docs/plans/sced-rebaseline-spec-2026-05-13.md §2.
+"""Locked SCED arm calendar (12 alternating A/B arm periods).
 
 12 arm periods, A/B alternating, 14 days each, Sun -> Mon 00:00 CT switches.
 First arm = A on 2026-06-01, last arm ends 2026-11-16. 48h washout per arm,

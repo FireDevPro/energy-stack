@@ -1,92 +1,77 @@
-"""ComEd RTP price-spike reactivity overlay (Arm B layer 2).
+"""ComEd RTP price-spike reactivity overlay (Arm B warm-only core).
 
-Continuously evaluated overlay on the active scheduled cool setpoint. When
+Continuously evaluated overlay on the active comfort baseline. When
 ComEd's hourly average price crosses configured thresholds, the overlay
-proposes a warmer cool setpoint (additive offset for elevated, hard
-override for scarcity) so the AC contributes less load while the price is
-high.
+warms the cool setpoint so the AC contributes less load while the price
+is high. Warm-only: the effective setpoint is never below the baseline,
+never above the comfort ceiling.
 
-The overlay is **stateful**: a 30-minute minimum hold prevents thrashing
-on borderline prices, and 2c/kWh hysteresis on each tier prevents a single
-tier-boundary fluctuation from triggering repeated transitions.
+The overlay is **stateful**: a minimum-hold window (config
+``hold_ttl_minutes``) prevents thrashing on borderline prices, and a
+per-tier hysteresis buffer (config ``hysteresis_cents``) prevents a
+single tier-boundary fluctuation from triggering repeated transitions.
 
-Locked threshold values per EXPERIMENT_DESIGN.md Appendix A (frozen at the
-OSF commit hash):
+Four tiers, all warmer-or-equal to baseline; every threshold and offset
+is config (no hardcoded numbers — see ``ControllerConfig``):
 
-  Tier      Trigger     Release    Action
-  -------   --------    --------   ----------------------------------------
-  Elevated  >= 10c/kWh  < 8c/kWh   +3F to active cool setpoint
-  Scarcity  >= 20c/kWh  < 18c/kWh  cool setpoint = 85F (effective shutoff)
+  Tier      Trigger              Release                 Effective setpoint
+  -------   ------------------   ---------------------   ------------------------
+  elevated  >= elevated_at       < elevated_at - hyst    baseline + warm_band
+  scarcity  >= scarcity_at       < scarcity_at - hyst    baseline + warm_band + spike_extra
+  extreme   >= extreme_at        < extreme_at - hyst     comfort_max (snap to ceiling)
 
-Trigger thresholds correspond to the P95 (10c) and P99 (20c) of the 2025
-ComEd hourly price distribution. The release thresholds are the trigger
-minus a 2c hysteresis buffer.
-
-The overlay is layered above the schedule baseline by the §4
-layer-priority resolver in app.py with "warmer wins" semantics: the
-overlay never makes the house cooler than the schedule intended, only
-warmer. The safety supervisor's [65, 86]F clamp still applies after.
+The effective setpoint comes from ``effective_cool_for_tier`` (the pinned
+formula), not from per-tier offsets carried on the tier object. The
+overlay is layered above the comfort baseline with "warmer wins"
+semantics: it only ever makes the house warmer than the baseline, never
+cooler, and never above the comfort ceiling. The device's own setpoint
+min/max limits are the hard cap (device-owned safety; no software
+supervisor).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .controller_config import ControllerConfig
 
 
-# ---- Locked tier definitions ----------------------------------------------
+# ---- Tier definitions ------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class PriceTier:
-    """One tier of the price-spike overlay. The combination of
-    ``cool_setpoint_offset_f`` and ``cool_setpoint_override_f`` selects
-    additive vs. replacement semantics:
+    """One tier of the price-spike overlay.
 
-      * offset only (override=None): effective = schedule + offset
-      * override set: effective = override (offset is ignored)
-
-    ``priority`` is used by the state machine to compare tiers for
-    upgrade decisions. Higher number = higher priority. Setting it once
-    on the tier object keeps the priority ordering as a single source of
-    truth (vs. duplicating it in a name->priority lookup); future
-    amendments adding a tier between elevated and scarcity only need to
-    update the tuple entry.
-
-    Locked at the OSF commit hash."""
+    Tiers no longer carry a setpoint offset/override — the effective
+    setpoint is computed by ``effective_cool_for_tier`` from the config.
+    A tier only carries the trigger / release thresholds (in c/kWh) and
+    its ``priority`` (higher number = higher priority), which the state
+    machine uses to compare tiers for upgrade/downgrade decisions.
+    """
     name: str
     trigger_price_cents_per_kwh: float
     release_price_cents_per_kwh: float
-    cool_setpoint_offset_f: int
-    cool_setpoint_override_f: Optional[int]
     priority: int
 
 
-# Order matters for the state machine: highest-priority tier first.
-PRICE_TIERS: tuple[PriceTier, ...] = (
-    PriceTier(
-        name="scarcity",
-        trigger_price_cents_per_kwh=20.0,
-        release_price_cents_per_kwh=18.0,
-        cool_setpoint_offset_f=0,
-        cool_setpoint_override_f=85,
-        priority=2,
-    ),
-    PriceTier(
-        name="elevated",
-        trigger_price_cents_per_kwh=10.0,
-        release_price_cents_per_kwh=8.0,
-        cool_setpoint_offset_f=3,
-        cool_setpoint_override_f=None,
-        priority=1,
-    ),
-)
-
 NORMAL_TIER_NAME = "normal"
 NORMAL_TIER_PRIORITY = 0
-DEFAULT_MINIMUM_HOLD_MINUTES = 30
-_PRIORITY_BY_NAME = {NORMAL_TIER_NAME: NORMAL_TIER_PRIORITY,
-                     **{t.name: t.priority for t in PRICE_TIERS}}
+
+
+def build_price_tiers(cfg: "ControllerConfig") -> tuple[PriceTier, ...]:
+    """Build the active tier tuple from config, highest priority first.
+
+    Release threshold for each tier is ``trigger - hysteresis_cents``.
+    """
+    pt = cfg.price_tiers_cents
+    return (
+        PriceTier("extreme", pt.extreme_at, pt.extreme_at - pt.hysteresis_cents, priority=3),
+        PriceTier("scarcity", pt.scarcity_at, pt.scarcity_at - pt.hysteresis_cents, priority=2),
+        PriceTier("elevated", pt.elevated_at, pt.elevated_at - pt.hysteresis_cents, priority=1),
+    )
 
 
 # ---- State machine ---------------------------------------------------------
@@ -96,7 +81,7 @@ _PRIORITY_BY_NAME = {NORMAL_TIER_NAME: NORMAL_TIER_PRIORITY,
 class PriceOverlayState:
     """Immutable state carried across scheduler ticks.
 
-    ``current_tier`` is one of "normal", "elevated", "scarcity".
+    ``current_tier`` is one of "normal", "elevated", "scarcity", "extreme".
     ``triggered_at_utc`` is the UTC timestamp of the most recent transition
     *into* the current tier, used by the minimum-hold check. None when the
     state has been ``normal`` since process startup.
@@ -105,10 +90,23 @@ class PriceOverlayState:
     triggered_at_utc: Optional[datetime] = None
 
 
-def _tier_by_name(name: str) -> Optional[PriceTier]:
+def _priority_by_name(tiers: tuple[PriceTier, ...]) -> dict[str, int]:
+    """Name -> priority lookup derived from the passed tiers (+ normal)."""
+    return {NORMAL_TIER_NAME: NORMAL_TIER_PRIORITY,
+            **{t.name: t.priority for t in tiers}}
+
+
+def tier_priority(name: str, tiers: tuple[PriceTier, ...]) -> int:
+    """Higher number = higher priority. Used for upgrade/downgrade
+    comparisons. Falls back to NORMAL_TIER_PRIORITY for unknown names so a
+    future state-corruption bug can't cause silent priority inversion."""
+    return _priority_by_name(tiers).get(name, NORMAL_TIER_PRIORITY)
+
+
+def _tier_by_name(name: str, tiers: tuple[PriceTier, ...]) -> Optional[PriceTier]:
     if name == NORMAL_TIER_NAME:
         return None
-    for t in PRICE_TIERS:
+    for t in tiers:
         if t.name == name:
             return t
     return None
@@ -128,23 +126,28 @@ def evaluate_price_overlay(
     current_price_cents: float,
     state: PriceOverlayState,
     now_utc: datetime,
-    minimum_hold_minutes: int = DEFAULT_MINIMUM_HOLD_MINUTES,
+    tiers: tuple[PriceTier, ...],
+    minimum_hold_minutes: int,
 ) -> tuple[Optional[PriceTier], PriceOverlayState]:
     """Decide whether the overlay should fire this tick and return the
     next state.
 
+    ``tiers`` (highest priority first) and ``minimum_hold_minutes`` are
+    config-driven — passed by the caller (see ``build_price_tiers`` and
+    ``ControllerConfig.hold_ttl_minutes``).
+
     Returns ``(active_tier_or_None, new_state)``. When the active tier is
     ``None``, the overlay does not propose a setpoint change (caller uses
-    the schedule baseline).
+    the comfort baseline).
 
     Decision rules:
 
-      * **Upgrade** (e.g. elevated -> scarcity, or normal -> scarcity):
+      * **Upgrade** (e.g. elevated -> scarcity, or normal -> extreme):
         crossing a higher tier's trigger threshold is immediate; no hold
         required for upgrades, since the upgrade itself is more aggressive
         protection and the operator wants it to fire fast.
 
-      * **Downgrade / release** (e.g. scarcity -> elevated, or any tier
+      * **Downgrade / release** (e.g. extreme -> scarcity, or any tier
         -> normal): requires both (a) the minimum-hold window has elapsed
         since entering the current tier, and (b) the price has crossed
         the current tier's release threshold (downward).
@@ -152,14 +155,14 @@ def evaluate_price_overlay(
       * **Hold within tier**: if neither upgrade nor release fires, the
         current tier persists. State is returned unchanged.
 
-    Hysteresis is encoded in the tier objects (trigger >= 10/20c, release
-    < 8/18c). The 2c gap prevents a price oscillating around the trigger
-    from causing repeated transitions inside the hold window.
+    Hysteresis is encoded in the tier objects (release = trigger -
+    hysteresis_cents). The gap prevents a price oscillating around the
+    trigger from causing repeated transitions inside the hold window.
     """
     # Step 1: scan tiers from highest to lowest priority. The highest tier
     # whose trigger condition is met wins for upgrades.
     target_tier: Optional[PriceTier] = None
-    for tier in PRICE_TIERS:
+    for tier in tiers:
         if current_price_cents >= tier.trigger_price_cents_per_kwh:
             target_tier = tier
             break
@@ -168,7 +171,8 @@ def evaluate_price_overlay(
 
     # Step 2: upgrade path. If target tier is strictly higher than current,
     # transition immediately.
-    if target_tier is not None and tier_priority(target_tier.name) > tier_priority(current):
+    if (target_tier is not None
+            and tier_priority(target_tier.name, tiers) > tier_priority(current, tiers)):
         new_state = PriceOverlayState(
             current_tier=target_tier.name,
             triggered_at_utc=now_utc,
@@ -177,7 +181,7 @@ def evaluate_price_overlay(
 
     # Step 3: hold-within-tier or release path. If the price still satisfies
     # the current tier's hold condition (>= release_price), stay put.
-    current_tier_obj = _tier_by_name(current)
+    current_tier_obj = _tier_by_name(current, tiers)
     if current_tier_obj is None:
         # Already in normal: target_tier is what should fire next, even if
         # equal to None. (Equal target is effectively no-op return.)
@@ -195,7 +199,8 @@ def evaluate_price_overlay(
 
     # Hold elapsed and price below release: downgrade. The new tier is
     # whichever lower tier the price still fits, or normal.
-    if target_tier is not None and tier_priority(target_tier.name) < tier_priority(current):
+    if (target_tier is not None
+            and tier_priority(target_tier.name, tiers) < tier_priority(current, tiers)):
         new_state = PriceOverlayState(
             current_tier=target_tier.name,
             triggered_at_utc=now_utc,
@@ -210,23 +215,29 @@ def evaluate_price_overlay(
     return None, new_state
 
 
-def tier_priority(name: str) -> int:
-    """Higher number = higher priority. Used for upgrade comparisons.
-    Falls back to NORMAL_TIER_PRIORITY for unknown names so a future
-    state-corruption bug can't cause silent priority inversion."""
-    return _PRIORITY_BY_NAME.get(name, NORMAL_TIER_PRIORITY)
+# ---- Effective-setpoint formula (pinned in spec) --------------------------
 
 
-# ---- Convenience: lookup the offset/override for a tier name --------------
+def effective_cool_for_tier(
+    tier_name: str, baseline: float, cfg: "ControllerConfig",
+) -> float:
+    """Resolve the effective cool setpoint for a tier (in the controller's
+    native ``temp_scale``):
 
+        effective_cool = clamp(baseline + offset,
+                               floor = baseline, ceiling = comfort_max)
 
-def offset_and_override_for_tier(
-    tier_name: str,
-) -> tuple[int, Optional[int]]:
-    """Return ``(offset_f, override_f)`` for a tier, defaulting to (0, None)
-    when the tier is normal or unknown. Used by the §4 layer-priority
-    resolver."""
-    tier = _tier_by_name(tier_name)
-    if tier is None:
-        return 0, None
-    return tier.cool_setpoint_offset_f, tier.cool_setpoint_override_f
+    where offset is 0 (normal) / warm_band (elevated) /
+    warm_band + spike_extra (scarcity) / -> comfort_max (extreme snaps
+    straight to the ceiling). Unknown tier -> baseline (conservative).
+    """
+    cmax = cfg.ceiling.comfort_max
+    if tier_name == "elevated":
+        target = baseline + cfg.flexibility.warm_band
+    elif tier_name == "scarcity":
+        target = baseline + cfg.flexibility.warm_band + cfg.flexibility.spike_extra
+    elif tier_name == "extreme":
+        target = cmax                       # snap to ceiling
+    else:                                   # normal / unknown
+        target = baseline
+    return min(max(target, baseline), cmax)  # floor=baseline, ceiling=comfort_max

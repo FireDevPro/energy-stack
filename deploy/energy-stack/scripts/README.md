@@ -80,12 +80,12 @@ After several manual runs have been validated, log nightly output only:
 ## randomize_arms.py — DEPRECATED (pre-rebaseline historical artifact)
 
 > [!WARNING]
-> **Retired 2026-05-13** by [`docs/plans/sced-rebaseline-spec-2026-05-13.md`](../../../docs/plans/sced-rebaseline-spec-2026-05-13.md) §2 + §0. The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
+> **Retired 2026-05-13** by the SCED rebaseline (its spec doc has since been removed in the controller demolition). The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
 >
 > The canonical arm calendar is now generated programmatically by [`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). The original `randomize_arms.py` script and its output `docs/experiment-assignments-summer-2026.csv` are preserved in-tree as historical artifacts (and to keep `tests/test_randomize_arms.py` pinning the original algorithm for audit traceability) but **should not be run** for any current operation. Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137).
 
 Generates the original Arm A / Arm B week-level assignment for the residential
-HVAC controls field study described in [`docs/EXPERIMENT_DESIGN.md`](../../../docs/EXPERIMENT_DESIGN.md).
+HVAC controls field study described in [`docs/archive/EXPERIMENT_DESIGN.md`](../../../docs/archive/EXPERIMENT_DESIGN.md).
 Block-of-2 randomization using a pre-committed seed (default `20260601` from
 EXPERIMENT_DESIGN.md §13). Same seed + same date range → same CSV, every time.
 
@@ -107,50 +107,23 @@ Pre-rebaseline, the directive read: **Do not modify the algorithm or default see
 pinned-snapshot test in `tests/test_randomize_arms.py` still fails loud if the
 seed-to-output mapping ever drifts, preserving the original artifact for audit.
 
-## commission_decision_trace_path_c.py — synthetic decision-trace event exerciser
+## commission_decision_trace_path_c.py — removed 2026-06-20
 
-Path C of the decision-trace commissioning: exercises every `decision_trace.*`
-event type via controlled synthetic inputs through real production functions
-inside a running `hvac-scheduler` container. Emitted lines go to stdout
-→ promtail → Loki, where they're discoverable forever by `tick_id` prefix
-`commission_<ISO-UTC>_<event>_<scenario>`.
-
-**Scope:** runs the real `decide_day_type`, `resolve_layer_priority`,
-`validate_setpoints`, and `compute_price_aware_precool_window` rule functions
-with synthetic in-memory inputs. Each trace line uses its real `_trace_*`
-helper so shape, level filtering, and JSON serialisation all run through
-production code.
-
-**Out of scope:** does NOT run the scheduler's tick loop, does NOT write to
-InfluxDB, does NOT modify the running scheduler. Separate Python process,
-separate in-memory state, separate `app` module instance.
-
-**Skipped event type:** `decision_trace.price_overlay_eval` — already verified
-live via ambient operation (fires every minute at real ComEd prices). Re-testing
-in Path C would duplicate ~30 lines of inline emission code; documented in the
-[2026-05-14 commissioning findings](../../../docs/replay-validation/2026-05-14-decision-trace-commissioning/findings.md)
-as "verified live via ambient operation."
-
-**Usage (inside the live scheduler container):**
-
-```bash
-# Copy the script into the container, then run with stdout to promtail's pipe
-docker cp deploy/energy-stack/scripts/commission_decision_trace_path_c.py \
-    hvac-scheduler:/tmp/
-docker exec hvac-scheduler bash -c \
-    "python /tmp/commission_decision_trace_path_c.py 1>>/proc/1/fd/1"
-```
-
-**When to run:** after a controller-side change that adds or modifies a
-`decision_trace.*` event type, to confirm the production emission path
-produces correctly-shaped Loki lines.
+This synthetic decision-trace event exerciser was removed with the
+day-type / precool / 5CP / overrides / forecast controller tear-out. It
+imported deleted rule functions (`decide_day_type`,
+`resolve_layer_priority`, `validate_setpoints`,
+`compute_price_aware_precool_window`) and their `_trace_*` helpers, all of
+which no longer exist, so it could only ImportError. The commissioning
+controller is reactive-price-overlay only; there is no day-type / precool
+trace path left to exercise.
 
 ## log_arm_transition.py — removed 2026-06-15
 
 This manual audit logger was removed. It was built on a per-arm AIR-toggle
 concept that was never the design (AIR is fixed OFF in both arms), was never
 run (its `hvac.arm_transitions` measurement has zero rows), and was redundant
-with the deterministic arm calendar. See `docs/EXPERIMENT_CHANGE_LOG.md`.
+with the deterministic arm calendar.
 
 **When to run:** every Monday at the arm-boundary crossover (2026-06-01,
 2026-06-15, 2026-06-29, ... per the canonical arm calendar at
