@@ -107,43 +107,16 @@ Pre-rebaseline, the directive read: **Do not modify the algorithm or default see
 pinned-snapshot test in `tests/test_randomize_arms.py` still fails loud if the
 seed-to-output mapping ever drifts, preserving the original artifact for audit.
 
-## commission_decision_trace_path_c.py — synthetic decision-trace event exerciser
+## commission_decision_trace_path_c.py — removed 2026-06-20
 
-Path C of the decision-trace commissioning: exercises every `decision_trace.*`
-event type via controlled synthetic inputs through real production functions
-inside a running `hvac-scheduler` container. Emitted lines go to stdout
-→ promtail → Loki, where they're discoverable forever by `tick_id` prefix
-`commission_<ISO-UTC>_<event>_<scenario>`.
-
-**Scope:** runs the real `decide_day_type`, `resolve_layer_priority`,
-`validate_setpoints`, and `compute_price_aware_precool_window` rule functions
-with synthetic in-memory inputs. Each trace line uses its real `_trace_*`
-helper so shape, level filtering, and JSON serialisation all run through
-production code.
-
-**Out of scope:** does NOT run the scheduler's tick loop, does NOT write to
-InfluxDB, does NOT modify the running scheduler. Separate Python process,
-separate in-memory state, separate `app` module instance.
-
-**Skipped event type:** `decision_trace.price_overlay_eval` — already verified
-live via ambient operation (fires every minute at real ComEd prices). Re-testing
-in Path C would duplicate ~30 lines of inline emission code; documented in the
-[2026-05-14 commissioning findings](../../../docs/replay-validation/2026-05-14-decision-trace-commissioning/findings.md)
-as "verified live via ambient operation."
-
-**Usage (inside the live scheduler container):**
-
-```bash
-# Copy the script into the container, then run with stdout to promtail's pipe
-docker cp deploy/energy-stack/scripts/commission_decision_trace_path_c.py \
-    hvac-scheduler:/tmp/
-docker exec hvac-scheduler bash -c \
-    "python /tmp/commission_decision_trace_path_c.py 1>>/proc/1/fd/1"
-```
-
-**When to run:** after a controller-side change that adds or modifies a
-`decision_trace.*` event type, to confirm the production emission path
-produces correctly-shaped Loki lines.
+This synthetic decision-trace event exerciser was removed with the
+day-type / precool / 5CP / overrides / forecast controller tear-out. It
+imported deleted rule functions (`decide_day_type`,
+`resolve_layer_priority`, `validate_setpoints`,
+`compute_price_aware_precool_window`) and their `_trace_*` helpers, all of
+which no longer exist, so it could only ImportError. The commissioning
+controller is reactive-price-overlay only; there is no day-type / precool
+trace path left to exercise.
 
 ## log_arm_transition.py — removed 2026-06-15
 

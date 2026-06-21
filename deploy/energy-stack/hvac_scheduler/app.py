@@ -1,65 +1,52 @@
-"""HVAC pre-cooling scheduler.
+"""Arm B commissioning controller — price-aware comfort scheduler.
 
-Reads tomorrow's NWS forecast + current ComEd HP price from InfluxDB,
-decides a day-type (MILD/NORMAL/HOT_5CP_RISK), and pushes COOL_SETPOINT
-+ HOLD_MODE commands to the Honeywell thermostat via Control4 Director
-(pyControl4) at scheduled time boundaries.
+Arm B runs the same comfort program as Arm A and adds price awareness on
+top. It holds a config-driven comfort baseline (the comfort_program +
+ceiling from the controller config) and only ever drifts the cool
+setpoint *warmer* in response to live ComEd RTP price — never below the
+baseline. The warm-only floor is enforced in code as
+``effective = max(effective, baseline)``. (The price offset itself lands
+in Slice B; until then the effective setpoint equals the baseline and the
+clamp is the load-bearing invariant.)
+
+Safety is device-owned: the thermostat enforces its own min/max bounds
+and timed holds. There is no software safety supervisor in this service.
 
 Design:
-  * One persistent process, asyncio main loop, ticks every 60s.
-  * Daily at DECISION_HOUR (default 21:00 local), decides tomorrow's
-    day-type from latest nws.forecast snapshot. Decision written to
-    `hvac.decisions` measurement for traceability.
-  * At each `SCHEDULER_REVISIT_HOURS` (default 06:00, 11:00 local),
-    re-evaluates today's day-type against the latest forecast and
-    overwrites the stored decision if it shifted. Catches forecast-bust
-    days where the 21:00-yesterday commitment was wrong (NWS day-1
-    max-T forecasts mis-classify ~1 in 3 marginal Midwest summer days
-    per NSSL/Brooks public-forecast verification).
-  * At each schedule transition time (e.g., 06:00, 13:00, 19:00, 22:00),
-    looks up the day-type for TODAY and pushes the corresponding
-    COOL_SETPOINT_F + HOLD_MODE='Permanent' to the thermostat.
-  * Every action also writes to `hvac.actions` for audit.
+  * One persistent process, asyncio main loop, ticks every ~10s.
+  * On each tick, evaluates the reactive price overlay against the live
+    ComEd price and, when the floor-clamped comfort baseline changes,
+    pushes COOL_SETPOINT + HOLD_MODE to the thermostat.
+  * Skips setpoint writes when thermostat HVAC_MODE != Cool/Auto
+    (heating-season no-op).
+  * Every action writes to `hvac.actions` for audit.
 
-Safety nets:
-  * SCHEDULER_MODE env var (REQUIRED, no default; spec §3): shadow =
-    never writes (logs only), experiment = writes ONLY during Arm B
-    inside the locked 2026-06-01..2026-11-16 calendar, production =
-    writes always (off-protocol). Module refuses to start on missing
-    or invalid value.
-  * Skips setpoint changes when thermostat HVAC_MODE != Cool/Auto
-    (i.e., heating-season no-op).
-  * Director token persisted to /data/director_token.json -- one cloud
-    auth at startup OR on 401, then pure LAN.
-  * Pi failure mode: thermostat keeps last-set setpoint; not a safety
-    issue, just degraded scheduling.
+Run mode (write-gating):
+  * SCHEDULER_MODE env var (REQUIRED, no default): shadow = never writes
+    (logs the proposed action only); production = writes always.
+    Promotion runs shadow -> production. Module refuses to start
+    (sys.exit(2)) on a missing or invalid value.
 
-Day-type rules (locked per EXPERIMENT_DESIGN.md Appendix A, recalibrated
-May 2026 against the 2025 ComEd RTP price-spike distribution):
-  * MILD             -- forecast high < 75F             -- no actions
-  * NORMAL           -- 75 <= forecast high < 85F       -- standard schedule
-  * HOT_5CP_RISK     -- forecast high >= 85F OR
-                        forecast apparent >= 90F OR
-                        active heat advisory             -- aggressive schedule
+Actuation: COOL_SETPOINT + HOLD_MODE='Permanent' are pushed to the
+Honeywell thermostat via Control4 Director (pyControl4). The Director
+token is persisted to /data/director_token.json — one cloud auth at
+startup or on 401, then pure LAN. Pi failure mode: the thermostat keeps
+its last-set setpoint (degraded scheduling, not a safety issue).
 
 Environment variables:
     CONTROL4_EMAIL              Control4 account email
     CONTROL4_PASSWORD           Control4 account password
     CONTROL4_CONTROLLER_IP      Director IP (default 192.168.1.30)
     CONTROL4_THERMOSTAT_ID      C4 item id (default 3231)
-    SCHEDULER_MODE              "shadow" | "experiment" | "production" (REQUIRED;
-                                no default). shadow = never writes; experiment =
-                                writes during Arm B inside the locked
-                                2026-06-01..2026-11-16 calendar; production =
-                                writes always (excluded from study analysis).
-                                Module refuses to start (sys.exit(2)) on missing
-                                or invalid value. Spec §3 lock.
+    SCHEDULER_MODE              "shadow" | "production" (REQUIRED; no default).
+                                shadow = never writes; production = writes
+                                always. Module refuses to start (sys.exit(2))
+                                on a missing or invalid value.
     SCHEDULER_DRY_RUN           Retired by SCHEDULER_MODE. If still set in the
                                 env, it is logged-and-ignored at Config load.
-    SCHEDULER_DECISION_HOUR     Hour-of-day to decide tomorrow (default 21)
-    SCHEDULER_REVISIT_HOURS     Comma-separated local hours at which to re-poll
-                                today's forecast and re-classify if it shifted
-                                (default "6,11"; empty disables)
+    CONTROLLER_CONFIG_FILE      Path to the controller config YAML (comfort
+                                program, heat floor, ceiling). When unset, the
+                                control loop does not consume a config.
     TEMP_SCALE                  Temperature scale the controller logic operates
                                 in (default "F"). Behavior-preserving: with "F"
                                 every scale-agnostic controller value carries
@@ -281,14 +268,12 @@ class Config:
     mode: str
     temp_scale: str
     decision_trace_verbose: bool
-    decision_hour: int
     tz_name: str
     influx_url: str
     influx_token: str
     influx_org: str
     influx_bucket: str
     token_file: Path
-    revisit_hours: tuple[int, ...]
     # Set when CONTROLLER_CONFIG_FILE env var is present; None otherwise.
     # Nothing in the control loop consumes this yet — later tasks wire it in.
     controller_config: ControllerConfig | None = None
@@ -301,15 +286,6 @@ class Config:
                 log("error", "missing_env", var=name)
                 sys.exit(2)
             return v
-
-        revisit_raw = os.environ.get("SCHEDULER_REVISIT_HOURS", "6,11")
-        try:
-            revisit_hours = tuple(sorted({
-                int(h.strip()) for h in revisit_raw.split(",") if h.strip()
-            }))
-        except ValueError:
-            log("error", "invalid_revisit_hours", raw=revisit_raw)
-            sys.exit(2)
 
         # SCHEDULER_DRY_RUN retired in favor of SCHEDULER_MODE (spec §3,
         # plan standing rule). If both are set, ignore SCHEDULER_DRY_RUN
@@ -389,21 +365,12 @@ class Config:
             # `_trace`, which reads os.environ on each call so tests can
             # monkeypatch.setenv without reloading the module.
             decision_trace_verbose=decision_trace_verbose,
-            decision_hour=int(os.environ.get("SCHEDULER_DECISION_HOUR", "21")),
             tz_name=os.environ.get("SCHEDULER_TZ", "America/Chicago"),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
             influx_bucket=required("INFLUXDB_BUCKET"),
             token_file=Path(os.environ.get("DIRECTOR_TOKEN_FILE", "/data/director_token.json")),
-            # Local hours at which to re-poll today's NWS forecast and re-classify
-            # the day-type if it shifted enough to change the schedule. Default
-            # 06:00 + 11:00 catches the morning forecast refresh AND the late-
-            # morning update before the noon coast transition. NWS day-1 max-T
-            # forecasts mis-classify ~1 in 3 marginal Midwest summer days
-            # (per NSSL/Brooks public-forecast verification); the day-ahead-only
-            # commitment leaves that error in place all day. Empty = disabled.
-            revisit_hours=revisit_hours,
             controller_config=controller_config,
         )
 
@@ -606,9 +573,6 @@ class FiringState:
     spans ticks."""
     last_decision_date: str = ""
     fired_actions: set[tuple[str, int, int]] = field(default_factory=set)  # (date, hour, minute)
-    # (date, revisit_hour) tuples for the intra-day forecast revisit checks.
-    # Separate set so the revisit cadence doesn't interact with action firing.
-    fired_revisits: set[tuple[str, int]] = field(default_factory=set)
     # Price-overlay state machine (§2). Survives across scheduler ticks but
     # not container restarts; cold-start re-evaluates from current price
     # within the 30-min minimum-hold window so behaviour stabilizes fast.
@@ -732,14 +696,6 @@ async def read_thermostat_snapshot(c4: C4Client) -> dict[str, Any]:
     except Exception as exc:
         log("warn", "thermostat_read_failed", error=str(exc), error_type=type(exc).__name__)
     return snapshot
-
-
-# Pre-registered capacity-risk operating window per spec §5.1. Outside
-# this window PJM capacity-risk inputs are not required for B-active
-# classification (the controller's capacity-risk overlay layer is
-# inactive by design). Inclusive of 2026-06-01 through 2026-09-30.
-CAPACITY_RISK_WINDOW_START_CT = datetime(2026, 6, 1, 0, 0)
-CAPACITY_RISK_WINDOW_END_CT = datetime(2026, 10, 1, 0, 0)  # exclusive
 
 
 # Feeds required by each controller mode. The reactive warm-only overlay
@@ -1061,20 +1017,6 @@ def derive_price_feed_healthy(firing: "FiringState", now_utc: datetime) -> bool:
     if last_fresh is None:
         return False
     return (now_utc - last_fresh) <= PRICE_FEED_STALE_THRESHOLD
-
-
-# Action make-up window: a scheduled action that didn't successfully
-# apply on its exact-minute tick (Control4 transient error, network
-# blip, partial snapshot) can be retried on the next N ticks until
-# either (a) it succeeds and gets marked done, or (b) the window
-# elapses. Without this window, the exact-minute match in the
-# action-fire loop would never re-fire after a transient failure
-# and a failed 19:00 HOT_RECOVER (for example) would silently
-# leave the thermostat in the prior schedule's setpoint until
-# 21:00 SLEEP. Five minutes is short enough that an action's
-# intent stays close to its scheduled time but long enough to
-# absorb typical transient C4 / network blips.
-ACTION_MAKEUP_WINDOW_MIN = 5
 
 
 def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
@@ -1509,7 +1451,6 @@ async def main_async(cfg: Config) -> int:
         controller_ip=cfg.controller_ip,
         thermostat_id=cfg.thermostat_id,
         dry_run=cfg.dry_run,
-        decision_hour=cfg.decision_hour,
         tz=cfg.tz_name)
 
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)

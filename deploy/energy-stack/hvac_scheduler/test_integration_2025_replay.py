@@ -1,6 +1,6 @@
 """Integration test: replay May-Sep 2025 ComEd RTP prices through the
 price-overlay state machine and verify tier-hour counts match the
-historical analysis (per ARM_B_IMPLEMENTATION §9).
+historical analysis of the 2025 cooling-season RTP distribution.
 
 The fixture ``tests/fixtures/comed_2025_hourly.csv`` is the hourly
 average of 5-minute ComEd RTP prices for the May-Sep 2025 cooling

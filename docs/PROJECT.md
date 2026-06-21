@@ -419,7 +419,7 @@ Honeywell's "Adaptive Intelligent Recovery" starts the AC 30-60 min BEFORE a sch
 2. Makes the Pi's setpoint pushes unpredictable — "set 78 at 13:00" should mean exactly that, not "AR starts cooling at 12:30 to hit 78 by 13:00"
 3. Fights the dynamic re-evaluation when the scheduler updates today's behavior from overrides
 
-Verify after any thermostat factory reset (the Honeywell ISU table that documented these lived in the now-removed HVAC_LOGIC.md).
+Verify (and disable Adaptive Intelligent Recovery in the Honeywell ISU settings) after any thermostat factory reset.
 
 ### ComEd public API does NOT expose day-ahead forecast
 
