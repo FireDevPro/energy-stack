@@ -29,7 +29,7 @@ from .app import FiringState, _evaluate_layer_inputs
 # Reuse the existing _evaluate_layer_inputs test scaffolding so the trace
 # tests drive the same caller surface the existing layer-input tests do.
 from .test_hvac_scheduler import (  # noqa: E402
-    _make_schedule_check_cfg,
+    _make_cfg_with_controller_config,
     _mock_c4_client,
     _stub_layer_eval_io,
 )
@@ -67,7 +67,7 @@ class TestPhase1PriceOverlay:
           3. price=22.0c -> upgrade to scarcity (>= 20c trigger)
         """
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
-        cfg = _make_schedule_check_cfg()
+        cfg = _make_cfg_with_controller_config()
         firing = FiringState()
         write_api = MagicMock()
         now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -137,7 +137,7 @@ class TestPhase1PriceOverlay:
             return original_log(level, msg, **fields)
         monkeypatch.setattr(app, "log", _maybe_raise)
 
-        cfg = _make_schedule_check_cfg()
+        cfg = _make_cfg_with_controller_config()
         firing = FiringState()
         write_api = MagicMock()
         now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -185,7 +185,7 @@ class TestPhase1PriceOverlay:
         regardless of calendar position — this test isolates the
         arm-field semantics from mode."""
         monkeypatch.setenv("SCHEDULER_DECISION_TRACE_VERBOSE", "true")
-        cfg = _make_schedule_check_cfg()
+        cfg = _make_cfg_with_controller_config()
         firing = FiringState()
         write_api = MagicMock()
         _stub_layer_eval_io(monkeypatch, price_cents=5.0)

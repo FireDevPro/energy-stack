@@ -83,12 +83,13 @@ from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-
 from .controller_config import ControllerConfig, load_controller_config
 from .controller_core import comfort_baseline_cool
 from .price_overlay import (
-    DEFAULT_MINIMUM_HOLD_MINUTES,
     NORMAL_TIER_NAME,
     PriceOverlayState,
+    PriceTier,
+    build_price_tiers,
+    effective_cool_for_tier,
     evaluate_price_overlay,
     hold_elapsed,
-    offset_and_override_for_tier,
     tier_priority,
 )
 from .decision_codes import (
@@ -175,16 +176,17 @@ def _trace(event_name: str, *, level: str, tick_id: str,
 
 
 def _price_overlay_hold_minutes_remaining(
-    state: PriceOverlayState, now_utc: datetime,
+    state: PriceOverlayState, now_utc: datetime, minimum_hold_minutes: int,
 ) -> float | None:
     """Minutes left on the price-overlay minimum-hold window, or None
     when in NORMAL tier / no triggered_at timestamp. Surfaces internal
     state-machine timing to the trace caller without re-implementing
-    the state machine."""
+    the state machine. ``minimum_hold_minutes`` is config-driven
+    (``ControllerConfig.hold_ttl_minutes``)."""
     if state.triggered_at_utc is None:
         return None
     elapsed = (now_utc - state.triggered_at_utc).total_seconds() / 60.0
-    remaining = DEFAULT_MINIMUM_HOLD_MINUTES - elapsed
+    remaining = minimum_hold_minutes - elapsed
     return max(0.0, remaining)
 
 
@@ -945,13 +947,17 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
 
 @dataclass(frozen=True)
 class LayerInputs:
-    """Per-tick output of `_evaluate_layer_inputs`. Captures the resolved
-    price-overlay tier/offset (re-consumed by the Slice B price path) plus
-    the audit context for `hvac.price_overlay` writes.
+    """Per-tick output of `_evaluate_layer_inputs`. Captures the post-gating
+    active price-overlay tier name (consumed by `_push_baseline_if_changed`
+    via `effective_cool_for_tier`) plus the audit context for
+    `hvac.price_overlay` writes.
+
+    Slice B replaced the old per-tier offset/override (`price_offset_f`,
+    `price_override_f`) with the pinned setpoint formula: the effective
+    cool is now derived from `price_tier_name` + config, not from a
+    tier-carried offset.
     """
     price_tier_name: str
-    price_offset_f: float
-    price_override_f: float | None
     price_prev_tier: str
     current_price_cents: float | None
 
@@ -964,10 +970,10 @@ _ARM_MODE_AUDIT_INTERVAL = timedelta(minutes=5)
 # tier (preserved across a brief feed gap per PR #60's P2.A fix) must
 # not hold indefinitely. If the ComEd RTP feed has been unavailable
 # for longer than this threshold, the overlay releases back to NORMAL
-# tier. 30 minutes mirrors the minimum-hold window for tier
-# transitions (price_overlay.DEFAULT_MINIMUM_HOLD_MINUTES) -- if a
-# tier event can resolve in 30 min on healthy data, an outage of
-# similar length is plausibly a real release rather than a brief blip.
+# tier. 30 minutes is a fixed feed-gap timer (the spec keeps it as-is) --
+# if a tier event can typically resolve in tens of minutes on healthy
+# data, an outage of similar length is plausibly a real release rather
+# than a brief blip.
 PRICE_FEED_STALE_THRESHOLD = timedelta(minutes=30)
 
 
@@ -1030,6 +1036,13 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         tick_id = uuid.uuid4().hex
 
     # ---- Price overlay (§2) ----
+    # Config-driven tiers + minimum-hold (no hardcoded numbers in the overlay).
+    assert cfg.controller_config is not None, (
+        "controller_config is required: the price overlay is config-driven"
+    )
+    tiers = build_price_tiers(cfg.controller_config)
+    min_hold_minutes = cfg.controller_config.hold_ttl_minutes
+
     # Read the latest ComEd bucket with now_utc for freshness classification.
     sample = fetch_latest_comed(query_api, cfg.influx_bucket, now_utc=now_utc)
     current_price_cents = sample.cents_per_kwh if sample is not None else None
@@ -1046,7 +1059,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
     # those are data-source timestamps; spec §3.5 explicitly forbids it.
     sample_is_fresh = sample is not None and sample.freshness == "fresh"
     min_hold_is_elapsed = hold_elapsed(
-        firing.price_overlay_state, now_utc, DEFAULT_MINIMUM_HOLD_MINUTES,
+        firing.price_overlay_state, now_utc, min_hold_minutes,
     )
 
     if prev_tier == NORMAL_TIER_NAME or not min_hold_is_elapsed:
@@ -1061,9 +1074,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
     safety_release_fired = False
     release_reason = None
     downgrade_gate_held = False
-    active_tier = None
-    price_offset_f = 0.0
-    price_override_f = None
+    active_tier: PriceTier | None = None
     price_tier_name = prev_tier  # default; branches below override.
 
     # Safety release check -- uses ONLY the controller-observation timer.
@@ -1086,10 +1097,8 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         )
         firing.nonfresh_after_hold_started_at_utc = None  # clear after release
         safety_release_fired = True
-        # Explicit normal outputs -- do NOT inherit prev_tier's offset/override.
+        # Explicit normal output -- do NOT inherit prev_tier.
         price_tier_name = NORMAL_TIER_NAME
-        price_offset_f = 0.0
-        price_override_f = None
         active_tier = None
 
     elif sample is not None:
@@ -1099,14 +1108,14 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         assert current_price_cents is not None
         proposed_tier, proposed_state = evaluate_price_overlay(
             current_price_cents, firing.price_overlay_state, now_utc,
+            tiers, min_hold_minutes,
         )
         proposed_name = proposed_tier.name if proposed_tier else NORMAL_TIER_NAME
-        is_downgrade = tier_priority(proposed_name) < tier_priority(prev_tier)
+        is_downgrade = tier_priority(proposed_name, tiers) < tier_priority(prev_tier, tiers)
 
         if is_downgrade and not sample_is_fresh:
             # Recency gate refuses downgrade. Hold prev_tier.
             downgrade_gate_held = True
-            price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
             price_tier_name = prev_tier
         else:
             # Detect protective upgrade and clear the safety-release timer so
@@ -1116,25 +1125,17 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
             # Checkpoint-3 finding. Unconditional clear: no-op during the
             # previous tier's min-hold (timer was already None per the reset
             # rules above), necessary post-min-hold.
-            is_upgrade = tier_priority(proposed_name) > tier_priority(prev_tier)
+            is_upgrade = tier_priority(proposed_name, tiers) > tier_priority(prev_tier, tiers)
             if is_upgrade:
                 firing.nonfresh_after_hold_started_at_utc = None
             # Apply state machine proposal.
             firing.price_overlay_state = proposed_state
             active_tier = proposed_tier
-            if active_tier is None:
-                price_offset_f = 0.0
-                price_override_f = None
-                price_tier_name = NORMAL_TIER_NAME
-            else:
-                price_offset_f = active_tier.cool_setpoint_offset
-                price_override_f = active_tier.cool_setpoint_override
-                price_tier_name = active_tier.name
+            price_tier_name = active_tier.name if active_tier is not None else NORMAL_TIER_NAME
 
     else:
-        # sample is None, timer not yet at 30-min threshold: carry-forward.
-        # Preserve prev_tier's offset/override.
-        price_offset_f, price_override_f = offset_and_override_for_tier(prev_tier)
+        # sample is None, timer not yet at 30-min threshold: carry-forward
+        # the prev_tier label (the effective setpoint is re-derived from it).
         price_tier_name = prev_tier
 
     # ---- Phase 1 decision-trace: price overlay per-eval ---------------
@@ -1168,22 +1169,28 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
             else PriceOverlayCode.HELD_IN_TIER
         )
         po_level = "debug"
-    elif new_tier == "scarcity":
-        po_outcome = "upgraded"
-        po_reason = PriceOverlayCode.UPGRADED_TO_SCARCITY
+    else:
+        # Real tier change. Direction is derived from a PRIORITY comparison
+        # of prev vs new (not per-name branches) so the 4th `extreme` tier
+        # is classified correctly — e.g. extreme->scarcity is a downgrade,
+        # not a mislabelled release-to-normal.
         po_level = "info"
-    elif new_tier == "elevated":
-        if prev_tier == NORMAL_TIER_NAME:
+        if new_tier == NORMAL_TIER_NAME:
+            po_outcome = "released"
+            po_reason = PriceOverlayCode.RELEASED_TO_NORMAL
+        elif tier_priority(new_tier, tiers) > tier_priority(prev_tier, tiers):
             po_outcome = "upgraded"
-            po_reason = PriceOverlayCode.UPGRADED_TO_ELEVATED
-        else:  # scarcity -> elevated
+            po_reason = {
+                "elevated": PriceOverlayCode.UPGRADED_TO_ELEVATED,
+                "scarcity": PriceOverlayCode.UPGRADED_TO_SCARCITY,
+                "extreme": PriceOverlayCode.UPGRADED_TO_EXTREME,
+            }[new_tier]
+        else:  # downgrade to a non-normal tier
             po_outcome = "downgraded"
-            po_reason = PriceOverlayCode.DOWNGRADED_TO_ELEVATED
-        po_level = "info"
-    else:  # new_tier == NORMAL_TIER_NAME, prev_tier != NORMAL_TIER_NAME
-        po_outcome = "released"
-        po_reason = PriceOverlayCode.RELEASED_TO_NORMAL
-        po_level = "info"
+            po_reason = {
+                "elevated": PriceOverlayCode.DOWNGRADED_TO_ELEVATED,
+                "scarcity": PriceOverlayCode.DOWNGRADED_TO_SCARCITY,
+            }[new_tier]
 
     bucket_age_sec = (
         (now_utc - sample.source_ts).total_seconds()
@@ -1203,7 +1210,7 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         outcome=po_outcome,
         reason_code=po_reason.value,
         hold_minutes_remaining=_price_overlay_hold_minutes_remaining(
-            firing.price_overlay_state, now_utc,
+            firing.price_overlay_state, now_utc, min_hold_minutes,
         ),
     )
 
@@ -1225,8 +1232,6 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
 
     return LayerInputs(
         price_tier_name=price_tier_name,
-        price_offset_f=price_offset_f,
-        price_override_f=price_override_f,
         price_prev_tier=prev_tier,
         current_price_cents=current_price_cents,
     )
@@ -1234,18 +1239,23 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
 
 async def _push_baseline_if_changed(
     cfg: Config, c4: ThermostatClient, write_api: Any,
-    firing: FiringState, now_local: datetime,
+    firing: FiringState, now_local: datetime, active_tier_name: str,
     *, tick_id: str | None = None,
 ) -> None:
-    """Push the floor-clamped comfort baseline when it differs from the
-    last value pushed.
+    """Push the warm-overlaid, floor-clamped effective cool setpoint when it
+    differs from the last value pushed.
 
-    The effective cool setpoint is the comfort baseline, floor-clamped so
-    it is never below the baseline (``effective = max(effective, baseline)``).
-    With no price offset yet (Slice B) the effective equals the baseline,
-    but the clamp is applied in code as the load-bearing floor invariant —
-    the only clamp in the controller (safety is device-owned; there is no
-    software supervisor and no ceiling yet).
+    The effective cool setpoint is the comfort baseline plus the active
+    price tier's warm offset, resolved by the pinned formula
+    (``effective_cool_for_tier``):
+
+        effective_cool = clamp(baseline + offset,
+                               floor = baseline, ceiling = comfort_max)
+
+    Warm-only: the formula never drops below baseline (floor invariant) and
+    never above the comfort ceiling. An additional ``max(effective, baseline)``
+    is kept as the defensive load-bearing floor clamp (the only clamp the
+    controller owns; safety is device-owned, no software supervisor).
 
     Re-push only when the effective differs from the last value pushed
     (``firing.last_pushed_effective_cool``). Runs in shadow when
@@ -1262,14 +1272,12 @@ async def _push_baseline_if_changed(
     assert cfg.controller_config is not None  # caller guarantees config-present path
     heat_floor = cfg.controller_config.heat_floor  # native temp_scale; no conversion
 
-    # Floor clamp — the load-bearing invariant. Effective is never below the
-    # baseline. In Slice A there is no price offset so effective_cool == baseline
-    # after the clamp (the clamp is defensive/no-op this slice). Slice B sets
-    # effective_cool = baseline + price_offset before this line and inherits a
-    # working floor invariant.
-    # NOTE: a clamp test with teeth (effective < baseline) comes in Slice B.
-    effective_cool = baseline  # Slice A: no offset yet
-    effective_cool = max(effective_cool, baseline)  # floor invariant
+    # Apply the active price tier's warm offset via the pinned formula
+    # (config-driven; clamped to [baseline, comfort_max]).
+    effective_cool = effective_cool_for_tier(
+        active_tier_name, baseline, cfg.controller_config,
+    )
+    effective_cool = max(effective_cool, baseline)  # defensive floor invariant
 
     # No-push short-circuit: nothing to do when the effective is unchanged.
     if effective_cool == firing.last_pushed_effective_cool:
@@ -1311,17 +1319,18 @@ async def _push_baseline_if_changed(
 async def run_schedule_check(cfg: Config, c4: ThermostatClient, query_api: Any, write_api: Any,
                               tz: ZoneInfo, now_local: datetime,
                               firing: FiringState) -> None:
-    """Compute the comfort baseline for this minute and push it (in shadow)
-    when it differs from the last value pushed.
+    """Compute the comfort baseline for this minute, apply the price overlay,
+    and push the resulting effective setpoint (in shadow) when it differs from
+    the last value pushed.
 
     Single-path commissioning controller (spec "Architecture": in-place,
     single-path rewrite):
       1. Comfort baseline from ``comfort_baseline_cool`` (config), every tick.
-      2. Floor clamp — the effective cool setpoint is never below the current
-         baseline (``effective = max(effective, baseline)``). This is the ONLY
-         clamp: there is no software safety supervisor (device-owned safety)
-         and no ceiling yet (Slice C). No price offset yet (Slice B), so the
-         effective equals the baseline here.
+      2. Price overlay — ``_evaluate_layer_inputs`` resolves the active warm
+         tier; ``_push_baseline_if_changed`` turns it into the effective cool
+         via the pinned formula, clamped to [baseline, comfort_max]. Warm-only:
+         the floor clamp (``effective = max(effective, baseline)``) is the only
+         clamp the controller owns (device-owned safety; no software supervisor).
       3. Push on change — re-push only when the effective differs from the
          last pushed value, via ``_push_baseline_if_changed``.
 
@@ -1351,11 +1360,10 @@ async def run_schedule_check(cfg: Config, c4: ThermostatClient, query_api: Any, 
     firing.baseline_initialized = True
 
     # ---- Per-tick layer evaluation ----
-    # Evaluate the price overlay and write its audit rows every tick.
-    # (Slice B re-introduces the price offset into the effective setpoint;
-    # here the overlay is telemetry only — the effective is the bare
-    # comfort baseline.)
-    _evaluate_layer_inputs(
+    # Evaluate the price overlay and write its audit rows every tick. The
+    # post-gating active tier is threaded into the push below, where the
+    # pinned formula turns it into the warm-overlaid effective setpoint.
+    layer_inputs = _evaluate_layer_inputs(
         query_api, write_api, cfg, firing, now_local, tick_id=tick_id,
     )
 
@@ -1404,12 +1412,13 @@ async def run_schedule_check(cfg: Config, c4: ThermostatClient, query_api: Any, 
         )
         firing.last_arm_mode_audit_at_utc = now_utc_for_audit
 
-    # ---- Push the comfort baseline when it changed ----
-    # Single push path: the effective cool setpoint is the floor-clamped
-    # comfort baseline (no price offset yet). Re-push only when it differs
-    # from the last value pushed.
+    # ---- Push the effective setpoint when it changed ----
+    # Single push path: the effective cool setpoint is the comfort baseline
+    # plus the active price tier's warm offset (pinned formula), floor-clamped.
+    # Re-push only when it differs from the last value pushed.
     await _push_baseline_if_changed(
-        cfg, c4, write_api, firing, now_local, tick_id=tick_id,
+        cfg, c4, write_api, firing, now_local,
+        layer_inputs.price_tier_name, tick_id=tick_id,
     )
 
 

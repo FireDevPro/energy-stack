@@ -302,7 +302,7 @@ def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
     A call at any minute populates a LayerInputs return value with the
     current price tier."""
     _stub_layer_eval_io(monkeypatch, price_cents=12.0)  # elevated tier
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 23,  # arbitrary non-action minute
@@ -310,14 +310,13 @@ def test_evaluate_layer_inputs_runs_without_action_firing(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
-    assert inputs.price_offset_f == 3
 
 
 def test_evaluate_layer_inputs_carries_overlay_state_across_calls(monkeypatch):
     """Two consecutive ticks: first triggers elevated, second stays
     elevated due to the 30-min hold even with a brief price dip."""
     _stub_layer_eval_io(monkeypatch, price_cents=12.0)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -338,7 +337,7 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
     """A price-tier transition writes a hvac.price_overlay row. Same-tier
     ticks don't (the measurement is event-driven)."""
     _stub_layer_eval_io(monkeypatch, price_cents=5.0)  # normal initially
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -365,19 +364,16 @@ def test_evaluate_layer_inputs_writes_price_overlay_on_tier_transition(monkeypat
 # ---- P2: price tier preservation across feed gap --------------------------
 
 
-def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
+def test_price_tier_carries_label_when_feed_drops(monkeypatch):
     """P2 review fix: when ``fetch_latest_comed`` returns None mid-tick,
-    the price-overlay tier label was carried forward but the
-    setpoint contributions (offset/override) were silently zeroed.
-    Result: logs labeled the tier as ``scarcity`` while the
-    effective setpoint fell back to the schedule baseline.
-
-    Post-fix: when the feed is unavailable, the active tier's
-    locked offset/override are looked up from PRICE_TIERS and
-    carried forward to the layer-priority resolver."""
+    the active price-overlay tier label is carried forward (so the pinned
+    formula re-derives the same warm effective setpoint next push) rather
+    than collapsing to baseline. Slice B1: the effective setpoint is now
+    derived from this tier label via ``effective_cool_for_tier``, so a
+    preserved label is the whole carry-forward contract."""
     from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     now_local = datetime(2026, 7, 15, 14, 30,
                           tzinfo=ZoneInfo("America/Chicago"))
     now_utc = now_local.astimezone(timezone.utc)
@@ -393,20 +389,15 @@ def test_price_tier_carries_effective_setpoint_when_feed_drops(monkeypatch):
     write_api = MagicMock()
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
-    # Label preserved (was already correct).
+    # Tier label preserved across the gap.
     assert inputs.price_tier_name == "scarcity"
-    # Setpoint contribution preserved (the fix): scarcity tier has
-    # cool_setpoint_override_f=85 in PRICE_TIERS.
-    assert inputs.price_override_f == 85
-    # Offset is 0 for scarcity (since it uses override, not offset).
-    assert inputs.price_offset_f == 0
 
 
-def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
-    """Symmetric for the elevated tier (offset=+3, override=None)."""
+def test_price_tier_elevated_label_preserved_across_feed_gap(monkeypatch):
+    """Symmetric for the elevated tier."""
     from .price_overlay import PriceOverlayState
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     now_local = datetime(2026, 7, 15, 14, 30,
                           tzinfo=ZoneInfo("America/Chicago"))
     now_utc = now_local.astimezone(timezone.utc)
@@ -421,16 +412,14 @@ def test_price_tier_elevated_offset_preserved_across_feed_gap(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "elevated"
-    assert inputs.price_offset_f == 3   # locked elevated offset
-    assert inputs.price_override_f is None
 
 
 def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
-    """Normal tier produces zero contribution regardless of feed
-    availability -- the fix should not introduce a phantom offset
-    when there was no active tier to begin with."""
+    """Normal tier stays normal regardless of feed availability -- the
+    carry-forward must not introduce a phantom active tier when there was
+    no active tier to begin with."""
     _stub_layer_eval_io(monkeypatch, price_cents=None)
-    cfg = _make_schedule_check_cfg()
+    cfg = _make_cfg_with_controller_config()
     firing = FiringState()   # default state: tier=normal
     write_api = MagicMock()
     now_local = datetime(2026, 7, 15, 14, 30,
@@ -438,8 +427,6 @@ def test_normal_tier_unaffected_by_feed_gap(monkeypatch):
 
     inputs = _evaluate_layer_inputs(MagicMock(), write_api, cfg, firing, now_local)
     assert inputs.price_tier_name == "normal"
-    assert inputs.price_offset_f == 0
-    assert inputs.price_override_f is None
 
 
 # ---- P2.3 (reviewer-flagged 2026-05-11): health marker gating -------------
@@ -1127,6 +1114,7 @@ def test_19_18z_downgrade_refused_on_stale_bucket(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app._trace", _capture_trace)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(
             current_tier="elevated",
@@ -1262,6 +1250,7 @@ def test_last_fresh_bucket_source_ts_updates_on_fresh_read(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(current_tier="normal"),
     )
@@ -1294,6 +1283,7 @@ def test_last_fresh_bucket_source_ts_NOT_updated_on_warn_read(monkeypatch):
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     seeded = now - timedelta(hours=1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(current_tier="normal"),
@@ -1415,6 +1405,7 @@ def _run_evaluate_with(monkeypatch: Any, sample: Any, *, current_tier: Any, trig
     monkeypatch.setattr("hvac_scheduler.app.write_input_feed_health", lambda *a, **k: None)
 
     cfg = MagicMock(influx_bucket="energy", tz_name="America/Chicago")
+    cfg.controller_config = _make_controller_config_stub()  # config-driven overlay (B1)
     firing = FiringState(
         price_overlay_state=PriceOverlayState(
             current_tier=current_tier,
@@ -2009,16 +2000,34 @@ _A2_PROGRAM_F = [
 ]
 
 
-def _make_controller_config_stub(heat_floor: float = 65.0) -> MagicMock:
-    """Minimal ControllerConfig stub for A2/A4 tests (config-present path).
+def _make_controller_config_stub(heat_floor: float = 65.0) -> Any:
+    """Real ControllerConfig for A2/A4/B1 tests (config-present path).
 
-    ``heat_floor`` defaults to 65.0 (F-scale baseline); pass 18.5 for the
-    Celsius-config case.
+    F-scale, on-grid values. ``heat_floor`` defaults to 65.0 (F baseline);
+    pass 18.5 for the Celsius-heat-floor case. The price tiers / flexibility
+    / ceiling / hold are real so the config-driven overlay (Slice B1) can
+    read them: warm_band=2, spike_extra=2, comfort_max=85 (above the 78
+    midday baseline so an extreme spike rides to the ceiling), and
+    hold_ttl_minutes=30 to preserve the gate tests' 30-min hold semantics.
     """
-    cc = MagicMock()
-    cc.comfort_program = _A2_PROGRAM_F
-    cc.heat_floor = heat_floor
-    return cc
+    from .controller_config import (
+        Ceiling, ControllerConfig, Flexibility, HumidityGuard, Modes,
+        PriceTiersCents, Stage1Ramp,
+    )
+    return ControllerConfig(
+        temp_scale="F",
+        comfort_program=tuple(_A2_PROGRAM_F),
+        heat_floor=heat_floor,
+        flexibility=Flexibility(warm_band=2.0, spike_extra=2.0),
+        price_tiers_cents=PriceTiersCents(
+            elevated_at=10.0, scarcity_at=20.0, extreme_at=50.0,
+            hysteresis_cents=2.0,
+        ),
+        humidity_guard=HumidityGuard(rh_max_pct=65, rh_clear_pct=62),
+        ceiling=Ceiling(comfort_max=85.0),
+        hold_ttl_minutes=30,
+        modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+    )
 
 
 def _make_cfg_with_controller_config(
