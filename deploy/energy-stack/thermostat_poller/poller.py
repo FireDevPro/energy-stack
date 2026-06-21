@@ -1,4 +1,8 @@
-"""CTK04 Thermostat → InfluxDB poller via Control4 EA-5.
+"""CTK04 Thermostat → InfluxDB poller via a ThermostatClient device seam.
+
+The concrete device client (Control4 -> TCC swap) is deferred:
+``StubThermostatClient`` raises ``NotImplementedError`` for every method
+until the TCC (aiosomecomfort) read implementation is wired at go-active.
 
 Reads thermostat state every THERMOSTAT_POLL_INTERVAL seconds (default 600 s =
 10 min, the TCC rate-limit floor) and writes:
@@ -28,10 +32,9 @@ the thermostat time to acknowledge the scheduler's push), an override
 event is logged. No dedup in v1 — each poll cycle while overridden writes
 a new row, which is fine at 10-min cadence.
 
-Independent of hvac-scheduler: this poller does its own Control4 auth
-with its own persisted token at /data/director_token.json. Two services
-sharing the same Control4 account is fine — the bearer token is per-token,
-not per-process.
+Independent of hvac-scheduler: this poller owns its own device client
+and its own persisted token at /data/director_token.json (the concrete
+auth/token lifecycle lands with the deferred TCC implementation).
 
 Environment variables:
     CONTROL4_EMAIL              Control4 cloud login email
@@ -57,13 +60,10 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Protocol
 
 from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined]  # stubs lack __all__
 from influxdb_client.client.write_api import SYNCHRONOUS
-from pyControl4.account import C4Account
-from pyControl4.director import C4Director
-from pyControl4.climate import C4Climate
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
 
@@ -111,92 +111,68 @@ class Config:
         )
 
 
-class C4Client:
-    """Same pattern as hvac-scheduler's C4Client — token-cached director access
-    with reauth-on-401. Lifted in spirit, kept independent (own token file)."""
+# ---- Thermostat device seam -----------------------------------------------
+#
+# The concrete device I/O (the prior Control4 Director client) is
+# demolished. ``ThermostatClient`` is the thin read-only interface the
+# poller talks to; ``StubThermostatClient`` is the not-yet-wired
+# implementation that raises ``NotImplementedError`` for every method.
+# The Control4 -> TCC swap fills this seam with an aiosomecomfort-backed
+# client at rebuild / go-active. ``read_snapshot`` is typed to the
+# interface and its body is unchanged.
+
+
+class ClimateDevice(Protocol):
+    """The per-thermostat read surface the poller invokes via
+    ``ThermostatClient.call_with_reauth``. Exactly the methods
+    ``read_snapshot`` calls — nothing more. All methods are async."""
+
+    async def get_current_temperature_f(self) -> float: ...
+    async def get_current_temperature_c(self) -> float: ...
+    async def get_cool_setpoint_f(self) -> float: ...
+    async def get_heat_setpoint_f(self) -> float: ...
+    async def get_hvac_mode(self) -> str: ...
+    async def get_hvac_state(self) -> str: ...
+    async def get_fan_mode(self) -> str: ...
+    async def get_hold_mode(self) -> str: ...
+    async def get_humidity(self) -> float: ...
+
+
+class ThermostatClient(Protocol):
+    """The device-client seam the poller talks to. Concrete impls
+    (Control4 -> TCC swap) own auth/token lifecycle; the poller only
+    needs to fetch the climate device and run a read with reauth-on-401."""
+
+    async def get_climate(self) -> ClimateDevice: ...
+
+    async def call_with_reauth(
+        self, coro_fn: Callable[[], Awaitable[Any]]
+    ) -> Any: ...
+
+
+_SWAP_PENDING = "Control4->TCC swap pending: no device client wired"
+
+
+class StubThermostatClient:
+    """Not-yet-wired ``ThermostatClient``. Every method raises
+    ``NotImplementedError`` — this is the seam the aiosomecomfort/TCC read
+    client fills at rebuild / go-active. The poll loop still constructs
+    and threads this client; the per-cycle try/except in ``main_async``
+    logs ``poll_failed`` and survives until the real client is wired."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self._account: C4Account | None = None
-        self._director: C4Director | None = None
-        self._climate: C4Climate | None = None
-        self._token: str | None = None
-        self._common_name: str | None = None
 
-    def _load_token(self) -> dict[str, Any] | None:
-        if not self.cfg.token_file.exists():
-            return None
-        try:
-            return cast(dict[str, Any], json.loads(self.cfg.token_file.read_text()))
-        except Exception as exc:
-            log("warn", "token_load_failed", error=str(exc))
-            return None
+    async def get_climate(self) -> ClimateDevice:
+        raise NotImplementedError(_SWAP_PENDING)
 
-    def _save_token(self, token: str, common_name: str) -> None:
-        self.cfg.token_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cfg.token_file.write_text(json.dumps({
-            "token": token,
-            "common_name": common_name,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-        }))
-        try:
-            os.chmod(self.cfg.token_file, 0o600)
-        except Exception:
-            pass
-
-    async def _cloud_auth(self) -> None:
-        log("info", "cloud_auth_starting", email=self.cfg.email)
-        account = C4Account(self.cfg.email, self.cfg.password)
-        await account.get_account_bearer_token()
-        controllers = await account.get_account_controllers()
-        common_name = controllers["controllerCommonName"]
-        token_data = await account.get_director_bearer_token(common_name)
-        token = token_data["token"]
-        self._account = account
-        self._token = token
-        self._common_name = common_name
-        self._save_token(token, common_name)
-        log("info", "cloud_auth_ok", common_name=common_name)
-
-    async def ensure_director(self) -> C4Director:
-        if self._director and self._token:
-            return self._director
-        cached = self._load_token()
-        if cached:
-            self._token = cached["token"]
-            self._common_name = cached.get("common_name")
-            log("info", "token_loaded_from_disk")
-        else:
-            await self._cloud_auth()
-        # Invariant: either _load_token() returned a truthy dict and we
-        # assigned cached["token"] above, or _cloud_auth() set self._token.
-        assert self._token is not None
-        self._director = C4Director(self.cfg.controller_ip, self._token)
-        self._climate = C4Climate(self._director, self.cfg.thermostat_id)
-        return self._director
-
-    async def get_climate(self) -> C4Climate:
-        await self.ensure_director()
-        assert self._climate is not None
-        return self._climate
-
-    async def call_with_reauth(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
-        try:
-            return await coro_fn()
-        except Exception as exc:
-            txt = str(exc).lower()
-            if "401" in txt or "unauthorized" in txt or "forbidden" in txt:
-                log("warn", "director_token_invalid_reauth", error=str(exc))
-                await self._cloud_auth()
-                # Invariant: _cloud_auth() set self._token (or raised).
-                assert self._token is not None
-                self._director = C4Director(self.cfg.controller_ip, self._token)
-                self._climate = C4Climate(self._director, self.cfg.thermostat_id)
-                return await coro_fn()
-            raise
+    async def call_with_reauth(
+        self, coro_fn: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        raise NotImplementedError(_SWAP_PENDING)
 
 
-async def read_snapshot(c4: C4Client) -> dict[str, Any]:
+async def read_snapshot(c4: ThermostatClient) -> dict[str, Any]:
     climate = await c4.get_climate()
     snap: dict[str, Any] = {}
     snap["indoor_temp_f"] = await c4.call_with_reauth(climate.get_current_temperature_f)
@@ -352,7 +328,7 @@ async def main_async(cfg: Config) -> int:
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
     query_api = influx.query_api()
     write_api = influx.write_api(write_options=SYNCHRONOUS)
-    c4 = C4Client(cfg)
+    c4 = StubThermostatClient(cfg)
 
     stop = asyncio.Event()
 
