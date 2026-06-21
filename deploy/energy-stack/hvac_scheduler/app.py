@@ -94,6 +94,7 @@ from pyControl4.climate import C4Climate
 
 from .arm_calendar import ARM_CALENDAR, current_arm_at  # local copy, hash-sync-checked in CI
 from .controller_config import ControllerConfig, load_controller_config
+from .controller_core import comfort_baseline_cool
 from .pjm_5cp import (
     COMED_SCOPE,
     RTO_SCOPE,
@@ -3173,18 +3174,32 @@ async def run_schedule_check(cfg: Config, c4: C4Client, query_api: Any, write_ap
                 schedule + [precool_window_action(precool_window)]
             )
 
-    # ---- Startup baseline reconstruction (one-shot) ----
-    # A restart between schedule boundaries leaves last_schedule_cool None,
-    # which makes _push_layer_change_mid_period short-circuit (silencing the
-    # §2 re-push and the P1.2 supervisor) until the next action fires. Repair
-    # it once, before the layer eval below, so the first post-restart audit row
-    # carries the real baseline and the supervisor arms this tick.
-    if not firing.baseline_initialized and firing.last_schedule_cool is None:
-        reconstruct_startup_baseline(
-            firing, schedule, now_local, today_dewpoint_f,
-            query_api, cfg.influx_bucket, overrides,
+    # ---- Per-tick comfort baseline (config-gated) ----
+    # When controller_config is present, recompute last_schedule_cool every
+    # tick from the comfort_program.  This survives a mid-block restart without
+    # any startup reconstruction (the value is derived from the clock, not from
+    # stored day-type state).  The action-fire path and _push_layer_change_mid_period
+    # both read firing.last_schedule_cool, so both pick up this value.
+    # When controller_config is absent, fall through to the existing one-shot
+    # startup reconstruction path below (unchanged).
+    if cfg.controller_config is not None:
+        firing.last_schedule_cool = comfort_baseline_cool(
+            cfg.controller_config.comfort_program, now_local,
         )
-    firing.baseline_initialized = True
+        firing.baseline_initialized = True
+    else:
+        # ---- Startup baseline reconstruction (one-shot) ----
+        # A restart between schedule boundaries leaves last_schedule_cool None,
+        # which makes _push_layer_change_mid_period short-circuit (silencing the
+        # §2 re-push and the P1.2 supervisor) until the next action fires. Repair
+        # it once, before the layer eval below, so the first post-restart audit row
+        # carries the real baseline and the supervisor arms this tick.
+        if not firing.baseline_initialized and firing.last_schedule_cool is None:
+            reconstruct_startup_baseline(
+                firing, schedule, now_local, today_dewpoint_f,
+                query_api, cfg.influx_bucket, overrides,
+            )
+        firing.baseline_initialized = True
 
     # ---- Per-tick layer evaluation (Critical #2 fix) ----
     # Always evaluate price overlay + 5CP, write audit rows, regardless of

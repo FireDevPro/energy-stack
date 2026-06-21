@@ -1326,6 +1326,10 @@ def _make_schedule_check_cfg(bucket: str = "energy",
     cfg.influx_bucket = bucket
     cfg.tz_name = tz_name
     cfg.dry_run = dry_run
+    # Explicitly None so the existing day-type reconstruction path runs
+    # (controller_config=None is the pre-A2 default).  A2 tests that need the
+    # config-gated path use _make_cfg_with_controller_config() instead.
+    cfg.controller_config = None
     return cfg
 
 
@@ -4188,3 +4192,244 @@ def test_run_schedule_check_one_shot_guard_skips_reconstruction_after_first_tick
         monkeypatch, now_local=now_local, firing=firing, day_type="NORMAL",
     )
     assert not reconstruct_called, "reconstruct must not run after baseline_initialized=True"
+
+
+# ---- A2: per-tick comfort baseline sourced from controller_config ----------
+#
+# These tests cover the config-gated per-tick baseline path added in A2.
+# When cfg.controller_config is present, last_schedule_cool is computed every
+# tick via comfort_baseline_cool(config.comfort_program, now_local), replacing
+# the startup-reconstruction dependency for that path.  When controller_config
+# is None the existing day-type reconstruction path is unchanged.
+
+_A2_PROGRAM_F = [
+    {"from": "22:00", "to": "06:00", "cool": 73.0},
+    {"from": "06:00", "to": "13:00", "cool": 75.0},
+    {"from": "13:00", "to": "19:00", "cool": 78.0},
+    {"from": "19:00", "to": "22:00", "cool": 75.0},
+]
+
+
+def _make_controller_config_stub() -> MagicMock:
+    """Minimal ControllerConfig stub for A2 tests (config-present path)."""
+    cc = MagicMock()
+    cc.comfort_program = _A2_PROGRAM_F
+    return cc
+
+
+def _make_cfg_with_controller_config(
+    bucket: str = "energy",
+    tz_name: str = "America/Chicago",
+    dry_run: bool = True,
+) -> MagicMock:
+    cfg = _make_schedule_check_cfg(bucket=bucket, tz_name=tz_name, dry_run=dry_run)
+    cfg.controller_config = _make_controller_config_stub()
+    return cfg
+
+
+def test_a2_block_boundary_baseline_matches_new_block(monkeypatch):
+    """A2: just inside a new comfort block (13:30), with the 13:00 action
+    already marked as fired so it won't re-fire, the per-tick baseline sourced
+    from controller_config equals the new block's value (78) since no action
+    overwrites it this tick."""
+    import asyncio
+
+    _stub_layer_eval_io(monkeypatch)
+    monkeypatch.setattr(app, "fetch_today_decision",
+                        lambda q, w, b, t: "NORMAL")
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: None)
+    monkeypatch.setattr(app, "read_precool_window_for_date",
+                        lambda q, b, d: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 75,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    # Pre-seed fired_actions so the 13:00 COAST action does not fire this tick.
+    # We're at 13:30 -- well past the 5-min makeup window -- so the action
+    # won't re-fire regardless, but pre-seeding is explicit about intent.
+    firing = FiringState()
+    firing.fired_actions.add(("2026-07-15", 13, 0))
+    # 13:30 is inside the 13:00-19:00 block (cool=78 in _A2_PROGRAM_F).
+    # No NORMAL schedule action fires at 13:30 (next boundary is 19:00).
+    now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+
+    cfg = _make_cfg_with_controller_config()
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+    # The config-gated per-tick path must have set the baseline to 78
+    # (the 13:00-19:00 block value in _A2_PROGRAM_F).
+    assert firing.last_schedule_cool == 78.0, (
+        f"expected 78.0 from config comfort_program, got {firing.last_schedule_cool}"
+    )
+
+
+def test_a2_mid_block_restart_recomputes_baseline_without_reconstruction(monkeypatch):
+    """A2 KEY ASSERTION: restart mid-block with config present and no prior
+    state (last_schedule_cool=None, baseline_initialized=False). The baseline
+    must be recomputed from the comfort_program -- not from startup
+    reconstruction -- so last_schedule_cool is not None on the first tick."""
+    import asyncio
+
+    reconstruct_called = []
+
+    def _fake_reconstruct(*args, **kwargs):
+        reconstruct_called.append(True)
+
+    monkeypatch.setattr(app, "reconstruct_startup_baseline", _fake_reconstruct)
+    _stub_layer_eval_io(monkeypatch)
+    monkeypatch.setattr(app, "fetch_today_decision",
+                        lambda q, w, b, t: "NORMAL")
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: None)
+    monkeypatch.setattr(app, "read_precool_window_for_date",
+                        lambda q, b, d: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 75,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    # Cold start: no prior state
+    firing = FiringState()
+    assert firing.last_schedule_cool is None
+    assert firing.baseline_initialized is False
+
+    # Mid-block: 15:30, inside the 13:00-19:00 block (cool=78)
+    now_local = datetime(2026, 7, 15, 15, 30, tzinfo=ZoneInfo("America/Chicago"))
+
+    cfg = _make_cfg_with_controller_config()
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+
+    # Key assertion: baseline recomputed from config, not startup reconstruction
+    assert firing.last_schedule_cool == 78.0, (
+        f"mid-block restart should recompute 78.0 from config, got {firing.last_schedule_cool}"
+    )
+    # startup reconstruction must NOT have been called (config path bypasses it)
+    assert not reconstruct_called, (  # type: ignore[unreachable]
+        "reconstruct_startup_baseline must not run when controller_config is present"
+    )
+
+
+def test_a2_no_scheduled_actions_mid_period_still_gets_baseline(monkeypatch):
+    """A2: mid-period path with config present and no day-type schedule actions
+    for this minute still gets a valid baseline from the comfort_program.
+    Uses a time with no matching schedule action (14:00 on MILD has no action
+    in the existing day-type schedule, but the config provides the baseline)."""
+    import asyncio
+
+    _stub_layer_eval_io(monkeypatch)
+    monkeypatch.setattr(app, "fetch_today_decision",
+                        lambda q, w, b, t: "MILD")
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: None)
+    monkeypatch.setattr(app, "read_precool_window_for_date",
+                        lambda q, b, d: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+
+    firing = FiringState()
+    # 14:00 on MILD: non-action minute (past the 13:00 MILD_DAY action).
+    # With config present, the baseline comes from the 13:00-19:00 block (78).
+    now_local = datetime(2026, 7, 15, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    cfg = _make_cfg_with_controller_config()
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+    # Config-gated path must have populated the baseline (not None)
+    assert firing.last_schedule_cool is not None, (
+        "baseline must be set from config when no day-type action fires"
+    )
+    assert firing.last_schedule_cool == 78.0
+
+
+def test_a2_config_none_preserves_existing_reconstruction_path(monkeypatch):
+    """A2: when controller_config is None, the existing startup reconstruction
+    path runs unchanged. Behavior must match the pre-A2 baseline exactly."""
+    import asyncio
+
+    reconstruct_called = []
+
+    original_reconstruct = app.reconstruct_startup_baseline
+
+    def _spy_reconstruct(*args, **kwargs):
+        reconstruct_called.append(True)
+        original_reconstruct(*args, **kwargs)
+
+    monkeypatch.setattr(app, "reconstruct_startup_baseline", _spy_reconstruct)
+    _stub_layer_eval_io(monkeypatch)
+    monkeypatch.setattr(app, "fetch_today_decision",
+                        lambda q, w, b, t: "NORMAL")
+    monkeypatch.setattr(app, "fetch_latest_forecast",
+                        lambda q, b, p: None)
+    monkeypatch.setattr(app, "read_precool_window_for_date",
+                        lambda q, b, d: None)
+    monkeypatch.setattr(app, "load_overrides", lambda path: [])
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78,
+                            "heat_setpoint_f": 65,
+                        }))
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+    monkeypatch.setattr(app, "_read_stored_decision",
+                        lambda q, b, d: "NORMAL")
+
+    firing = FiringState()  # fresh: baseline_initialized=False
+    now_local = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    # Explicitly set controller_config=None so the reconstruction path runs
+    cfg = _make_schedule_check_cfg()
+    cfg.controller_config = None
+    cfg.overrides_file = "/nonexistent"
+    c4, _climate = _mock_c4_client()
+
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+    # The day-type reconstruction must still run (config=None path unchanged)
+    assert reconstruct_called, "reconstruct must run when controller_config is None"
+    assert firing.baseline_initialized is True
