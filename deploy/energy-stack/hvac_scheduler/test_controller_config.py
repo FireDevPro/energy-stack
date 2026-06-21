@@ -68,6 +68,12 @@ def test_parse_well_formed(tmp_path: Path) -> None:
     assert cfg.ceiling.comfort_max == 29.0
     assert cfg.hold_ttl_minutes == 60
     assert cfg.modes.stage1_ramp.enabled is False
+    # B3: config_id is the file's SHA256 hex digest (config provenance for
+    # the hvac.actions/hvac.price_overlay telemetry rows).
+    import hashlib
+    expected_sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    assert cfg.config_id == expected_sha
+    assert len(cfg.config_id) == 64  # full hex SHA-256
 
 
 # ---------------------------------------------------------------------------

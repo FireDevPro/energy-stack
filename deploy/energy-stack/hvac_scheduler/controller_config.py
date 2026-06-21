@@ -83,6 +83,7 @@ class ControllerConfig:
     ceiling: Ceiling
     hold_ttl_minutes: int
     modes: Modes
+    config_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -249,4 +250,5 @@ def load_controller_config(path: str) -> ControllerConfig:
         ceiling=ceiling,
         hold_ttl_minutes=int(raw["hold_ttl_minutes"]),
         modes=modes,
+        config_id=sha256,
     )

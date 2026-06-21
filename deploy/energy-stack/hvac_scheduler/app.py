@@ -610,54 +610,73 @@ class FiringState:
 
 def write_price_overlay_transition(
     write_api: Any, bucket: str,
-    *, prev_tier: str, new_tier: str,
+    *, prev_tier: str, new_tier: str, unit: str,
     current_price_cents: float,
-    schedule_cool_f: float, effective_cool_f: float,
+    baseline_cool: float, commanded_cool: float,
     triggered_at_utc: datetime | None,
 ) -> None:
     """Write one ``hvac.price_overlay`` row when the price-overlay tier
     changes between scheduler ticks. Skipped when the tier is unchanged
-    so dashboards aren't drowned in no-op rows."""
+    so dashboards aren't drowned in no-op rows.
+
+    Scale-neutral: ``baseline_cool``/``commanded_cool`` carry native
+    ``temp_scale`` values; the ``unit`` tag records which scale ("F"/"C").
+    """
     write_point(
         write_api, bucket, "hvac.price_overlay",
         tags={
             "prev_tier": prev_tier,
             "new_tier": new_tier,
+            "unit": unit,
         },
         fields={
             "current_price_cents": float(current_price_cents),
-            "schedule_cool_f": float(schedule_cool_f),
-            "effective_cool_f": float(effective_cool_f),
+            "baseline_cool": float(baseline_cool),
+            "commanded_cool": float(commanded_cool),
             "triggered_at_utc":
                 triggered_at_utc.isoformat() if triggered_at_utc else "",
         },
     )
 
 
-def write_action(write_api: Any, bucket: str, day_type: str, action: ScheduleAction,
-                 cool_applied_f: float, heat_applied_f: float,
+def write_action(write_api: Any, bucket: str, action: ScheduleAction,
+                 cool_applied: float, heat_applied: float,
                  fan_mode_applied: str | None,
                  setpoint_reason: str, dry_run: bool, applied: bool,
-                 thermostat_state_before: dict[str, Any], error: str | None = None) -> None:
+                 thermostat_state_before: dict[str, Any],
+                 *, unit: str, tier: str, baseline_cool: float, config_id: str,
+                 error: str | None = None) -> None:
+    """Write one ``hvac.actions`` row.
+
+    Scale-neutral: ``commanded_*``/``baseline_cool``/``drift``/``actual_*``
+    carry native ``temp_scale`` values; the ``unit`` tag records the scale
+    ("F"/"C"). NO conversion — values stay in whatever scale the controller
+    runs in. ``drift = commanded_cool - baseline_cool`` (native-scale warm
+    drift magnitude). ``config_id`` is the loaded config's SHA256.
+    """
+    commanded_cool = float(cool_applied)
+    baseline = float(baseline_cool)
     tags: dict[str, str] = {
-        "day_type": day_type,
+        "unit": unit,
+        "tier": tier,
         "action_label": action.label,
         "dry_run": "true" if dry_run else "false",
     }
     fields: dict[str, float | int | bool | str] = {
-        "cool_setpoint_f": float(cool_applied_f),
-        "heat_setpoint_f": float(heat_applied_f),
+        "commanded_cool": commanded_cool,
+        "commanded_heat": float(heat_applied),
+        "baseline_cool": baseline,
+        "drift": commanded_cool - baseline,
         "fan_mode": fan_mode_applied or "",
         "setpoint_reason": setpoint_reason,
-        "cool_setpoint_proposed_f": float(action.cool_setpoint or 0),
-        "heat_setpoint_proposed_f": float(action.heat_setpoint),
         "applied": int(applied),
         "error": error or "",
+        "config_id": config_id,
         "hvac_mode_before": str(thermostat_state_before.get("hvac_mode") or ""),
-        "indoor_temp_before_f": float(thermostat_state_before.get("indoor_temp_f") or 0),
-        "cool_setpoint_before_f": float(thermostat_state_before.get("cool_setpoint_f") or 0),
-        "heat_setpoint_before_f": float(thermostat_state_before.get("heat_setpoint_f") or 0),
-        "indoor_humidity_before_pct": float(thermostat_state_before.get("humidity") or 0),
+        "actual_indoor_temp": float(thermostat_state_before.get("indoor_temp_f") or 0),
+        "actual_cool_before": float(thermostat_state_before.get("cool_setpoint_f") or 0),
+        "actual_heat_before": float(thermostat_state_before.get("heat_setpoint_f") or 0),
+        "actual_humidity": float(thermostat_state_before.get("humidity") or 0),
     }
     write_point(write_api, bucket, "hvac.actions", tags=tags, fields=fields)
 
@@ -1220,9 +1239,10 @@ def _evaluate_layer_inputs(query_api: Any, write_api: Any, cfg: Config,
         write_price_overlay_transition(
             write_api, cfg.influx_bucket,
             prev_tier=prev_tier, new_tier=new_tier,
+            unit=cfg.controller_config.temp_scale,
             current_price_cents=current_price_cents,
-            schedule_cool_f=firing.last_schedule_cool or 0,
-            effective_cool_f=0,  # filled in by mid-period push if it runs
+            baseline_cool=firing.last_schedule_cool or 0,
+            commanded_cool=0,  # filled in by mid-period push if it runs
             triggered_at_utc=firing.price_overlay_state.triggered_at_utc,
         )
 
@@ -1294,9 +1314,14 @@ async def _push_baseline_if_changed(
         when_ct=now_local,
     )
     write_action(
-        write_api, cfg.influx_bucket, "B", action,
+        write_api, cfg.influx_bucket, action,
         effective_cool, heat_floor, None, "comfort_baseline",
-        cfg.dry_run, applied, snapshot, error,
+        cfg.dry_run, applied, snapshot,
+        unit=cfg.controller_config.temp_scale,
+        tier=active_tier_name,
+        baseline_cool=baseline,
+        config_id=cfg.controller_config.config_id,
+        error=error,
     )
     log("info", "baseline_push",
         label=action.label,

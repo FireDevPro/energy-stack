@@ -65,6 +65,7 @@ _REPLAY_CFG = ControllerConfig(
     ceiling=Ceiling(comfort_max=29.0),
     hold_ttl_minutes=30,
     modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+    config_id="test-replay-config-id",
 )
 _REPLAY_TIERS = build_price_tiers(_REPLAY_CFG)
 _REPLAY_HOLD = _REPLAY_CFG.hold_ttl_minutes

@@ -61,6 +61,7 @@ def _cfg(
         ceiling=Ceiling(comfort_max=comfort_max),
         hold_ttl_minutes=hold_ttl_minutes,
         modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+        config_id="test-config-id",
     )
 
 

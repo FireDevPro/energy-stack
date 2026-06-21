@@ -2170,6 +2170,187 @@ def test_b2_sustained_staleness_releases_after_min_hold_plus_threshold(monkeypat
     assert firing.nonfresh_after_hold_started_at_utc is None  # cleared on release
 
 
+# ---- B3: scale-neutral telemetry schema (hvac.actions / hvac.price_overlay) --
+#
+# Spec §"Telemetry" + §"Units": scale-neutral field names + a `unit` tag.
+# hvac.actions: drop day_type; tags = unit/tier/action_label/dry_run; fields
+# carry commanded_cool/commanded_heat/baseline_cool/drift/actual_indoor_temp/
+# actual_humidity/actual_cool_before/actual_heat_before/config_id. Values are
+# in native temp_scale (NO conversion); the `unit` tag records the scale.
+# drift == commanded_cool - baseline_cool.
+
+
+def _capture_write_point(monkeypatch: Any) -> list[dict[str, Any]]:
+    """Patch app.write_point and return the list of captured calls as dicts
+    {measurement, tags, fields} so a test can assert the schema directly."""
+    captured: list[dict[str, Any]] = []
+
+    def _wp(write_api: Any, bucket: str, measurement: str, *,
+            tags: Any, fields: Any, **kwargs: Any) -> None:
+        captured.append({"measurement": measurement,
+                         "tags": dict(tags), "fields": dict(fields)})
+    monkeypatch.setattr(app, "write_point", _wp)
+    return captured
+
+
+def test_b3_write_action_schema_normal_tick(monkeypatch):
+    """hvac.actions carries the scale-neutral schema on a normal tick: a `unit`
+    tag (no `day_type`), a `tier` tag, and commanded/baseline/drift/actual/
+    config_id fields. drift == commanded - baseline (0 at normal tier)."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=78.0,
+                            heat_setpoint=65.0)
+    snapshot = {
+        "indoor_temp_f": 74.0, "hvac_mode": "Cool",
+        "cool_setpoint_f": 75.0, "heat_setpoint_f": 65.0, "humidity": 51.0,
+    }
+    app.write_action(
+        MagicMock(), "energy", action,
+        78.0, 65.0, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="F", tier="normal", baseline_cool=78.0, config_id="abc123",
+    )
+
+    row = captured[-1]
+    assert row["measurement"] == "hvac.actions"
+    # Tags: unit + tier present; day_type GONE.
+    assert row["tags"]["unit"] == "F"
+    assert row["tags"]["tier"] == "normal"
+    assert row["tags"]["action_label"] == "BASELINE"
+    assert row["tags"]["dry_run"] == "true"
+    assert "day_type" not in row["tags"]
+    # Fields: scale-neutral names; old *_f names GONE.
+    f = row["fields"]
+    assert f["commanded_cool"] == 78.0
+    assert f["commanded_heat"] == 65.0
+    assert f["baseline_cool"] == 78.0
+    assert f["drift"] == 0.0  # normal tier: commanded == baseline
+    assert f["actual_indoor_temp"] == 74.0
+    assert f["actual_humidity"] == 51.0
+    assert f["actual_cool_before"] == 75.0
+    assert f["actual_heat_before"] == 65.0
+    assert f["config_id"] == "abc123"
+    for gone in ("cool_setpoint_f", "heat_setpoint_f", "indoor_temp_before_f",
+                 "indoor_humidity_before_pct", "cool_setpoint_proposed_f",
+                 "heat_setpoint_proposed_f", "cool_setpoint_before_f",
+                 "heat_setpoint_before_f"):
+        assert gone not in f
+
+
+def test_b3_write_action_drift_on_spike_tick(monkeypatch):
+    """A spike (scarcity) tick: commanded_cool > baseline_cool and
+    drift == warm_band + spike_extra (the warm-drift magnitude). Native scale,
+    no conversion."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=78.0,
+                            heat_setpoint=65.0)
+    snapshot = {"indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                "humidity": 55.0}
+    # scarcity effective = baseline + warm_band(2) + spike_extra(2) = 82.
+    app.write_action(
+        MagicMock(), "energy", action,
+        82.0, 65.0, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="F", tier="scarcity", baseline_cool=78.0, config_id="abc123",
+    )
+
+    f = captured[-1]["fields"]
+    assert captured[-1]["tags"]["tier"] == "scarcity"
+    assert f["commanded_cool"] == 82.0
+    assert f["baseline_cool"] == 78.0
+    assert f["commanded_cool"] > f["baseline_cool"]
+    assert f["drift"] == 4.0  # warm_band + spike_extra
+
+
+def test_b3_write_action_celsius_unit_no_conversion(monkeypatch):
+    """Under a Celsius config the values are emitted native (no F conversion)
+    and the unit tag reads "C"."""
+    captured = _capture_write_point(monkeypatch)
+    action = ScheduleAction(13, 30, "BASELINE", cool_setpoint=25.5,
+                            heat_setpoint=18.5)
+    snapshot = {"indoor_temp_f": 24.0, "cool_setpoint_f": 25.5,
+                "heat_setpoint_f": 18.5, "humidity": 50.0, "hvac_mode": "Cool"}
+    app.write_action(
+        MagicMock(), "energy", action,
+        26.5, 18.5, None, "comfort_baseline",
+        True, False, snapshot,
+        unit="C", tier="elevated", baseline_cool=25.5, config_id="def456",
+    )
+    row = captured[-1]
+    assert row["tags"]["unit"] == "C"
+    assert row["fields"]["commanded_cool"] == 26.5  # native C, not converted
+    assert row["fields"]["baseline_cool"] == 25.5
+    assert row["fields"]["drift"] == 1.0  # warm_band in C
+
+
+def test_b3_price_overlay_transition_schema(monkeypatch):
+    """hvac.price_overlay is scale-neutral: a `unit` tag plus baseline_cool /
+    commanded_cool (renamed from schedule_cool_f / effective_cool_f). The
+    prev_tier/new_tier tags (carrying `extreme`) and current_price_cents /
+    triggered_at_utc are unchanged."""
+    captured = _capture_write_point(monkeypatch)
+    app.write_price_overlay_transition(
+        MagicMock(), "energy",
+        prev_tier="scarcity", new_tier="extreme", unit="F",
+        current_price_cents=55.0,
+        baseline_cool=78.0, commanded_cool=85.0,
+        triggered_at_utc=datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc),
+    )
+    row = captured[-1]
+    assert row["measurement"] == "hvac.price_overlay"
+    assert row["tags"]["unit"] == "F"
+    assert row["tags"]["prev_tier"] == "scarcity"
+    assert row["tags"]["new_tier"] == "extreme"
+    f = row["fields"]
+    assert f["baseline_cool"] == 78.0
+    assert f["commanded_cool"] == 85.0
+    assert f["current_price_cents"] == 55.0
+    assert f["triggered_at_utc"]  # non-empty iso string
+    assert "schedule_cool_f" not in f
+    assert "effective_cool_f" not in f
+
+
+def test_b3_run_schedule_check_writes_config_id_and_unit(monkeypatch):
+    """Integration: a spike tick driven through run_schedule_check emits an
+    hvac.actions row whose config_id equals the loaded config's id, whose unit
+    tag is the config temp_scale, and whose commanded_cool > baseline_cool with
+    tier == the spike tier."""
+    import asyncio
+
+    captured = _capture_write_point(monkeypatch)
+    _stub_layer_eval_io(monkeypatch, price_cents=25.0)  # scarcity (>= 20c)
+    monkeypatch.setattr(app, "execute_action",
+                        AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 79.0, "hvac_mode": "Cool",
+                            "cool_setpoint_f": 78.0, "heat_setpoint_f": 65.0,
+                            "humidity": 55.0,
+                        }))
+
+    cfg = _make_cfg_with_controller_config()
+    c4, _ = _mock_c4_client()
+    firing = FiringState()
+    now_local = datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/Chicago"))
+    asyncio.run(app.run_schedule_check(
+        cfg, c4, MagicMock(), MagicMock(),
+        ZoneInfo(cfg.tz_name), now_local, firing,
+    ))
+
+    action_rows = [r for r in captured if r["measurement"] == "hvac.actions"]
+    assert action_rows, "expected at least one hvac.actions row"
+    row = action_rows[-1]
+    assert row["tags"]["unit"] == cfg.controller_config.temp_scale
+    assert row["tags"]["tier"] == "scarcity"
+    assert row["fields"]["config_id"] == _STUB_CONFIG_ID
+    # Baseline 78 (midday block) + warm_band 2 + spike_extra 2 = 82 commanded.
+    assert row["fields"]["baseline_cool"] == 78.0
+    assert row["fields"]["commanded_cool"] == 82.0
+    assert row["fields"]["commanded_cool"] > row["fields"]["baseline_cool"]
+    assert row["fields"]["drift"] == 4.0
+
+
 # ---- action_in_effect_at (Task 2: restart baseline reconstruction) ----------
 
 # Synthetic schedule (the day-type schedules were removed): PRE_COOL 06:00,
@@ -2220,6 +2401,10 @@ _A2_PROGRAM_F = [
     {"from": "19:00", "to": "22:00", "cool": 75.0},
 ]
 
+# Sentinel config_id for the A2/A4/B1 config-present test stub. The B3
+# hvac.actions schema test asserts the written config_id equals this value.
+_STUB_CONFIG_ID = "stub-config-sha"
+
 
 def _make_controller_config_stub(heat_floor: float = 65.0) -> Any:
     """Real ControllerConfig for A2/A4/B1 tests (config-present path).
@@ -2248,6 +2433,7 @@ def _make_controller_config_stub(heat_floor: float = 65.0) -> Any:
         ceiling=Ceiling(comfort_max=85.0),
         hold_ttl_minutes=30,
         modes=Modes(stage1_ramp=Stage1Ramp(enabled=False)),
+        config_id=_STUB_CONFIG_ID,
     )
 
 
