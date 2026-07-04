@@ -143,11 +143,14 @@ def _validate(raw: dict[str, Any]) -> None:
             f"less than rh_max_pct ({rh_max})."
         )
 
-    # 5. hold_ttl_minutes positive
+    # 5. hold_ttl_minutes >= 15. The device-side timed-hold expiry floors to
+    # the CTK04's quarter-hour slot grid (controller_core.hold_expiry), so a
+    # TTL under 15 can floor to a slot at-or-before now — an already-lapsed
+    # hold.
     ttl = int(raw.get("hold_ttl_minutes", 0))
-    if ttl <= 0:
+    if ttl < 15:
         raise ValueError(
-            f"hold_ttl_minutes must be positive, got {ttl}."
+            f"hold_ttl_minutes must be >= 15 (quarter-hour device hold slots), got {ttl}."
         )
 
     # 6. price-tier hysteresis is a positive cent delta below the lowest

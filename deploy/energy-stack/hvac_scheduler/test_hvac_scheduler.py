@@ -7,7 +7,7 @@ Run from this directory:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -98,6 +98,7 @@ def _mock_c4_client() -> tuple[MagicMock, MagicMock]:
 
     climate = MagicMock()
     climate.set_hold_mode = AsyncMock()
+    climate.set_hold_until = AsyncMock()
     climate.set_cool_setpoint_f = AsyncMock()
     climate.set_heat_setpoint_f = AsyncMock()
     climate.set_fan_mode = AsyncMock()
@@ -155,21 +156,41 @@ async def test_execute_release_hold_dry_run_does_not_call_thermostat():
 # ---- execute_action: regression on existing setpoint path -----------------
 
 
-async def test_execute_setpoint_action_still_pins_permanent_hold():
-    """The original behavior — set setpoints + Permanent hold — must remain
-    intact for non-release actions."""
+async def test_execute_setpoint_action_sets_timed_hold_never_permanent():
+    """Spec Safety #2: holds are timed, never Permanent. A setpoint action
+    pins its override with set_hold_until(expiry) so a dead controller's
+    hold lapses on the device and the onboard schedule resumes."""
     c4, climate = _mock_c4_client()
     action = ScheduleAction(13, 0, "COAST", cool_setpoint=79,
                              fan_mode="Circulate")
 
     applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
-                                           state={"hvac_mode": "Cool"}, dry_run=False)
+                                           state={"hvac_mode": "Cool"}, dry_run=False,
+                                           hold_until=dtime(14, 0))
     assert applied is True
     assert error is None
     climate.set_cool_setpoint_f.assert_awaited_once_with(79)
     climate.set_heat_setpoint_f.assert_awaited_once()
     climate.set_fan_mode.assert_awaited_once_with("Circulate")
-    climate.set_hold_mode.assert_awaited_once_with("Permanent")
+    climate.set_hold_until.assert_awaited_once_with(dtime(14, 0))
+    climate.set_hold_mode.assert_not_awaited()
+
+
+async def test_execute_setpoint_action_without_hold_until_refuses_to_write():
+    """No silent Permanent fallback: a setpoint action with no hold_until
+    is refused before any device write (fail-loud; the only production
+    caller always supplies one)."""
+    c4, climate = _mock_c4_client()
+    action = ScheduleAction(13, 0, "COAST", cool_setpoint=79)
+
+    applied, error = await execute_action(c4, action, cool_setpoint_to_apply=79, heat_setpoint_to_apply=60,
+                                           state={"hvac_mode": "Cool"}, dry_run=False)
+    assert applied is False
+    assert error and "hold_until" in error
+    climate.set_cool_setpoint_f.assert_not_awaited()
+    climate.set_heat_setpoint_f.assert_not_awaited()
+    climate.set_hold_mode.assert_not_awaited()
+    climate.set_hold_until.assert_not_awaited()
 
 
 async def test_execute_setpoint_action_sets_heat_before_cool():
@@ -187,7 +208,7 @@ async def test_execute_setpoint_action_sets_heat_before_cool():
     parent.attach_mock(climate.set_heat_setpoint_f, "set_heat_setpoint_f")
     parent.attach_mock(climate.set_cool_setpoint_f, "set_cool_setpoint_f")
     parent.attach_mock(climate.set_fan_mode, "set_fan_mode")
-    parent.attach_mock(climate.set_hold_mode, "set_hold_mode")
+    parent.attach_mock(climate.set_hold_until, "set_hold_until")
 
     # HOT_PRE_COOL action: cool=68 from prior schedule state where heat
     # might have been higher than 65.
@@ -195,7 +216,7 @@ async def test_execute_setpoint_action_sets_heat_before_cool():
                              fan_mode="Auto")
     applied, error = await execute_action(
         c4, action, cool_setpoint_to_apply=68, heat_setpoint_to_apply=65,
-        state={"hvac_mode": "Cool"}, dry_run=False,
+        state={"hvac_mode": "Cool"}, dry_run=False, hold_until=dtime(5, 0),
     )
     assert applied is True
     assert error is None
@@ -205,7 +226,7 @@ async def test_execute_setpoint_action_sets_heat_before_cool():
         call.set_heat_setpoint_f(65),
         call.set_cool_setpoint_f(68),
         call.set_fan_mode("Auto"),
-        call.set_hold_mode("Permanent"),
+        call.set_hold_until(dtime(5, 0)),
     ]
     assert parent.mock_calls == expected, (
         f"Pre-P1.3 order was cool->heat. mock_calls: {parent.mock_calls}"
@@ -548,6 +569,7 @@ async def test_experiment_mode_arm_b_writes(monkeypatch):
     applied, error = await app.execute_action(
         c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
         state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+        hold_until=dtime(14, 0),
     )
     assert applied is True
     assert error is None
@@ -592,6 +614,7 @@ async def test_production_mode_writes_regardless_of_calendar(monkeypatch):
     applied, error = await app.execute_action(
         c4, action, cool_setpoint_to_apply=78, heat_setpoint_to_apply=65,
         state={"hvac_mode": "Cool"}, dry_run=False, when_ct=when_ct,
+        hold_until=dtime(14, 0),
     )
     assert applied is True
     assert error is None
@@ -2616,7 +2639,7 @@ def test_a4_effective_equals_baseline_floor_clamped_shadow(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None, hold_until=None):
         captured["cool"] = cool
         captured["label"] = action.label
         return (False, None)  # shadow: not applied, no error
@@ -2728,7 +2751,7 @@ def test_a4_heat_setpoint_comes_from_config_heat_floor(monkeypatch):
 
         captured: dict[str, Any] = {}
 
-        async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+        async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None, hold_until=None):
             captured["cool"] = cool
             captured["heat"] = heat
             return (False, None)
@@ -2844,7 +2867,7 @@ def _run_push_with_gate(
 
     captured: dict[str, Any] = {}
 
-    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None):
+    async def _exec(c4, action, cool, heat, snapshot, dry_run, *, when_ct=None, hold_until=None):
         captured["cool"] = cool
         return (False, None)  # shadow
     monkeypatch.setattr(app, "execute_action", AsyncMock(side_effect=_exec))
@@ -3017,3 +3040,116 @@ def test_c1_ungated_action_row_humidity_gated_zero(monkeypatch):
     assert rows, "expected an hvac.actions row"
     f = rows[-1]["fields"]
     assert f["humidity_gated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Timed-hold refresh — _push_baseline_if_changed (spec Safety #2)
+# ---------------------------------------------------------------------------
+# An applied production push records the device-side hold expiry; while the
+# effective is unchanged, the push re-fires only inside the refresh margin
+# so an alive controller keeps its hold and a dead one lapses to the onboard
+# schedule. Shadow never tracks expiry (behavior byte-identical to today).
+
+_TZ_CT = ZoneInfo("America/Chicago")
+_PUSH_MIDDAY = datetime(2026, 7, 15, 13, 30, tzinfo=_TZ_CT)  # midday block, baseline 78
+
+
+def _push_rig(monkeypatch: Any, *, dry_run: bool,
+              exec_result: tuple[bool, str | None] = (True, None)) -> tuple[Any, Any, FiringState, dict[str, Any]]:
+    """Rig for driving _push_baseline_if_changed directly: production or
+    shadow cfg, execute_action captured (never a real device), IO stubbed."""
+    captured: dict[str, Any] = {"calls": 0}
+
+    async def _exec(c4: Any, action: Any, cool: Any, heat: Any, snapshot: Any,
+                    dry_run_flag: Any, *, when_ct: Any = None,
+                    hold_until: Any = None) -> tuple[bool, str | None]:
+        captured["calls"] += 1
+        captured["cool"] = cool
+        captured["hold_until"] = hold_until
+        if dry_run_flag:
+            return (False, None)
+        return exec_result
+
+    monkeypatch.setattr(app, "execute_action", AsyncMock(side_effect=_exec))
+    monkeypatch.setattr(app, "write_action", MagicMock())
+    monkeypatch.setattr(app, "read_thermostat_snapshot",
+                        AsyncMock(return_value={
+                            "indoor_temp_f": 74.0, "humidity": 45.0,
+                            "hvac_mode": "Cool",
+                            "cool_setpoint_f": 75, "heat_setpoint_f": 65,
+                        }))
+
+    cfg = _make_cfg_with_controller_config(dry_run=dry_run)
+    c4, _climate = _mock_c4_client()
+    firing = FiringState()
+    firing.last_schedule_cool = 78.0
+    return cfg, c4, firing, captured
+
+
+async def test_push_production_passes_hold_until_and_records_expiry(monkeypatch):
+    """An applied production push sends a quarter-hour hold expiry to
+    execute_action (13:30 + ttl 30 -> 14:00) and records it on FiringState."""
+    cfg, c4, firing, cap = _push_rig(monkeypatch, dry_run=False)
+
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        _PUSH_MIDDAY, "extreme", tick_id="t1")
+
+    assert cap["calls"] == 1
+    assert cap["hold_until"] == dtime(14, 0)
+    assert firing.hold_expires_at == _PUSH_MIDDAY.replace(minute=0, hour=14)
+
+
+async def test_push_shadow_never_tracks_hold_expiry(monkeypatch):
+    """Shadow pushes stay exactly as today: audit row + log, no expiry state,
+    so the refresh rule can never fire in shadow."""
+    cfg, c4, firing, cap = _push_rig(monkeypatch, dry_run=True)
+
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        _PUSH_MIDDAY, "extreme", tick_id="t1")
+
+    assert cap["calls"] == 1  # the would-push is still audited
+    assert firing.hold_expires_at is None
+
+
+async def test_push_refreshes_near_expiry_without_effective_change(monkeypatch):
+    """Unchanged effective + hold inside the refresh margin -> re-push (the
+    alive-controller refresh that keeps the timed hold from lapsing)."""
+    cfg, c4, firing, cap = _push_rig(monkeypatch, dry_run=False)
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        _PUSH_MIDDAY, "extreme", tick_id="t1")
+    assert cap["calls"] == 1  # initial push at 13:30, expiry 14:00
+
+    near_expiry = _PUSH_MIDDAY.replace(minute=58)  # 13:58, 2 min out
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        near_expiry, "extreme", tick_id="t2")
+
+    assert cap["calls"] == 2
+    assert cap["hold_until"] == dtime(14, 15)  # 13:58 + 30 -> floor 14:15
+
+
+async def test_push_short_circuit_intact_far_from_expiry(monkeypatch):
+    """Unchanged effective + hold far from expiry -> no re-push (the ride-the-
+    ceiling short-circuit keeps its no-thrash behavior)."""
+    cfg, c4, firing, cap = _push_rig(monkeypatch, dry_run=False)
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        _PUSH_MIDDAY, "extreme", tick_id="t1")
+    assert cap["calls"] == 1
+
+    next_tick = _PUSH_MIDDAY.replace(minute=35)  # 13:35, expiry 14:00 is 25 min out
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        next_tick, "extreme", tick_id="t2")
+
+    assert cap["calls"] == 1  # short-circuited
+
+
+async def test_push_failed_write_does_not_record_expiry(monkeypatch):
+    """A failed live push must not record an expiry (mirrors the existing
+    guard rule: a failed push must not pretend the device took the value)."""
+    cfg, c4, firing, cap = _push_rig(monkeypatch, dry_run=False,
+                                     exec_result=(False, "TimeoutError: boom"))
+
+    await app._push_baseline_if_changed(cfg, c4, MagicMock(), firing,
+                                        _PUSH_MIDDAY, "extreme", tick_id="t1")
+
+    assert cap["calls"] == 1
+    assert firing.hold_expires_at is None

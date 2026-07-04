@@ -84,7 +84,7 @@ from .controller_config import (
     HumidityGuard,
     load_controller_config,
 )
-from .controller_core import comfort_baseline_cool
+from .controller_core import comfort_baseline_cool, hold_expiry, needs_hold_refresh
 from .price_overlay import (
     NORMAL_TIER_NAME,
     PriceOverlayState,
@@ -518,6 +518,7 @@ class ClimateDevice(Protocol):
     async def set_heat_setpoint_f(self, value: float) -> None: ...
     async def set_fan_mode(self, mode: str) -> None: ...
     async def set_hold_mode(self, mode: str) -> None: ...
+    async def set_hold_until(self, until: dtime) -> None: ...
 
 
 class ThermostatClient(Protocol):
@@ -579,6 +580,14 @@ class FiringState:
     last_schedule_cool: float | None = None
     last_action_label: str = ""
     last_pushed_effective_cool: float | None = None
+    # Device-side expiry of the last APPLIED timed hold (spec Safety #2:
+    # holds are timed, never Permanent). None in shadow (no write ever
+    # applies) and until the first production push succeeds; the refresh
+    # rule in _push_baseline_if_changed re-pushes near/past this instant so
+    # an alive controller keeps its hold while a dead one lapses to the
+    # onboard schedule. Survives ticks, not restarts — a restarted
+    # controller simply re-pushes on its first changed/refresh-due tick.
+    hold_expires_at: datetime | None = None
     # Humidity-release guard hysteresis state (spec §"Guards": humidity guard).
     # True once indoor RH crosses rh_max_pct (or is missing); cleared only when
     # RH drops below rh_clear_pct. While True the warm overlay is gated OFF at
@@ -913,6 +922,7 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
                           heat_setpoint_to_apply: float,
                           state: dict[str, Any], dry_run: bool,
                           when_ct: datetime | None = None,
+                          *, hold_until: dtime | None = None,
                           ) -> tuple[bool, str | None]:
     """Apply the action to the thermostat. Returns (applied, error).
 
@@ -926,9 +936,13 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
         (set_hold_mode("Schedule") is safe even in Heat/Off — it just becomes
         a no-op when no hold is active).
       * Setpoint action: applies heat + cool setpoints, optional fan mode,
-        then HOLD_MODE='Permanent' to pin the override against the
-        thermostat's own schedule. Skipped when hvac_mode is not Cool/Auto
-        (so we don't accidentally fight a heating-season furnace).
+        then a TIMED hold until ``hold_until`` (spec Safety #2: never
+        Permanent — a dead controller's hold lapses on the device and the
+        onboard schedule resumes). ``hold_until`` must be on the device's
+        quarter-hour grid (callers floor via controller_core.hold_expiry);
+        a setpoint action without one is refused before any write — there
+        is no silent Permanent fallback. Skipped when hvac_mode is not
+        Cool/Auto (so we don't accidentally fight a heating-season furnace).
 
     Two write-gates (defense in depth):
       1. SCHEDULER_MODE gate (spec §3, this top-level check) — blocks
@@ -957,6 +971,8 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
     hvac_mode = state.get("hvac_mode") or ""
     if hvac_mode not in ("Cool", "Auto"):
         return False, f"hvac_mode_not_cooling ({hvac_mode!r})"
+    if hold_until is None:
+        return False, "hold_until_missing (setpoint actions carry a timed-hold expiry)"
     try:
         climate = await c4.get_climate()
         # Always set both heat and cool — protects against narrow-deadband
@@ -980,8 +996,11 @@ async def execute_action(c4: ThermostatClient, action: ScheduleAction,
             fan_mode = action.fan_mode  # bind locally so the lambda closure carries the narrowed str type
             await c4.call_with_reauth(lambda: climate.set_fan_mode(fan_mode))
             await asyncio.sleep(1)
-        # Pin the override so thermostat baseline doesn't override our setpoint
-        await c4.call_with_reauth(lambda: climate.set_hold_mode("Permanent"))
+        # Pin the override with a TIMED hold — never Permanent (spec Safety
+        # #2): if the controller dies, the hold lapses on the device and the
+        # onboard schedule resumes.
+        hold_until_t = hold_until  # bind locally so the lambda closure carries the narrowed dtime type
+        await c4.call_with_reauth(lambda: climate.set_hold_until(hold_until_t))
         return True, None
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
@@ -1337,6 +1356,12 @@ async def _push_baseline_if_changed(
     assert cfg.controller_config is not None  # caller guarantees config-present path
     heat_floor = cfg.controller_config.heat_floor  # native temp_scale; no conversion
 
+    # Timed-hold refresh (spec Safety #2): a live applied hold must be
+    # re-established before its device-side expiry lapses, even when the
+    # effective is unchanged. Always False in shadow — hold_expires_at is
+    # only ever recorded on a real applied write.
+    hold_refresh_due = needs_hold_refresh(now_local, firing.hold_expires_at)
+
     if active_tier_name == NORMAL_TIER_NAME:
         # No overlay this tick: the humidity gate is irrelevant. Reset it so a
         # return-to-normal clears any prior gated state, and read the snapshot
@@ -1344,7 +1369,7 @@ async def _push_baseline_if_changed(
         firing.overlay_humidity_gated = False
         humidity_gated = False
         effective_cool = baseline  # normal tier: effective IS the baseline
-        if effective_cool == firing.last_pushed_effective_cool:
+        if effective_cool == firing.last_pushed_effective_cool and not hold_refresh_due:
             return  # no-push short-circuit
         snapshot = await read_thermostat_snapshot(c4)
     else:
@@ -1368,7 +1393,7 @@ async def _push_baseline_if_changed(
                 active_tier_name, baseline, cfg.controller_config,
             )
         effective_cool = max(effective_cool, baseline)  # defensive floor invariant
-        if effective_cool == firing.last_pushed_effective_cool:
+        if effective_cool == firing.last_pushed_effective_cool and not hold_refresh_due:
             return  # no-push short-circuit (after the effective is finalized)
 
     action = ScheduleAction(
@@ -1379,9 +1404,12 @@ async def _push_baseline_if_changed(
         fan_mode=None,
     )
 
+    # Timed-hold expiry: now + TTL floored to the device's quarter-hour slot
+    # grid (spec Safety #2 — the lapse is bounded by hold_ttl_minutes).
+    expiry = hold_expiry(now_local, cfg.controller_config.hold_ttl_minutes)
     applied, error = await execute_action(
         c4, action, effective_cool, heat_floor, snapshot, cfg.dry_run,
-        when_ct=now_local,
+        when_ct=now_local, hold_until=expiry.time(),
     )
     write_action(
         write_api, cfg.influx_bucket, action,
@@ -1407,6 +1435,11 @@ async def _push_baseline_if_changed(
     # value was already on the thermostat.
     if cfg.dry_run or error is None:
         firing.last_pushed_effective_cool = effective_cool
+    # The hold expiry is tracked only for a real APPLIED write: shadow never
+    # holds anything on the device, and a failed push must not pretend the
+    # hold exists (the refresh rule would then skip re-establishing it).
+    if applied and error is None:
+        firing.hold_expires_at = expiry
 
 
 async def run_schedule_check(cfg: Config, c4: ThermostatClient, query_api: Any, write_api: Any,
