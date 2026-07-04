@@ -350,11 +350,12 @@ def poller_last_writes(query_api: Any, bucket: str) -> dict[str, datetime | None
         ("eagle.meter", "eagle-poller"),
         ("refoss.channel", "refoss-poller"),
         ("nws.forecast", "nws-poller"),
-        # Silenced 2026-06-24 during the controller rebuild: thermostat-poller is
-        # mid-rework (TCC client behind ThermostatClient seam) and writes no
-        # hvac.thermostat, so the "no data in the last hour" alert is pure noise.
-        # Restore this entry when the poller is writing again.
-        # ("hvac.thermostat", "thermostat-poller"),
+        # Restored 2026-07-03: the TCC-backed poller writes hvac.thermostat
+        # again (silenced 2026-06-24 during the controller rebuild). With the
+        # controller in production this silence check is load-bearing — the
+        # poller is the readback path for applied holds and manual-override
+        # detection.
+        ("hvac.thermostat", "thermostat-poller"),
         # ComfortNet HVAC bus sniffer: writes on every decoded furnace/AC frame.
         # Decoder hit rate is variable — coordinator R2R cycle is ~33s but only
         # ~12% of 0x82 GetStatusResponse frames are from src_node_type=0x02
