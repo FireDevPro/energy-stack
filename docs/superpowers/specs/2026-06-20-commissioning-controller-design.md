@@ -260,13 +260,14 @@ constants.
 
 ### Guards
 
-- **Scarcity absolute — ride it, and choose it for endurance.** During a
-  sustained ≥20¢ event the house sits at `scarcity_absolute` for the duration
-  (keep the savings, sit at the warmest *sustainable* point), then lapses home
-  when price drops. It is a **for-hours temperature** (≥20¢ ran 5–6 h/day at
-  the 2026-07 peak) — tune it as one (seed 27.0, not a shutoff-flavored max).
-  The unit overshoots its setpoint ~1-1.5°F; watch commanded-vs-actual and
-  lower the absolute if the house runs hotter than intended.
+- **Scarcity absolute — the hottest the house may get; ride it.** The
+  absolute is the operator's maximum tolerable house temperature (seed 29.5 =
+  the long-standing 85°F "effective shutoff"), not a comfort target. During a
+  sustained ≥20¢ event the house rides it for the duration (keep the savings;
+  ≥20¢ ran 5–6 h/day at the 2026-07 peak), then lapses home when price drops.
+  Because the semantic is a *house-temp* max and the unit overshoots its
+  setpoint ~1-1.5°F, watch commanded-vs-actual and lower the commanded value
+  if the actual house temp exceeds the intent.
 - **Humidity guard — one more reason not to extend.** When indoor RH ≥
   `rh_max_pct` (or humidity is missing -> conservative, treat as humid), the
   controller stops extending; the hold lapses and the program resumes — at
@@ -301,7 +302,7 @@ interpretable.
 temp_scale: C            # or F — config choice. All temps below in temp_scale.
 price_tiers_cents: {elevated_at: 10, scarcity_at: 20, hysteresis_cents: 2}
 elevated_offset: 1.5     # added to the device's current program cool value (≈ the old +3°F; 1.0 blew past in <1h under heat-wave load)
-scarcity_absolute: 27.0  # for-hours endurance temp; the single cap on all commands
+scarcity_absolute: 29.5  # the hottest the house may get (85°F, the operator's long-standing max); the single cap on all commands. Unit overshoots ~1-1.5°F above commanded — lower this if actual exceeds intent.
 heat_floor: 18.5         # heat pinned at/below this on every hold push
 humidity_guard: {rh_max_pct: 65, rh_clear_pct: 62}
 hold_ttl_minutes: 30     # 30–60 operator knob; min-hold couples to this (spike-end tail ≤ 2×)
