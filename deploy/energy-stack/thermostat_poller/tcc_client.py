@@ -27,7 +27,7 @@ Normalization:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timezone
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -130,6 +130,14 @@ class TCCClimate:
         #   anything else ("Schedule"/release)   -> set_hold_cool(False)
         permanent = mode == "Permanent"
         await self._dev.set_hold_cool(permanent)
+
+    async def set_hold_until(self, until: dtime) -> None:
+        # Timed hold (spec Safety #2: never Permanent). set_hold_cool with a
+        # datetime.time writes StatusCool/StatusHeat = "Hold Until" plus BOTH
+        # NextPeriod quarter-hour slots in one payload (device.py:_set_hold),
+        # so one call covers heat and cool. The library raises on times off
+        # the quarter-hour grid — callers floor via controller_core.hold_expiry.
+        await self._dev.set_hold_cool(until)
 
 
 class TCCClient:

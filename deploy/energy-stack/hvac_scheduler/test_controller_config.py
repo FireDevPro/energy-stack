@@ -196,6 +196,15 @@ def test_hold_ttl_positive_accepted(tmp_path: Path) -> None:
     assert cfg.hold_ttl_minutes == 60
 
 
+def test_hold_ttl_below_quarter_hour_rejected(tmp_path: Path) -> None:
+    # Device hold expiry lands on 15-min slots (floor); a TTL under 15 can
+    # floor to a slot at-or-before now, i.e. an already-lapsed hold.
+    bad = VALID_YAML.replace("hold_ttl_minutes: 60", "hold_ttl_minutes: 10")
+    path = _write_yaml(tmp_path, bad)
+    with pytest.raises(ValueError, match="hold_ttl_minutes"):
+        load_controller_config(path)
+
+
 # ---------------------------------------------------------------------------
 # 5b. hysteresis_cents must be > 0 and < elevated_at (release-threshold sense)
 # ---------------------------------------------------------------------------

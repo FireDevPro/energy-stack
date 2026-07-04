@@ -7,11 +7,11 @@ Run: cd deploy/energy-stack/hvac_scheduler && python -m pytest test_controller_c
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 
 import pytest
 
-from .controller_core import comfort_baseline_cool
+from .controller_core import comfort_baseline_cool, hold_expiry, needs_hold_refresh
 
 
 # Comfort program matching commissioning-controller.example.yaml (Celsius)
@@ -100,3 +100,89 @@ def test_f_scale_midday() -> None:
 def test_f_scale_midnight_wrap() -> None:
     when = datetime(2026, 6, 20, 1, 0)
     assert comfort_baseline_cool(PROGRAM_F, when) == 73
+
+
+# ---------------------------------------------------------------------------
+# hold_expiry — timed-hold device expiry (spec Safety #2: lapse <= TTL)
+# ---------------------------------------------------------------------------
+
+
+def test_hold_expiry_floors_to_quarter_hour() -> None:
+    # 12:07 + 60 min = 13:07 -> floor to 13:00 (never past now+TTL)
+    now = datetime(2026, 7, 3, 12, 7)
+    assert hold_expiry(now, 60) == datetime(2026, 7, 3, 13, 0)
+
+
+def test_hold_expiry_on_boundary_unchanged() -> None:
+    now = datetime(2026, 7, 3, 12, 0)
+    assert hold_expiry(now, 60) == datetime(2026, 7, 3, 13, 0)
+
+
+def test_hold_expiry_never_exceeds_ttl() -> None:
+    now = datetime(2026, 7, 3, 12, 14)
+    exp = hold_expiry(now, 60)
+    assert exp == datetime(2026, 7, 3, 13, 0)
+    assert exp - now <= timedelta(minutes=60)
+
+
+def test_hold_expiry_zeroes_seconds() -> None:
+    now = datetime(2026, 7, 3, 12, 7, 45, 123456)
+    exp = hold_expiry(now, 60)
+    assert exp == datetime(2026, 7, 3, 13, 0)
+    assert exp.second == 0 and exp.microsecond == 0
+
+
+def test_hold_expiry_midnight_wrap() -> None:
+    # 23:50 + 60 = 00:50 next day -> floor 00:45 next day (date advances;
+    # the device sees the time-of-day slot and holds to its next occurrence)
+    now = datetime(2026, 7, 3, 23, 50)
+    assert hold_expiry(now, 60) == datetime(2026, 7, 4, 0, 45)
+
+
+def test_hold_expiry_result_on_device_grid() -> None:
+    # aiosomecomfort raises on non-quarter-hour times; every result must land
+    # on the device grid
+    for minute in (0, 3, 7, 14, 22, 29, 31, 44, 46, 59):
+        exp = hold_expiry(datetime(2026, 7, 3, 9, minute), 60)
+        assert exp.minute in (0, 15, 30, 45)
+
+
+def test_hold_expiry_preserves_tzinfo() -> None:
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("America/Chicago")
+    now = datetime(2026, 7, 3, 12, 7, tzinfo=tz)
+    exp = hold_expiry(now, 60)
+    assert exp.tzinfo == tz
+    assert exp.time() == dtime(13, 0)
+
+
+# ---------------------------------------------------------------------------
+# needs_hold_refresh — an alive controller re-establishes its hold before the
+# device-side expiry lapses (5-min margin = ~5 one-per-tick retries)
+# ---------------------------------------------------------------------------
+
+
+def test_no_refresh_when_no_hold_tracked() -> None:
+    assert needs_hold_refresh(datetime(2026, 7, 3, 12, 0), None) is False
+
+
+def test_no_refresh_far_from_expiry() -> None:
+    now = datetime(2026, 7, 3, 12, 0)
+    assert needs_hold_refresh(now, datetime(2026, 7, 3, 13, 0)) is False
+
+
+def test_refresh_inside_margin() -> None:
+    now = datetime(2026, 7, 3, 12, 56)
+    assert needs_hold_refresh(now, datetime(2026, 7, 3, 13, 0)) is True
+
+
+def test_refresh_at_exact_margin_boundary() -> None:
+    now = datetime(2026, 7, 3, 12, 55)
+    assert needs_hold_refresh(now, datetime(2026, 7, 3, 13, 0)) is True
+
+
+def test_refresh_after_missed_expiry_self_heals() -> None:
+    # Past-expiry (missed refreshes / device already reverted): keep asking
+    # for a push every tick until one succeeds
+    now = datetime(2026, 7, 3, 13, 7)
+    assert needs_hold_refresh(now, datetime(2026, 7, 3, 13, 0)) is True

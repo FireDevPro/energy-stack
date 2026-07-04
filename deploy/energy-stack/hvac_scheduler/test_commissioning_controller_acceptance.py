@@ -80,7 +80,7 @@ def _run_tick(
 
     async def _exec(
         c4: Any, action: Any, cool: Any, heat: Any, snapshot: Any,
-        dry_run: Any, *, when_ct: Any = None,
+        dry_run: Any, *, when_ct: Any = None, hold_until: Any = None,
     ) -> tuple[bool, None]:
         captured["cool"] = cool
         return (False, None)  # shadow: not applied, no error
