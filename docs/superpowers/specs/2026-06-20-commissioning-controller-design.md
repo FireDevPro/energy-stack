@@ -300,7 +300,7 @@ interpretable.
 ```yaml
 temp_scale: C            # or F — config choice. All temps below in temp_scale.
 price_tiers_cents: {elevated_at: 10, scarcity_at: 20, hysteresis_cents: 2}
-elevated_offset: 1.0     # added to the device's current program cool value
+elevated_offset: 1.5     # added to the device's current program cool value (≈ the old +3°F; 1.0 blew past in <1h under heat-wave load)
 scarcity_absolute: 27.0  # for-hours endurance temp; the single cap on all commands
 heat_floor: 18.5         # heat pinned at/below this on every hold push
 humidity_guard: {rh_max_pct: 65, rh_clear_pct: 62}
