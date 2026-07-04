@@ -298,6 +298,12 @@ fresh-loose to extend; device fail-safe. 2026's "refine the setpoints" happens b
 config identity must be recorded (see Telemetry) to keep refinements
 interpretable.
 
+**The values below are seeds for the first deploy, plus the rationale for
+each choice — not maintained contracts.** After first deploy the deployed
+yaml is the source of truth, tuned at will; `config_id` provenance in
+telemetry records what actually ran and when. Do not PR this spec to change
+a number; the spec binds the keys, semantics, and invariants only.
+
 ```yaml
 temp_scale: C            # or F — config choice. All temps below in temp_scale.
 price_tiers_cents: {elevated_at: 10, scarcity_at: 20, hysteresis_cents: 2}
