@@ -216,12 +216,22 @@ Four rules:
 4. **Otherwise stop extending** and the hold **lapses on the device** — the
    program resumes with no release write.
 
-**Minimum-hold retained as-is** (reuse, don't reinvent): the overlay
-minimum-hold stays coupled to `hold_ttl_minutes`, so after prices drop the
-tier holds for the min-hold remainder (extensions continue), then the final
-hold lapses — worst-case tail ≈ 2× `hold_ttl_minutes` at the spike setpoint
-after a spike ends (≤ 1 h at TTL 30). Stated so nobody "fixes" it to a flat
-lapse and nobody is surprised by it.
+**Minimum-hold — decoupled from the TTL (reverts rev 3's silent change).**
+Rev 3 coupled the overlay minimum-hold to `hold_ttl_minutes`
+(`app.py:1101`), so the config's 60-min TTL silently doubled the original
+30-min tier lock. That was never decided; it is reverted. The deliberate
+timing, as its own knob pair:
+
+- On any tier trigger, the tier is **locked for `min_hold_minutes`**
+  (seed 30) — no downgrade, extensions continue.
+- At lock end, check the price data. **Fresh and at/below the tier's release
+  threshold → release.** Fresh and still above → tier simply persists (the
+  spike is real; the lock is moot).
+- **Stale → keep holding and recheck every tick**, up to
+  `stale_hold_extra_minutes` more (seed 30) — **then release regardless**,
+  a hard cap of lock + stretch (= 60 min with the seeds) held on stale data.
+- Release = stop extending; the device hold then lapses on its own TTL as
+  above (≤ `hold_ttl_minutes` of tail).
 
 **Manual holds.** Outside spikes the controller never writes, so operator
 holds survive — a deliberate property of this design. When a spike fires
@@ -251,8 +261,10 @@ reinvent:
   `app.py`). Governs **extension**: an active hold keeps extending through the
   routine ComEd publish sawtooth (bucket age normally oscillates ~6–11 min
   between publishes — fresh-strict would wrongly lapse holds mid-spike on
-  healthy data), and only sustained staleness stops extension, after which the
-  hold lapses at its TTL and the program runs.
+  healthy data). "Sustained staleness" is not vague: it is the
+  min-hold + stale-stretch rule (Hold lifecycle) — stale past the lock is
+  tolerated for `stale_hold_extra_minutes`, then the tier hard-releases,
+  extension stops, and the hold lapses at its TTL.
 
 In normal tier a stale feed requires no action at all: the do-nothing state is
 the safe state. Neither threshold is a new config key — both are the existing
@@ -311,7 +323,9 @@ elevated_offset: 1.5     # added to the device's current program cool value (≈
 scarcity_absolute: 29.5  # the hottest the house may get (85°F, the operator's long-standing max); the single cap on all commands. Unit overshoots ~1-1.5°F above commanded — lower this if actual exceeds intent.
 heat_floor: 18.5         # heat pinned at/below this on every hold push
 humidity_guard: {rh_max_pct: 65, rh_clear_pct: 62}
-hold_ttl_minutes: 30     # 30–60 operator knob; min-hold couples to this (spike-end tail ≤ 2×)
+hold_ttl_minutes: 30       # device-hold TTL (lapse horizon); NOT the tier lock
+min_hold_minutes: 30       # tier lock after any trigger — decoupled from TTL (rev 3 wrongly coupled them)
+stale_hold_extra_minutes: 30  # max stale-data stretch past the lock; hard release at lock+stretch
 ```
 
 Removed keys vs rev 3: `comfort_program` (device owns the schedule),
