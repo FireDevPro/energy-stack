@@ -136,7 +136,7 @@ its action side and config keys change.
 | Cooling overshoot | the unit overshoots its setpoint ~1-1.5°F — watch this at the scarcity absolute |
 | Hold release is edge-triggered | device unpowered at expiry ⇒ expired hold persists indefinitely (observed 2026-07-03) |
 | `ScheduleCoolSp` | device reports its current program cool value in every read, including mid-hold (verified 2026-07-03) |
-| ComEd bucket age at tick time | saws **~7.2–11.2 min** (publish lag; floor measured 430 s, 2026-07-05). Any freshness gate < 7.2 min is never satisfiable — rev 3's ≤7-min downgrade gate never once passed in production; every release went via the persistent-stale timer (the 99-min hold of 07-04 and the 07-05 event both) |
+| ComEd bucket age at tick time | saws ~6.2–11.2 min; the floor **jitters with publish timing** (observed 370–430 s across cycles, 2026-07-05). Rev 3's ≤7-min (420 s) downgrade gate therefore passes only on favorable jitter — nondeterministic releases: 07-04's never cooperated (99-min hold, stale-timer release); 07-05's cooperated once, 14 min after lock expiry. A control gate must sit above the jitter ceiling, not inside the jitter band |
 
 ## What the controller does
 
