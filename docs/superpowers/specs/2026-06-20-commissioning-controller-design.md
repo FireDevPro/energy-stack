@@ -68,6 +68,10 @@ onboard program). Four changes, each a deletion or a narrowing:
    carries the expired hold indefinitely. The controller now cleans up after
    itself (and only itself), and controller-down / push-failure conditions
    alert instead of failing silently.
+5. **No tier time lock.** Releases follow fresh data (confirmation count +
+   hysteresis + stale backstop), not a clock — decided from the first three
+   production events, all of which were punished only by lock time (see
+   Reactive core → Release policy).
 
 One deliberate supersession of a rev 3 choice: rev 3 allowed a **stale**
 high-price sample to drive a warm upgrade. Rev 4 requires **fresh-strict**
@@ -89,12 +93,17 @@ the safe, correct state; acting on stale data buys little and costs trust.
 
 ## Build discipline (binding): reuse, don't reinvent
 
-Every component is an extend-in-place of a named existing backbone. The only
-net-new code is the YAML config loader (+ a small helper module). Do not rebuild
-what exists. Rev 4 is predominantly **deletion**: the normal-tier push path,
-the config schedule copy, and the extreme tier come out; the spike-hold
-machinery is retained (tier state machine, timed push / TTL-refresh flow) while
-its action side and config keys change.
+**Rev 4 supersedes rev 3's extend-in-place discipline with fresh-derivation
+(decided 2026-07-05, from the rev 3 post-mortem: extend-in-place let the old
+architecture through unexamined).** The new controller is written **from this
+spec only**, as new files, with a named **import whitelist** — the only rev 3
+code allowed across: `tcc_client.py` (the proven seam), `freshness.py`, the
+arm-calendar apparatus (2027 contract), and the Influx writer helpers.
+Everything else — tick loop, tier machine with the release policy, hold
+lifecycle, config loader — is written new. Copying any other rev 3 code is a
+review-rejectable defect ("rev-3 leakage"); the fresh write doubles as this
+spec's derivability test. Reuse-don't-reinvent still governs *mechanisms*
+(the whitelist); it no longer shields *architecture*.
 
 ## Why this shape (the reframe)
 
@@ -212,27 +221,34 @@ Four rules:
    immediately** rather than letting the device cool below program at spike
    prices until lapse. This release is the one unforced write besides pushes.
 3. **Extend** (re-push near expiry) continues only while ALL of: tier still
-   ≥ elevated (minimum-hold semantics below), price data *fresh-loose* (below),
+   ≥ elevated (release policy below), price data *fresh-loose* (below),
    humidity guard clear, `ScheduleCoolSp` readable, precondition holds.
 4. **Otherwise stop extending** and the hold **lapses on the device** — the
    program resumes with no release write.
 
-**Minimum-hold — decoupled from the TTL (reverts rev 3's silent change).**
-Rev 3 coupled the overlay minimum-hold to `hold_ttl_minutes`
-(`app.py:1101`), so the config's 60-min TTL silently doubled the original
-30-min tier lock. That was never decided; it is reverted. The deliberate
-timing, as its own knob pair:
+**Release policy — no time lock (decided 2026-07-05, from live data).**
+Rev 3 locked tiers for a minimum-hold (silently doubled to 60 min by the
+TTL coupling at `app.py:1101`); an interim 30/30/60 lock design was also
+considered and superseded. The first three production events killed the
+lock concept entirely: every observed event was punished *only* by lock
+time (a 5-min blip → 99-min hold; a 40-min event → 56 min of ceiling-hold
+on ≤8¢ power), the only oscillation in two days of data flapped harmlessly
+between adjacent tiers (±1 °C), and the thermal-battery asymmetry means an
+"early" release into a dip that re-spikes simply buys cooling at the cheap
+price — which is the system's purpose. The rules:
 
-- On any tier trigger, the tier is **locked for `min_hold_minutes`**
-  (seed 30) — no downgrade, extensions continue.
-- At lock end, check the price data. **Fresh and at/below the tier's release
-  threshold → release.** Fresh and still above → tier simply persists (the
-  spike is real; the lock is moot).
-- **Stale → keep holding and recheck every tick**, up to
-  `stale_hold_extra_minutes` more (seed 30) — **then release regardless**,
-  a hard cap of lock + stretch (= 60 min with the seeds) held on stale data.
-- Release = stop extending; the device hold then lapses on its own TTL as
-  above (≤ `hold_ttl_minutes` of tail).
+- **Downgrade/release:** fresh-strict data at/below the tier's release
+  threshold (trigger − `hysteresis_cents`) for **`release_confirm_buckets`
+  consecutive buckets** (seed 2, ≈ 10 min). No time lock. A tier downgrade
+  re-targets on the next tick (Correct rule above); a release to normal
+  stops extending and the hold lapses (≤ `hold_ttl_minutes` of tail).
+- **Upgrade/engage:** fresh-strict, single bucket — deliberately asymmetric
+  (respond to real spikes immediately; the cost of a false engage is one
+  warm push that the release rule unwinds ~10 min later).
+- **Stale backstop:** while a hold is active and no fresh-strict sample has
+  arrived for `stale_release_minutes` (seed 30), hard-release — stop
+  extending, lapse home. Anti-thrash lives in the hysteresis band plus the
+  confirmation count, not in a clock.
 
 **Manual holds.** Outside spikes the controller never writes, so operator
 holds survive — a deliberate property of this design. When a spike fires
@@ -266,12 +282,11 @@ reinvent:
 - **fresh-loose** = the existing stale-release machinery
   (`PRICE_FEED_STALE_THRESHOLD` and the minimum-hold-then-release timers in
   `app.py`). Governs **extension**: an active hold keeps extending through the
-  routine ComEd publish sawtooth (bucket age normally oscillates ~6–11 min
-  between publishes — fresh-strict would wrongly lapse holds mid-spike on
-  healthy data). "Sustained staleness" is not vague: it is the
-  min-hold + stale-stretch rule (Hold lifecycle) — stale past the lock is
-  tolerated for `stale_hold_extra_minutes`, then the tier hard-releases,
-  extension stops, and the hold lapses at its TTL.
+  routine ComEd publish sawtooth (bucket age jitters ~6.2–11.2 min between
+  publishes — a tight gate would wrongly lapse holds mid-spike on healthy
+  data). "Sustained staleness" is not vague: it is the stale backstop in the
+  release policy — no fresh-strict sample for `stale_release_minutes` while
+  holding → hard release, extension stops, the hold lapses at its TTL.
 
 In normal tier a stale feed requires no action at all: the do-nothing state is
 the safe state. Neither threshold is a new config key — both are the existing
@@ -329,10 +344,10 @@ price_tiers_cents: {elevated_at: 10, scarcity_at: 20, hysteresis_cents: 2}
 elevated_offset: 1.5     # added to the device's current program cool value (≈ the old +3°F; 1.0 blew past in <1h under heat-wave load)
 scarcity_absolute: 29.5  # the hottest the house may get (85°F, the operator's long-standing max); the single cap on all commands. Unit overshoots ~1-1.5°F above commanded — lower this if actual exceeds intent.
 heat_floor: 18.5         # heat pinned at/below this on every hold push
-humidity_guard: {rh_max_pct: 65, rh_clear_pct: 62}
-hold_ttl_minutes: 30       # device-hold TTL (lapse horizon); NOT the tier lock
-min_hold_minutes: 30       # tier lock after any trigger — decoupled from TTL (rev 3 wrongly coupled them)
-stale_hold_extra_minutes: 30  # max stale-data stretch past the lock; hard release at lock+stretch
+humidity_guard: {rh_max_pct: 61, rh_clear_pct: 58}  # intent = 65/62 real; CTK04 reads ~4.4 low vs the ch2 reference (263-h comparison, 2026-07-05)
+hold_ttl_minutes: 30       # device-hold TTL (lapse horizon); there is NO tier time lock
+release_confirm_buckets: 2  # consecutive fresh buckets at/below release threshold to downgrade (~10 min)
+stale_release_minutes: 30  # no fresh-strict data while holding for this long -> hard release
 ```
 
 Removed keys vs rev 3: `comfort_program` (device owns the schedule),
@@ -480,20 +495,20 @@ config (config-as-surface — no code, and `config_id` records the epoch).
 
 ## Architecture
 
-**In-place, single-path rewrite — rev 4 is chiefly deletion.** Keep the
-price-overlay state machine, the feed-gap machinery, the write gate, the
-telemetry writers, `freshness.py`, **and the retained experiment apparatus**
-(arm calendar, `experiment` mode, `current_arm_at`, `hvac.arm_mode`) as shared
-infra. Remove: the normal-tier push path, the config `comfort_program` +
-per-tick config baseline, the extreme tier, the effective-layer humidity
-gating, the poller's override detection. Add (small): `ScheduleCoolSp` **and**
-`TemporaryHoldUntilTime` through the ClimateDevice seam (note `tcc_client.py`
-is a documented verbatim duplicate in `hvac_scheduler` and `thermostat_poller`
-— both copies change), the persisted own-hold record + normal-tier cleanup,
-the two alerts. No parallel path, no flag — `shadow` is the isolation, git
-history is rollback.
-**Phase discipline:** delete a thing's tests and stop the main loop calling it
-in the same slice that removes it.
+**In-repo fresh-write, staged beside the running controller.** New modules
+land as fresh files in `deploy/energy-stack/hvac_scheduler/`, NOT wired into
+the container entrypoint — rev 3 keeps running the season through every WIP
+merge (deploys bounce it harmlessly). The **cutover slice** swaps the
+entrypoint to the new controller and deletes the rev 3 modules **and their
+tests in the same PR** (phase discipline). Whitelist imports only (see Build
+discipline); rev-3 leakage is an explicit review dimension on every task PR.
+Both `tcc_client.py` copies (documented verbatim duplicates in
+`hvac_scheduler` and `thermostat_poller`) gain `ScheduleCoolSp` and
+`TemporaryHoldUntilTime` through the ClimateDevice seam. Removed at cutover:
+the normal-tier push path, the config `comfort_program` + per-tick config
+baseline, the extreme tier, the effective-layer humidity gating, the poller's
+override detection. Added: the persisted own-hold record + normal-tier
+cleanup, the two alerts. `shadow` is the isolation; git history is rollback.
 
 ## Scope
 
