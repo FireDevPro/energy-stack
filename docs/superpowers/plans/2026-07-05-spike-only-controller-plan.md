@@ -31,7 +31,10 @@ Copied from the spec — every task inherits these:
 - **No time locks.** Tier release = `release_confirm_buckets` consecutive fresh-strict buckets at/below the release threshold. Engage = 1 fresh-strict bucket. Stale backstop = `stale_release_minutes` without fresh-strict data while holding → hard release.
 - **Device reads are scoped:** ticks at tier ≥ elevated, or with a persisted own-hold record, read the device; pure normal ticks never touch it.
 - **Tests run per-service:** `cd deploy/energy-stack/hvac_scheduler && python -m pytest . -q`. NEVER `pytest deploy/energy-stack` from the repo root. New test files use the `test_rev4_*.py` prefix and package-relative imports, matching the existing files.
-- **Telemetry field contract (transcribed from rev 3 — these exact names, because live consumers filter on them):** `hvac.actions` tags `unit`, `tier`, `action_label`, `dry_run` ("true"/"false"); fields `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed `ScheduleCoolSp` under rev 4), `drift`, `humidity_gated`, `setpoint_reason`, `applied` (int 0/1), `error` (str, "" when none), `config_id`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. New rev 4 fields: `schedule_cool` (same value as `baseline_cool`, explicit name), `hold_expires_at` (RFC3339 str, "" when no hold). `hvac.arm_mode`: tags `scheduler_mode`, `arm`; field `mode_actual` (in `production` outside an experiment window the value is `off-protocol-production`; `arm` tag comes from `arm_calendar.current_arm_at`, omitted when None — transcribe rev 3's exact three-branch behavior as specified in Task 10).
+- **Telemetry field contract (transcribed from rev 3 — these exact names, because live consumers filter on them):** `hvac.actions` tags `unit`, `tier`, `action_label`, `dry_run` ("true"/"false"); fields `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed `ScheduleCoolSp` under rev 4), `drift`, `humidity_gated`, `setpoint_reason`, `applied` (int 0/1), `error` (str, "" when none), `config_id`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. New rev 4 fields: `schedule_cool` (same value as `baseline_cool`, explicit name), `hold_expires_at` (RFC3339 str, "" when no hold). `hvac.arm_mode`: tags `scheduler_mode`, `arm`; field `mode_actual` — rev 3's exact branch behavior (transcribed in Task 10): `current_arm_at` None (outside any arm window) → `mode_actual="outside-window"` regardless of mode, no `arm` tag; arm present + mode ≠ `experiment` → `mode_actual=f"off-protocol-{scheduler_mode}"` with `arm` tag. NOTE: `current_arm_at` requires a NAIVE CT datetime (strip tzinfo before calling — rev 3 does `now_ct.replace(tzinfo=None)`). `hvac.price_overlay` (tier transitions only — spec §Telemetry keeps it, cockpit reads it): tags `prev_tier`, `new_tier`, `unit`; fields `current_price_cents`, `baseline_cool`, `commanded_cool`.
+- **CI type gate (repo `typecheck.yml` runs on every push):** strict mypy over `hvac_scheduler` + import-linter. Consequences for every code task: (1) all new production code is FULLY type-annotated (the plan's embedded code shows the logic; add precise annotations — the types all exist: `TierState`, `PriceSample | None`, `ControllerConfig`, `ControlSnapshot`, `OwnHoldRecord | None`); (2) each new `test_rev4_*` module is added to `pyproject.toml`'s per-module `disallow_untyped_defs=false` relaxation list **in the same commit that creates it**; (3) `controller/__main__.py` imports `influxdb_client` directly — add an `ignore_imports` entry `hvac_scheduler.controller.__main__ -> influxdb_client` to the import-linter contract in Task 11; (4) Task 15 removes the then-stale `hvac_scheduler.app` entries from `pyproject.toml` when `app.py` is deleted.
+- **The async seam:** `ControllerLoop.tick` is async and runs inside an event loop — device access must be `await`ed end-to-end. NEVER call `asyncio.run()` from inside adapter/loop code (nested-event-loop crash; also `TCCClient`'s aiohttp session binds to the first loop it sees). `run_forever` owns the single `asyncio.run(...)`.
+- **`run_forever` per-tick error contract:** wrap each tick in try/except — a transient error (TCC timeout, Influx hiccup) logs one `rev4_tick_failed` line with `error_type` and continues to the next tick; it must NOT exit the process.
 - **Commit style:** every task commits on green; end commit messages with the two standard trailer lines used in this repo.
 
 ## File Structure
@@ -60,7 +63,7 @@ test_rev4_loop.py
 commissioning-controller-rev4.yaml   # staged config; renamed over the live one at cutover
 ```
 
-Modified: `hvac_scheduler/tcc_client.py` + `thermostat_poller/tcc_client.py` (seam additions, both verbatim copies), `telegram_notifier/app.py` (two alerts), `thermostat_poller/poller.py` (override retirement), `hvac_scheduler/Dockerfile` (cutover), `docker-compose.yml` (config mount at cutover), `docs/SERVICES.md` (cutover).
+Modified: `hvac_scheduler/tcc_client.py` + `thermostat_poller/tcc_client.py` (seam additions, both verbatim copies), `telegram_notifier/app.py` (two alerts), `thermostat_poller/poller.py` (override retirement), `docker-compose.yml` (Task 14: poller env cleanup only — the config mount path is unchanged), `hvac_scheduler/Dockerfile` (cutover), `pyproject.toml` (mypy test-module list per task; linter entries Tasks 11+15), `deploy/energy-stack/run_tests.sh` (Task 15: per-service sentinel), `docs/SERVICES.md` (cutover).
 
 Deleted at cutover: `app.py`, `price_overlay.py`, `controller_core.py`, `controller_config.py`, `decision_codes.py`, `commissioning-controller.yaml` (replaced by rev4 file), and their tests: `test_hvac_scheduler.py`, `test_price_overlay.py`, `test_controller_core.py`, `test_controller_config.py`, `test_decision_trace.py`, `test_commissioning_controller_acceptance.py`, `test_integration_2025_replay.py`.
 
@@ -143,7 +146,7 @@ class FakeClimate:
     pushes: list[tuple[float, float, int]] = field(default_factory=list)  # (cool, heat, until_min)
     releases: int = 0
 
-    def snapshot(self):
+    async def snapshot(self):
         self.read_count += 1
         from hvac_scheduler.controller.device import ControlSnapshot
         return ControlSnapshot(
@@ -156,13 +159,13 @@ class FakeClimate:
             humidity=self.humidity,
         )
 
-    def push(self, cool: float, heat: float, until_minutes: int):
+    async def push(self, cool: float, heat: float, until_minutes: int):
         self.pushes.append((cool, heat, until_minutes))
         self.cool_setpoint = cool
         self.hold_active = True
         self.hold_until_minutes = until_minutes
 
-    def release(self):
+    async def release(self):
         self.releases += 1
         self.hold_active = False
         self.hold_until_minutes = None
@@ -180,10 +183,12 @@ class FakeClimate:
 class TelemetryRecorder:
     actions: list[dict] = field(default_factory=list)
     arm_rows: list[dict] = field(default_factory=list)
+    overlay_rows: list[dict] = field(default_factory=list)
     traces: list[dict] = field(default_factory=list)
 
     def write_action(self, **kw): self.actions.append(kw)
     def write_arm_mode(self, **kw): self.arm_rows.append(kw)
+    def write_price_overlay(self, **kw): self.overlay_rows.append(kw)
     def trace(self, **kw): self.traces.append(kw)
 
 
@@ -268,7 +273,7 @@ def test_full_spike_story(tmp_path):
     # -- 5. Collapse: two fresh buckets below elevated-release (8c) -> release to normal,
     #       NO device release write (lapse-only): hold left to expire on the device.
     t4 = t3 + timedelta(minutes=15)
-    feed.buckets.append((t4 - timedelta(seconds=400), 4.0))
+    feed.buckets.append((t4 - timedelta(seconds=100), 4.0))  # must be NEWER than step 4's last bucket
     run_tick(t4)
     feed.buckets.append((t4 + timedelta(minutes=4, seconds=20), 3.5))
     run_tick(t4 + timedelta(minutes=5))
@@ -602,7 +607,7 @@ must NOT gate control decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 FRESH_STRICT_MAX_AGE_SEC: float = 720.0
 
@@ -635,6 +640,10 @@ def fetch_price(query_api, bucket: str, now_utc: datetime) -> PriceSample | None
             v = rec.get_value()
             if t is None or v is None:
                 return None
+            if t.tzinfo is None:
+                # some influxdb_client versions return naive datetimes
+                # (see influx_adapter.project_record's identical guard)
+                t = t.replace(tzinfo=timezone.utc)
             return PriceSample(
                 cents=float(v),
                 bucket_time_utc=t,
@@ -701,9 +710,9 @@ class Feed:
 @dataclass
 class NeverClimate:
     """Blows up on any access — normal tier must never touch the device."""
-    def snapshot(self): raise AssertionError("device read in normal tier")
-    def push(self, *a): raise AssertionError("device write in normal tier")
-    def release(self): raise AssertionError("device release in normal tier")
+    async def snapshot(self): raise AssertionError("device read in normal tier")
+    async def push(self, *a): raise AssertionError("device write in normal tier")
+    async def release(self): raise AssertionError("device release in normal tier")
 
 
 @dataclass
@@ -711,9 +720,11 @@ class Tel:
     traces: list = field(default_factory=list)
     actions: list = field(default_factory=list)
     arm_rows: list = field(default_factory=list)
+    overlay_rows: list = field(default_factory=list)
     def trace(self, **kw): self.traces.append(kw)
     def write_action(self, **kw): self.actions.append(kw)
     def write_arm_mode(self, **kw): self.arm_rows.append(kw)
+    def write_price_overlay(self, **kw): self.overlay_rows.append(kw)
 
 
 def _loop(tmp_path, feed):
@@ -767,7 +778,6 @@ _ORDER = {NORMAL: 0, ELEVATED: 1, SCARCITY: 2}
 class TierState:
     tier: str = NORMAL
     confirm_count: int = 0
-    confirm_below: str | None = None          # tier the confirmations point at
     last_confirm_bucket: datetime | None = None
     last_fresh_utc: datetime | None = None
 
@@ -1034,8 +1044,9 @@ def evaluate_tier(state: TierState, sample, cfg, now_utc: datetime):
     if state.tier == NORMAL:
         return state, "REV4_NORMAL_BELOW_TRIGGER"
 
-    # Downgrade path: fresh bucket strictly below the current tier's release threshold.
-    if fresh and sample.cents < _release_threshold(state.tier, cfg):
+    # Downgrade path: fresh bucket AT/BELOW the current tier's release threshold
+    # (spec §Release policy: "at/below"; strictly-above resets).
+    if fresh and sample.cents <= _release_threshold(state.tier, cfg):
         if sample.bucket_time_utc == state.last_confirm_bucket:
             return state, "REV4_RELEASE_CONFIRMING"  # same bucket, already counted
         count = state.confirm_count + 1
@@ -1045,12 +1056,13 @@ def evaluate_tier(state: TierState, sample, cfg, now_utc: datetime):
             if new_tier == NORMAL:
                 return new, "REV4_RELEASED_TO_NORMAL"
             return new, "REV4_DOWNGRADED_TO_ELEVATED"
-        return replace(state, confirm_count=count, confirm_below=target,
+        return replace(state, confirm_count=count,
                        last_confirm_bucket=sample.bucket_time_utc), "REV4_RELEASE_CONFIRMING"
 
-    # In-band (hysteresis) or non-fresh: hold tier, reset confirmations.
+    # In-band (hysteresis, strictly above release threshold) or non-fresh:
+    # hold tier, reset confirmations.
     if state.confirm_count:
-        state = replace(state, confirm_count=0, confirm_below=None, last_confirm_bucket=None)
+        state = replace(state, confirm_count=0, last_confirm_bucket=None)
     return state, "REV4_HELD_IN_TIER"
 ```
 
@@ -1532,11 +1544,11 @@ def test_adapter_maps_seam_to_snapshot():
         async def get_climate(self): return self.clim
 
     a = TccClimateAdapter(FakeClient())
-    s = a.snapshot()
+    s = asyncio.run(a.snapshot())
     assert s == ControlSnapshot(25.5, 27.0, 18.5, True, 1290, 25.0, 52.0)
-    a.push(29.5, 18.5, 14 * 60 + 30)
+    asyncio.run(a.push(29.5, 18.5, 14 * 60 + 30))
     assert ("cool", 29.5) in FakeClim.pushed and ("until", 870) in FakeClim.pushed
-    a.release()
+    asyncio.run(a.release())
     assert ("mode", "Schedule") in FakeClim.pushed
 ```
 
@@ -1567,38 +1579,39 @@ class ControlSnapshot:
 
 
 class TccClimateAdapter:
+    """Async end-to-end (Global Constraints: never asyncio.run inside —
+    tick runs in an event loop, and TCCClient's aiohttp session binds to
+    the first loop it sees)."""
+
     def __init__(self, client) -> None:
         self._client = client
 
-    def snapshot(self) -> ControlSnapshot:
-        async def _read():
-            clim = await self._client.get_climate()
-            sched = await clim.get_schedule_cool_f()
-            return ControlSnapshot(
-                schedule_cool=(float(sched) if sched is not None else None),
-                cool_setpoint=float(await clim.get_cool_setpoint_f()),
-                heat_setpoint=float(await clim.get_heat_setpoint_f()),
-                hold_active=(await clim.get_hold_mode()) == "Hold Until",
-                hold_until_minutes=await clim.get_hold_until_minutes(),
-                indoor_temp=await clim.get_current_temperature_f(),
-                humidity=await clim.get_humidity(),
-            )
-        return asyncio.run(_read())
+    async def snapshot(self) -> ControlSnapshot:
+        clim = await self._client.get_climate()
+        sched = await clim.get_schedule_cool_f()
+        return ControlSnapshot(
+            schedule_cool=(float(sched) if sched is not None else None),
+            cool_setpoint=float(await clim.get_cool_setpoint_f()),
+            heat_setpoint=float(await clim.get_heat_setpoint_f()),
+            # != "Off": both "Hold Until" AND "Permanent" are real holds — a
+            # Permanent manual hold must hit the foreign-hold (respect) branch,
+            # not the engage branch (spec §Manual holds).
+            hold_active=(await clim.get_hold_mode()) != "Off",
+            hold_until_minutes=await clim.get_hold_until_minutes(),
+            indoor_temp=await clim.get_current_temperature_f(),
+            humidity=await clim.get_humidity(),
+        )
 
-    def push(self, cool: float, heat: float, until_minutes: int) -> None:
-        async def _push():
-            clim = await self._client.get_climate()
-            await clim.set_heat_setpoint_f(heat)
-            await clim.set_cool_setpoint_f(cool)
-            await clim.set_hold_until(dtime(hour=until_minutes // 60,
-                                            minute=until_minutes % 60))
-        asyncio.run(_push())
+    async def push(self, cool: float, heat: float, until_minutes: int) -> None:
+        clim = await self._client.get_climate()
+        await clim.set_heat_setpoint_f(heat)
+        await clim.set_cool_setpoint_f(cool)
+        await clim.set_hold_until(dtime(hour=until_minutes // 60,
+                                        minute=until_minutes % 60))
 
-    def release(self) -> None:
-        async def _rel():
-            clim = await self._client.get_climate()
-            await clim.set_hold_mode("Schedule")
-        asyncio.run(_rel())
+    async def release(self) -> None:
+        clim = await self._client.get_climate()
+        await clim.set_hold_mode("Schedule")
 ```
 
 - [ ] **Step 4: Run** — `python -m pytest test_rev4_loop.py -q` → all pass.
@@ -1687,7 +1700,6 @@ from zoneinfo import ZoneInfo
 from ..arm_calendar import current_arm_at
 from ..influx_adapter import write_point
 
-_VERBOSE = os.environ.get("SCHEDULER_DECISION_TRACE_VERBOSE", "false").lower() == "true"
 _TRANSITION_REASONS = {
     "REV4_UPGRADED_TO_ELEVATED", "REV4_UPGRADED_TO_SCARCITY",
     "REV4_DOWNGRADED_TO_ELEVATED", "REV4_RELEASED_TO_NORMAL",
@@ -1713,10 +1725,11 @@ class InfluxTelemetry:
         self.tz = ZoneInfo(tz_name)
 
     def trace(self, **kw) -> None:
+        # ALWAYS emits (spec §Telemetry: the per-tick trace continues 24/7 —
+        # a silent healthy controller is indistinguishable from a hung one).
+        # Transitions at info, holds at debug; nothing is suppressed.
         reason = kw.get("reason_code", "")
         level = "info" if reason in _TRANSITION_REASONS else "debug"
-        if level == "debug" and not _VERBOSE:
-            return
         _log(level, "decision_trace.rev4_tick", **kw)
 
     def write_action(self, *, tier: str, action_label: str, dry_run: bool,
@@ -1746,8 +1759,20 @@ class InfluxTelemetry:
         write_point(self.write_api, self.bucket, "hvac.actions",
                     tags=tags, fields=fields)
 
+    def write_price_overlay(self, *, prev_tier: str, new_tier: str,
+                            current_price_cents: float, baseline_cool: float,
+                            commanded_cool: float) -> None:
+        # Tier transitions only (rev 3 contract preserved; cockpit reads this).
+        write_point(self.write_api, self.bucket, "hvac.price_overlay",
+                    tags={"prev_tier": prev_tier, "new_tier": new_tier,
+                          "unit": self.unit},
+                    fields={"current_price_cents": float(current_price_cents),
+                            "baseline_cool": float(baseline_cool),
+                            "commanded_cool": float(commanded_cool)})
+
     def write_arm_mode(self, now_ct: datetime, scheduler_mode: str) -> None:
-        arm = current_arm_at(now_ct)
+        # current_arm_at requires NAIVE CT (rev 3: app.py stripped tzinfo too).
+        arm = current_arm_at(now_ct.replace(tzinfo=None))
         if arm is None:
             write_point(self.write_api, self.bucket, "hvac.arm_mode",
                         tags={"scheduler_mode": scheduler_mode},
@@ -1803,8 +1828,15 @@ Complete `tick` implementation (replace the skeleton's trailing comment):
 
         needs_device = self.tier_state.tier != tiers.NORMAL or own is not None
         if needs_device:
-            snap = self.climate.snapshot()
+            snap = await self.climate.snapshot()
             self._update_humidity_gate(snap)
+
+        if prev != self.tier_state.tier:
+            self.telemetry.write_price_overlay(
+                prev_tier=prev, new_tier=self.tier_state.tier,
+                current_price_cents=(sample.cents if sample else 0.0),
+                baseline_cool=(snap.schedule_cool if snap and snap.schedule_cool else 0.0),
+                commanded_cool=(snap.cool_setpoint if snap else 0.0))
 
         if snap is not None:
             now_local = now_utc.astimezone(self.tz)
@@ -1812,7 +1844,7 @@ Complete `tick` implementation (replace the skeleton's trailing comment):
                 self.tier_state.tier, snap, own, self.cfg,
                 now_utc, now_local, self.humidity_blocked)
             if kind == "push":
-                applied, err = self._apply_push(cool, until)
+                applied, err = await self._apply_push(cool, until)
                 if applied:
                     save_record(self.data_dir, OwnHoldRecord(
                         value=cool, until_minutes=until,
@@ -1826,7 +1858,7 @@ Complete `tick` implementation (replace the skeleton's trailing comment):
                     snapshot_before=snap, setpoint_reason=dreason,
                     humidity_gated=self.humidity_blocked)
             elif kind == "release":
-                applied, err = self._apply_release()
+                applied, err = await self._apply_release()
                 if applied:
                     clear_record(self.data_dir)
                 self.telemetry.write_action(
@@ -1848,20 +1880,20 @@ Complete `tick` implementation (replace the skeleton's trailing comment):
 With helpers (same class):
 
 ```python
-    def _apply_push(self, cool: float, until: int) -> tuple[bool, str]:
+    async def _apply_push(self, cool: float, until: int) -> tuple[bool, str]:
         if self.mode == "shadow":
             return False, ""
         try:
-            self.climate.push(cool, self.cfg.heat_floor, until)
+            await self.climate.push(cool, self.cfg.heat_floor, until)
             return True, ""
         except Exception as exc:  # transient TCC errors self-heal next tick
             return False, f"{type(exc).__name__}: {exc}"
 
-    def _apply_release(self) -> tuple[bool, str]:
+    async def _apply_release(self) -> tuple[bool, str]:
         if self.mode == "shadow":
             return False, ""
         try:
-            self.climate.release()
+            await self.climate.release()
             return True, ""
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
@@ -1882,14 +1914,14 @@ With helpers (same class):
         return base.astimezone(timezone.utc)
 ```
 
-(`humidity_blocked = False` and `_last_arm_write = None` initialized in `__init__`; `_maybe_write_arm_mode` writes via `self.telemetry.write_arm_mode(now_utc.astimezone(self.tz), self.mode)` at most every 300 s. Note for the shadow path: `_apply_*` returns `applied=False, error=""`, the record is NOT saved, matching "shadow never writes" — the trace still shows the would-push via `write_action(dry_run=True)`.)
+(`humidity_blocked = False` and `_last_arm_write = None` initialized in `__init__`; `_maybe_write_arm_mode` writes via `self.telemetry.write_arm_mode(now_ct=now_utc.astimezone(self.tz), scheduler_mode=self.mode)` — KEYWORDS, the test fakes are `**kw`-only — at most every 300 s. Note for the shadow path: `_apply_*` returns `applied=False, error=""`, the record is NOT saved, matching "shadow never writes" — the trace still shows the would-push via `write_action(dry_run=True)`. `run_forever` = ONE `asyncio.run(...)` around the whole loop per the async-seam global constraint, with the per-tick try/except error contract.)
 
 - [ ] **Step 1: Add loop tests** — humidity hysteresis (blocked at 61, stays blocked at 59, clears at 57.9), shadow gate (production=False → `dev.pushes == []`, action row has `dry_run=True/applied=0`), record hygiene (record + no device hold → record cleared).
 - [ ] **Step 2: Run all rev4 unit tests** — green.
 - [ ] **Step 3: Run the acceptance test** — `python -m pytest test_rev4_acceptance.py -q`. With strict xfail, a PASSING test reports **XPASS(strict) = FAILURE of the suite**: that is the signal to remove the marker.
 - [ ] **Step 4: Delete the `pytestmark = pytest.mark.xfail(...)` line** from `test_rev4_acceptance.py`.
 - [ ] **Step 5: Full service suite** — `cd deploy/energy-stack/hvac_scheduler && python -m pytest . -q` → everything green (rev 3 tests included — they still pass; nothing of rev 3 was touched).
-- [ ] **Step 6: Wire `__main__.py`** — replace the stub:
+- [ ] **Step 6: Wire `__main__.py`** — replace the stub. Same commit: add the import-linter exemption `hvac_scheduler.controller.__main__ -> influxdb_client` to `pyproject.toml`'s `ignore_imports` (the contract otherwise forbids direct `influxdb_client` imports outside `influx_adapter`):
 
 ```python
 """Entrypoint: python -m hvac_scheduler.controller."""
@@ -1980,20 +2012,15 @@ git commit -m "feat(rev4): full loop wiring — acceptance test passes, xfail re
 def test_check_controller_down_fires_on_beacon():
     from .app import check_controller_down
 
-    class _Rec:
-        def __init__(self, v): self._v = v
-        @property
-        def values(self): return {"_value": self._v}
-
     class _Table:
         def __init__(self, recs): self.records = recs
+
+    class _R:
+        def __init__(self, v): self.values = {"_value": v}
 
     class Api:
         def __init__(self, rows): self._rows = rows
         def query(self, flux): return [_Table(self._rows)] if self._rows else []
-
-    class _R:
-        def __init__(self, v): self.values = {"_value": v}
 
     alerts = check_controller_down(Api([_R(False)]), "energy")
     assert len(alerts) == 1 and alerts[0].key == "controller_down"
@@ -2051,7 +2078,10 @@ def test_push_failure_alert_requires_three_consecutive():
     from .app import check_hvac_action_errors
 
     def api_with(errors):  # newest-first error field values of the last 3 rows
-        return _make_fake_api_rows(errors)  # reuse this file's fake helper
+        # NOTE: the notifier test file uses monkeypatch/MagicMock — there is no
+        # shared row-fake helper. Build one here (same _Table/_R shape as Task 12's
+        # test) returning one record per error string.
+        return _fake_api(errors)
 
     # one transient followed by a success: NO alert (kills the 07-05 double-bark)
     assert check_hvac_action_errors(api_with(["", "TimeoutError: ", ""]), "energy") == []
@@ -2064,7 +2094,7 @@ def test_push_failure_alert_requires_three_consecutive():
         api_with(["hvac_mode_not_cooling ('Off')"] * 3), "energy") == []
 ```
 
-- [ ] **Step 2: Implement** — flux fetches the last `PUSH_FAILURE_ALERT_N` (env, default 3) `hvac.actions` `error` rows (`sort desc` + `limit(n)`); alert only when all N are non-empty after excluding the two benign `hvac_mode_not_cooling` strings (preserve the existing exclusion filter); key stays `hvac_error:<first-40-chars>`.
+- [ ] **Step 2: Implement** — module constant `PUSH_FAILURE_ALERT_N = 3` (spec: "constant, seed 3" — NOT an env var; no unrequested configurability); flux fetches the last N `hvac.actions` `error` rows (`sort desc` + `limit(n)`); alert only when all N are non-empty after excluding the two benign `hvac_mode_not_cooling` strings (preserve the existing exclusion filter); key stays `hvac_error:<first-40-chars>`.
 - [ ] **Step 3: Run notifier suite** — green.
 - [ ] **Step 4: Commit**
 
@@ -2120,9 +2150,9 @@ release_confirm_buckets: 2
 stale_release_minutes: 30
 ```
 
-- [ ] **Step 1: Wire-up audit BEFORE deleting (memory: verify-production-wireup).** `git grep -nE "hvac_scheduler\.(app|price_overlay|controller_core|controller_config|decision_codes)"` and `git grep -n "from .app import\|from .price_overlay"` — every hit must be a file being deleted in this task, the knowledge graph, or docs. Also `git grep -n "hvac.overrides"` (cockpit/grafana refs are observer-rebuild scope, note them in the PR body, don't fix here).
+- [ ] **Step 1: Wire-up audit BEFORE deleting (memory: verify-production-wireup).** `git grep -nE "hvac_scheduler\.(app|price_overlay|controller_core|controller_config|decision_codes)"` and `git grep -n "from .app import\|from .price_overlay"` — every hit must be a file being deleted in this task, the knowledge graph, or docs. Also `git grep -n "hvac.overrides"` and `git grep -n "hvac.price_overlay"` (rev 4 writes the latter via telemetry.write_price_overlay — confirm cockpit's reader survives; cockpit/grafana `hvac.overrides` refs are observer-rebuild scope, note them in the PR body, don't fix here). Also clean `pyproject.toml`: remove the now-stale `hvac_scheduler.app` mypy overrides and import-linter `ignore_imports` entries in this same PR (a stale unmatched entry is a linter error).
 - [ ] **Step 2: Swap Dockerfile CMD; replace the yaml; delete the rev 3 files and tests.**
-- [ ] **Step 3: Full per-service suites:** `bash deploy/energy-stack/run_tests.sh` → all green (rev 4 tests + surviving infra tests: `test_tcc_client.py`, `test_freshness.py`, `test_influx_adapter.py`).
+- [ ] **Step 3: Fix `run_tests.sh` BEFORE trusting it:** the runner's per-service sentinel is the literal filename `test_<service>.py` — deleting `test_hvac_scheduler.py` makes it silently SKIP the entire hvac_scheduler suite. Change the sentinel to "any `test_*.py` exists in the service dir" (glob check) in this PR. Then run `bash deploy/energy-stack/run_tests.sh` → all green (rev 4 tests + surviving infra tests: `test_tcc_client.py`, `test_freshness.py`, `test_influx_adapter.py`) — and verify the hvac_scheduler section actually EXECUTED (test count > 0), not skipped.
 - [ ] **Step 4: Local container build check:** `cd deploy/energy-stack && docker compose build hvac-scheduler` (or on the Pi at deploy) — image builds, CMD resolves (`python -c "import hvac_scheduler.controller.__main__"` in an RUN check is acceptable).
 - [ ] **Step 5: Update `docs/SERVICES.md` hvac-scheduler entry** (three tiers, spike-only, no schedule copy, own-hold cleanup, alert pair).
 - [ ] **Step 6: Commit — PR-5. Merging = deploying rev 4 in `SCHEDULER_MODE` as set on the Pi.** Coordinate with the operator: the Pi `.env` stays `production` (rev 4 boots straight into production) **only if** the operator wants the go-active gates run same-day; otherwise flip the Pi `.env` to `shadow` before merging and run gates per the checklist below.
