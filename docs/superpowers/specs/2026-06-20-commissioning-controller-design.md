@@ -136,6 +136,7 @@ its action side and config keys change.
 | Cooling overshoot | the unit overshoots its setpoint ~1-1.5°F — watch this at the scarcity absolute |
 | Hold release is edge-triggered | device unpowered at expiry ⇒ expired hold persists indefinitely (observed 2026-07-03) |
 | `ScheduleCoolSp` | device reports its current program cool value in every read, including mid-hold (verified 2026-07-03) |
+| ComEd bucket age at tick time | saws **~7.2–11.2 min** (publish lag; floor measured 430 s, 2026-07-05). Any freshness gate < 7.2 min is never satisfiable — rev 3's ≤7-min downgrade gate never once passed in production; every release went via the persistent-stale timer (the 99-min hold of 07-04 and the 07-05 event both) |
 
 ## What the controller does
 
@@ -252,10 +253,16 @@ wanted); no heat-stretch banking (the floor invariant is absolute).
 Two named freshness predicates, both already implemented — reuse, don't
 reinvent:
 
-- **fresh-strict** = the existing `freshness.py` fresh label for `comed.prices`
-  (≤ 7 min). Required to **engage a new hold or upgrade a tier**. A
-  stale-but-high sample never starts or escalates a hold (supersedes rev 3's
-  stale-spike upgrade — see Revision 4 note).
+- **fresh-strict** = bucket age ≤ **12 min** at evaluation time. NOT the
+  `freshness.py` 7-min display label: live measurement (2026-07-05) shows the
+  ComEd bucket's age at tick time saws between **~7.2 and ~11.2 min**
+  (publish lag) — the 7-min label is *never true at tick time*, which is
+  exactly how rev 3's freshness-gated downgrade became dead code (see
+  Empirical grounds). 12 min = the observed sawtooth ceiling plus margin: true
+  whenever the feed is actually flowing, false within one missed publish.
+  Required to **engage a new hold or upgrade a tier**. A genuinely stale
+  sample never starts or escalates a hold (supersedes rev 3's stale-spike
+  upgrade — see Revision 4 note).
 - **fresh-loose** = the existing stale-release machinery
   (`PRICE_FEED_STALE_THRESHOLD` and the minimum-hold-then-release timers in
   `app.py`). Governs **extension**: an active hold keeps extending through the
