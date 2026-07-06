@@ -125,16 +125,6 @@ disallow_any_generics = false
 disallow_untyped_calls = false
 warn_unreachable = false
 
-[[tool.mypy.overrides]]
-# TEMPORARY SCAFFOLDING (rev 4 plan 2026-07-05): the acceptance test
-# imports hvac_scheduler.controller.{config,loop,device} before those
-# modules exist (config/loop land in PR-1 Tasks 2/4; device in PR-3
-# Task 9). ignore_missing_imports only applies while a module cannot be
-# found — once each module lands it is strictly checked as usual, so
-# this block self-retires. Remove it at Task 11 (acceptance goes green).
-module = "hvac_scheduler.controller.*"
-ignore_missing_imports = true
-
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
@@ -167,6 +157,9 @@ ignore_imports = [
     # the adapter too, eliminating this exemption; PR 3b leaves it
     # as a bounded exception.
     "hvac_scheduler.app -> influxdb_client",
+    # Rev 4 controller entrypoint mirrors app.py's bounded exception:
+    # __main__.main() constructs InfluxDBClient + SYNCHRONOUS write_api.
+    "hvac_scheduler.controller.__main__ -> influxdb_client",
 ]
 
 [[tool.importlinter.contracts]]
