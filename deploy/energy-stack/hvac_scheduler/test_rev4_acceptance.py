@@ -1,7 +1,6 @@
 """Rev 4 outside-in acceptance: the whole spike-only story in one scenario.
 
 Drives the real ControllerLoop through fake seams (price feed + device).
-xfail(strict=True) until the implementation is complete — see plan Task 11.
 """
 from __future__ import annotations
 
@@ -9,12 +8,6 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-
-import pytest
-
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="rev 4 controller not complete yet (plan Tasks 2-11)"
-)
 
 UTC = timezone.utc
 CT = "America/Chicago"

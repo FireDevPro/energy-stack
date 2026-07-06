@@ -99,6 +99,105 @@ def test_adapter_maps_seam_to_snapshot():
     assert ("mode", "Schedule") in FakeClim.pushed
 
 
+@dataclass
+class Dev:
+    """Recording device fake mirroring the acceptance test's FakeClimate."""
+    schedule_cool: float = 25.5
+    cool_setpoint: float = 25.5
+    heat_setpoint: float = 18.5
+    hold_active: bool = False
+    hold_until_minutes: int | None = None
+    indoor_temp: float = 25.0
+    humidity: float = 45.0
+    pushes: list = field(default_factory=list)
+    releases: int = 0
+
+    async def snapshot(self):
+        from .controller.device import ControlSnapshot
+        return ControlSnapshot(
+            schedule_cool=self.schedule_cool,
+            cool_setpoint=self.cool_setpoint,
+            heat_setpoint=self.heat_setpoint,
+            hold_active=self.hold_active,
+            hold_until_minutes=self.hold_until_minutes,
+            indoor_temp=self.indoor_temp,
+            humidity=self.humidity,
+        )
+
+    async def push(self, cool, heat, until_minutes):
+        self.pushes.append((cool, heat, until_minutes))
+        self.cool_setpoint = cool
+        self.hold_active = True
+        self.hold_until_minutes = until_minutes
+
+    async def release(self):
+        self.releases += 1
+        self.hold_active = False
+        self.hold_until_minutes = None
+        self.cool_setpoint = self.schedule_cool
+
+
+def _wired(tmp_path, feed, dev, mode="production"):
+    p = tmp_path / "c.yaml"; p.write_text(CFG_YAML, encoding="utf-8")
+    cfg = load_config(str(p), temp_scale_env="C")
+    return ControllerLoop(cfg=cfg, price_source=feed, climate=dev,
+                          telemetry=Tel(), mode=mode, tz_name="America/Chicago",
+                          data_dir=str(tmp_path))
+
+
+def test_humidity_hysteresis_blocks_then_clears(tmp_path):
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+    dev = Dev(humidity=61.0)
+    loop = _wired(tmp_path, feed, dev)
+    asyncio.run(loop.tick(now))              # RH 61 >= rh_max 61 -> blocked
+    assert loop.humidity_blocked and dev.pushes == []
+    dev.humidity = 59.0                      # inside the band: stays blocked
+    asyncio.run(loop.tick(now + timedelta(minutes=1)))
+    assert loop.humidity_blocked and dev.pushes == []
+    dev.humidity = 57.9                      # < rh_clear 58 -> clears, engage fires
+    asyncio.run(loop.tick(now + timedelta(minutes=2)))
+    assert not loop.humidity_blocked
+    assert len(dev.pushes) == 1 and dev.pushes[0][0] == 27.0
+
+
+def test_shadow_gate_never_writes_device(tmp_path):
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+    dev = Dev()
+    loop = _wired(tmp_path, feed, dev, mode="shadow")
+    asyncio.run(loop.tick(now))
+    assert dev.pushes == [] and dev.releases == 0
+    row = loop.telemetry.actions[-1]
+    assert row["dry_run"] is True and not row["applied"]
+    assert not (tmp_path / "own_hold.json").exists()  # shadow never saves a record
+
+
+def test_record_hygiene_clears_stale_record(tmp_path):
+    from .controller.ownhold import OwnHoldRecord, load_record, save_record
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    save_record(str(tmp_path), OwnHoldRecord(
+        value=27.0, until_minutes=870,
+        expiry_utc=(now + timedelta(minutes=25)).isoformat()))
+    feed = Feed(out=(4.0, now - timedelta(seconds=400), 400.0))
+    dev = Dev(hold_active=False)             # device already lapsed the hold
+    loop = _wired(tmp_path, feed, dev)
+    asyncio.run(loop.tick(now))
+    assert load_record(str(tmp_path)) is None
+    assert dev.pushes == [] and dev.releases == 0
+
+
+def test_arm_mode_throttled(tmp_path):
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    feed = Feed(out=(4.2, now - timedelta(seconds=400), 400.0))
+    loop = _loop(tmp_path, feed)
+    asyncio.run(loop.tick(now))
+    asyncio.run(loop.tick(now + timedelta(minutes=1)))  # < 300s -> throttled
+    assert len(loop.telemetry.arm_rows) == 1
+    asyncio.run(loop.tick(now + timedelta(minutes=6)))  # >= 300s -> writes again
+    assert len(loop.telemetry.arm_rows) == 2
+
+
 def test_influx_telemetry_action_row_contract():
     from .controller.telemetry import InfluxTelemetry
     from .controller.device import ControlSnapshot
