@@ -1,8 +1,8 @@
 ---
 date: 2026-06-20
-revised: 2026-07-03
+revised: 2026-07-06
 owner: chris
-status: draft (revision 4 — spike-only respec, 2026-07-03)
+status: draft (revision 4.1 — spike-only respec; active release on live stand-down, 2026-07-06)
 role-label: code-team
 supersedes_intent_of: the now-removed day-type / deep-precool controller model (its docs were deleted in the demolition); revision 4 additionally supersedes revision 3's always-hold normal tier, config schedule copy, and extreme tier
 depends_on: Control4->TCC actuation swap (landed; timed holds live since #112)
@@ -71,14 +71,20 @@ onboard program). Four changes, each a deletion or a narrowing:
 5. **No tier time lock.** Releases follow fresh data (confirmation count +
    hysteresis + stale backstop), not a clock — decided from the first three
    production events, all of which were punished only by lock time (see
-   Reactive core → Release policy).
+   Reactive core → Release policy). *(Rev 4.1: these releases are active
+   writes to the device, not lapses.)*
 
 One deliberate supersession of a rev 3 choice: rev 3 allowed a **stale**
 high-price sample to drive a warm upgrade. Rev 4 requires **fresh-strict**
 price data to engage or upgrade a hold; extension tolerates only the routine
-publish sawtooth (**fresh-loose** — see Feed-gap). Without fresh data, holds
-lapse and the program runs. Rationale: in spike-only, the do-nothing state is
+publish sawtooth (**fresh-loose** — see Feed-gap). Without fresh data, the
+controller actively releases its hold and the program runs. Rationale: in
+spike-only, the do-nothing state is
 the safe, correct state; acting on stale data buys little and costs trust.
+
+Rev 4.1 (2026-07-06, operator directive after the first live spike): live
+releases are active writes; TTL lapse demoted to pure dead-controller safety
+net — the two mechanisms are independent.
 
 ## How 2026 runs
 
@@ -215,16 +221,25 @@ Four rules:
 2. **Correct** — on any tick during a live own-hold where the computed target
    differs from the held value (tier moved, program block changed), re-push
    immediately at the new target with a fresh TTL; near-expiry extension is
-   the same-value case of this rule. **Warm-only outranks lapse-only:** if the
+   the same-value case of this rule. **Warm-only outranks the TTL tail:** if the
    held value falls below the current program value (a program step-up
    mid-hold) and no valid warmer target exists, **release the own-hold
    immediately** rather than letting the device cool below program at spike
-   prices until lapse. This release is the one unforced write besides pushes.
+   prices until lapse. This release uses the same active-release path as
+   rule 4.
 3. **Extend** (re-push near expiry) continues only while ALL of: tier still
    ≥ elevated (release policy below), price data *fresh-loose* (below),
    humidity guard clear, `ScheduleCoolSp` readable, precondition holds.
-4. **Otherwise stop extending** and the hold **lapses on the device** — the
-   program resumes with no release write.
+4. **Otherwise release (active write).** Whenever the live controller decides
+   its own hold should not exist — a confirmed release to normal (release
+   policy below), the stale-data backstop, or the humidity guard while
+   holding — it **writes an active release** (`set_hold_mode("Schedule")` via
+   the existing release path) and clears its own-hold record on success; the
+   program resumes immediately. The TTL lapse is **not** the spike-end path —
+   it is solely the safety net for a dead controller or a failed release
+   write (Safety #2). One non-release stand-down remains: if `ScheduleCoolSp`
+   is unreadable the controller merely declines to extend (fail toward the
+   program) and the TTL covers the tail.
 
 **Release policy — no time lock (decided 2026-07-05, from live data).**
 Rev 3 locked tiers for a minimum-hold (silently doubled to 60 min by the
@@ -241,13 +256,15 @@ price — which is the system's purpose. The rules:
   threshold (trigger − `hysteresis_cents`) for **`release_confirm_buckets`
   consecutive buckets** (seed 2, ≈ 10 min). No time lock. A tier downgrade
   re-targets on the next tick (Correct rule above); a release to normal
-  stops extending and the hold lapses (≤ `hold_ttl_minutes` of tail).
+  **writes an active release** (`set_hold_mode("Schedule")`) and clears the
+  own-hold record on success — no lapse tail.
 - **Upgrade/engage:** fresh-strict, single bucket — deliberately asymmetric
   (respond to real spikes immediately; the cost of a false engage is one
   warm push that the release rule unwinds ~10 min later).
 - **Stale backstop:** while a hold is active and no fresh-strict sample has
-  arrived for `stale_release_minutes` (seed 30), hard-release — stop
-  extending, lapse home. Anti-thrash lives in the hysteresis band plus the
+  arrived for `stale_release_minutes` (seed 30), hard-release — an active
+  release write sends the device home immediately, record cleared on
+  success. Anti-thrash lives in the hysteresis band plus the
   confirmation count, not in a clock.
 
 **Manual holds.** Outside spikes the controller never writes, so operator
@@ -283,10 +300,11 @@ reinvent:
   (`PRICE_FEED_STALE_THRESHOLD` and the minimum-hold-then-release timers in
   `app.py`). Governs **extension**: an active hold keeps extending through the
   routine ComEd publish sawtooth (bucket age jitters ~6.2–11.2 min between
-  publishes — a tight gate would wrongly lapse holds mid-spike on healthy
+  publishes — a tight gate would wrongly release holds mid-spike on healthy
   data). "Sustained staleness" is not vague: it is the stale backstop in the
   release policy — no fresh-strict sample for `stale_release_minutes` while
-  holding → hard release, extension stops, the hold lapses at its TTL.
+  holding → hard release: an active release write sends the device home
+  immediately (the TTL covers only the dead-controller/failed-write branch).
 
 In normal tier a stale feed requires no action at all: the do-nothing state is
 the safe state. Neither threshold is a new config key — both are the existing
@@ -298,18 +316,20 @@ constants.
   absolute is the operator's maximum tolerable house temperature (seed 29.5 =
   the long-standing 85°F "effective shutoff"), not a comfort target. During a
   sustained ≥20¢ event the house rides it for the duration (keep the savings;
-  ≥20¢ ran 5–6 h/day at the 2026-07 peak), then lapses home when price drops.
+  ≥20¢ ran 5–6 h/day at the 2026-07 peak), then is actively released home
+  when price drops.
   Because the semantic is a *house-temp* max and the unit overshoots its
   setpoint ~1-1.5°F, watch commanded-vs-actual and lower the commanded value
   if the actual house temp exceeds the intent.
-- **Humidity guard — one more reason not to extend.** When indoor RH ≥
+- **Humidity guard — a release trigger while holding.** When indoor RH ≥
   `rh_max_pct` (or humidity is missing -> conservative, treat as humid), the
-  controller stops extending; the hold lapses and the program resumes — at
+  controller **actively releases its own hold** (release write, record
+  cleared on success) and the program resumes immediately — at
   program setpoints the AC cycles and dries the air. Re-engagement requires RH
   < `rh_clear_pct` (hysteresis). **Never below program, no DEHUM** (DEHUM
   pre-cools early — against the goal). Rev 3's effective-layer gating,
-  min-hold override, and re-enable machinery are deleted — in lapse-world the
-  guard is a condition on extension, not a subsystem.
+  min-hold override, and re-enable machinery are deleted — the
+  guard is a release condition on the own-hold, not a subsystem.
 
 ### Units — `temp_scale`, controller-native, conversion only at analysis
 
@@ -345,7 +365,7 @@ elevated_offset: 1.5     # added to the device's current program cool value (≈
 scarcity_absolute: 29.5  # the hottest the house may get (85°F, the operator's long-standing max); the single cap on all commands. Unit overshoots ~1-1.5°F above commanded — lower this if actual exceeds intent.
 heat_floor: 18.5         # heat pinned at/below this on every hold push
 humidity_guard: {rh_max_pct: 61, rh_clear_pct: 58}  # intent = 65/62 real; CTK04 reads ~4.4 low vs the ch2 reference (263-h comparison, 2026-07-05)
-hold_ttl_minutes: 30       # device-hold TTL (lapse horizon); there is NO tier time lock
+hold_ttl_minutes: 30       # device-hold TTL (dead-controller lapse horizon — safety net only, not the release path); there is NO tier time lock
 release_confirm_buckets: 2  # consecutive fresh buckets at/below release threshold to downgrade (~10 min)
 stale_release_minutes: 30  # no fresh-strict data while holding for this long -> hard release
 ```
@@ -373,7 +393,11 @@ controller code (which dies with the Pi). Three facts:
    controller's hold lapses (≤ `hold_ttl_minutes`) and the thermostat reverts
    to its onboard schedule. Under rev 4 this graceful-reversion state is also
    the controller's **normal-tier state** — the failure mode and the idle mode
-   are the same state, by construction.
+   are the same state, by construction. **The TTL lapse is solely this
+   dead-controller (or failed-release-write) safety net** — it has nothing to
+   do with pricing returning to normal and is never the live controller's
+   stand-down path; a live controller that decides its hold should not exist
+   writes an active release (rev 4.1). The two mechanisms are independent.
 3. **Zombie holds (the power-cycle edge, observed live 2026-07-03).** The CTK04
    hold release is **edge-triggered**: if the device is unpowered at the expiry
    instant, the expired hold persists indefinitely on power restore (it does
@@ -393,7 +417,8 @@ controller code (which dies with the Pi). Three facts:
        failure). This matters precisely because zombies are born in power
        events, when TCC may briefly serve cached reads while writes still fail.
      - The record is also cleared on the first tick that observes **no device
-       hold, or a non-matching one** — a normally-lapsed hold must not leave a
+       hold, or a non-matching one** — a lapsed hold (controller down across
+       expiry) must not leave a
        stale record that could later match a coincidental manual hold on the
        dateless slot.
      - A hold that doesn't match the record (a manual hold, or no record) is
@@ -456,7 +481,8 @@ hold.
 
 - **`SCHEDULER_MODE`** is the write gate: `shadow` (compute/log, never write) ->
   `production` (write for the season). `experiment` (arm-gated) is the 2027
-  layer, untouched. The zombie self-cleanup release is a write and obeys the
+  layer, untouched. All release writes — live stand-down (hold-lifecycle
+  rule 4) and the zombie self-cleanup — obey the
   gate.
 - **Scoped device reads.** Spike-tier ticks (and normal ticks holding a
   cleanup record) read the device snapshot (`ScheduleCoolSp` + hold state);
@@ -464,7 +490,7 @@ hold.
   no-needless-thermostat-read short-circuit. No startup baseline push, no
   startup reconstruction — a restarted controller in normal tier writes
   nothing; in a spike tier it engages on its first tick from live data.
-- **Shadow validation for rev 4** = watch the would-engage/extend/lapse traces
+- **Shadow validation for rev 4** = watch the would-engage/extend/release traces
   across real spikes for a short window (days, not weeks — the spike machinery
   is unchanged and already production-proven; what's new is mostly deletion),
   plus sanity checks: floor never violated, setpoints on-grid, no writes traced
@@ -485,9 +511,10 @@ config (config-as-surface — no code, and `config_id` records the epoch).
    test must be re-run clean, with its restore step parked on the Pi — e.g.
    `at`-scheduled `docker compose start` — not in an agent session.)*
 2. Spike-hold round-trip readback (engage on a real elevated tick, confirm
-   device state and lapse).
+   device state and the active release home at spike end).
 3. Zombie self-cleanup: matching/lifecycle logic covered by tests, and the
-   record-clearing path (normal lapse observed -> record cleared) verified
+   record-clearing paths (successful release write -> record cleared;
+   observed no-hold -> record cleared) verified
    live. The true zombie-release path requires a power cut across an expiry —
    verify opportunistically, or optionally by cutting thermostat power across
    a short-TTL hold's expiry.
@@ -513,8 +540,9 @@ cleanup, the two alerts. `shadow` is the isolation; git history is rollback.
 ## Scope
 
 **IN:** spike-only warm-hold controller (3 tiers; device-read anchor; hybrid
-offset+absolute; fresh-strict/fresh-loose feed gates; humidity stop-extend;
-timed holds, lapse-home),
+offset+absolute; fresh-strict/fresh-loose feed gates; humidity release;
+timed holds, active release on live stand-down, TTL lapse as dead-controller
+backstop),
 device-owned safety (min/max + timed holds + zombie self-cleanup),
 `temp_scale` actuation (format-only), config-as-surface + provenance, alert
 pair, `shadow -> production` runtime, reshaped `hvac.actions`, live for 2026
