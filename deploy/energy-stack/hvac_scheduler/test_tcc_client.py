@@ -161,3 +161,29 @@ async def test_get_climate_logs_in_when_no_session() -> None:
     climate = await client.get_climate()
     dev.refresh.assert_awaited_once()
     assert climate._dev is dev
+
+
+def test_schedule_cool_and_hold_until_read_raw_ui_data():
+    import asyncio
+
+    class _Dev:
+        raw_ui_data = {"ScheduleCoolSp": 25.5, "TemporaryHoldUntilTime": 1290,
+                       "StatusCool": 1}
+
+    class _Client:
+        device = _Dev()
+
+    from .tcc_client import TCCClimate
+    clim = TCCClimate(_Client())  # type: ignore[arg-type]
+    assert asyncio.run(clim.get_schedule_cool_f()) == 25.5
+    assert asyncio.run(clim.get_hold_until_minutes()) == 1290
+
+    class _Empty:
+        raw_ui_data = {}
+
+    class _C2:
+        device = _Empty()
+
+    clim2 = TCCClimate(_C2())  # type: ignore[arg-type]
+    assert asyncio.run(clim2.get_schedule_cool_f()) is None
+    assert asyncio.run(clim2.get_hold_until_minutes()) is None
