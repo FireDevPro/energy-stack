@@ -109,6 +109,18 @@ class TCCClimate:
             return _HOLD_BY_STATUS[status]
         return "Off"
 
+    async def get_schedule_cool_f(self) -> Any:
+        # Rev 4: the device's current program cool value — the drift anchor and
+        # warm-only floor. Present in every uiData read, including mid-hold
+        # (verified live 2026-07-03). Pass-through, display unit, no conversion.
+        return (self._dev.raw_ui_data or {}).get("ScheduleCoolSp")
+
+    async def get_hold_until_minutes(self) -> Any:
+        # Rev 4: the device's dateless hold-until (minutes since midnight).
+        # Used ONLY for own-hold record matching (zombie cleanup) — never as a
+        # clock (no date; see spec Safety #3).
+        return (self._dev.raw_ui_data or {}).get("TemporaryHoldUntilTime")
+
     async def get_humidity(self) -> Any:
         return self._dev.current_humidity
 
