@@ -146,6 +146,7 @@ def _wired(tmp_path, feed, dev, mode="production"):
 
 
 def test_humidity_hysteresis_blocks_then_clears(tmp_path):
+    from .controller.ownhold import load_record
     now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
     feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
     dev = Dev(humidity=61.0)
@@ -159,6 +160,36 @@ def test_humidity_hysteresis_blocks_then_clears(tmp_path):
     asyncio.run(loop.tick(now + timedelta(minutes=2)))
     assert not loop.humidity_blocked
     assert len(dev.pushes) == 1 and dev.pushes[0][0] == 27.0
+    # RH crosses rh_max MID-HOLD -> active release write (rev 4.1), record cleared
+    dev.humidity = 61.0
+    asyncio.run(loop.tick(now + timedelta(minutes=3)))
+    assert loop.humidity_blocked
+    assert dev.releases == 1 and not dev.hold_active
+    row = loop.telemetry.actions[-1]
+    assert row["action_label"] == "RELEASE"
+    assert row["setpoint_reason"] == "REV4_HUMIDITY_RELEASE"
+    assert row["applied"] and row["dry_run"] is False
+    assert load_record(str(tmp_path)) is None
+
+
+def test_humidity_release_shadow_gate_dry_run(tmp_path):
+    """Shadow mode: the mid-hold humidity release is decided and traced as a
+    dry_run action row but never touches the device or the record."""
+    from .controller.ownhold import OwnHoldRecord, load_record, save_record
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    save_record(str(tmp_path), OwnHoldRecord(
+        value=27.0, until_minutes=870,
+        expiry_utc=(now + timedelta(minutes=25)).isoformat()))
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+    dev = Dev(hold_active=True, hold_until_minutes=870, cool_setpoint=27.0,
+              humidity=61.0)
+    loop = _wired(tmp_path, feed, dev, mode="shadow")
+    asyncio.run(loop.tick(now))
+    assert dev.releases == 0 and dev.pushes == []
+    row = loop.telemetry.actions[-1]
+    assert row["dry_run"] is True and not row["applied"]
+    assert row["setpoint_reason"] == "REV4_HUMIDITY_RELEASE"
+    assert load_record(str(tmp_path)) is not None  # only cleared on a real write
 
 
 def test_shadow_gate_never_writes_device(tmp_path):

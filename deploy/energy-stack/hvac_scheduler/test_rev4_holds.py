@@ -87,9 +87,9 @@ def test_own_hold_correct_extend_and_warm_only_release(tmp_path):
     near = now + timedelta(minutes=22)
     kind, cool, until, reason = decide("elevated", held, own, cfg, near, near, False)
     assert kind == "push" and cool == 27.0 and reason == "REV4_EXTENDED"
-    # humidity blocked -> stop extending
+    # humidity blocked mid-hold -> active release (rev 4.1)
     kind, *_ , reason = decide("elevated", held, own, cfg, near, near, True)
-    assert kind == "none" and reason == "REV4_HUMIDITY_STOP_EXTEND"
+    assert kind == "release" and reason == "REV4_HUMIDITY_RELEASE"
     # program stepped ABOVE held value and target invalid -> immediate release
     stepped = Snap(schedule_cool=29.5, hold_active=True,
                    hold_until_minutes=own.until_minutes, cool_setpoint=27.0)
@@ -100,9 +100,9 @@ def test_own_hold_correct_extend_and_warm_only_release(tmp_path):
                     hold_until_minutes=own.until_minutes, cool_setpoint=27.0)
     kind, cool, _, reason = decide("elevated", stepped2, own, cfg, now, now, False)
     assert kind == "push" and cool == 24.5 and reason == "REV4_CORRECTED"
-    # ...but humidity blocks corrective pushes too (only warm-only release acts)
+    # ...and humidity outranks corrective pushes too: release, not correct
     kind, *_ , reason = decide("elevated", stepped2, own, cfg, now, now, True)
-    assert kind == "none" and reason == "REV4_HUMIDITY_STOP_EXTEND"
+    assert kind == "release" and reason == "REV4_HUMIDITY_RELEASE"
 
 
 def test_zombie_cleanup_only_matching_and_expired(tmp_path):
@@ -116,8 +116,24 @@ def test_zombie_cleanup_only_matching_and_expired(tmp_path):
     foreign = Snap(hold_active=True, hold_until_minutes=915, cool_setpoint=27.0)
     kind, *_ = decide("normal", foreign, own, cfg, now, now, False)
     assert kind == "none"
-    # matching but not yet past expiry+grace: leave alone
-    own_live = Own(value=27.0, until_minutes=870,
-                   expiry_utc=(now + timedelta(minutes=5)).isoformat())
-    kind, *_ = decide("normal", zombie, own_live, cfg, now, now, False)
+    # matching, expired but within grace: the device's own lapse edge is
+    # imminent — leave alone (zombie fires only past expiry+grace)
+    own_grace = Own(value=27.0, until_minutes=870,
+                    expiry_utc=(now - timedelta(minutes=2)).isoformat())
+    kind, *_ = decide("normal", zombie, own_grace, cfg, now, now, False)
     assert kind == "none"
+
+
+def test_normal_tier_live_own_hold_is_actively_released(tmp_path):
+    """Rev 4.1: tier released to normal while our hold is still live on the
+    device -> active release write, not a lapse tail."""
+    cfg = _cfg(tmp_path)
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    own = Own(value=27.0, until_minutes=870,
+              expiry_utc=(now + timedelta(minutes=20)).isoformat())
+    held = Snap(hold_active=True, hold_until_minutes=870, cool_setpoint=27.0)
+    kind, *_ , reason = decide("normal", held, own, cfg, now, now, False)
+    assert kind == "release" and reason == "REV4_SPIKE_END_RELEASE"
+    # humidity state is irrelevant to the normal-tier release
+    kind, *_ , reason = decide("normal", held, own, cfg, now, now, True)
+    assert kind == "release" and reason == "REV4_SPIKE_END_RELEASE"
