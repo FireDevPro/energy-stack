@@ -49,12 +49,19 @@ def decide(tier: str, snap: Any, own: Any, cfg: ControllerConfig,
     device.py/ownhold.py (duck-typed fields documented in the plan)."""
     none = ("none", None, None, "")
 
-    # Zombie cleanup: normal tier, matching own record, expired past grace.
+    # Normal tier, matching own record (rev 4.1 §Hold lifecycle rule 4):
+    # a LIVE own hold has no business existing once the tier is normal
+    # (confirmed release, or the stale backstop landing here) -> active
+    # release. Expired past grace -> zombie cleanup. Expired but within
+    # grace -> leave alone (the device's own lapse edge is imminent).
     if tier == NORMAL:
         if _matches_own(own, snap):
             expiry = datetime.fromisoformat(own.expiry_utc)
-            if (now_utc - expiry).total_seconds() > CLEANUP_GRACE_SEC:
+            elapsed = (now_utc - expiry).total_seconds()
+            if elapsed > CLEANUP_GRACE_SEC:
                 return ("release", None, None, "REV4_ZOMBIE_RELEASED")
+            if elapsed <= 0:
+                return ("release", None, None, "REV4_SPIKE_END_RELEASE")
         return none
 
     if snap.schedule_cool is None:
@@ -68,11 +75,11 @@ def decide(tier: str, snap: Any, own: Any, cfg: ControllerConfig,
             if own.value < snap.schedule_cool:
                 return ("release", None, None, "REV4_WARM_ONLY_RELEASE")
             return none
-        # Humidity outranks BOTH correction and extension (spec: "one more
-        # reason not to extend" — a corrective push is a fresh TTL too).
-        # Only the warm-only release above may act while RH-blocked.
+        # Humidity outranks BOTH correction and extension, and under rev 4.1
+        # it is a release trigger while holding: the live controller sends
+        # the device home so the program can cycle and dry the air.
         if humidity_blocked:
-            return ("none", None, None, "REV4_HUMIDITY_STOP_EXTEND")
+            return ("release", None, None, "REV4_HUMIDITY_RELEASE")
         if target != own.value:
             return ("push", target, until, "REV4_CORRECTED")
         expiry = datetime.fromisoformat(own.expiry_utc)

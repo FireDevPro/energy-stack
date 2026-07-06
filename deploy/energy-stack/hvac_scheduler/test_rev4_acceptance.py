@@ -170,48 +170,65 @@ def test_full_spike_story(tmp_path):
     assert dev.pushes[-1][0] == 24.5
     assert len(dev.pushes) == n_before + 1
 
-    # -- 5. Collapse: two fresh buckets below elevated-release (8c) -> release to normal,
-    #       NO device release write (lapse-only): hold left to expire on the device.
+    # -- 5. Collapse: two fresh buckets below elevated-release (8c) -> release
+    #       to normal, and the controller WRITES ONE ACTIVE RELEASE (rev 4.1):
+    #       the device goes home immediately, no lapse tail.
     t4 = t3 + timedelta(minutes=15)
     feed.buckets.append((t4 - timedelta(seconds=100), 4.0))  # must be NEWER than step 4's last bucket
     run_tick(t4)
+    assert dev.releases == 0               # first cheap bucket: still confirming
     feed.buckets.append((t4 + timedelta(minutes=4, seconds=20), 3.5))
     run_tick(t4 + timedelta(minutes=5))
     assert tel.traces[-1]["new_tier"] == "normal"
-    assert dev.releases == 0               # lapse-only: no release write on spike end
+    assert dev.releases == 1               # ONE active release write on spike end
+    assert not dev.hold_active and dev.cool_setpoint == dev.schedule_cool
+    rec_path = tmp_path / "own_hold.json"
+    assert not json.loads(rec_path.read_text() or "null")  # record cleared on success
+    assert tel.actions[-1]["action_label"] == "RELEASE"
+    assert tel.actions[-1]["setpoint_reason"] == "REV4_SPIKE_END_RELEASE"
     pushes_at_release = len(dev.pushes)
 
-    # -- 6. Normal ticks after release: no further extension, and the DEVICE
-    #       lapses the hold on its own — lapse-home proven, not just no-push.
+    # -- 6. Normal ticks after the release: nothing left to do — no pushes,
+    #       no further releases, no device reads (record is gone).
+    reads_after_release = dev.read_count
     run_tick(t4 + timedelta(minutes=6))
     assert len(dev.pushes) == pushes_at_release
-    assert dev.hold_active and dev.hold_until_minutes is not None
-    dev.lapse_if_due(dev.hold_until_minutes)   # the device's TTL edge fires
-    assert not dev.hold_active and dev.cool_setpoint == dev.schedule_cool
+    assert dev.releases == 1
+    assert dev.read_count == reads_after_release
 
-    # -- 7. Zombie cleanup: simulate power-cycle-stuck hold (expired, still active),
-    #       with the controller's own record persisted from step 4's push.
-    rec_path = tmp_path / "own_hold.json"
-    assert rec_path.exists()
-    rec = json.loads(rec_path.read_text())
+    # -- 7. Dead-controller safety net + zombie cleanup. The TTL lapse is
+    #       SOLELY the deadman path (rev 4.1): simulate a controller that
+    #       pushed, then died across expiry. A powered device lapses at its
+    #       edge; a power cut across the edge leaves a ZOMBIE the restarted
+    #       controller must actively release.
+    from hvac_scheduler.controller.ownhold import OwnHoldRecord, save_record
+    t5 = t4 + timedelta(hours=2)
+    save_record(str(tmp_path), OwnHoldRecord(
+        value=27.0, until_minutes=870,
+        expiry_utc=(t5 - timedelta(hours=1)).isoformat()))  # long past expiry+grace
     dev.hold_active = True
-    dev.hold_until_minutes = rec["until_minutes"]
-    dev.cool_setpoint = rec["value"]
-    t5 = t4 + timedelta(hours=2)           # long past expiry + grace
+    dev.hold_until_minutes = 870
+    dev.cool_setpoint = 27.0
+    dev.lapse_if_due(870)                  # powered device: TTL edge fires on its own
+    assert not dev.hold_active and dev.cool_setpoint == dev.schedule_cool
+    dev.hold_active = True                 # ...but a power cut MISSED the edge
+    dev.hold_until_minutes = 870
+    dev.cool_setpoint = 27.0
     feed.buckets.append((t5 - timedelta(seconds=400), 3.0))
     run_tick(t5)
-    assert dev.releases == 1               # released our zombie, once
+    assert dev.releases == 2               # released our zombie, once
     assert not json.loads(rec_path.read_text() or "null")  # record cleared
     run_tick(t5 + timedelta(minutes=1))
-    assert dev.releases == 1               # never touches the device again
+    assert dev.releases == 2               # never touches the device again
 
     # -- 8. Manual hold respected: foreign hold warmer than tier target survives
+    #       (own record is None after the release bookkeeping above).
     dev.hold_active = True
     dev.hold_until_minutes = 999           # not ours (no record)
     dev.cool_setpoint = 30.0               # manually warmer than scarcity_absolute
     t6 = t5 + timedelta(minutes=10)
     feed.buckets.append((t6 - timedelta(seconds=400), 45.0))
     run_tick(t6)
-    assert dev.pushes[-1][0] != 30.0 or len(dev.pushes) == pushes_at_release + 0
     # precise assertion: no push occurred (target 29.5 is NOT warmer than held 30.0)
     assert len(dev.pushes) == pushes_at_release
+    assert dev.releases == 2               # and no release either: manual holds never touched
