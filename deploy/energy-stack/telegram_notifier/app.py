@@ -9,6 +9,8 @@ Two background tasks:
      - ComEd 5-min price spike > PRICE_SPIKE_THRESHOLD_C cents
      - Fridge/freezer power anomaly vs 14-day baseline
      - Latest hvac.actions has applied=false with a non-skip error
+     - HVAC controller down-beacon: `hvac.heartbeat` controller_alive=false
+       in the last 10 min (watchdog beacon; absence = healthy)
      - PJM `pjm.feed_status` per-feed freshness against per-feed SLAs
        (DA LMP daily, NSPL annually, peak forecast cooling-season-only, etc.)
      - PJM `pjm.feed_status` direct failure rows (one alert per feed with
@@ -823,6 +825,25 @@ from(bucket: "{bucket}")
     return []
 
 
+def check_controller_down(query_api: Any, bucket: str) -> list[Alert]:
+    flux = f'''
+from(bucket: "{bucket}")
+  |> range(start: -10m)
+  |> filter(fn: (r) => r._measurement == "hvac.heartbeat" and r._field == "controller_alive")
+  |> filter(fn: (r) => r._value == false)
+  |> last()
+'''
+    rows = fetch_one(query_api, flux)
+    if not rows:
+        return []
+    return [Alert(
+        key="controller_down",
+        text=("🛑 <b>HVAC controller DOWN</b> — watchdog beacon active.\n"
+              "Device may be carrying a stale hold; it reverts to its program "
+              "within the hold TTL. Check <code>docker compose ps hvac-scheduler</code>."),
+    )]
+
+
 # ---- Main loop -------------------------------------------------------------
 
 async def daily_summary_loop(cfg: Config, query_api: Any, tz: ZoneInfo, stop: asyncio.Event) -> None:
@@ -860,6 +881,7 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
             alerts.extend(check_poller_silence(query_api, cfg.influx_bucket, cfg.poller_silent_min))
             alerts.extend(check_price_spike(query_api, cfg.influx_bucket, cfg.price_spike_threshold_c))
             alerts.extend(check_hvac_action_errors(query_api, cfg.influx_bucket))
+            alerts.extend(check_controller_down(query_api, cfg.influx_bucket))
             alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
             alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
             alerts.extend(check_pjm_feed_failures(query_api, cfg.influx_bucket))

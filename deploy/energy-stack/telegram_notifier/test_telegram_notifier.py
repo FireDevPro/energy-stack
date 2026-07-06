@@ -25,6 +25,7 @@ from . import app
 from .app import (
     Alert,
     PJM_FEED_SLAS,
+    check_controller_down,
     check_pjm_feed_failures,
     check_pjm_feed_freshness,
     check_poller_silence,
@@ -581,3 +582,21 @@ def test_pjm_failures_alert_key_prefix():
     collide with check_pjm_feed_freshness's `pjm_feed_stale:` keys."""
     a = Alert(key="pjm_feed_failed:da_hrl_lmps", text="...")
     assert a.key.startswith("pjm_feed_failed:")
+
+
+# ---- check_controller_down --------------------------------------------------
+#
+# Rev 4 watchdog beacon: the watchdog writes hvac.heartbeat with
+# controller_alive=false when the controller dies (absence = healthy).
+# This check alerts on the beacon within the last 10 min.
+
+
+def test_check_controller_down_fires_on_beacon(monkeypatch):
+    """A controller_alive=false beacon row in the window fires exactly one
+    alert with the fixed dedup key; no beacon rows → silent."""
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [{"_value": False}])
+    alerts = check_controller_down(MagicMock(), "energy")
+    assert len(alerts) == 1 and alerts[0].key == "controller_down"
+
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [])
+    assert check_controller_down(MagicMock(), "energy") == []
