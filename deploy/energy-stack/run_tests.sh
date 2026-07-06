@@ -43,8 +43,11 @@ extras=(
 failed=()
 
 for svc in "${services[@]}"; do
-    test_file="$STACK_DIR/$svc/test_${svc//-/_}.py"
-    if [[ ! -f "$test_file" ]]; then
+    # Sentinel: any test_*.py in the service dir. (Was the literal
+    # test_<service>.py filename, which silently skipped a whole suite
+    # when that file was renamed/deleted — e.g. the rev 4 cutover.)
+    test_files=("$STACK_DIR/$svc"/test_*.py)
+    if [[ ! -e "${test_files[0]}" ]]; then
         # Service has no tests yet — skip silently.
         continue
     fi
