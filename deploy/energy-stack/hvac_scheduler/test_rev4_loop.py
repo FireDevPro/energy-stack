@@ -97,3 +97,44 @@ def test_adapter_maps_seam_to_snapshot():
     assert ("cool", 29.5) in FakeClim.pushed and ("until", 870) in FakeClim.pushed
     asyncio.run(a.release())
     assert ("mode", "Schedule") in FakeClim.pushed
+
+
+def test_influx_telemetry_action_row_contract():
+    from .controller.telemetry import InfluxTelemetry
+    from .controller.device import ControlSnapshot
+
+    class Cap:
+        lines: list[str] = []
+        def write(self, bucket, record): Cap.lines.append(record.to_line_protocol())
+
+    tel = InfluxTelemetry(write_api=Cap(), bucket="energy", unit="C",
+                          config_id="abc123", tz_name="America/Chicago")
+    snap = ControlSnapshot(25.5, 27.0, 18.5, True, 870, 25.0, 52.0)
+    tel.write_action(tier="elevated", action_label="SPIKE", dry_run=False,
+                     commanded_cool=27.0, commanded_heat=18.5, schedule_cool=25.5,
+                     applied=True, error="", hold_expires_at="2026-07-10T19:30:00+00:00",
+                     snapshot_before=snap, setpoint_reason="REV4_ENGAGED",
+                     humidity_gated=False)
+    lp = Cap.lines[-1]
+    assert lp.startswith("hvac.actions,")
+    for token in ("commanded_cool=27", "baseline_cool=25.5", "schedule_cool=25.5",
+                  "drift=1.5", "applied=1i", 'error=""', "config_id="):
+        assert token in lp, token
+    assert "dry_run=false" in lp  # tag
+
+
+def test_arm_mode_row_production_branch():
+    from .controller.telemetry import InfluxTelemetry
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    class Cap:
+        lines: list[str] = []
+        def write(self, bucket, record): Cap.lines.append(record.to_line_protocol())
+
+    tel = InfluxTelemetry(write_api=Cap(), bucket="energy", unit="C",
+                          config_id="abc", tz_name="America/Chicago")
+    tel.write_arm_mode(datetime(2026, 7, 10, 14, 0, tzinfo=ZoneInfo("America/Chicago")),
+                       scheduler_mode="production")
+    assert Cap.lines[-1].startswith("hvac.arm_mode,")
+    assert "mode_actual=" in Cap.lines[-1]
