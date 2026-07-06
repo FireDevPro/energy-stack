@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
+from .controller.config import load_config
+from .controller.loop import ControllerLoop
+
+UTC = timezone.utc
+
+CFG_YAML = (
+    "temp_scale: C\n"
+    "price_tiers_cents: {elevated_at: 10, scarcity_at: 20, hysteresis_cents: 2}\n"
+    "elevated_offset: 1.5\nscarcity_absolute: 29.5\nheat_floor: 18.5\n"
+    "humidity_guard: {rh_max_pct: 61, rh_clear_pct: 58}\n"
+    "hold_ttl_minutes: 30\nrelease_confirm_buckets: 2\nstale_release_minutes: 30\n"
+)
+
+
+@dataclass
+class Feed:
+    out: tuple | None = None
+    def latest(self, now_utc): return self.out
+
+
+@dataclass
+class NeverClimate:
+    """Blows up on any access — normal tier must never touch the device."""
+    async def snapshot(self): raise AssertionError("device read in normal tier")
+    async def push(self, *a): raise AssertionError("device write in normal tier")
+    async def release(self): raise AssertionError("device release in normal tier")
+
+
+@dataclass
+class Tel:
+    traces: list = field(default_factory=list)
+    actions: list = field(default_factory=list)
+    arm_rows: list = field(default_factory=list)
+    overlay_rows: list = field(default_factory=list)
+    def trace(self, **kw): self.traces.append(kw)
+    def write_action(self, **kw): self.actions.append(kw)
+    def write_arm_mode(self, **kw): self.arm_rows.append(kw)
+    def write_price_overlay(self, **kw): self.overlay_rows.append(kw)
+
+
+def _loop(tmp_path, feed):
+    p = tmp_path / "c.yaml"; p.write_text(CFG_YAML, encoding="utf-8")
+    cfg = load_config(str(p), temp_scale_env="C")
+    return ControllerLoop(cfg=cfg, price_source=feed, climate=NeverClimate(),
+                          telemetry=Tel(), mode="shadow", tz_name="America/Chicago",
+                          data_dir=str(tmp_path))
+
+
+def test_normal_tick_traces_and_never_touches_device(tmp_path):
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    feed = Feed(out=(4.2, now - timedelta(seconds=400), 400.0))
+    loop = _loop(tmp_path, feed)
+    asyncio.run(loop.tick(now))
+    t = loop.telemetry.traces[-1]
+    assert t["new_tier"] == "normal" and t["price_cents"] == 4.2
+    assert t["scheduler_mode"] == "shadow"
+
+
+def test_missing_feed_is_a_traced_noop(tmp_path):
+    loop = _loop(tmp_path, Feed(out=None))
+    asyncio.run(loop.tick(datetime(2026, 7, 10, 12, 0, tzinfo=UTC)))
+    assert loop.telemetry.traces[-1]["reason_code"] == "REV4_FEED_MISSING"
