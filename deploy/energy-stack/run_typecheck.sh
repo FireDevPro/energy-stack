@@ -4,7 +4,7 @@
 # Full package model: each renamed service dir under deploy/energy-stack/
 # is a regular Python package (with __init__.py). deploy/energy-stack is
 # on sys.path so each service is a top-level package (e.g.,
-# `hvac_scheduler.app`). Mypy reads pyproject.toml from the repo root.
+# `hvac_scheduler.controller`). Mypy reads pyproject.toml from the repo root.
 #
 # Two target types are supported:
 #   - service_dirs: service package names under deploy/energy-stack/

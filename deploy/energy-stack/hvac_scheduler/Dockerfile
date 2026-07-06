@@ -21,4 +21,4 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
   CMD test -n "$(find /tmp/last_tick_ok -mmin -5 2>/dev/null)" || exit 1
 
-CMD ["python", "-m", "hvac_scheduler.app"]
+CMD ["python", "-m", "hvac_scheduler.controller"]

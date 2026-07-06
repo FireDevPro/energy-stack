@@ -20,9 +20,9 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [refoss-poller](#refoss-poller) — per-circuit power
 - [nws-poller](#nws-poller) — weather forecast + alerts
 - [pjm-dm2-poller](#pjm-dm2-poller) — PJM zonal market data (DA LMP, load forecast, metered, peak, NSPL)
-- [hvac-scheduler](#hvac-scheduler) — reactive commissioning controller (TCC setpoint pushes; warm-only price overlay; device-owned safety)
+- [hvac-scheduler](#hvac-scheduler) — rev 4 spike-only controller (warm-only timed holds on RTP spikes; device program is the baseline; device-owned safety)
 - [hvac-scheduler-watchdog](#hvac-scheduler-watchdog) — out-of-band controller-liveness beacon (`hvac.heartbeat`)
-- [thermostat-poller](#thermostat-poller) — continuous thermostat reads + override detection
+- [thermostat-poller](#thermostat-poller) — continuous thermostat reads
 - [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
 - [ecowitt-ingest](#ecowitt-ingest) — Ecowitt GW1200 push receiver (`ecowitt.weather`)
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
@@ -72,14 +72,11 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `pjm.coincident_peak` | `scrape_pjm_5cp_pdf.py` (annual cron) | tagged `summer_year`, `peak_rank` |
 | `pjm.feed_status` | pjm-dm2-poller | tagged `feed`, `success`; one point per feed attempt with `points_written`, `error_type`, `error_msg` fields. **The per-feed health signal** — telegram-notifier's `check_pjm_feed_failures` and `check_pjm_feed_freshness` both consume it |
 | `pjm.poller_heartbeat` | pjm-dm2-poller | one row per loop cycle (hourly), single field `alive=1`. Liveness signal for telegram-notifier's `check_poller_silence` so the long quiet stretches between scheduled feeds don't look like a dead poller |
-| `hvac.actions` | hvac-scheduler | Scale-neutral (`unit` tag = `F`/`C`; values stay in the controller's `temp_scale`). Tags: `unit`, `tier` (price-overlay tier this tick), `action_label`, `dry_run`. Fields: `commanded_cool`, `commanded_heat`, `baseline_cool`, `drift` (`= commanded_cool − baseline_cool`, the warm-drift magnitude), `humidity_gated` (0/1 — humidity-release guard fired this tick), `fan_mode`, `setpoint_reason`, `applied` (0/1), `error`, `config_id` (loaded config's SHA256), `hvac_mode_before`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per push attempt |
+| `hvac.actions` | hvac-scheduler | Scale-neutral (`unit` tag = `F`/`C`; values stay in the controller's `temp_scale`). Tags: `unit`, `tier`, `action_label` (`SPIKE`/`RELEASE`), `dry_run`. Fields: `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed device `ScheduleCoolSp`), `schedule_cool` (same value, explicit name), `drift` (`= commanded_cool − schedule_cool`), `humidity_gated` (0/1), `setpoint_reason`, `applied` (0/1), `error`, `config_id` (loaded config's SHA256), `hold_expires_at` (RFC3339, `""` when no hold), `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per action attempt |
 | `hvac.price_overlay` | hvac-scheduler | tag `prev_tier`, `new_tier`, `unit` (`F`/`C`); fields `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc`. Warm-only RTP tier transitions only (not every tick) |
-| `hvac.arm_mode` | hvac-scheduler | tag `scheduler_mode`, `arm` (when applicable); field `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. **Canonical scheduler-alive signal** — the watchdog reads this measurement to determine whether to emit a `hvac.heartbeat` down-beacon |
-| `hvac.switch_event` | hvac-scheduler | fields `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary transitions |
-| `hvac.input_feed_health` | hvac-scheduler | tag `feed`; field `healthy` (bool). Per-feed gate state observed by the controller each tick |
+| `hvac.arm_mode` | hvac-scheduler | tag `scheduler_mode`, `arm` (when applicable); field `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`}. **Canonical scheduler-alive signal** — the watchdog reads this measurement to determine whether to emit a `hvac.heartbeat` down-beacon |
 | `hvac.heartbeat` | hvac-scheduler-watchdog | field `controller_alive` (only `false` is ever written — no-news-is-good-news; absence of recent rows says nothing about liveness, the canonical signal is recent `hvac.arm_mode`) |
 | `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
-| `hvac.overrides` | thermostat-poller | one row per poll while setpoints diverge from last `hvac.actions` by ≥0.5°F past `OVERRIDE_GRACE_MIN` |
 | `ecowitt.weather` | ecowitt-ingest | tag `gateway` (GW1200 PASSKEY). Field families: **canonical analysis source per spec §6** is `ch1_temp_f` / `ch1_rh_pct` / `ch1_dewpoint_f` (the paired WN31 channel; ch1 is the shaded N/E-wall sensor by Chris's wiring). Gateway also writes a descriptive alias `outdoor_temp_f` / `outdoor_rh_pct` / `outdoor_dewpoint_f` mirroring the configured shaded channel when `ECOWITT_SHADED_CHANNEL` is set — descriptive only, NOT consumed by the analysis weather vector. WS90 sun-exposed comparator + wind/solar/UV/rain (`ws90_temp_f`/`rh_pct`/`dewpoint_f`, `wind_mph`, `solar_wm2`, `rain_*_in`, etc.); GW1200 internal (`indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg`, `pressure_inhg`). Plus `ch{N}_temp_f`/`rh_pct`/`dewpoint_f` for any other paired WH31 channels. |
 | `haven.indoor` | haven-ingest | tagged `device_id`; temp/RH/tVOC continuous, PM2.5/airflow CFM flow-dependent |
 | `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
@@ -88,7 +85,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
-**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config). No new writes occur to any of these.
+**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config); `hvac.overrides` (thermostat-poller override detection retired at the rev 4 cutover, July 2026 — manual holds are first-class operator action now; `tools/log_override.py` can still write operator annotations); `hvac.switch_event`, `hvac.input_feed_health` (rev 3 scheduler measurements; writers deleted at the rev 4 cutover); `hvac.decisions`, `hvac.precool_window`, `hvac.5cp_state` (day-type/precool/5CP writers removed in the June 2026 demolition). No new writes occur to any of these.
 
 **Operations:**
 
@@ -119,7 +116,7 @@ Build: `./influx-init` · `restart: "no"` · One-shot per `compose up -d`
 Idempotent post-bootstrap provisioning. Runs after `influxdb` is healthy and exits cleanly. Two responsibilities:
 
 1. Create the `energy-longterm` bucket if it doesn't exist (with the configured retention).
-2. Apply the 1-min downsample Flux task at `tasks/downsample-energy-1m.flux`. Task aggregates per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) from `energy` to `energy-longterm` with `mean` and `max` reducers. Event measurements (`hvac.actions`, `hvac.overrides`) are written to `energy-longterm` directly by their producers.
+2. Apply the 1-min downsample Flux task at `tasks/downsample-energy-1m.flux`. Task aggregates per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) from `energy` to `energy-longterm` with `mean` and `max` reducers. Event measurements (e.g. `hvac.actions`) are written to `energy-longterm` directly by their producers.
 
 **Env:**
 - `INFLUXDB_INIT_ORG`, `INFLUXDB_INIT_ADMIN_TOKEN` — same admin credentials as `influxdb` bootstrap
@@ -340,41 +337,45 @@ The zone-code-by-feed mismatch (`CE` vs `COMED`) is empirically verified, not a 
 
 ## hvac-scheduler
 
-Build: `./hvac-scheduler` · Cycle: 1-min ticker · Volume: `hvac_scheduler_data` (`/data`)
+Build: `./hvac_scheduler` · Cycle: 1-min ticker (`python -m hvac_scheduler.controller`) · Volume: `hvac_scheduler_data` (`/data`)
 
-The Arm B commissioning controller — a single-path reactive loop, no day-type decision cycle. On every tick it recomputes the comfort baseline from the mounted `commissioning-controller.yaml` (config-driven `comfort_program` + ceiling), then applies a warm-only ComEd-RTP price overlay *above* that baseline. The overlay is a four-tier state machine (`normal` / `elevated` / `scarcity` / `extreme`); each non-normal tier carries a warm offset, and the effective cool setpoint is `clamp(baseline + offset, floor = baseline, ceiling = comfort_max)` — it never drops below the baseline (warm-only floor invariant) and never above the comfort ceiling (ride-the-ceiling). The setpoint is pushed only when the effective value changes from the last push; each push sends heat-then-cool (deadband-safe ordering) then pins `Hold = Permanent`. Pushes are skipped when the thermostat `hvac_mode` is not `Cool`/`Auto` (heating-season no-op).
+The rev 4 **spike-only controller**: the thermostat runs its own onboard comfort program untouched, and the controller pushes a *warmer* timed hold only while ComEd RTP power is expensive. That is the entire controller — no schedule copy in config (the device's own `ScheduleCoolSp` is the baseline, read live), no day-types, no precool, no software safety supervisor.
 
-A **humidity-release guard** (hysteresis on indoor RH) gates the warm overlay off at the effective layer: when RH crosses the configured `rh_max_pct` (or is missing) the effective falls back to baseline while the price-overlay tier keeps tracking price underneath — temp rides, humidity releases. A feed-gap safety-release returns the overlay to `normal` if the ComEd feed stays stale past 30 min.
+**Three tiers exactly** — `normal` / `elevated` / `scarcity` — driven by the ComEd 5-min price with hysteresis (`hysteresis_cents`). Engage on **1 fresh-strict bucket** (bucket age ≤ 720 s); release only after `release_confirm_buckets` consecutive fresh-strict buckets at/below the release threshold; a **stale backstop** hard-releases after `stale_release_minutes` without fresh-strict data while holding. Targets: elevated = device program + `elevated_offset`; scarcity = `scarcity_absolute`. **Warm-only is a code invariant** — the commanded cool never drops below the device's current program value; heat is pinned at/below `heat_floor` on every push (deadband-safe).
 
-**Safety is device-owned — there is no software supervisor in this service.** The thermostat enforces its own min/max bounds, and the `Permanent` hold is the only software pin (a Pi failure leaves the last-set setpoint in place; degraded scheduling, not a safety issue). See the [commissioning-controller spec, Safety section](superpowers/specs/2026-06-20-commissioning-controller-design.md#safety--device-owned-no-software-supervisor).
+**Holds are timed, never Permanent.** Every push is a `TemporaryHold` with a quarter-hour-floored expiry ≤ `hold_ttl_minutes` ahead; if the controller dies, the device drops the hold at expiry and resumes its program unaided (safety is device-owned: thermostat min/max limits are the hard cap). Applied holds are recorded in an **own-hold record** (`/data/own_hold.json`); on later ticks the record scopes device reads (pure normal ticks with no record never touch the device), distinguishes the controller's own hold from a manual operator hold (manual holds are first-class, not "overrides"), and drives **own-hold cleanup**: a normally-lapsed or foreign hold drops the stale record, and a zombie hold (record says ours, device still holding after expiry-equivalent) is released.
 
-**Device client:** the Control4/pyControl4 path is demolished. The controller talks to a `ThermostatClient` seam; the concrete client is the Total Connect Comfort (`aiosomecomfort`) `TCCClient`, constructed when `TCC_USERNAME`/`TCC_PASSWORD` are present. With creds absent the scheduler keeps the inert `StubThermostatClient` (fail-loud on any device call) so a credential-less deploy stays in the known not-yet-wired state.
+A **humidity guard** (hysteresis on thermostat RH: blocks at `rh_max_pct`, clears below `rh_clear_pct`, missing RH blocks) stops spike holds from extending while it's humid — the hold lapses on its TTL rather than being renewed.
+
+**Modes:** `SCHEDULER_MODE=shadow` computes + traces every tick with zero device writes (including cleanup releases); `production` writes live. Sole write gate; invalid value → exit 2.
+
+**Alert pair (telegram-notifier):** `check_controller_down` fires on the watchdog's `hvac.heartbeat controller_alive=false` down-beacon (controller silent ≥ 10 min); `check_hvac_action_errors` fires on N consecutive non-benign `hvac.actions` push failures. Unit-tested in `telegram_notifier/`.
+
+**Config** (`commissioning-controller.yaml`, mounted read-only — **the experimental surface, tune freely**): `temp_scale`, `price_tiers_cents` (`elevated_at`/`scarcity_at`/`hysteresis_cents`), `elevated_offset`, `scarcity_absolute`, `heat_floor`, `humidity_guard` (`rh_max_pct`/`rh_clear_pct`), `hold_ttl_minutes`, `release_confirm_buckets`, `stale_release_minutes`. Every key is **required** — no code defaults; a missing key is a startup error naming the key. Temps must sit on the scale's grid (0.5 °C / 1 °F). `config_id` (SHA256 of the file bytes) is stamped into telemetry so tuning epochs stay interpretable. Schema example: `commissioning-controller.example.yaml`.
 
 **Env:**
-- `TCC_USERNAME`, `TCC_PASSWORD` — Total Connect Comfort account creds. When both are present the controller constructs the real `TCCClient`; when either is absent it keeps the inert `StubThermostatClient`.
-- `TCC_DEVICE_ID` — Honeywell TCC device id (default `4750378`).
-- `CONTROLLER_CONFIG_FILE` — path to the controller config YAML (default mount `/config/commissioning-controller.yaml`; the file is mounted read-only from `./hvac_scheduler/commissioning-controller.yaml`). This config is the experimental surface (comfort program, ceiling, tier offsets/thresholds, hold TTL, humidity guard). Loader fail-fasts on a load error.
-- `TEMP_SCALE` — scale the controller logic operates in (`F`/`C`; compose default `C`). **Must match the YAML's `temp_scale`** or the loader fail-fasts (A3 coherence check); setpoints and telemetry stay in this scale, converted only at analysis.
-- `SCHEDULER_MODE` — **required, no default** (container exits with code 2 on missing or invalid; compose supplies a safe-by-default `shadow`). Accepted values: `shadow` (never writes; logs the proposed action only), `experiment` (writes only during Arm B periods), `production` (writes always). The 2026 live-experiment calendar gating is dead — there is no live A/B calendar governing control now (the experiment was killed and the OSF registration retracted); the `experiment` mode's arm-calendar branch still exists in code but is not driving 2026 operation. The 2026 path is `shadow` -> `production`. Replaces the retired `SCHEDULER_DRY_RUN` env var.
-- `SCHEDULER_DECISION_TRACE_VERBOSE` — when true, per-evaluation "no-change" decision-trace lines emit at `debug`; transitions/pushes/releases/errors always emit at `info` (default false; orthogonal to `SCHEDULER_MODE`).
-- `SCHEDULER_TZ` — IANA tz (default `America/Chicago`)
-- `INFLUXDB_*`
+- `TCC_USERNAME`, `TCC_PASSWORD`, `TCC_DEVICE_ID` — Total Connect Comfort creds + Honeywell device id (default `4750378`); the device client is the `aiosomecomfort` `TCCClient` behind the `TccClimateAdapter` seam.
+- `CONTROLLER_CONFIG_FILE` — path to the config YAML (compose mounts `./hvac_scheduler/commissioning-controller.yaml` at `/config/commissioning-controller.yaml`).
+- `TEMP_SCALE` — must match the YAML's `temp_scale` (`C`/`F`; compose default `C`) or the loader fail-fasts. All temps flow scale-native; no F↔C conversion anywhere.
+- `SCHEDULER_MODE` — `shadow` | `production` (see Modes above; compose default `shadow`).
+- `SCHEDULER_TZ` — IANA tz (default `America/Chicago`).
+- `INFLUXDB_URL`, `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` — standard.
 
 **Writes:**
 
-All setpoint/baseline values are scale-neutral: the `unit` tag records the controller's `temp_scale` (`F`/`C`) and values stay in that scale — no conversion.
+All setpoint values are scale-neutral: the `unit` tag records the controller's `temp_scale` (`F`/`C`) and values stay in that scale — no conversion.
 
 | Measurement | Tags | Fields |
 |---|---|---|
-| `hvac.actions` | `unit`, `tier`, `action_label`, `dry_run` | `commanded_cool`, `commanded_heat`, `baseline_cool`, `drift` (`= commanded_cool − baseline_cool`), `humidity_gated` (0/1), `fan_mode`, `setpoint_reason`, `applied` (0/1), `error`, `config_id` (loaded config's SHA256), `hvac_mode_before`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per push attempt. |
-| `hvac.price_overlay` | `prev_tier`, `new_tier`, `unit` | `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc`. Warm-only RTP tier transitions only (not every tick). |
-| `hvac.arm_mode` | `scheduler_mode`, `arm` (when applicable) | `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`, `A-active`, `B-active`, `B-down`, `B-fallback`}. Written on a ~5-min cadence — canonical scheduler-alive signal that the watchdog reads. |
-| `hvac.switch_event` | — | `from_arm`, `to_arm`, `boundary_planned_ts`, `boundary_actual_ts`. Arm-boundary crossings. |
-| `hvac.input_feed_health` | `feed` | `healthy` (bool). Per-feed gate state observed by the controller (~5-min cadence). |
+| `hvac.actions` | `unit`, `tier`, `action_label` (`SPIKE`/`RELEASE`), `dry_run` | `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed device `ScheduleCoolSp`), `schedule_cool` (same value, explicit name), `drift` (`= commanded_cool − schedule_cool`), `humidity_gated` (0/1), `setpoint_reason` (rev 4 reason code), `applied` (0/1), `error` (`""` when none), `config_id`, `hold_expires_at` (RFC3339, `""` when no hold), `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. One row per action attempt. |
+| `hvac.price_overlay` | `prev_tier`, `new_tier`, `unit` | `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc`. Tier transitions only (not every tick). |
+| `hvac.arm_mode` | `scheduler_mode`, `arm` (when in an arm window) | `mode_actual` ∈ {`outside-window`, `off-protocol-<mode>`}. Written on a ≤5-min cadence — canonical scheduler-alive signal that the watchdog reads. (The `experiment` arm-gated branch is the retained 2027 layer, not implemented in rev 4.) |
 
-**Healthcheck:** `/tmp/last_tick_ok` touched every tick only when the schedule check completed without raising — a sustained failure flips the container unhealthy.
+Plus one `decision_trace.rev4_tick` JSON log line **every tick, 24/7** (transitions at `info`, holds at `debug`; never suppressed — a silent healthy controller is indistinguishable from a hung one).
 
-**Detailed controller logic (comfort program, warm-only overlay tiers, guards, units, device-owned safety):** [commissioning-controller spec](superpowers/specs/2026-06-20-commissioning-controller-design.md).
+**Healthcheck:** `/tmp/last_tick_ok` touched only when a tick completes without raising — a sustained failure flips the container unhealthy. A transient tick error logs one `rev4_tick_failed` line and the loop continues.
+
+**Detailed controller logic (tiers, fresh-strict, hold math, own-hold lifecycle, device-owned safety):** [commissioning-controller spec, revision 4](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 ---
 
@@ -412,29 +413,22 @@ Build: `./thermostat-poller` · Cycle: `THERMOSTAT_POLL_INTERVAL` (default 600 s
 
 Continuous reads of CTK04AE state through the device client. Independent of `hvac-scheduler`. The Control4/pyControl4 read path has been retired; reads now go through the stubbed `ThermostatClient` seam (TCC/`aiosomecomfort` deferred).
 
-**Two outputs:**
+**Output — `hvac.thermostat`**, every poll cycle:
 
-1. **`hvac.thermostat`** — every poll cycle:
+| Tag | Field | Notes |
+|---|---|---|
+| `thermostat_id` | `indoor_temp_f`, `indoor_temp_f_hires`, `humidity_pct`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` (running/idle), `fan_mode`, `hold_mode` | Continuous time-series of full thermostat state. Use for Grafana panels, calibration vs. Haven, anomaly detection. `indoor_temp_f` is whole-degree (from Director `TEMPERATURE_F`); `indoor_temp_f_hires` is fractional ~0.18°F resolution (derived from Director `TEMPERATURE_C`). Same underlying CTK04AE sensor; prefer the hires field for thermal characterization and stage-cooling-rate work. See [docs/THERMAL_ROUGH_CUT_2026-05-26.md](THERMAL_ROUGH_CUT_2026-05-26.md). |
 
-   | Tag | Field | Notes |
-   |---|---|---|
-   | `thermostat_id` | `indoor_temp_f`, `indoor_temp_f_hires`, `humidity_pct`, `cool_setpoint_f`, `heat_setpoint_f`, `hvac_mode`, `hvac_state` (running/idle), `fan_mode`, `hold_mode` | Continuous time-series of full thermostat state. Use for Grafana panels, calibration vs. Haven, anomaly detection. `indoor_temp_f` is whole-degree (from Director `TEMPERATURE_F`); `indoor_temp_f_hires` is fractional ~0.18°F resolution (derived from Director `TEMPERATURE_C`). Same underlying CTK04AE sensor; prefer the hires field for thermal characterization and stage-cooling-rate work. See [docs/THERMAL_ROUGH_CUT_2026-05-26.md](THERMAL_ROUGH_CUT_2026-05-26.md). |
-
-2. **`hvac.overrides`** — only when current setpoints differ from the last `hvac.actions` row by ≥ 0.5°F AND the last action was > `OVERRIDE_GRACE_MIN` ago (default 5 min):
-
-   | Tag | Field | Notes |
-   |---|---|---|
-   | `thermostat_id`, `source="manual_override"` | `expected_cool_setpoint_f`, `actual_cool_setpoint_f`, `delta_cool_f`, `expected_heat_setpoint_f`, `actual_heat_setpoint_f`, `delta_heat_f`, `last_action_label`, `minutes_since_last_action`, `indoor_temp_f`, `humidity_pct`, `hvac_mode` | One row per poll cycle while overridden. v1 doesn't dedupe — at 10-min cadence, the data volume is tiny. |
+Override detection (`hvac.overrides`) was **retired at the rev 4 cutover** (July 2026): under the spike-only controller the `hvac.actions` row it compared against is days old or absent, and manual holds are first-class operator action, not "overrides".
 
 **Env:**
 - `CONTROL4_THERMOSTAT_ID` — same as `hvac-scheduler` (flagged for rename at TCC wire-up)
 - `THERMOSTAT_POLL_INTERVAL` — seconds (default 600)
-- `OVERRIDE_GRACE_MIN` — minutes after a scheduler action before counting setpoint mismatch as an override (default 5)
 - `INFLUXDB_*` — standard
 
 **Healthcheck:** `/tmp/last_poll_ok` marker, `find -mmin -15` (allows up to 15 min staleness on a 10-min poll interval).
 
-**Why this exists:** the `hvac-scheduler` snapshots thermostat state only at action-firing moments (~4-7 timestamps per day). That's too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. This poller fills both gaps.
+**Why this exists:** the `hvac-scheduler` snapshots thermostat state only at action moments. That's too sparse for proper time-series correlation against Haven's 5-min cadence. This poller fills the gap.
 
 ---
 
