@@ -26,6 +26,7 @@ from .app import (
     Alert,
     PJM_FEED_SLAS,
     check_controller_down,
+    check_hvac_action_errors,
     check_pjm_feed_failures,
     check_pjm_feed_freshness,
     check_poller_silence,
@@ -600,3 +601,28 @@ def test_check_controller_down_fires_on_beacon(monkeypatch):
 
     monkeypatch.setattr(app, "fetch_one", lambda q, f: [])
     assert check_controller_down(MagicMock(), "energy") == []
+
+
+# ---- check_hvac_action_errors -----------------------------------------------
+#
+# Rev 4: the push-failure alert requires PUSH_FAILURE_ALERT_N consecutive
+# non-benign errors on hvac.actions instead of firing on the single latest
+# one (kills the single-transient double-bark observed 2026-07-05 while
+# still catching genuine consecutive failures like a missed spike engage).
+
+
+def test_push_failure_alert_requires_three_consecutive(monkeypatch):
+    def api_with(errors: list[str]) -> None:  # newest-first error field values of the last 3 rows
+        monkeypatch.setattr(app, "fetch_one",
+                            lambda q, f: [{"_value": v} for v in errors])
+
+    # one transient followed by a success: NO alert (kills the 07-05 double-bark)
+    api_with(["", "TimeoutError: ", ""])
+    assert check_hvac_action_errors(MagicMock(), "energy") == []
+    # three consecutive failures: one alert
+    api_with(["TimeoutError: ", "TimeoutError: ", "TimeoutError: "])
+    alerts = check_hvac_action_errors(MagicMock(), "energy")
+    assert len(alerts) == 1 and alerts[0].key.startswith("hvac_error:")
+    # benign not-cooling strings never count
+    api_with(["hvac_mode_not_cooling ('Off')"] * 3)
+    assert check_hvac_action_errors(MagicMock(), "energy") == []

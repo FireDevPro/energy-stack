@@ -8,7 +8,8 @@ Two background tasks:
      - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map)
      - ComEd 5-min price spike > PRICE_SPIKE_THRESHOLD_C cents
      - Fridge/freezer power anomaly vs 14-day baseline
-     - Latest hvac.actions has applied=false with a non-skip error
+     - Last PUSH_FAILURE_ALERT_N (=3) hvac.actions rows ALL carry a
+       non-benign error (N-consecutive push failures)
      - HVAC controller down-beacon: `hvac.heartbeat` controller_alive=false
        in the last 10 min (watchdog beacon; absence = healthy)
      - PJM `pjm.feed_status` per-feed freshness against per-feed SLAs
@@ -804,25 +805,44 @@ def check_pjm_feed_failures(query_api: Any, bucket: str,
     return alerts
 
 
+# N consecutive hvac.actions errors required before the push-failure alert
+# fires (spec: constant, seed 3 — not an env var). A single transient error
+# followed by a success stays silent; N-in-a-row is the "this is actually
+# broken" signal (e.g. a missed spike engage).
+PUSH_FAILURE_ALERT_N = 3
+
+# Benign "device not in cooling mode" strings the controller writes as
+# errors; they never count toward the consecutive-failure window.
+_BENIGN_HVAC_ERRORS = (
+    "hvac_mode_not_cooling ('Heat')",
+    "hvac_mode_not_cooling ('Off')",
+)
+
+
 def check_hvac_action_errors(query_api: Any, bucket: str) -> list[Alert]:
+    # group() merges the per-series tables (hvac.actions is multi-tagged) so
+    # sort+limit yield the global newest N rows; safe here because _field is
+    # pre-filtered to "error" (single-field group, no schema collision).
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -1h)
   |> filter(fn: (r) => r._measurement == "hvac.actions" and r._field == "error")
-  |> filter(fn: (r) => r._value != "" and r._value != "hvac_mode_not_cooling ('Heat')"
-                    and r._value != "hvac_mode_not_cooling ('Off')")
-  |> last()
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: {PUSH_FAILURE_ALERT_N})
 '''
     rows = fetch_one(query_api, flux)
-    if not rows:
+    # newest first; a None _value normalizes to "" (counts as no-failure)
+    errors: list[str] = [r.get("_value") or "" for r in rows[:PUSH_FAILURE_ALERT_N]]
+    if len(errors) < PUSH_FAILURE_ALERT_N:
         return []
-    err = rows[0].get("_value")
-    if err:
-        return [Alert(
-            key=f"hvac_error:{err[:40]}",
-            text=f"🌡️ <b>HVAC scheduler error</b>\n<code>{err}</code>"
-        )]
-    return []
+    if not all(e and e not in _BENIGN_HVAC_ERRORS for e in errors):
+        return []
+    err = errors[0]
+    return [Alert(
+        key=f"hvac_error:{err[:40]}",
+        text=f"🌡️ <b>HVAC scheduler error</b>\n<code>{err}</code>"
+    )]
 
 
 def check_controller_down(query_api: Any, bucket: str) -> list[Alert]:
