@@ -20,20 +20,6 @@ Reads thermostat state every THERMOSTAT_POLL_INTERVAL seconds (default 600 s =
     which no longer exists.) Non-load-bearing; Ecowitt is the canonical finer
     indoor source. The field is retained for schema continuity.
 
-  Measurement `hvac.overrides` (only when manual override detected):
-    Tags:   thermostat_id, source ("manual_override")
-    Fields: expected_cool_setpoint_f, actual_cool_setpoint_f, delta_cool_f,
-            expected_heat_setpoint_f, actual_heat_setpoint_f, delta_heat_f,
-            last_action_label (str), minutes_since_last_action,
-            indoor_temp_f, humidity_pct, hvac_mode (str)
-
-Override detection: compares current setpoints against the most recent
-`hvac.actions` row written by the hvac-scheduler. If they differ AND the
-last action fired more than OVERRIDE_GRACE_MIN ago (default 5 min, gives
-the thermostat time to acknowledge the scheduler's push), an override
-event is logged. No dedup in v1 — each poll cycle while overridden writes
-a new row, which is fine at 10-min cadence.
-
 Independent of hvac-scheduler: this poller owns its own TCC device client
 (aiosomecomfort manages its own session; no persisted token file).
 
@@ -43,8 +29,6 @@ Environment variables:
                                 TCC_PASSWORD) the poller stays inert (Stub).
     TCC_PASSWORD                TCC account password.
     THERMOSTAT_POLL_INTERVAL    Seconds between polls (default 600)
-    OVERRIDE_GRACE_MIN          Minutes after last action before counting
-                                a setpoint mismatch as an override (default 5)
     INFLUXDB_URL                Default http://influxdb:8086
     INFLUXDB_TOKEN              Admin or write token
     INFLUXDB_ORG                InfluxDB organization
@@ -87,7 +71,6 @@ class Config:
     email: str | None
     password: str | None
     poll_interval: float
-    override_grace_min: int
     influx_url: str
     influx_token: str
     influx_org: str
@@ -106,7 +89,6 @@ class Config:
             email=os.environ.get("TCC_USERNAME"),
             password=os.environ.get("TCC_PASSWORD"),
             poll_interval=float(os.environ.get("THERMOSTAT_POLL_INTERVAL", "600")),
-            override_grace_min=int(os.environ.get("OVERRIDE_GRACE_MIN", "5")),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
             influx_token=required("INFLUXDB_TOKEN"),
             influx_org=required("INFLUXDB_ORG"),
@@ -215,119 +197,13 @@ def write_snapshot(write_api: Any, cfg: Config, snap: dict[str, Any]) -> None:
     write_api.write(bucket=cfg.influx_bucket, record=p)
 
 
-def fetch_last_action(query_api: Any, bucket: str) -> dict[str, Any] | None:
-    """Return the most recent applied (non-dry-run) hvac.actions row, with
-    cool_setpoint_f / heat_setpoint_f / action_label / minutes_since_last_action."""
-    flux = f'''
-from(bucket: "{bucket}")
-  |> range(start: -2d)
-  |> filter(fn: (r) => r._measurement == "hvac.actions" and r.dry_run == "false")
-  |> filter(fn: (r) => r._field == "cool_setpoint_f" or r._field == "heat_setpoint_f" or r._field == "applied")
-  |> last()
-  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-'''
-    rows: list[dict[str, Any]] = []
-    for table in query_api.query(flux):
-        for record in table.records:
-            rows.append({**record.values})
-    if not rows:
-        return None
-    row = rows[0]
-    # last() returned per-field rows pivoted; flatten any None fields
-    action_time = row.get("_time")
-    minutes_since = (datetime.now(timezone.utc) - action_time).total_seconds() / 60.0 if action_time else None
-    return {
-        "cool_setpoint_f": row.get("cool_setpoint_f"),
-        "heat_setpoint_f": row.get("heat_setpoint_f"),
-        "applied": row.get("applied"),
-        "action_label": row.get("action_label", ""),
-        "minutes_since_last_action": minutes_since,
-        "action_time": action_time,
-    }
-
-
-def classify_override(snap: dict[str, Any], last: dict[str, Any], override_grace_min: float) -> dict[str, Any] | None:
-    """Decide whether the current thermostat snapshot represents a manual
-    override of the last applied scheduler action.
-
-    Returns a summary dict when:
-      * Both expected and actual setpoints (heat AND cool) are present, AND
-      * It has been at least ``override_grace_min`` minutes since the last
-        applied action (avoids flagging the action's own write as an
-        override before the read-back settles), AND
-      * Either the cool or heat setpoint differs from the action's setpoint
-        by 0.5°F or more (sub-half-degree differences are rounding noise).
-
-    Returns None on any condition above failing.
-    """
-    expected_cool = last.get("cool_setpoint_f")
-    expected_heat = last.get("heat_setpoint_f")
-    actual_cool = snap.get("cool_setpoint_f")
-    actual_heat = snap.get("heat_setpoint_f")
-    minutes_since = last.get("minutes_since_last_action")
-    if (expected_cool is None or expected_heat is None
-            or actual_cool is None or actual_heat is None):
-        return None
-    if minutes_since is None or minutes_since < override_grace_min:
-        return None
-    delta_cool = float(actual_cool) - float(expected_cool)
-    delta_heat = float(actual_heat) - float(expected_heat)
-    if abs(delta_cool) < 0.5 and abs(delta_heat) < 0.5:
-        return None  # within rounding; not an override
-    return {
-        "expected_cool_f": expected_cool,
-        "actual_cool_f": actual_cool,
-        "delta_cool_f": delta_cool,
-        "expected_heat_f": expected_heat,
-        "actual_heat_f": actual_heat,
-        "delta_heat_f": delta_heat,
-        "minutes_since_last_action": minutes_since,
-        "last_action_label": last.get("action_label"),
-    }
-
-
-def detect_and_write_override(query_api: Any, write_api: Any, cfg: Config, snap: dict[str, Any]) -> dict[str, Any] | None:
-    """If current setpoints differ from last applied action (after grace period),
-    write hvac.overrides row and return the override summary. Returns None if
-    no override or last action data unavailable."""
-    last = fetch_last_action(query_api, cfg.influx_bucket)
-    if not last:
-        return None
-    summary = classify_override(snap, last, cfg.override_grace_min)
-    if summary is None:
-        return None
-
-    # `p: Any` lets the Point()/.tag()/.field() chain (untyped in
-    # influxdb_client stubs) flow through without per-call ignores.
-    p: Any = (
-        Point("hvac.overrides")  # type: ignore[no-untyped-call]
-        .tag("thermostat_id", str(cfg.device_id))
-        .tag("source", "manual_override")
-        .field("expected_cool_setpoint_f", float(summary["expected_cool_f"]))
-        .field("actual_cool_setpoint_f", float(summary["actual_cool_f"]))
-        .field("delta_cool_f", float(summary["delta_cool_f"]))
-        .field("expected_heat_setpoint_f", float(summary["expected_heat_f"]))
-        .field("actual_heat_setpoint_f", float(summary["actual_heat_f"]))
-        .field("delta_heat_f", float(summary["delta_heat_f"]))
-        .field("last_action_label", str(summary["last_action_label"] or ""))
-        .field("minutes_since_last_action", float(summary["minutes_since_last_action"]))
-        .field("indoor_temp_f", float(snap.get("indoor_temp_f") or 0))
-        .field("humidity_pct", float(snap.get("humidity_pct") or 0))
-        .field("hvac_mode", str(snap.get("hvac_mode") or ""))
-    )
-    write_api.write(bucket=cfg.influx_bucket, record=p)
-    return summary
-
-
 async def main_async(cfg: Config) -> int:
     log("info", "startup",
         device_id=cfg.device_id,
         poll_interval_s=cfg.poll_interval,
-        override_grace_min=cfg.override_grace_min,
         bucket=cfg.influx_bucket)
 
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
-    query_api = influx.query_api()
     write_api = influx.write_api(write_options=SYNCHRONOUS)
     # Construct the real TCC client when creds are present; otherwise keep the
     # inert StubThermostatClient (fail-loud on a device call) so a credential-
@@ -353,7 +229,6 @@ async def main_async(cfg: Config) -> int:
             try:
                 snap = await read_snapshot(c4)
                 write_snapshot(write_api, cfg, snap)
-                override = detect_and_write_override(query_api, write_api, cfg, snap)
                 log("info", "poll_ok",
                     indoor_temp_f=snap.get("indoor_temp_f"),
                     humidity_pct=snap.get("humidity_pct"),
@@ -362,9 +237,7 @@ async def main_async(cfg: Config) -> int:
                     hvac_mode=snap.get("hvac_mode"),
                     hvac_state=snap.get("hvac_state"),
                     fan_mode=snap.get("fan_mode"),
-                    hold_mode=snap.get("hold_mode"),
-                    override_detected=bool(override),
-                    override=override)
+                    hold_mode=snap.get("hold_mode"))
                 HEALTH_MARKER.touch()
             except Exception as exc:
                 log("error", "poll_failed", error=str(exc), error_type=type(exc).__name__)
