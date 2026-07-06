@@ -66,3 +66,34 @@ def test_missing_feed_is_a_traced_noop(tmp_path):
     loop = _loop(tmp_path, Feed(out=None))
     asyncio.run(loop.tick(datetime(2026, 7, 10, 12, 0, tzinfo=UTC)))
     assert loop.telemetry.traces[-1]["reason_code"] == "REV4_FEED_MISSING"
+
+
+def test_adapter_maps_seam_to_snapshot():
+    import asyncio
+    from .controller.device import TccClimateAdapter, ControlSnapshot
+
+    class FakeClim:
+        async def get_schedule_cool_f(self): return 25.5
+        async def get_cool_setpoint_f(self): return 27.0
+        async def get_heat_setpoint_f(self): return 18.5
+        async def get_hold_mode(self): return "Hold Until"
+        async def get_hold_until_minutes(self): return 1290
+        async def get_current_temperature_f(self): return 25.0
+        async def get_humidity(self): return 52.0
+        pushed = []
+        async def set_cool_setpoint_f(self, v): self.pushed.append(("cool", v))
+        async def set_heat_setpoint_f(self, v): self.pushed.append(("heat", v))
+        async def set_hold_until(self, t): self.pushed.append(("until", t.hour * 60 + t.minute))
+        async def set_hold_mode(self, m): self.pushed.append(("mode", m))
+
+    class FakeClient:
+        def __init__(self): self.clim = FakeClim()
+        async def get_climate(self): return self.clim
+
+    a = TccClimateAdapter(FakeClient())
+    s = asyncio.run(a.snapshot())
+    assert s == ControlSnapshot(25.5, 27.0, 18.5, True, 1290, 25.0, 52.0)
+    asyncio.run(a.push(29.5, 18.5, 14 * 60 + 30))
+    assert ("cool", 29.5) in FakeClim.pushed and ("until", 870) in FakeClim.pushed
+    asyncio.run(a.release())
+    assert ("mode", "Schedule") in FakeClim.pushed
