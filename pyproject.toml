@@ -102,6 +102,36 @@ module = [
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
 
+[[tool.mypy.overrides]]
+# rev 4 spike-only controller test modules (plan 2026-07-05). The plan's
+# embedded test code is binding and transcribed verbatim, and it uses
+# untyped fakes (bare generics, unannotated returns, untyped helper calls,
+# assert-narrowing the fake's mutable state), so these modules need a
+# wider relaxation than the shared test list above. New test_rev4_*
+# modules are appended HERE, not to the list above.
+module = [
+    "hvac_scheduler.test_rev4_acceptance",
+    "hvac_scheduler.test_rev4_config",
+    "hvac_scheduler.test_rev4_pricing",
+    "hvac_scheduler.test_rev4_loop",
+]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+warn_unreachable = false
+
+[[tool.mypy.overrides]]
+# TEMPORARY SCAFFOLDING (rev 4 plan 2026-07-05): the acceptance test
+# imports hvac_scheduler.controller.{config,loop,device} before those
+# modules exist (config/loop land in PR-1 Tasks 2/4; device in PR-3
+# Task 9). ignore_missing_imports only applies while a module cannot be
+# found — once each module lands it is strictly checked as usual, so
+# this block self-retires. Remove it at Task 11 (acceptance goes green).
+module = "hvac_scheduler.controller.*"
+ignore_missing_imports = true
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
