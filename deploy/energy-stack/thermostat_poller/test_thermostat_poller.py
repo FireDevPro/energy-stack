@@ -1,141 +1,133 @@
-"""Tests for the thermostat poller's override-detection logic.
+"""Tests for the thermostat poller.
 
-The override-detection state machine compares the current thermostat
-snapshot against the last applied scheduler action. A divergence after
-the grace period == user manually changed setpoints. The branches that
-matter:
+Override detection was retired under the rev 4 spike-only controller
+(plan 2026-07-05 Task 14): manual holds are first-class operator action,
+and the `hvac.actions` row the detector compared against is days old or
+absent under spike-only. These tests pin the removal:
 
-- Missing expected or actual setpoints → no override
-- Within the grace period (action just fired, read-back not settled) → no override
-- Setpoints match within 0.5°F (rounding noise) → no override
-- Otherwise → override summary
+- The module exposes no override machinery (classify_override,
+  detect_and_write_override, fetch_last_action).
+- Config carries no override_grace_min.
+- A full poll cycle writes exactly one `hvac.thermostat` row (never
+  `hvac.overrides`) and logs a `poll_ok` line with no override fields.
 
 Run from this directory:
-    python -m pytest tests.py
+    python -m pytest . -q
 """
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import json
+import signal
+from pathlib import Path
 from typing import Any
 
-from .poller import classify_override
+import pytest
+
+from . import poller
 
 
-# ---- classify_override ---------------------------------------------------
+# ---- Module surface: override machinery is gone ---------------------------
 
 
-def _last(cool: float = 70, heat: float = 65, label: str = "PRE_COOL", minutes_since: float = 30.0) -> dict[str, Any]:
-    return {
-        "cool_setpoint_f": cool,
-        "heat_setpoint_f": heat,
-        "action_label": label,
-        "minutes_since_last_action": minutes_since,
-    }
+def test_override_machinery_removed() -> None:
+    """Rev 4 retired override detection — none of its functions survive."""
+    for name in ("classify_override", "detect_and_write_override", "fetch_last_action"):
+        assert not hasattr(poller, name), f"{name} should have been removed"
 
 
-def _snap(cool: float = 70, heat: float = 65) -> dict[str, Any]:
-    return {
-        "cool_setpoint_f": cool,
-        "heat_setpoint_f": heat,
-    }
+def test_config_carries_no_override_grace() -> None:
+    """OVERRIDE_GRACE_MIN config was retired with the detector."""
+    field_names = {f.name for f in dataclasses.fields(poller.Config)}
+    assert "override_grace_min" not in field_names
 
 
-def test_classify_no_override_when_setpoints_match():
-    """Snapshot matches last action exactly — no override."""
-    assert classify_override(_snap(70, 65), _last(70, 65), override_grace_min=5) is None
+# ---- Poll cycle: hvac.thermostat only, no override fields ------------------
 
 
-def test_classify_override_when_cool_setpoint_changed():
-    """User dragged cool setpoint from 70 to 72 after the grace window."""
-    summary = classify_override(_snap(72, 65), _last(70, 65), override_grace_min=5)
-    assert summary is not None
-    assert summary["expected_cool_f"] == 70
-    assert summary["actual_cool_f"] == 72
-    assert summary["delta_cool_f"] == 2.0
-    assert summary["delta_heat_f"] == 0.0
+def _cfg(poll_interval: float = 3600.0) -> poller.Config:
+    return poller.Config(
+        device_id=4750378,
+        email=None,
+        password=None,
+        poll_interval=poll_interval,
+        influx_url="http://influx.test:8086",
+        influx_token="tok",
+        influx_org="org",
+        influx_bucket="energy",
+    )
 
 
-def test_classify_override_when_heat_setpoint_changed():
-    summary = classify_override(_snap(70, 68), _last(70, 65), override_grace_min=5)
-    assert summary is not None
-    assert summary["delta_cool_f"] == 0.0
-    assert summary["delta_heat_f"] == 3.0
+class _FakeWriteApi:
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def write(self, bucket: str, record: Any) -> None:
+        self.records.append(record)
 
 
-def test_classify_no_override_within_rounding():
-    """Sub-half-degree differences are rounding noise, not an override.
-    Tested against both directions."""
-    # 0.4°F delta (under threshold)
-    assert classify_override(_snap(70.4, 65), _last(70, 65),
-                              override_grace_min=5) is None
-    assert classify_override(_snap(70, 65.3), _last(70, 65),
-                              override_grace_min=5) is None
-    # Negative direction
-    assert classify_override(_snap(69.7, 65), _last(70, 65),
-                              override_grace_min=5) is None
+class _FakeInflux:
+    """Stands in for InfluxDBClient inside main_async."""
+
+    def __init__(self) -> None:
+        self.write_api_obj = _FakeWriteApi()
+
+    def write_api(self, write_options: Any = None) -> _FakeWriteApi:
+        return self.write_api_obj
+
+    def close(self) -> None:
+        pass
 
 
-def test_classify_override_at_exactly_half_degree():
-    """0.5°F is the threshold (>= 0.5 fires, < 0.5 doesn't). Test the
-    boundary explicitly."""
-    # 0.5°F exact — fires
-    summary = classify_override(_snap(70.5, 65), _last(70, 65), override_grace_min=5)
-    assert summary is not None
-    # 0.49°F — doesn't fire
-    assert classify_override(_snap(70.49, 65), _last(70, 65),
-                              override_grace_min=5) is None
+async def test_poll_cycle_writes_thermostat_row_without_override_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One poll cycle end-to-end (fakes at the Influx and device-read seams):
+    exactly one hvac.thermostat write — no hvac.overrides row — and a
+    poll_ok log line carrying no override_detected/override keys."""
+    cfg = _cfg()
+    fake_influx = _FakeInflux()
+    monkeypatch.setattr(poller, "InfluxDBClient", lambda **_: fake_influx)
+    monkeypatch.setattr(poller, "HEALTH_MARKER", tmp_path / "last_poll_ok")
+    # poller's `import signal` binds the same module object — patching the
+    # stdlib module keeps main_async from clobbering pytest's handlers.
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
 
+    async def fake_read(c4: Any) -> dict[str, Any]:
+        return {
+            "indoor_temp_f": 74.0,
+            "cool_setpoint_f": 71.0,
+            "heat_setpoint_f": 67.0,
+            "hvac_mode": "Cool",
+            "hvac_state": "Off",
+            "fan_mode": "Auto",
+            "hold_mode": "TemporaryHold",
+            "humidity_pct": 45.0,
+        }
 
-def test_classify_no_override_within_grace_period():
-    """An action just fired (1 min ago) — the read-back may show the new
-    setpoints sub-second-stale. Don't flag as override before the read-back
-    has had time to settle."""
-    last = _last(70, 65, minutes_since=1.0)
-    assert classify_override(_snap(75, 65), last, override_grace_min=5) is None
+    monkeypatch.setattr(poller, "read_snapshot", fake_read)
 
+    task = asyncio.ensure_future(poller.main_async(cfg))
+    for _ in range(500):
+        if fake_influx.write_api_obj.records:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
-def test_classify_override_at_grace_boundary():
-    """Grace boundary: 5 min exactly fires, 4.99 doesn't."""
-    fires = classify_override(_snap(75, 65), _last(70, 65, minutes_since=5.0),
-                                override_grace_min=5)
-    assert fires is not None
-    silent = classify_override(_snap(75, 65), _last(70, 65, minutes_since=4.99),
-                                override_grace_min=5)
-    assert silent is None
+    lines = [r.to_line_protocol() for r in fake_influx.write_api_obj.records]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("hvac.thermostat,")
+    assert "override" not in lines[0]
 
-
-def test_classify_no_override_when_expected_setpoint_missing():
-    """Last action row missing fields (e.g. a release_hold action that
-    didn't carry setpoints) — no override possible."""
-    last = {"cool_setpoint_f": None, "heat_setpoint_f": 65,
-             "minutes_since_last_action": 30.0}
-    assert classify_override(_snap(70, 65), last, override_grace_min=5) is None
-
-
-def test_classify_no_override_when_actual_setpoint_missing():
-    """Thermostat read failed for one setpoint — don't synthesize an
-    override from incomplete data."""
-    snap = {"cool_setpoint_f": 70, "heat_setpoint_f": None}
-    assert classify_override(snap, _last(70, 65), override_grace_min=5) is None
-
-
-def test_classify_no_override_when_minutes_since_unknown():
-    """If we can't determine grace-period status, don't fire."""
-    last = {**_last(70, 65), "minutes_since_last_action": None}
-    assert classify_override(_snap(75, 65), last, override_grace_min=5) is None
-
-
-def test_classify_override_carries_label_for_diagnostics():
-    """The override row records which action got overridden — useful when
-    the user is fighting one specific time-of-day setpoint."""
-    last = _last(80, 65, label="HOT_COAST", minutes_since=30)
-    summary = classify_override(_snap(75, 65), last, override_grace_min=5)
-    assert summary is not None
-    assert summary["last_action_label"] == "HOT_COAST"
-
-
-def test_classify_override_with_negative_delta():
-    """User dragged setpoint DOWN (more cooling). Negative delta is
-    semantically "user wants colder than the action set"."""
-    summary = classify_override(_snap(68, 65), _last(73, 65), override_grace_min=5)
-    assert summary is not None
-    assert summary["delta_cool_f"] == -5.0
+    out = capsys.readouterr().out
+    log_records = [json.loads(line) for line in out.splitlines() if line.strip()]
+    poll_ok = [rec for rec in log_records if rec.get("msg") == "poll_ok"]
+    assert poll_ok, log_records
+    for rec in poll_ok:
+        assert "override_detected" not in rec
+        assert "override" not in rec
