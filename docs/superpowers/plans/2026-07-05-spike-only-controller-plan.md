@@ -31,7 +31,7 @@ Copied from the spec — every task inherits these:
 - **No time locks.** Tier release = `release_confirm_buckets` consecutive fresh-strict buckets at/below the release threshold. Engage = 1 fresh-strict bucket. Stale backstop = `stale_release_minutes` without fresh-strict data while holding → hard release.
 - **Device reads are scoped:** ticks at tier ≥ elevated, or with a persisted own-hold record, read the device; pure normal ticks never touch it.
 - **Tests run per-service:** `cd deploy/energy-stack/hvac_scheduler && python -m pytest . -q`. NEVER `pytest deploy/energy-stack` from the repo root. New test files use the `test_rev4_*.py` prefix and package-relative imports, matching the existing files.
-- **Telemetry field contract (transcribed from rev 3 — these exact names, because live consumers filter on them):** `hvac.actions` tags `unit`, `tier`, `action_label`, `dry_run` ("true"/"false"); fields `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed `ScheduleCoolSp` under rev 4), `drift`, `humidity_gated`, `setpoint_reason`, `applied` (int 0/1), `error` (str, "" when none), `config_id`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. New rev 4 fields: `schedule_cool` (same value as `baseline_cool`, explicit name), `hold_expires_at` (RFC3339 str, "" when no hold). `hvac.arm_mode`: tags `scheduler_mode`, `arm`; field `mode_actual` — rev 3's exact branch behavior (transcribed in Task 10): `current_arm_at` None (outside any arm window) → `mode_actual="outside-window"` regardless of mode, no `arm` tag; arm present + mode ≠ `experiment` → `mode_actual=f"off-protocol-{scheduler_mode}"` with `arm` tag. NOTE: `current_arm_at` requires a NAIVE CT datetime (strip tzinfo before calling — rev 3 does `now_ct.replace(tzinfo=None)`). `hvac.price_overlay` (tier transitions only — spec §Telemetry keeps it, cockpit reads it): tags `prev_tier`, `new_tier`, `unit`; fields `current_price_cents`, `baseline_cool`, `commanded_cool`.
+- **Telemetry field contract (transcribed from rev 3 — these exact names, because live consumers filter on them):** `hvac.actions` tags `unit`, `tier`, `action_label`, `dry_run` ("true"/"false"); fields `commanded_cool`, `commanded_heat`, `baseline_cool` (= observed `ScheduleCoolSp` under rev 4), `drift`, `humidity_gated`, `setpoint_reason`, `applied` (int 0/1), `error` (str, "" when none), `config_id`, `actual_indoor_temp`, `actual_cool_before`, `actual_heat_before`, `actual_humidity`. New rev 4 fields: `schedule_cool` (same value as `baseline_cool`, explicit name), `hold_expires_at` (RFC3339 str, "" when no hold). `hvac.arm_mode`: tags `scheduler_mode`, `arm`; field `mode_actual` — rev 3's exact branch behavior (transcribed in Task 10): `current_arm_at` None (outside any arm window) → `mode_actual="outside-window"` regardless of mode, no `arm` tag; arm present + mode ≠ `experiment` → `mode_actual=f"off-protocol-{scheduler_mode}"` with `arm` tag. NOTE: `current_arm_at` requires a NAIVE CT datetime (strip tzinfo before calling — rev 3 does `now_ct.replace(tzinfo=None)`). `hvac.price_overlay` (tier transitions only — spec §Telemetry keeps it, cockpit reads it): tags `prev_tier`, `new_tier`, `unit`; fields `current_price_cents`, `baseline_cool`, `commanded_cool`, `triggered_at_utc` (RFC3339 str — rev 3 contract field, do not drop).
 - **CI type gate (repo `typecheck.yml` runs on every push):** strict mypy over `hvac_scheduler` + import-linter. Consequences for every code task: (1) all new production code is FULLY type-annotated — every parameter and return; injected seams (`price_source`, `climate`, `telemetry`, `client`, `query_api`, `write_api`, `snap`, `own` where cross-module typing would couple pure modules) are annotated `Any` (`from typing import Any`), which strict mypy accepts; (2) each new `test_rev4_*` module is added to `pyproject.toml`'s per-module `disallow_untyped_defs=false` relaxation list **in the same commit that creates it, and `pyproject.toml` is included in that commit's `git add` line** (the commit blocks below include it wherever a new test module is born); (3) `controller/__main__.py` imports `influxdb_client` directly — add an `ignore_imports` entry `hvac_scheduler.controller.__main__ -> influxdb_client` to the import-linter contract in Task 11; (4) Task 15 removes the then-stale `hvac_scheduler.app` entries from `pyproject.toml` when `app.py` is deleted.
 - **The async seam:** `ControllerLoop.tick` is async and runs inside an event loop — device access must be `await`ed end-to-end. NEVER call `asyncio.run()` from inside adapter/loop code (nested-event-loop crash; also `TCCClient`'s aiohttp session binds to the first loop it sees). `run_forever` owns the single `asyncio.run(...)`.
 - **`run_forever` per-tick error contract:** wrap each tick in try/except — a transient error (TCC timeout, Influx hiccup) logs one `rev4_tick_failed` line with `error_type` and continues to the next tick; it must NOT exit the process.
@@ -433,6 +433,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 import yaml
 
@@ -458,7 +459,7 @@ class ControllerConfig:
     config_id: str
 
 
-def _require(mapping: dict, key: str, ctx: str = ""):
+def _require(mapping: dict[str, Any], key: str, ctx: str = "") -> Any:
     if not isinstance(mapping, dict) or key not in mapping:
         raise ConfigError(f"missing required config key: {ctx}{key}")
     return mapping[key]
@@ -836,6 +837,8 @@ class ControllerLoop:
         self.tz = ZoneInfo(tz_name)
         self.data_dir = data_dir
         self.tier_state = tiers.TierState()
+        self.humidity_blocked = False              # RH hysteresis (Task 11)
+        self._last_arm_write: datetime | None = None  # arm-mode throttle (Task 11)
 
     async def tick(self, now_utc: datetime) -> None:
         tick_id = uuid.uuid4().hex
@@ -1867,6 +1870,7 @@ Complete `tick` implementation (replace the skeleton's trailing comment):
                 self.tier_state.tier, snap, own, self.cfg,
                 now_utc, now_local, self.humidity_blocked)
             if kind == "push":
+                assert cool is not None and until is not None  # decide() contract; narrows for mypy
                 applied, err = await self._apply_push(cool, until)
                 overlay_commanded = cool
                 if applied:
@@ -1994,7 +1998,7 @@ With helpers (same class):
         asyncio.run(_run())
 ```
 
-(`humidity_blocked = False` and `_last_arm_write = None` initialized in `__init__`; `_maybe_write_arm_mode` writes via `self.telemetry.write_arm_mode(now_ct=now_utc.astimezone(self.tz), scheduler_mode=self.mode)` — KEYWORDS, the test fakes are `**kw`-only — at most every 300 s. Note for the shadow path: `_apply_*` returns `applied=False, error=""`, the record is NOT saved, matching "shadow never writes" — the trace still shows the would-push via `write_action(dry_run=True)`. `run_forever` = ONE `asyncio.run(...)` around the whole loop per the async-seam global constraint, with the per-tick try/except error contract.)
+(`humidity_blocked` and `_last_arm_write` are initialized in Task 4's `__init__` code block; `_maybe_write_arm_mode` writes via `self.telemetry.write_arm_mode(now_ct=now_utc.astimezone(self.tz), scheduler_mode=self.mode)` — KEYWORDS, the test fakes are `**kw`-only — at most every 300 s. Note for the shadow path: `_apply_*` returns `applied=False, error=""`, the record is NOT saved, matching "shadow never writes" — the trace still shows the would-push via `write_action(dry_run=True)`. `run_forever` = ONE `asyncio.run(...)` around the whole loop per the async-seam global constraint, with the per-tick try/except error contract.)
 
 - [ ] **Step 1: Add loop tests** — humidity hysteresis (blocked at 61, stays blocked at 59, clears at 57.9), shadow gate (production=False → `dev.pushes == []`, action row has `dry_run=True/applied=0`), record hygiene (record + no device hold → record cleared), arm-mode throttle (two ticks 1 min apart → exactly one arm row).
 - [ ] **Step 2: Run all rev4 unit tests** — green.
@@ -2071,7 +2075,7 @@ if __name__ == "__main__":
 - [ ] **Step 7: Commit — end of PR-3**
 
 ```bash
-git add deploy/energy-stack/hvac_scheduler/controller/ deploy/energy-stack/hvac_scheduler/test_rev4_*.py
+git add deploy/energy-stack/hvac_scheduler/controller/ deploy/energy-stack/hvac_scheduler/test_rev4_*.py pyproject.toml
 git commit -m "feat(rev4): full loop wiring — acceptance test passes, xfail removed"
 ```
 
