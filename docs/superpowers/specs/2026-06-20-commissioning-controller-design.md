@@ -1,8 +1,8 @@
 ---
 date: 2026-06-20
-revised: 2026-07-06
+revised: 2026-07-07
 owner: chris
-status: draft (revision 4.1 — spike-only respec; active release on live stand-down, 2026-07-06)
+status: active (revision 4.1 — live in production since 2026-07-06; go-active validation record below)
 role-label: code-team
 supersedes_intent_of: the now-removed day-type / deep-precool controller model (its docs were deleted in the demolition); revision 4 additionally supersedes revision 3's always-hold normal tier, config schedule copy, and extreme tier
 depends_on: Control4->TCC actuation swap (landed; timed holds live since #112)
@@ -496,29 +496,40 @@ hold.
   plus sanity checks: floor never violated, setpoints on-grid, no writes traced
   in normal tier.
 
-## Go-active (rev 4 redeploy gates)
+## Go-active — validation record (feature closed 2026-07-07)
 
-**Ordering:** gates 1–4 require production writes, so the sequence is: SOPS /
-`SCHEDULER_MODE` confirmation -> flip to `production` **with the operator
-watching** -> gates 1–4 run as the first-production-day checklist. Forcing a
-spike without waiting for the market: temporarily lower `elevated_at` in
-config (config-as-surface — no code, and `config_id` records the epoch).
+Rev 4 merged straight into production at the 2026-07-06 cutover (operator
+choice; the Pi was already `SCHEDULER_MODE=production`). The original gates
+were satisfied by live production evidence:
 
-1. **Clean kill test on real hardware** — push a spike hold, stop the
-   controller, watch the device drop the hold at expiry and resume its program
-   unaided. *(The 2026-07-03 attempt is VOID — the outage unpowered the device
-   across the expiry instant; that run instead discovered safety fact #3. The
-   test must be re-run clean, with its restore step parked on the Pi — e.g.
-   `at`-scheduled `docker compose start` — not in an agent session.)*
-2. Spike-hold round-trip readback (engage on a real elevated tick, confirm
-   device state and the active release home at spike end).
-3. Zombie self-cleanup: matching/lifecycle logic covered by tests, and the
-   record-clearing paths (successful release write -> record cleared;
-   observed no-hold -> record cleared) verified
-   live. The true zombie-release path requires a power cut across an expiry —
-   verify opportunistically, or optionally by cutting thermostat power across
-   a short-TTL hold's expiry.
-4. Alert pair live-fired once (beacon + push-failure).
+1. **Dead-controller lapse-home — OBSERVED 2026-07-06 04:56Z.** Rev 3 died
+   at cutover holding 23.5; the device lapsed the hold unaided 21 minutes
+   later and resumed its own program. (The 2026-07-03 staged attempt remains
+   VOID — the outage unpowered the device across the expiry instant; that
+   run discovered safety fact #3 instead.)
+2. **Spike round-trip — OBSERVED.** First production spike 2026-07-06
+   (12.8 -> 94.1¢: engage, scarcity, stairstep downgrade, confirmed release,
+   under rev 4.0). Rev 4.1 **active release** observed 2026-07-07 18:06:10Z:
+   `REV4_RELEASED_TO_NORMAL` and the `REV4_SPIKE_END_RELEASE` device write
+   landed in the same second; the device ran its own program immediately, no
+   tail. Cold-boot engage also observed 2026-07-07 16:41Z (controller
+   restarted into a live 22.9¢ spike and engaged scarcity on its first tick).
+3. **Zombie self-cleanup — PARTIALLY OBSERVED.** Record save + record clear
+   ran live 2026-07-06/07; matching/lifecycle logic is test-covered. The true
+   zombie-release branch requires a power cut across a hold expiry — validate
+   opportunistically at the next real power event (TTL and the cleanup rule
+   both backstop it meanwhile).
+4. **Alert pair — down-beacon LIVE-FIRED 2026-07-07.** Controller stopped
+   16:26Z; watchdog beaconed; telegram-notifier alerted 16:37Z (11-minute
+   detection); the operator received it. Restore ran from a Pi-side deadman
+   (`systemd-run --on-active=25m ...` — the Pi has no `at`; use systemd-run
+   for kill-test restores). Push-failure alert: unit-tested; fires on 3
+   consecutive failed pushes.
+5. **RH guard — test-covered, live fire pending** a humid hold (August will
+   provide) or a temporary `rh_max_pct` lowering during a spike.
+
+Residual open validations (both backstopped and unit-tested): zombie release
+on a real power event; RH-guard live fire.
 
 ## Architecture
 

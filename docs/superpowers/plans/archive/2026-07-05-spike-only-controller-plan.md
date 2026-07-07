@@ -5,7 +5,7 @@
 ---
 date: 2026-07-05
 owner: chris
-status: active
+status: completed 2026-07-06 (PRs #116-#121); archived 2026-07-07
 role-label: code-team
 spec: docs/superpowers/specs/2026-06-20-commissioning-controller-design.md (rev 4, merged PR #114)
 ---

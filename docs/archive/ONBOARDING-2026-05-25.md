@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-07-07 — thoroughly stale.** Generated 2026-05-25 from a
+> pre-demolition knowledge graph; describes the killed SCED study, the
+> safety supervisor, day-types, and precool — none of which exist. Regenerate
+> a fresh onboarding doc via the Understand-Anything plugin after the
+> knowledge-graph rebuild; until then, start at INDEX.md and the rev 4.1
+> controller spec.
+
 ---
 date: 2026-05-25
 owner: chris
