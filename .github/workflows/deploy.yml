@@ -18,11 +18,11 @@ on:
   workflow_dispatch:
     inputs:
       stack:
-        description: 'Force deploy a stack regardless of detected changes'
+        description: 'Force deploy regardless of detected changes'
         required: false
         default: 'auto'
         type: choice
-        options: [auto, energy-stack, n8n-stack, both]
+        options: [auto, energy-stack]
 
 # GitHub-hosted ubuntu-latest runners reach Pi-lab via Tailscale.
 # Each job joins the tailnet as an ephemeral node tagged `tag:ci`,
@@ -59,7 +59,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       energy-stack: ${{ steps.changes.outputs.energy-stack }}
-      n8n-stack: ${{ steps.changes.outputs.n8n-stack }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -71,9 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ inputs.stack || 'auto' }}" in
-            energy-stack) echo "energy-stack=true" >> $GITHUB_OUTPUT; echo "n8n-stack=false" >> $GITHUB_OUTPUT ;;
-            n8n-stack)    echo "energy-stack=false" >> $GITHUB_OUTPUT; echo "n8n-stack=true" >> $GITHUB_OUTPUT ;;
-            both)         echo "energy-stack=true" >> $GITHUB_OUTPUT; echo "n8n-stack=true" >> $GITHUB_OUTPUT ;;
+            energy-stack) echo "energy-stack=true" >> $GITHUB_OUTPUT ;;
             *)
               # Auto-detect from the diff
               CHANGED=$(git diff --name-only HEAD^ HEAD || git ls-files)
@@ -83,11 +80,6 @@ jobs:
                 echo "energy-stack=true" >> $GITHUB_OUTPUT
               else
                 echo "energy-stack=false" >> $GITHUB_OUTPUT
-              fi
-              if echo "$CHANGED" | grep -q '^deploy/n8n-stack/'; then
-                echo "n8n-stack=true" >> $GITHUB_OUTPUT
-              else
-                echo "n8n-stack=false" >> $GITHUB_OUTPUT
               fi
               ;;
           esac
@@ -155,60 +147,6 @@ jobs:
             UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
             if [ -n "$UNHEALTHY" ]; then
               echo "::error::Some services not healthy after deploy:"
-              echo "$UNHEALTHY"
-              exit 1
-            fi
-            echo "All services healthy."
-          EOF
-
-  deploy-n8n-stack:
-    needs: detect
-    if: needs.detect.outputs.n8n-stack == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Join tailnet (ephemeral tag:ci)
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
-      - name: Sync to ~/n8n
-        shell: bash
-        run: |
-          rsync -av --delete \
-            -e "ssh ${{ env.SSH_OPTS }}" \
-            --exclude '.env' \
-            --exclude '.env.*' \
-            ./deploy/n8n-stack/ \
-            ${{ env.PI_USER }}@${{ env.PI_HOST }}:~/n8n/
-
-      - name: Deploy
-        shell: bash
-        run: |
-          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
-            set -euo pipefail
-            cd ~/n8n
-            docker compose pull --quiet
-            docker compose up -d --remove-orphans
-            echo ""
-            echo "=== Service status ==="
-            docker compose ps
-          EOF
-
-      - name: Smoke test
-        shell: bash
-        run: |
-          ssh ${{ env.SSH_OPTS }} ${{ env.PI_USER }}@${{ env.PI_HOST }} bash <<'EOF'
-            set -euo pipefail
-            cd ~/n8n
-            sleep 10
-            UNHEALTHY=$(docker compose ps --format json | grep -E '"State":"(exited|restarting|dead)"' || true)
-            if [ -n "$UNHEALTHY" ]; then
-              echo "::error::n8n services not healthy after deploy:"
               echo "$UNHEALTHY"
               exit 1
             fi

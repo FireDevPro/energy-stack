@@ -7,6 +7,8 @@ role-label: chris
 
 # ComEd Price Freshness — Design Spec
 
+> **Rev 4.1 note (2026-07-06):** the four-state freshness *vocabulary* this spec defines (`freshness.py`) remains live and is consumed by the rev 4 controller's display/telemetry paths. The *behavior rules* here (tier-downgrade refusal on the 7-min label, 30-min safety-release timer) applied to the demolished rev-3 controller and are superseded by the rev 4.1 spec's fresh-strict (720 s) / active-release design — do not implement from this document.
+
 ## 1. Purpose
 
 Fix the freshness-blindness bug class observed on 2026-05-19 at 19:18Z, where the hvac-scheduler downgraded its price-overlay tier from `elevated` to `normal` based on an 8-minute-old ComEd bucket while real-time prices were spiking. Close two coupled gaps in one cohesive change:

@@ -40,9 +40,11 @@ price-aware overlay on the Arm A comfort program).
   warm-offset. Warm-only; device-owned safety (setpoint limits + timed
   holds); no day-types, no 5CP control, no deep precool, no software
   supervisor. Config is the experimental surface.
-- [docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md](docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md)
-  — implementation plan for the commissioning controller (shadow →
-  active commissioning → 2027 A/B comparison)
+- [docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md](docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md)
+  — implementation plan for the rev 4 spike-only controller (executed
+  2026-07-06 across PRs #116–#121; archives at feature close after the
+  go-active gates). The superseded rev-3 plan lives in
+  `docs/superpowers/plans/archive/`.
 
 ## Data, telemetry, and integrations
 
@@ -73,11 +75,6 @@ The science layer: what counts as evidence, how it's validated.
   surfaced the wrong-variable choice in pyControl4 that motivated the
   `indoor_temp_f_hires` telemetry field
 
-## Security
-
-- [SECURITY.md](SECURITY.md) — security policy and private-reporting
-  channel
-
 ## Stack operations
 
 How to deploy, run, and tweak the running stack on Pi-lab.
@@ -92,8 +89,6 @@ How to deploy, run, and tweak the running stack on Pi-lab.
 Workstation-local utilities and analysis scaffolds. Most are
 self-contained mini-projects with their own READMEs.
 
-- [tools/n8n/README.md](tools/n8n/README.md)
-  — n8n workflow SDK source (canonical `.workflow.ts` authoring)
 - [tools/decision-trace-report/README.md](tools/decision-trace-report/README.md)
   — daily decision-trace commissioning report tooling
 

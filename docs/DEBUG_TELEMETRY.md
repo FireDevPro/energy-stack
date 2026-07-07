@@ -40,7 +40,7 @@ What `hvac_scheduler` actively reads to make decisions (Arm B periods only; in s
 | `pjm.metered_load` | (load) | 5CP season-to-date baseline |
 | `pjm.inst_load` | (load) | 5CP live load tracking |
 | `pjm.load_forecast` | (forecast) | 5CP day-ahead forecast |
-| `hvac.precool_window` | (state) | Read-back of own prior pre-cool state |
+| `hvac.precool_window` | (dead) | Writers removed in the June 2026 demolition; historical rows only |
 | `hvac.decisions` | (state) | Read-back of own prior daily decision |
 
 ### Not from Influx
@@ -49,7 +49,6 @@ What `hvac_scheduler` actively reads to make decisions (Arm B periods only; in s
 |---|---|---|
 | Thermostat live state | Control4 Director API via `pyControl4.C4Climate` | Current setpoints, hvac_mode, hold_mode — read live, not via Influx. (`hvac.thermostat` measurement is poller *output*, not a scheduler input.) |
 | Arm calendar | Python module `arm_calendar.py` (byte-identical copies in scheduler + `tools/analysis/`) | Locked A/B/A/B alternation 2026-06-01 to 2026-11-16 |
-| Manual overrides | `/data/overrides.json` on the persistent volume | Operator day-type force or vacation flat-setpoint |
 
 ## §3 — Influx measurement inventory
 
@@ -78,7 +77,7 @@ Every measurement currently in the `energy` bucket, with consumption status. **F
 | `hvac.actions` | **FULL** | Scheduler's action log → thermostat_poller (last-action lookup), telegram_notifier, cockpit, analysis. In shadow mode these are *proposed* actions, not pushed |
 | `hvac.arm_mode` | **FULL** | hvac_scheduler_watchdog (alarms on stuck arm), cockpit |
 | `hvac.decisions` | **FULL** | hvac_scheduler reads own prior decision, telegram_notifier, cockpit, analysis |
-| `hvac.precool_window` | **FULL** | hvac_scheduler reads own state, cockpit, analysis |
+| `hvac.precool_window` | **NONE** | dead since the June 2026 demolition (historical rows only) |
 | `hvac.price_overlay` | **FULL** | Scheduler-emit telemetry → analysis (`queries/hvac.price_overlay.flux`) |
 | `hvac.5cp_state` | **FULL** | Scheduler-emit telemetry → analysis (`queries/hvac.5cp_state.flux`) |
 | `hvac.heartbeat` | **FULL** | hvac_scheduler liveness → cockpit |
