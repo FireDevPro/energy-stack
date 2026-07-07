@@ -85,7 +85,7 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
-**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config); `hvac.overrides` (thermostat-poller override detection retired at the rev 4 cutover, July 2026 — manual holds are first-class operator action now; `tools/log_override.py` can still write operator annotations); `hvac.switch_event`, `hvac.input_feed_health` (rev 3 scheduler measurements; writers deleted at the rev 4 cutover); `hvac.decisions`, `hvac.precool_window`, `hvac.5cp_state` (day-type/precool/5CP writers removed in the June 2026 demolition). No new writes occur to any of these.
+**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config); `hvac.overrides` (thermostat-poller override detection retired at the rev 4 cutover, July 2026 — manual holds are first-class operator action now; the `tools/log_override.py` annotation script was deleted in the 2026-07-06 repo cleanup); `hvac.switch_event`, `hvac.input_feed_health` (rev 3 scheduler measurements; writers deleted at the rev 4 cutover); `hvac.decisions`, `hvac.precool_window`, `hvac.5cp_state` (day-type/precool/5CP writers removed in the June 2026 demolition). No new writes occur to any of these.
 
 **Operations:**
 
@@ -131,11 +131,13 @@ Image: `grafana/grafana-oss:11.4.0` · Port: `3000` · Volumes: `grafana_data`, 
 
 InfluxDB and Loki provisioned as datasources (read-only via `editable: false`). Five dashboards provisioned from disk (`grafana/dashboards/`):
 
+Dashboards are maintained in the separate [FireDevPro/grafana-dashboards](https://github.com/FireDevPro/grafana-dashboards) repo (mounted on the Pi at `/opt/grafana-dashboards`); listed here for reference only.
+
 | Dashboard | File | Purpose |
 |---|---|---|
 | Home Energy — Full | `home-energy-full.json` | Whole-stack view: prices, mains, per-circuit, HVAC scheduler, equipment-health row |
 | Home Energy — Overview | `home-energy-overview.json` | High-level (cost, demand, indoor temp) |
-| HVAC Scheduler | `hvac-scheduler.json` | Day-type history, action timeline, setpoint vs indoor temp |
+| HVAC Scheduler | `hvac-scheduler.json` | Action timeline, tier history, setpoint vs indoor temp (pre-rev-4 panels pending dashboard-repo refresh) |
 | ComEd Bill Reconciliation | `comed-bill-reconciliation.json` | Bill-vs-projected, EAGLE-vs-billed-kWh, capacity-charge tracker, forward-projection (stub) |
 | IAQ Comparison | `iaq-comparison.json` | HAVEN return-air mix vs thermostat wall reading; tVOC; blower cross-validation |
 

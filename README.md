@@ -40,8 +40,8 @@ fully commissioned and validated:
 review at season end. The Arm A vs Arm B cost-savings comparison is the **2027
 experiment** — deferred, not active in 2026.
 
-Controller design: [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](docs/superpowers/specs/2026-06-20-commissioning-controller-design.md)
-Commissioning plan: [`docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md`](docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md)
+Controller design: [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](docs/superpowers/specs/2026-06-20-commissioning-controller-design.md) (rev 4.1, spike-only — live since 2026-07-06)
+Implementation plan: [`docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md`](docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md)
 
 ## What's in this repo
 
@@ -81,4 +81,4 @@ Legacy operator README archived at [`docs/archive/README-LEGACY.md`](docs/archiv
 
 ## License
 
-[MIT](LICENSE) — see also [`SECURITY.md`](SECURITY.md).
+[MIT](LICENSE)

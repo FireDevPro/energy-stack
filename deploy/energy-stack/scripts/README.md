@@ -77,35 +77,15 @@ After several manual runs have been validated, log nightly output only:
 17 3 * * * bash -lc 'cd ~/energy-stack/scripts && . .venv/bin/activate && set -a; . ~/energy-stack/.env; set +a; export INFLUX_URL="${INFLUXDB_URL:-${INFLUX_URL:-http://localhost:8086}}"; export INFLUX_TOKEN="${INFLUXDB_TOKEN:-${INFLUXDB_INIT_ADMIN_TOKEN:-${INFLUX_TOKEN}}}"; export INFLUX_ORG="${INFLUXDB_ORG:-${INFLUXDB_INIT_ORG:-${INFLUX_ORG}}}"; export INFLUX_BUCKET="${INFLUXDB_BUCKET:-${INFLUXDB_INIT_BUCKET:-${INFLUX_BUCKET}}}"; python fit_thermal_observer.py --window-days 14 >> /var/log/thermal-observer.log 2>&1'
 ```
 
-## randomize_arms.py — DEPRECATED (pre-rebaseline historical artifact)
+## randomize_arms.py — removed 2026-07-06
 
-> [!WARNING]
-> **Retired 2026-05-13** by the SCED rebaseline (its spec doc has since been removed in the controller demolition). The current experiment uses **deterministic 14-day arm alternation** (12 arms total, 6 Arm A + 6 Arm B) — no PRNG seed, no 4-week blocks, no weekly assignment CSV.
->
-> The canonical arm calendar is now generated programmatically by [`tools/analysis/arm_calendar.py`](../../../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked). The original `randomize_arms.py` script and its output `docs/experiment-assignments-summer-2026.csv` are preserved in-tree as historical artifacts (and to keep `tests/test_randomize_arms.py` pinning the original algorithm for audit traceability) but **should not be run** for any current operation. Tracked since [PR #137 F3 deferral](https://github.com/FireDevPro/energy-stack/pull/137).
-
-Generates the original Arm A / Arm B week-level assignment for the residential
-HVAC controls field study described in [`docs/archive/EXPERIMENT_DESIGN.md`](../../../docs/archive/EXPERIMENT_DESIGN.md).
-Block-of-2 randomization using a pre-committed seed (default `20260601` from
-EXPERIMENT_DESIGN.md §13). Same seed + same date range → same CSV, every time.
-
-Default run produces [`docs/experiment-assignments-summer-2026.csv`](../../../docs/experiment-assignments-summer-2026.csv):
-
-```bash
-python randomize_arms.py
-# → 18 rows, 9 Arm A weeks + 9 Arm B weeks, 2026-06-01 .. 2026-09-28
-```
-
-Other invocations:
-
-- Future cooling-season run: `--seed 20270601 --start 2027-06-01 --end 2027-09-30`
-- Inspect without writing: `--dry-run`
-- Custom output path: `--output /tmp/foo.csv`
-
-This script WAS the binding artifact behind the original OSF pre-registration draft.
-Pre-rebaseline, the directive read: **Do not modify the algorithm or default seed without filing an OSF amendment.** The
-pinned-snapshot test in `tests/test_randomize_arms.py` still fails loud if the
-seed-to-output mapping ever drifts, preserving the original artifact for audit.
+Deleted in the repo cleanup (already retired 2026-05-13 by the SCED
+rebaseline; its OSF audit-traceability retention rationale was voided
+by the 2026-06-20 registration retraction). The deterministic arm
+calendar (`tools/analysis/arm_calendar.py` + the controller-side
+byte-identical copy) is canonical; the historical assignment output
+`docs/experiment-assignments-summer-2026.csv` remains in-tree. Full
+script and its pinned-snapshot test recoverable from git history.
 
 ## commission_decision_trace_path_c.py — removed 2026-06-20
 

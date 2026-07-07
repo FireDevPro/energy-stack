@@ -58,7 +58,7 @@ But anything you push to `main` will overwrite local-only edits on the next depl
 
 The `.env` file lives ONLY on Pi-lab (chmod 600). Never committed (`.gitignore`), never rsynced (CI workflow excludes it, manual rsync above excludes it). The SOPS-encrypted equivalent (`secrets/env.sops.env`) IS committed and IS deployed — that's the recovery path.
 
-To force a redeploy without making a code change: GitHub Actions UI → "Deploy to Pi" workflow → "Run workflow" → pick `energy-stack`, `n8n-stack`, or `both`.
+To force a redeploy without making a code change: GitHub Actions UI → "Deploy to Pi" workflow → "Run workflow" → pick `energy-stack`.
 
 ### Tailscale (deploy runner)
 
@@ -147,7 +147,7 @@ Currently covered (22 test files across 11 services + scripts/ suite as of 2026-
 - `refoss_poller/test_refoss_poller.py`
 - `telegram_notifier/test_telegram_notifier.py`
 - `thermostat_poller/test_thermostat_poller.py`
-- `scripts/tests/` — five test files: `test_backfill_pjm.py`, `test_influx.py`, `test_parser.py`, `test_randomize_arms.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
+- `scripts/tests/` — four test files: `test_backfill_pjm.py`, `test_influx.py`, `test_parser.py`, `test_scrape_pjm_5cp_pdf.py` (run automatically by `run_tests.sh` extras block)
 
 Services without dedicated test files: `influx-init`, `mosquitto-init` (one-shot provisioning shell), `telegraf` (config-only). The compose-controlled containers (`influxdb`, `grafana`, `loki`, `promtail`, `mosquitto`) are all upstream images with no Python under test.
 
