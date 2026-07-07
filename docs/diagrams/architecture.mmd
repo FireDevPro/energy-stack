@@ -1,37 +1,46 @@
 %% Top-level architecture diagram for README.md
-%% Source of truth. Rendered to architecture.svg via:
+%% Source of truth. Rendered to architecture.svg + architecture.png via:
 %%   npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd -o docs/diagrams/architecture.svg -t neutral -b transparent
-%% Re-render after any edits and commit both files together.
+%%   npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd -o docs/diagrams/architecture.png -t neutral -b white -w 1600 -H 1400
+%% Re-render after any edits and commit all three files together.
+%% Rev 4.1 (2026-07-06): spike-only controller — normal prices: the thermostat
+%% runs its own program, controller writes nothing; spikes: timed warm holds,
+%% actively released when prices confirm cheap. ComEd RTP is the SOLE live
+%% control input; everything else is telemetry/observability.
 
 flowchart LR
   classDef store fill:#e8eef7,stroke:#3b6aa0,color:#0b2540
   classDef input fill:#f5f5f5,stroke:#888,color:#222
   classDef output fill:#eef5ec,stroke:#3a7a3a,color:#143a14
   classDef hw fill:#fff7e0,stroke:#a07a14,color:#3a2a05
+  classDef ctrl fill:#fdeaea,stroke:#a03b3b,color:#3a0b0b
 
-  subgraph IN["Inputs"]
+  subgraph IN["Telemetry inputs"]
     direction TB
     E["EAGLE-3<br/>billing meter"]:::input
-    C["ComEd Hourly<br/>Pricing"]:::input
     P["PJM Data Miner 2<br/>LMP / load / 5CP"]:::input
     N["NWS forecast<br/>+ alerts"]:::input
     R["Refoss EM16P<br/>per-circuit"]:::input
     W["Ecowitt<br/>outdoor + indoor"]:::input
-    T["CTK04AE state<br/>(10-min reads)"]:::input
+    T["thermostat-poller<br/>CTK04AE state (10-min)"]:::input
     CN["ComfortNet<br/>(CT-485 bus &rarr; MQTT)"]:::input
   end
 
+  C["ComEd Hourly Pricing<br/>(5-min RTP)"]:::ctrl
+
   DB[("InfluxDB 2.7<br/>energy +<br/>energy-longterm")]:::store
 
-  subgraph OUT["Decision &amp; output"]
+  subgraph OUT["Observability"]
     direction TB
-    H["hvac-scheduler<br/>Arm B controller<br/>+ safety supervisor"]:::output
     G["Grafana<br/>(dashboards)"]:::output
     L["Loki + Promtail<br/>(logs)"]:::output
-    M["telegram-notifier"]:::output
+    M["telegram-notifier<br/>(alerts incl. controller<br/>down-beacon)"]:::output
+    WD["hvac-scheduler-watchdog<br/>(down-beacon writer)"]:::output
   end
 
-  TS["CTK04AE thermostat<br/>(Amana 2-stage AC<br/>+ modulating furnace)"]:::hw
+  H["hvac-scheduler<br/>rev 4 spike-only controller<br/>normal: NO writes &mdash; spikes:<br/>timed warm holds, active release"]:::ctrl
+
+  TS["CTK04AE thermostat<br/>runs its own program<br/>(Amana 2-stage AC<br/>+ modulating furnace)"]:::hw
 
   E --> DB
   C --> DB
@@ -41,8 +50,9 @@ flowchart LR
   W --> DB
   T --> DB
   CN --> DB
-  DB --> H
+  DB -->|"ComEd RTP<br/>(sole live control input)"| H
   DB --> G
   DB --> M
   DB --> L
-  H --> TS
+  WD --> DB
+  H <-->|"TCC cloud: program/state reads +<br/>timed warm holds (spikes only)"| TS

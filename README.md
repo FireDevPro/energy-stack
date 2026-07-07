@@ -13,7 +13,6 @@ role-label: chris
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href=".python-version"><img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13"></a>
   <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/typecheck.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/typecheck.yml?branch=main&label=type-check" alt="Type-check status"></a>
-  <a href="https://github.com/FireDevPro/energy-stack/actions/workflows/shadow-validation.yml"><img src="https://img.shields.io/github/actions/workflow/status/FireDevPro/energy-stack/shadow-validation.yml?branch=main&label=shadow-validation" alt="Shadow-validation status"></a>
   <img src="https://img.shields.io/github/last-commit/FireDevPro/energy-stack" alt="Last commit">
 </p>
 
@@ -25,20 +24,23 @@ zone 5A; Amana CTK04AE thermostat on a 2-stage AC + modulating furnace.
 
 ## The controller
 
-Two control approaches — retained for a 2027 cost-savings comparison once Arm B is
-fully commissioned and validated:
+Two control approaches — retained for a 2027 cost-savings comparison:
 
 - **Arm A** — the CTK04AE's internal programmed schedule runs autonomously.
-  `hvac-scheduler` stays in `shadow` mode (telemetry only, no writes).
-- **Arm B** — the Arm A comfort baseline **plus price awareness**. Holds the
-  baseline and drifts *warmer* when ComEd RTP prices are elevated. Warm-only;
-  never cools below the current baseline. Safety is device-owned: the thermostat's
-  setpoint min/max limits are the hard cap; timed holds (never Permanent) revert to
-  the onboard schedule if the controller dies.
+- **Arm B** — Arm A **plus price awareness** (the rev 4.1 spike-only
+  controller, **live in production since 2026-07-06**). At normal prices the
+  thermostat runs its own program and the controller writes nothing. During
+  ComEd RTP spikes it pushes timed warm holds anchored on a live read of the
+  device's current program value (elevated = program + offset; scarcity = an
+  absolute max-house temperature), and **actively releases** them once two
+  consecutive price buckets confirm cheap. Warm-only; never cools below the
+  device's program. Safety is device-owned: setpoint min/max limits are the
+  hard cap, and the timed-hold TTL reverts the device to its own schedule if
+  the controller dies — the safety net and the release path are independent
+  mechanisms by design.
 
-**2026 goal:** get Arm B built, running in shadow, then live for the season, then
-review at season end. The Arm A vs Arm B cost-savings comparison is the **2027
-experiment** — deferred, not active in 2026.
+**2026 status:** built, validated, and running the season live. The Arm A vs
+Arm B cost-savings comparison is the **2027 experiment** — deferred.
 
 Controller design: [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](docs/superpowers/specs/2026-06-20-commissioning-controller-design.md) (rev 4.1, spike-only — live since 2026-07-06)
 Implementation plan: [`docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md`](docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md)
@@ -58,9 +60,7 @@ Implementation plan: [`docs/superpowers/plans/2026-07-05-spike-only-controller-p
 
 ## Architecture
 
-![Architecture: ComEd Hourly Pricing and CTK04AE thermostat state are the ONLY live controller inputs to hvac-scheduler (Arm B). All other feeds — EAGLE-3, PJM Data Miner 2, NWS, Refoss EM16P, Ecowitt, ComfortNet CT-485 bus via MQTT — flow into InfluxDB 2.7 as telemetry/observability only, NOT controller inputs. InfluxDB feeds Grafana dashboards, Loki + Promtail logs, and the telegram-notifier. The scheduler pushes setpoints to the CTK04AE thermostat driving a 2-stage Amana AC and modulating furnace. Note: architecture PNG predates this controller redesign and needs regeneration to reflect the input split.](docs/diagrams/architecture.png)
-
-> ⚠ **The diagram above is stale** — it predates the controller redesign. Current reality: the controller's only live inputs are **ComEd RTP price + CTK04AE thermostat state**; PJM 5CP, NWS, Refoss, Ecowitt, and EAGLE-3 are **telemetry only**, not controller inputs. Regeneration pending.
+![Architecture: telemetry inputs (EAGLE-3, PJM Data Miner 2, NWS, Refoss EM16P, Ecowitt, thermostat-poller, ComfortNet) flow into InfluxDB 2.7. ComEd Hourly Pricing is the sole live control input, feeding the rev 4 spike-only hvac-scheduler, which leaves the CTK04AE thermostat running its own program at normal prices and pushes timed warm holds via the TCC cloud only during price spikes, actively released when prices confirm cheap. InfluxDB also feeds Grafana dashboards, Loki + Promtail logs, and the telegram-notifier (including the controller down-beacon alert written by the hvac-scheduler-watchdog). The thermostat drives a 2-stage Amana AC and modulating furnace.](docs/diagrams/architecture.png)
 
 > Diagram source: [`docs/diagrams/architecture.mmd`](docs/diagrams/architecture.mmd) (Mermaid).
 > Re-render with `npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd -o docs/diagrams/architecture.png -t neutral -b white -w 1600 -H 1400` (SVG is also committed at the same path).

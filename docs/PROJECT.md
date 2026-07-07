@@ -9,7 +9,7 @@ role-label: chris
 
 **Project**: `D:\Projects\energy-proxy`
 **Started**: 2025
-**Last Updated**: 2026-06-20
+**Last Updated**: 2026-07-07
 
 ---
 
@@ -27,13 +27,18 @@ The goal is not just "what am I using right now" but "what did it cost, why, and
 > deposit obligation, and no peer-review deliverable gating the work. **The repo
 > is private.** The old `hvac-scheduler` controller design (weather day-types, a
 > daily decision cycle, four fixed schedules, deep day-ahead pre-cool, live 5CP
-> control, and a software safety supervisor) is being **replaced** by a much
-> simpler controller — it failed under its own complexity and drift. The
-> sections below that describe that design are retained as **historical**; the
-> current design lives in
+> control, and a software safety supervisor) failed under its own complexity
+> and drift and has been **replaced twice over**: first by the rev 3
+> always-hold commissioning controller (June 2026), then by the **rev 4.1
+> spike-only controller, live in production since 2026-07-06** (PRs #114–#121;
+> rev 3 deleted at cutover). At normal prices the thermostat runs its own
+> program and the controller writes nothing; during ComEd RTP spikes it pushes
+> timed warm holds anchored on a live read of the device's program, and
+> actively releases them when prices confirm cheap. Sections below describing
+> older designs are retained as **historical**; the binding design is
 > [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md)
-> and its plan
-> [`docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md`](superpowers/plans/2026-06-20-commissioning-controller-plan.md).
+> (rev 4.1); its executed plan is archived at
+> [`docs/superpowers/plans/archive/2026-07-05-spike-only-controller-plan.md`](superpowers/plans/archive/2026-07-05-spike-only-controller-plan.md).
 
 The same instrumentation still runs a two-approach HVAC comparison built around
 the same arm apparatus, but as **private, in-house work** rather than a public
@@ -41,9 +46,11 @@ study. The two control approaches:
 
 - **Arm A** = the CTK04AE thermostat's own programmed schedule (thermostat in
   control — a comfortable static schedule).
-- **Arm B** = that Arm A comfort program **plus price awareness**: it holds the
-  comfort baseline and drifts *warmer* when power is expensive (ComEd RTP).
-  Warm-only. That is the entire controller. Canonical design:
+- **Arm B** = that Arm A program **plus price awareness**: the thermostat's
+  own program stays in command; during ComEd RTP spikes the controller pushes
+  timed warm holds (anchored on a live read of the device's current program
+  value) and actively releases them when prices confirm cheap. Warm-only.
+  That is the entire controller. Canonical design:
   [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 What this means for the project shape:
@@ -51,10 +58,12 @@ What this means for the project shape:
 - **Safety is device-owned.** The thermostat's setpoint min/max limits are the
   hard cap, and timed holds (never Permanent) revert to the onboard schedule if
   the controller dies. There is no software safety supervisor.
-- **Config is the experimental surface.** Baseline, offsets, thresholds,
-  ceiling, and hold TTL are config values (in `temp_scale`, C or F); code owns
-  invariants only (warm-only, never below the current baseline, guards revoke
-  the overlay to baseline, device fail-safe).
+- **Config is the experimental surface.** Tier thresholds + hysteresis, the
+  elevated offset, the scarcity absolute (max house temp), the RH guard pair,
+  hold TTL, release-confirmation buckets, and the stale backstop are config
+  values (in `temp_scale`); code owns invariants only (warm-only, never below
+  the device's current program value, fresh-strict to engage / fresh-loose to
+  extend, active release on live stand-down, device fail-safe).
 - **Both arms are owned in this repo.** Arm A is the CTK04AE thermostat's
   internal programmed schedule. Arm B is the price-aware overlay described above.
   The arm apparatus (arm calendar, mode telemetry, switch-event logging) is
@@ -131,9 +140,9 @@ Plus ancillary services in the same compose project: `telegram-notifier` (daily 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
 InfluxDB. The `refoss-poller` (Phase 5) replaced `sense-poller` (retired Phase 1.5).
-The thermostat path's Control4/pyControl4 actuation has been retired; the device
-client is now a stubbed `ThermostatClient` seam, with TCC/`aiosomecomfort` wiring
-deferred (see the commissioning-controller spec). The Windows-side `energy_proxy.py` and custom HTML
+The thermostat path's Control4/pyControl4 actuation was retired in June 2026;
+the device client is TCC/`aiosomecomfort` behind the `ThermostatClient` seam
+(live since #109), driven by the rev 4.1 spike-only controller. The Windows-side `energy_proxy.py` and custom HTML
 dashboard are gone — Grafana is the sole visualization layer. State is durable:
 InfluxDB on a persistent volume, with a separate `energy-longterm` bucket for 1-min
 downsampled history.
@@ -197,7 +206,7 @@ downsampled history.
 
 ## Target Architecture
 
-The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, and Phase 9 PJM DM2 poller all landed by May 2026 (see Development Roadmap below). The Phase 10 software safety supervisor also shipped in May 2026 but is **being removed** — safety is now device-owned (see the commissioning controller spec). Active follow-on work: the commissioning controller (the price-aware Arm B overlay) per [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md) and [`docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md`](superpowers/plans/2026-06-20-commissioning-controller-plan.md), which replaces the old `hvac-scheduler` day-type/precool design. ComfortNet pipeline (broker + telegraf + Pi-3B publisher) is live as of 2026-05-06 and `hvac.comfortnet` is flowing — see [`docs/COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) for downstream consumption and [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for the live implementation.
+The collector layer matches "Current Architecture" above. Phase 3.4 dashboards, Phase 4 thermostat integration, Phase 8 bill ingest, and Phase 9 PJM DM2 poller all landed by May 2026 (see Development Roadmap below). The Phase 10 software safety supervisor shipped in May 2026 and was **deleted at the 2026-07-06 rev 4 cutover** — safety is device-owned (setpoint limits + timed holds). The commissioning controller **shipped as the rev 4.1 spike-only design, live in production since 2026-07-06** per [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md) (plan executed and archived). ComfortNet pipeline (broker + telegraf + Pi-3B publisher) is live as of 2026-05-06 and `hvac.comfortnet` is flowing — see [`docs/COMFORTNET_USE_CASES.md`](COMFORTNET_USE_CASES.md) for downstream consumption and [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) for the live implementation.
 
 **Grafana dashboards will provide:**
 - Real-time "right now" view (10-30s auto-refresh): current demand, current rate, current cost/hour, top circuits by power
@@ -239,7 +248,7 @@ The fixed Flux cost-calc pattern is shared with `telegram-notifier` daily summar
 The `webdashboard` nginx container + `webdashboard-api` FastAPI backend shipped as a sci-fi HUD on port 8081, sourced from `claude.ai/design`. Retired in favor of consolidating on Grafana — the additional surface (custom React + Babel-in-browser, FastAPI service, nginx proxy, separate cost-calc code path) wasn't pulling enough weight against a Grafana dashboard with the same data. Code removed from the repo and compose; Grafana is the only visualization layer going forward.
 
 ### Phase 4 — Thermostat Integration ✅ (May 2026)
-Originally implemented via the Control4 EA-5 path rather than the planned direct Honeywell TCC API: `thermostat-poller` read via `pyControl4.C4Climate` every 10 minutes, with override-detection logic, and wrote to `hvac.thermostat`. **That Control4/pyControl4 path has since been retired** behind a stubbed `ThermostatClient` seam (TCC/`aiosomecomfort` deferred) per the commissioning-controller demolition.
+Originally implemented via the Control4 EA-5 path rather than the planned direct Honeywell TCC API: `thermostat-poller` read via `pyControl4.C4Climate` every 10 minutes, with override-detection logic, and wrote to `hvac.thermostat`. **That Control4/pyControl4 path was retired** behind the `ThermostatClient` seam; TCC/`aiosomecomfort` landed June 2026 (#109) and is the live device client. The poller's automatic override detection was retired at the 2026-07-06 rev 4 cutover (manual holds are first-class operator action under rev 4).
 
 ### Phase 5 — Refoss EM16P ✅ (April 2026)
 Complete. Sense hardware removed and replaced with Refoss EM16P at `192.168.20.140` (homelab VLAN, auth disabled). New `refoss-poller` container in `energy-stack` polls `Refoss.Status.Get` every 30 s — single round-trip per cycle returns all 18 `em:N` channels plus `sys`/`wifi` blocks. Channel labels are sourced from the device's own `Refoss.Config.Get` (whatever was named in the Refoss app) and refreshed automatically when `sys.cfg_rev` increments. Measurements: `refoss.channel` (one point per channel) and `refoss.system`. The `sense-poller` container was removed from compose; old `energy_proxy.py`, `dashboard.html`, launchers, and Sense `.env` credentials were deleted from the Windows-side repo.
@@ -262,12 +271,13 @@ Non-Member API access provisioned via PJM tech-support (the path the May 2026 Kn
 - `annual_zonal_nspl` (`zone=COMED`) Dec 1 03:00 CT — yearly NSPL snapshot.
 Plus two scripts: `backfill_pjm.py` for one-shot 5-year history (`scripts/`), and `scrape_pjm_5cp_pdf.py` to parse the official PJM 5CP PDF each November. Design + schema in [`docs/PJM_DM2_INTEGRATION.md`](PJM_DM2_INTEGRATION.md); feed catalog in [`docs/PJM_DM2_FEEDS.md`](PJM_DM2_FEEDS.md).
 
-### Phase 10 — HVAC Scheduler Safety Supervisor ✅ shipped May 2026, ⚠ being removed
+### Phase 10 — HVAC Scheduler Safety Supervisor ✅ shipped May 2026, ✖ deleted (June–July 2026)
 > **Superseded (2026-06-20).** Safety is now **device-owned** — the thermostat's
 > setpoint min/max limits are the hard cap, and timed holds (never Permanent)
 > revert to the onboard schedule if the controller dies. The
-> `safety_supervisor.py` module described below is being **deleted** in the
-> commissioning controller rework; this entry is retained for historical record.
+> `safety_supervisor.py` module described below was **deleted** in the June
+> 2026 demolition (rev 3 remnants at the 2026-07-06 rev 4 cutover); this
+> entry is retained for historical record.
 > See [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md).
 
 A `safety_supervisor.py` module gated every setpoint push the scheduler proposed. Three decision kinds (`approved` / `clamped` / `emergency`):
@@ -276,7 +286,7 @@ A `safety_supervisor.py` module gated every setpoint push the scheduler proposed
 - **Approved** — proposed values pass through.
 Decision logged to `hvac.actions` for audit.
 
-Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose container (so it cannot fail-with-the-controller) that writes `hvac.heartbeat controller_alive=false` whenever no `hvac.arm_mode` row appears in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10). No-news-is-good-news: the absence of recent `hvac.heartbeat` rows tells you nothing on its own; the canonical liveness signal is recent `hvac.arm_mode` from the scheduler itself. Consumed by the Controller Cockpit's `controller.alive` field.
+Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose container (so it cannot fail-with-the-controller) that writes `hvac.heartbeat controller_alive=false` whenever no `hvac.arm_mode` row appears in the last `WATCHDOG_THRESHOLD_MINUTES` (default 10). No-news-is-good-news: the absence of recent `hvac.heartbeat` rows tells you nothing on its own; the canonical liveness signal is recent `hvac.arm_mode` from the scheduler itself. Consumed by the Controller Cockpit's `controller.alive` field, and since 2026-07-06 by `telegram-notifier`'s controller-down alert (live-fire tested 2026-07-07: scheduler stopped, Telegram alert received 11 minutes later).
 
 ### Phase 11 — Field Study Pre-Registration (drafted May 2026, ⚠ retracted 2026-06-20)
 > **Retracted (2026-06-20).** The pre-registered/OSF-deposited public-study
@@ -293,13 +303,37 @@ Out-of-band partner: **`hvac-scheduler-watchdog`** is a separate single-purpose 
 The retained apparatus describes a deterministic-alternation comparison of the CTK04AE programmed schedule (Arm A) against the price-aware Arm B overlay, 14-day arm-level alternation. The canonical arm calendar lives in [`tools/analysis/arm_calendar.py`](../tools/analysis/arm_calendar.py) (analysis-side) and [`deploy/energy-stack/hvac_scheduler/arm_calendar.py`](../deploy/energy-stack/hvac_scheduler/arm_calendar.py) (controller-side; byte-identical, CI hash-sync checked), replacing the retired `randomize_arms.py` + assignment CSV. Historical analysis-design context (now superseded) is preserved in [`docs/archive/EXPERIMENT_DESIGN.md`](archive/EXPERIMENT_DESIGN.md). The PJM 5CP capacity window (Jun–Sep) is retained for the 5CP **telemetry** signal, not for live control.
 
 ### Controller Cockpit ✅ (May 2026; moved to Pi-lab 2026-06-11)
-Read-only dashboard at [`deploy/energy-stack/cockpit/`](../deploy/energy-stack/cockpit/), deployed as the `cockpit` compose service on Pi-lab: one container serves the FastAPI proxy (live InfluxDB + Loki) and the production frontend build same-origin on `:8765`. Renders the `decision_trace.*` events the controller emits as a real-time flow board (the flow stages — Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action — reflect the old day-type/supervisor controller and will be revised with the commissioning controller rework). Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). Read-only by design — no setpoint writes back to the controller. Originally workstation-local (Vite dev server + one-click launcher); the launcher remains as the dev loop. Companion to the daily decision-trace report (live-tape vs end-of-day-tape).
+Read-only dashboard at [`deploy/energy-stack/cockpit/`](../deploy/energy-stack/cockpit/), deployed as the `cockpit` compose service on Pi-lab: one container serves the FastAPI proxy (live InfluxDB + Loki) and the production frontend build same-origin on `:8765`. Renders the `decision_trace.*` events the controller emits as a real-time flow board (the flow stages — Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action — reflect the old day-type/supervisor controller; the rev 4 cutover changed the telemetry event names and `hvac.actions` shape, so the flow board and several panels are **expectedly broken** pending the cockpit rebuild, which conforms to rev 4 telemetry). Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). Read-only by design — no setpoint writes back to the controller. Originally workstation-local (Vite dev server + one-click launcher); the launcher remains as the dev loop. Companion to the daily decision-trace report (live-tape vs end-of-day-tape).
+
+### Phase 12 — Rev 4 Spike-Only Controller ✅ (July 2026)
+
+The 2026-07-03 power outage exposed three latent defects in the rev 3
+always-hold controller (a zombie-hold power-cycle edge, a config schedule
+that had silently diverged from the thermostat's true program, and a
+freshness gate calibrated inside the ComEd publish-jitter band). The
+resulting redesign inverted the architecture: **the thermostat runs its own
+program; the controller intervenes only during RTP spikes** — timed warm
+holds anchored on a live device read (elevated = program + offset, scarcity
+= absolute max-house temp), two-bucket confirmed release with an active
+release write, no time locks, TTL lapse strictly as the dead-controller
+safety net (rev 4.1). Executed as spec PRs #114/#115 (triple adversarial
+review) + implementation PRs #116–#121 (subagent-per-task with cold review;
+outside-in acceptance test xfail→green) + cutover deleting rev 3 (~10.9k
+lines). Live validation: first spike 2026-07-06 (12.8→94.1¢, full tier
+ladder); active release observed 2026-07-07 (tier decision to device write
+< 1 s); down-beacon alert live-fired 2026-07-07 (11-min detection). Full
+record in the spec's Go-active section.
 
 ---
 
 ## Known Follow-ups
 
-- **Commissioning controller (active critical path)**: build, validate, and run the price-aware Arm B overlay (Arm A comfort program + warm-only RTP drift, device-owned safety). Per [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md) and [`docs/superpowers/plans/2026-06-20-commissioning-controller-plan.md`](superpowers/plans/2026-06-20-commissioning-controller-plan.md). Replaces the retired day-type/precool/5CP-control/safety-supervisor design. The arm apparatus (calendar, mode telemetry `hvac.arm_mode`, switch-event logging, controller heartbeat/watchdog, feed-health telemetry) is retained for the deferred 2027 Arm-A-vs-Arm-B comparison. (The old OSF pre-registration filing and its `frozen_at_commit` freeze are retracted — see Phase 11 above.)
+- **Commissioning controller — ✅ DONE (rev 4.1 live in production 2026-07-06)**: spec rev 4.1 + 15-task plan executed across PRs #114–#121; rev 3 deleted; live validation record in the spec's Go-active section. The arm apparatus (`arm_calendar`, `hvac.arm_mode`, watchdog) is retained for the deferred 2027 Arm-A-vs-Arm-B comparison.
+- **Cockpit rebuild + daily decision-trace report refresh**: both consume rev-3 telemetry event names and are expectedly broken since the rev 4 cutover; rebuild conforms to rev 4 (`decision_trace.rev4_tick`, reshaped `hvac.actions`, 3-tier `hvac.price_overlay`).
+- **SOPS `.env` resync**: `deploy/energy-stack/secrets/env.sops.env` is stale (pre-production values, missing TCC creds); re-encrypt the live Pi `.env`.
+- **haven-ingest auth**: 403 from the HAVEN Auth0 token endpoint since 2026-07-01; refresh-token bootstrap needs redoing.
+- **Knowledge graph rebuild + ONBOARDING regeneration**: graph stale since the demolition; rebuild against the post-cleanup tree, then regenerate the onboarding doc (old one archived).
+- **Open live validations (backstopped, unit-tested)**: zombie-release on a real power event; RH-guard fire on a humid hold (or via temporary `rh_max_pct` lowering).
 - **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md).
 - **Open-Meteo as second weather source**: ECMWF IFS, 9 km, free since Oct 2025. Research showed it beats NWS at 1–3 day temp forecast. Worth running as a parallel weather input. (The day-type classifier it originally fed is part of the retired controller design.)
 - **Forecast bias correction**: affine intercept+slope per lead time (NOAA NCEP Office Note 520 method). Observation source live (`ecowitt-ingest`, shaded WN31 on N/E wall — May 2026); only the bias-fit work remains pending.
@@ -307,7 +341,7 @@ Read-only dashboard at [`deploy/energy-stack/cockpit/`](../deploy/energy-stack/c
 - **Pre-cool depth tuning (historical — retired design)**: a May 2026 research review suggested softening `HOT_PRE_COOL` from 68°F@4am to 71–72°F@3am for ~90% of peak shift at less off-peak kWh. This applied to the retired day-type/deep-precool controller, which the commissioning controller replaces (warm-only RTP drift, no deep pre-cool). Retained only as research context.
 - **Fridge anomaly detection upgrade**: current univariate threshold; Merlion (Salesforce, BSD-3) is multivariate and a better fit for the 18-channel Refoss surface.
 - **SOPS encryption** (complete, April 2026): `.env` is mirrored as age-encrypted `deploy/energy-stack/secrets/env.sops.env`, committed to the repo. Recipients: Windows workstation + Pi-lab. Rotation workflow documented in `deploy/energy-stack/README.md`. Both age private keys must be stored in 1Password (single-host loss is recoverable; both-host loss is not).
-- **InfluxDB downsampling** (complete, May 2026): `influx-init` container provisions the `energy-longterm` bucket and a 1-minute downsample Flux task on every `compose up -d`. Per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) keep raw 90 d → mean+max longterm; event measurements (`hvac.actions`, `hvac.overrides`) write directly to longterm. See [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
+- **InfluxDB downsampling** (complete, May 2026): `influx-init` container provisions the `energy-longterm` bucket and a 1-minute downsample Flux task on every `compose up -d`. Per-frame measurements (`eagle.meter`, `refoss.channel`, `refoss.system`, future `hvac.comfortnet`) keep raw 90 d → mean+max longterm; event measurements (`hvac.actions`; the now-retired `hvac.overrides`) write directly to longterm. See [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
 
 ---
 
@@ -362,7 +396,7 @@ A second wave of work that took the project from "monitoring + dashboards" to "a
 ### What was built
 
 - **`nws-poller`** — pulls hourly + daily NWS forecasts (today/tomorrow/day2) and active alerts (heat advisories, etc.) every 30 min. Core input to the day-type decision.
-- **`hvac-scheduler`** — the controller service. ⚠ Both the day-type design **and** the Control4 actuation path described here are **superseded** by the commissioning controller (Arm A comfort program + warm-only RTP drift; device writes via a stubbed `ThermostatClient` seam with TCC/`aiosomecomfort` deferred; see [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md)); only the service shape and `hvac.actions`/override mechanics below remain accurate. As originally built, a daily 21:00 decision classified tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picked a schedule, and fired `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. As originally built, it pushed to the Amana CTK04AE via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat (now retired behind the seam). Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
+- **`hvac-scheduler`** — the controller service. ⚠ Everything described below is **historical**: the day-type design, the Control4 actuation path, and the override mechanics are all superseded by the rev 4.1 spike-only controller (live 2026-07-06; TCC/`aiosomecomfort` device client; see [`docs/superpowers/specs/2026-06-20-commissioning-controller-design.md`](superpowers/specs/2026-06-20-commissioning-controller-design.md)). Only the service shape (container in the compose stack, watchdog partner) remains accurate. As originally built, a daily 21:00 decision classified tomorrow as MILD / NORMAL / HOT_5CP_RISK / HOT_STREAK_DAY1 based on NWS forecast + day-after lookahead, picked a schedule, and fired `cool_setpoint`/`heat_setpoint`/`fan_mode`/`hold` actions at scheduled times. As originally built, it pushed to the Amana CTK04AE via Pi → Control4 EA-5 (`192.168.1.30`) → Cinegration C4 driver → TCC cloud → RedLINK gateway → physical thermostat (now retired behind the seam). Override mechanism (`/data/overrides.json`) for vacation flat-holds and manual day-type forces.
 - **`telegram-notifier`** — daily summary at 8 AM (yesterday's cost / kWh / peak demand / fridge anomaly / scheduler activity / today's forecast) + alert checker every 5 min (poller silence, price spikes, fridge anomalies). Bot: `@EnergyStackBot` (separate from any other Telegram bots used elsewhere).
 - **`loki` + `promtail`** — log aggregation with Docker service-discovery filtered to the energy-stack project. JSON log lines have `level` and `msg` lifted to Loki labels for easy LogQL filtering in Grafana Explore.
 - **Nightly restic backup** to Backblaze B2 (root cron 02:00). Includes InfluxDB backup staged per-run, energy-stack/, chris-brain/, dns-stack/, Network_Management/, .ssh, .config/restic, and the backup script itself. Telegram notifications on success and failure (failure includes last 20 log lines).
@@ -463,7 +497,7 @@ Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are flow-dependent and
 Two new services shipped:
 
 - **`haven-ingest`** — polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
-- **`thermostat-poller`** — continuous 10-min reads of CTK04AE state through the device client (TCC rate-limit floor; the Control4/pyControl4 read path has been retired behind a stubbed `ThermostatClient` seam). Writes `hvac.thermostat` measurement on every poll. Also implements **automatic override detection**: compares current setpoints against the last applied `hvac.actions` row; if they differ by ≥ 0.5°F AND the last action was > 5 min ago, writes `hvac.overrides` row. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
+- **`thermostat-poller`** — continuous 10-min reads of CTK04AE state through the device client (TCC rate-limit floor; the Control4/pyControl4 read path has been retired behind a stubbed `ThermostatClient` seam). Writes `hvac.thermostat` measurement on every poll. It also implemented **automatic override detection** (writing `hvac.overrides` rows on setpoint divergence) — retired at the 2026-07-06 rev 4 cutover: manual holds are first-class operator action under the spike-only design. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
 
 Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.
 
@@ -479,7 +513,7 @@ Why this matters for the existing scheduler: the return-air mix is a **fundament
 - **EMHASS / Predheat** — open-source MILP/MPC layers for HA; worth reading even if not adopting (reference thermal model + tariff abstractions)
 - **Merlion (Salesforce, BSD-3)** — multivariate anomaly detection; better fit for the 18-channel Refoss data than the current univariate threshold approach
 - **OpenADR 3.x** — ComEd doesn't currently expose a residential VTN; revisit if/when they do
-- **Override logging** ✅ shipped May 2026 via `thermostat-poller` automatic override detection: writes `hvac.overrides` rows whenever current thermostat setpoints diverge ≥ 0.5°F from the last `hvac.actions` row by more than `OVERRIDE_GRACE_MIN` (default 5 min). Foundational training data for future ML/MPC layers.
+- **Override logging** ✅ shipped May 2026, ✖ retired 2026-07-06 with the rev 4 cutover (`hvac.overrides` is a legacy measurement; manual holds are first-class under spike-only control).
 
 Full research output: agent reports retained in session transcripts; key findings summarized in the open-questions section above.
 
@@ -491,7 +525,7 @@ Full research output: agent reports retained in session transcripts; key finding
 |---|---|---|---|
 | Rainforest EAGLE-3 | Smart meter gateway (billing-grade) | Ethernet, homelab VLAN, 192.168.20.192:443 | Connected & polling |
 | Refoss EM16P | Per-circuit energy monitoring (2 mains + 16 branch) | Wi-Fi, homelab VLAN, 192.168.20.140 (HTTP, no auth) | Connected & polling |
-| Amana CTK04AE thermostat (Honeywell-OEM whitelabel) | HVAC control | Native RedLINK Wi-Fi + CT-485 bus. The old Control4 EA-5 → Cinegration → TCC reach has been retired; the device client is now a stubbed `ThermostatClient` seam (TCC/`aiosomecomfort` deferred). CT-485 sniffed read-only by Promithius-DR/comfortnet | Active (device client stubbed) |
+| Amana CTK04AE thermostat (Honeywell-OEM whitelabel) | HVAC control | Native RedLINK Wi-Fi + CT-485 bus. The old Control4 EA-5 → Cinegration → TCC reach was retired; the device client is TCC/`aiosomecomfort` behind the `ThermostatClient` seam (live June 2026). CT-485 sniffed read-only by Promithius-DR/comfortnet | Active (TCC device client live) |
 | Amana ASXC160481BE | Outdoor AC condenser, 16 SEER 2-stage 4-ton | (HVAC) | Active; stage 2 = "get colder", stage 1 = "hold" per the commissioning-controller spec |
 | Amana AMVM971005CN | Modulating gas furnace + variable-speed ECM blower | (HVAC) | Active; ECM blower enables Circulate-fan during coast at low W |
 | Control4 EA-5 controller | HA-style automation hub (formerly bridged the stack to TCC) | LAN, 192.168.1.30 | No longer used by energy-proxy — the pyControl4 actuation path was retired behind the `ThermostatClient` seam |

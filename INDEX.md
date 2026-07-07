@@ -40,11 +40,10 @@ price-aware overlay on the Arm A comfort program).
   warm-offset. Warm-only; device-owned safety (setpoint limits + timed
   holds); no day-types, no 5CP control, no deep precool, no software
   supervisor. Config is the experimental surface.
-- [docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md](docs/superpowers/plans/2026-07-05-spike-only-controller-plan.md)
-  — implementation plan for the rev 4 spike-only controller (executed
-  2026-07-06 across PRs #116–#121; archives at feature close after the
-  go-active gates). The superseded rev-3 plan lives in
-  `docs/superpowers/plans/archive/`.
+- The rev 4 implementation plan is **executed and archived**
+  ([docs/superpowers/plans/archive/2026-07-05-spike-only-controller-plan.md](docs/superpowers/plans/archive/2026-07-05-spike-only-controller-plan.md),
+  PRs #116–#121; feature closed 2026-07-07 — validation record in the spec's
+  Go-active section). The superseded rev-3 plan is in the same archive.
 
 ## Data, telemetry, and integrations
 
