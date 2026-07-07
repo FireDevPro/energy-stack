@@ -29,6 +29,9 @@ Read these first if you're new to the repo.
   overview
 - [docs/PROJECT.md](docs/PROJECT.md) — project narrative, current
   status, phase plan
+- [docs/ONBOARDING.md](docs/ONBOARDING.md) — graph-derived narrative
+  onboarding: architecture layers + a 12-step guided tour through the
+  controller's data flow
 
 ## Controller logic (Arm A and Arm B)
 
