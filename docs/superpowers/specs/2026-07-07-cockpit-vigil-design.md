@@ -257,13 +257,23 @@ frontend.
   narrative shell).
 - **Frontend:** rebuilt new (not patched) by Claude Design against the three
   endpoints above; the repo is readable to it for wiring context.
-- **Tier thresholds:** to keep one source of truth (no config duplication — the
-  drift failure this project already paid for), the cockpit reads the
-  controller's `commissioning-controller.yaml` thresholds. Simplest: add a
-  read-only mount of that file into the cockpit compose block and parse
-  `price_tiers_cents` + `humidity_guard` at startup. **(Flag: this references a
-  scheduler-owned file from the cockpit compose block — confirm the boundary is
-  acceptable, else fall back to a small cockpit-side config kept in sync.)**
+- **Tier thresholds — single source of truth via a read-only mount.** A running
+  container sees only its own image contents plus explicit mounts (Docker
+  isolation); the cockpit image copies only `backend/` + `frontend/dist`, so it
+  cannot read the sibling `hvac_scheduler/` directory at runtime even though
+  they live side by side in the repo. To avoid duplicating the thresholds (the
+  config-drift failure this project already paid for), the cockpit compose block
+  gains a **read-only bind mount** of the controller's config:
+
+  ```yaml
+  volumes:
+    - ./hvac_scheduler/commissioning-controller.yaml:/config/commissioning-controller.yaml:ro
+  ```
+
+  The backend parses `price_tiers_cents` (elevated_at, scarcity_at,
+  hysteresis_cents) and `humidity_guard` (rh_max_pct, rh_clear_pct) from it at
+  startup. The controller mounts the same file at the same path, so both read
+  one file — edit the yaml once, both services see it.
 
 ## Out of scope / non-goals
 
