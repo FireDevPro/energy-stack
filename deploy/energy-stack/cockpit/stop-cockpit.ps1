@@ -1,7 +1,7 @@
 #requires -Version 7.0
-# Stops the Cockpit backend on :8765 and Vite on :5173 plus their hidden
-# pwsh wrappers. Targeted: only kills processes whose command line matches
-# the cockpit pattern. Unrelated python/node on those ports are left alone.
+# Stops the Cockpit backend on :8765 plus its hidden pwsh wrapper. Targeted:
+# only kills processes whose command line matches the cockpit pattern.
+# Unrelated python on that port is left alone.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -24,12 +24,11 @@ function Stop-CockpitOnPort {
 }
 
 Stop-CockpitOnPort -Port 8765 -Pattern 'backend\.app:app|cockpit[\\/]+backend' -Label 'backend'
-Stop-CockpitOnPort -Port 5173 -Pattern 'vite|cockpit[\\/]+frontend' -Label 'frontend'
 
-# Reap any orphaned pwsh wrappers (hidden launcher children that
-# survived after their inner uvicorn/vite exited).
+# Reap any orphaned pwsh wrapper (hidden launcher child that survived
+# after its inner uvicorn exited).
 Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" |
-  Where-Object { $_.CommandLine -match 'backend\.app:app|cockpit[\\/]+frontend' } |
+  Where-Object { $_.CommandLine -match 'backend\.app:app' } |
   ForEach-Object {
     Write-Host "Stopping wrapper pwsh (PID $($_.ProcessId))"
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue

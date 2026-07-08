@@ -1,20 +1,648 @@
-<!doctype html>
-<html lang="en" data-theme="dark" data-density="comfortable" data-accent="ember">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reticule · Energy Cockpit</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Vigil — Cockpit rev 4</title>
+<!--
+  THE VIGIL — read-only wall board for the rev-4.1 spike-only HVAC controller.
+  Single self-contained file. No build step. Serve from the existing FastAPI
+  same-origin static mount so fetch('/api/vigil/*') needs no CORS.
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+  Data:  GET /api/vigil/now              polled every ~15s
+         GET /api/vigil/timeline?hours=24 polled every ~2min
+         GET /api/vigil/events?limit=10   polled every ~2min
+  Fallback: if a poll fails and we have no data yet, baked-in fixtures render so
+            the board is never blank. Once real data arrives it takes over.
+  URL params (QA only, harmless in prod):
+         ?demo=resting|engaged|release|down   render a fixture, no polling
+         ?debug=1                             show the state switcher on-screen
+         ?theme=day|night                     force a theme (else auto by clock)
+  Fonts load from Google Fonts; for offline kiosk resilience, self-host these
+  three families and swap the <link> for local @font-face.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg-deep); overflow: hidden; }
+
+  #vigil {
+    --nh: 52; --nc: 0.011;
+    --bg-deep:   oklch(0.116 var(--nc) var(--nh));
+    --bg-base:   oklch(0.150 var(--nc) var(--nh));
+    --bg-panel:  oklch(0.186 var(--nc) var(--nh));
+    --bg-panel-2:oklch(0.226 var(--nc) var(--nh));
+    --line-soft: oklch(0.285 var(--nc) var(--nh));
+    --line:      oklch(0.345 var(--nc) var(--nh));
+    --ink:   oklch(0.966 0.004 var(--nh));
+    --ink-2: oklch(0.888 0.006 var(--nh));
+    --ink-3: oklch(0.720 0.008 var(--nh));
+    --ink-4: oklch(0.560 0.010 var(--nh));
+    --ink-5: oklch(0.430 0.010 var(--nh));
+    --ember:  oklch(0.772 0.165 55);
+    --ember-2:oklch(0.660 0.180 45);
+    --ice:    oklch(0.825 0.110 232);
+    --live:   oklch(0.800 0.160 150);
+    --warn:   oklch(0.822 0.150 78);
+    --danger: oklch(0.700 0.215 25);
+    --accent: var(--ember);
+    color: var(--ink);
+    font-family: 'Hanken Grotesk', system-ui, sans-serif;
+    font-feature-settings: "ss01","cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  #vigil[data-theme="day"] {
+    --bg-deep:   oklch(0.948 0.007 var(--nh));
+    --bg-base:   oklch(0.980 0.005 var(--nh));
+    --bg-panel:  oklch(0.998 0.004 var(--nh));
+    --bg-panel-2:oklch(0.952 0.008 var(--nh));
+    --line-soft: oklch(0.902 0.011 var(--nh));
+    --line:      oklch(0.836 0.013 var(--nh));
+    --ink:   oklch(0.205 0.010 var(--nh));
+    --ink-2: oklch(0.335 0.010 var(--nh));
+    --ink-3: oklch(0.470 0.010 var(--nh));
+    --ink-4: oklch(0.588 0.010 var(--nh));
+    --ink-5: oklch(0.690 0.010 var(--nh));
+    --ember:  oklch(0.590 0.180 50);
+    --ember-2:oklch(0.520 0.190 45);
+    --ice:    oklch(0.540 0.150 235);
+    --live:   oklch(0.540 0.175 150);
+    --warn:   oklch(0.615 0.170 70);
+    --danger: oklch(0.545 0.220 25);
+  }
+
+  #vigil {
+    position: relative; display: flex; flex-direction: column;
+    height: 100vh; height: 100dvh; overflow: hidden;
+    background: radial-gradient(130% 74% at 50% -8%, color-mix(in oklab, var(--accent) var(--amb,12%), transparent) 0%, transparent 60%), var(--bg-base);
+    transition: background 1.2s ease;
+  }
+  .amb {
+    position: absolute; inset: -25%; pointer-events: none; z-index: 0;
+    opacity: var(--ambField, .7);
+    background:
+      radial-gradient(40% 32% at 24% 30%, color-mix(in oklab, var(--accent) 24%, transparent) 0%, transparent 70%),
+      radial-gradient(36% 30% at 78% 64%, color-mix(in oklab, var(--ice) 15%, transparent) 0%, transparent 70%);
+    filter: blur(50px);
+    animation: drift 48s ease-in-out infinite alternate;
+    transition: opacity 1.2s ease;
+  }
+  #vigil > *:not(.amb) { position: relative; z-index: 1; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .sora { font-family: 'Sora', system-ui, sans-serif; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* top bar */
+  .topbar { display: flex; align-items: center; gap: 16px; padding: 2.4vh 3.2vw 0; }
+  .brandmark { width: 32px; height: 32px; border-radius: 9px; flex: none;
+    background: radial-gradient(circle at 32% 30%, var(--accent), var(--ember-2) 62%, transparent 78%);
+    box-shadow: 0 0 22px -2px color-mix(in oklab, var(--accent) 55%, transparent); }
+  .brandname { font-family: 'Sora'; font-weight: 600; font-size: 20px; letter-spacing: .02em; }
+  .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); }
+  .topright { margin-left: auto; display: flex; align-items: center; gap: 22px; }
+  .clock { text-align: right; font-family: 'JetBrains Mono', monospace; }
+  .clock .t { font-size: 18px; color: var(--ink-2); }
+  .clock .d { font-size: 10.5px; color: var(--ink-4); letter-spacing: .14em; }
+  .livechip { display: inline-flex; align-items: center; gap: 10px; padding: 9px 15px 9px 13px; border-radius: 999px;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px; border: 1px solid var(--line); background: var(--bg-panel); color: var(--ink-3); }
+  .livedot { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--ink-4); }
+  .livedot::after { content:""; position: absolute; inset: -3px; border-radius: 50%; border: 1.5px solid currentColor; opacity: .5; animation: ringpulse 2.4s ease-out infinite; }
+  .livechip.alive { color: var(--live); border-color: color-mix(in oklab, var(--live) 40%, var(--line)); background: color-mix(in oklab, var(--live) 12%, var(--bg-panel)); }
+  .livechip.alive .livedot { background: var(--live); }
+  .livechip.down { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 50%, var(--line)); background: color-mix(in oklab, var(--danger) 14%, var(--bg-panel)); }
+  .livechip.down .livedot { background: var(--danger); }
+
+  /* hero */
+  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5vh 4vw; min-height: 0; }
+  .hero .cap { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink-4); margin-bottom: .6vh; }
+  .pricewrap { display: flex; align-items: flex-start; gap: 8px; line-height: .86; }
+  .price { font-family: 'Sora'; font-weight: 300; font-size: min(19vh,190px); letter-spacing: -.045em; color: var(--priceCol, var(--live)); font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 52px color-mix(in oklab, var(--priceCol, var(--live)) var(--priceGlow,22%), transparent); transition: color .8s ease, text-shadow .8s ease; }
+  .cents { font-family: 'Sora'; font-weight: 300; font-size: min(6vh,60px); color: var(--ink-3); margin-top: 2.4vh; }
+  .subline { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-4); letter-spacing: .03em; margin-top: .4vh; }
+
+  .track { position: relative; margin: 2.6vh auto 0; width: min(1100px,84vw); }
+  .trackbar { position: relative; height: 18px; border-radius: 999px; border: 1px solid var(--line-soft);
+    background: linear-gradient(90deg,
+      color-mix(in oklab,var(--live) 34%,var(--bg-panel)) 0%, color-mix(in oklab,var(--live) 34%,var(--bg-panel)) 40%,
+      color-mix(in oklab,var(--warn) 40%,var(--bg-panel)) 40%, color-mix(in oklab,var(--warn) 40%,var(--bg-panel)) 80%,
+      color-mix(in oklab,var(--danger) 46%,var(--bg-panel)) 80%); }
+  .trackfill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px 0 0 999px; width: 0;
+    background: linear-gradient(90deg, color-mix(in oklab,var(--priceCol) 55%,transparent), var(--priceCol)); transition: width 1s cubic-bezier(.34,1.05,.5,1); }
+  .tick { position: absolute; top: -7px; bottom: -7px; width: 2px; background: var(--line); }
+  .trackdot { position: absolute; top: 50%; left: 0; transform: translate(-50%,-50%); width: 28px; height: 28px; border-radius: 50%;
+    background: var(--priceCol); border: 3px solid var(--bg-base); box-shadow: 0 0 22px -2px var(--priceCol); transition: left 1s cubic-bezier(.34,1.05,.5,1); }
+  .tracklabels { position: relative; height: 18px; margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+  .tracklabels span { position: absolute; color: var(--ink-4); }
+  .tl-n { left: 0; } .tl-e { left: 40%; transform: translateX(-50%); } .tl-s { left: 80%; transform: translateX(-50%); }
+
+  .why { margin: 2.4vh auto 0; width: min(940px,80vw); text-align: center; font-family: 'Sora'; font-weight: 400; font-size: min(3.1vh,26px); line-height: 1.34; color: var(--ink-2); text-wrap: balance; }
+
+  /* banners */
+  .banner { margin: 0 3.2vw 1.6vh; padding: 2vh 26px; border-radius: 16px; animation: wake .5s ease both; }
+  .banner.hidden { display: none !important; }
+  .banner.engaged { border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--line)); background: linear-gradient(120deg, color-mix(in oklab, var(--accent) 12%, var(--bg-panel)) 0%, var(--bg-panel) 68%); display: flex; align-items: center; gap: 32px; }
+  .banner.release { border: 1px solid color-mix(in oklab, var(--live) 50%, var(--line)); background: linear-gradient(120deg, color-mix(in oklab, var(--live) 15%, var(--bg-panel)) 0%, var(--bg-panel) 70%); display: flex; align-items: center; gap: 30px; }
+  .banner.down { border: 1px solid color-mix(in oklab, var(--danger) 55%, var(--line)); background: linear-gradient(120deg, color-mix(in oklab, var(--danger) 13%, var(--bg-panel)) 0%, var(--bg-panel) 70%); display: flex; align-items: center; gap: 18px; animation: none; }
+  .vdiv { width: 1px; align-self: stretch; background: var(--line-soft); }
+  .lab { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-4); }
+  .bigset { font-family: 'Sora'; font-weight: 500; font-size: 52px; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat { display: inline-block; }
+  .stat .v { font-family: 'JetBrains Mono', monospace; font-size: 26px; color: var(--ink); margin-top: 4px; }
+  .stat .v.green { color: var(--live); }
+  .stats { display: flex; gap: 32px; }
+  .trace { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+  .tstep { display: flex; align-items: center; gap: 10px; }
+  .tstep .col { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+  .tstep .lbl { display: inline-flex; align-items: center; gap: 7px; font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: .05em; }
+  .tstep .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .tstep .at { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-4); padding-left: 16px; }
+  .tconn { width: 34px; height: 2px; background: var(--line); margin: 0 4px; }
+  .tnow { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--ink-4); }
+  .release .sd-title { font-family: 'Sora'; font-weight: 600; font-size: 24px; color: var(--live); display: flex; align-items: center; gap: 12px; }
+  .release .sd-title .ck { animation: breathe 2.6s ease-in-out infinite; }
+  .release .sd-sub { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-3); margin-top: 4px; }
+  .release .sd-total { font-family: 'Sora'; font-weight: 600; font-size: 52px; line-height: 1; color: var(--live); }
+  .release .sd-total small { font-size: 18px; color: var(--ink-4); font-weight: 400; }
+  .down .dn-title { font-family: 'Sora'; font-weight: 600; font-size: 20px; color: var(--danger); }
+  .down .dn-sub { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-3); }
+
+  /* tiles */
+  .tiles { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding: 0 3.2vw; }
+  .tile { border: 1px solid var(--line-soft); background: var(--bg-panel); border-radius: 14px; padding: 1.7vh 20px; }
+  .tile .k { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); }
+  .tile .v { font-family: 'Sora'; font-weight: 500; font-size: min(5vh,42px); line-height: 1.05; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tile .v.small { font-size: min(4vh,34px); line-height: 1.2; }
+  .tile .v u { font-style: normal; font-size: .42em; color: var(--ink-4); text-decoration: none; }
+  .tile .v.ice { color: var(--ice); }
+  .tile .s { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--ink-4); margin-top: 3px; }
+
+  /* footer */
+  .footer { display: grid; grid-template-columns: 1fr 420px; gap: 28px; padding: 1.8vh 3.2vw 2.4vh; }
+  .rib-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); }
+  .legend { display: inline-flex; gap: 14px; }
+  .legend .n { color: var(--live); } .legend .e { color: var(--warn); } .legend .s { color: var(--danger); }
+  .ribbon { position: relative; height: 9vh; min-height: 64px; display: flex; align-items: flex-end; gap: 2px; padding: 0 3px; border-radius: 10px; background: var(--bg-panel); border: 1px solid var(--line-soft); overflow: hidden; }
+  .ribguide { position: absolute; left: 0; right: 0; height: 1px; }
+  .ribguide.e { bottom: 40%; background: color-mix(in oklab,var(--warn) 34%,transparent); }
+  .ribguide.s { bottom: 80%; background: color-mix(in oklab,var(--danger) 34%,transparent); }
+  .holdband { position: absolute; top: 0; bottom: 0; background: color-mix(in oklab, var(--accent) 16%, transparent); border-left: 1px dashed color-mix(in oklab,var(--accent) 50%, transparent); border-right: 1px dashed color-mix(in oklab,var(--accent) 50%, transparent); }
+  .bar { flex: 1; min-width: 0; align-self: flex-end; border-radius: 2px 2px 0 0; }
+  .events-head { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); margin-bottom: 8px; }
+  .events { display: flex; flex-direction: column; gap: 7px; }
+  .ev { display: flex; align-items: center; gap: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; padding: 8px 12px; border-radius: 9px; background: var(--bg-panel); border: 1px solid var(--line-soft); }
+  .ev .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .ev .when { color: var(--ink-3); width: 78px; } .ev .peak { color: var(--ink); width: 56px; }
+  .ev .meta { color: var(--ink-4); flex: 1; } .ev .av { color: var(--live); }
+
+  /* offline note */
+  .offnote { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-4); background: var(--bg-panel); border: 1px solid var(--line-soft); padding: 5px 12px; border-radius: 999px; z-index: 50; display: none; }
+  .offnote.show { display: block; }
+
+  /* debug switcher (only when ?debug=1) */
+  .dbg { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 100; display: none; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 999px; background: oklch(0.20 0.01 60 / .92); backdrop-filter: blur(8px); border: 1px solid oklch(0.34 0.012 58); font-family: 'JetBrains Mono', monospace; }
+  .dbg.show { display: flex; }
+  .dbg button { cursor: pointer; font-family: inherit; font-size: 11.5px; padding: 6px 11px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: oklch(0.72 0.008 60); }
+  .dbg button.on { background: oklch(0.30 0.02 60); color: oklch(0.97 0.006 70); border-color: oklch(0.46 0.02 60); }
+
+  @keyframes ringpulse { 0%{transform:scale(.85);opacity:.7} 100%{transform:scale(2.1);opacity:0} }
+  @keyframes drift { 0%{transform:translate3d(-2%,-1%,0) scale(1)} 50%{transform:translate3d(3%,2%,0) scale(1.08)} 100%{transform:translate3d(-1%,3%,0) scale(1.04)} }
+  @keyframes wake { 0%{opacity:0; transform:translateY(8px)} 100%{opacity:1; transform:translateY(0)} }
+  @keyframes breathe { 0%,100%{opacity:.55} 50%{opacity:1} }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="vigil">
+  <div class="amb"></div>
+
+  <!-- top bar -->
+  <div class="topbar">
+    <div class="brandmark"></div>
+    <div class="brandname">THE VIGIL</div>
+    <div class="eyebrow">rev 4.1 · spike watch</div>
+    <div class="topright">
+      <div class="clock"><div class="t" id="clock">—:—</div><div class="d" id="date">—</div></div>
+      <div class="livechip alive" id="livechip"><span class="livedot"></span><span id="liveLabel">Controller live</span></div>
+    </div>
+  </div>
+
+  <!-- hero -->
+  <div class="hero">
+    <div class="cap">Current ComEd real-time price</div>
+    <div class="pricewrap"><span class="price" id="price">—</span><span class="cents">¢</span></div>
+    <div class="subline" id="subline">—</div>
+    <div class="track">
+      <div class="trackbar">
+        <div class="trackfill" id="trackfill"></div>
+        <div class="tick" id="tickE" style="left:40%"></div>
+        <div class="tick" id="tickS" style="left:80%"></div>
+        <div class="trackdot" id="trackdot"></div>
+      </div>
+      <div class="tracklabels">
+        <span class="tl-n" id="tlN">Normal</span>
+        <span class="tl-e" id="tlE">Elevated · 10¢</span>
+        <span class="tl-s" id="tlS">Scarcity · 20¢</span>
+      </div>
+    </div>
+    <div class="why" id="why">—</div>
+  </div>
+
+  <!-- engaged banner -->
+  <div class="banner engaged hidden" id="bEngaged">
+    <div>
+      <div class="lab">Holding setpoint</div>
+      <div class="bigset" id="engCommanded">—°</div>
+      <div class="lab" id="engProgram" style="letter-spacing:.02em;text-transform:none;margin-top:3px;">—</div>
+    </div>
+    <div class="vdiv"></div>
+    <div style="flex:1;min-width:0;">
+      <div class="lab" id="engSpikeHead" style="margin-bottom:10px;">This spike</div>
+      <div class="trace" id="engTrace"></div>
+    </div>
+    <div class="vdiv"></div>
+    <div class="stats">
+      <div class="stat"><div class="lab">Held for</div><div class="v" id="engHeld">—</div></div>
+      <div class="stat"><div class="lab">Next re-check</div><div class="v" id="engRecheck">—</div></div>
+      <div class="stat"><div class="lab">Est. avoided</div><div class="v green" id="engAvoided">—</div></div>
+    </div>
+  </div>
+
+  <!-- release banner -->
+  <div class="banner release hidden" id="bRelease">
+    <div>
+      <div class="sd-title">Stand-down <span class="ck">✓</span></div>
+      <div class="sd-sub" id="relSub">—</div>
+    </div>
+    <div style="margin-left:auto;text-align:right;">
+      <div class="lab">Estimated avoided this event</div>
+      <div class="sd-total" id="relTotal">—</div>
+    </div>
+  </div>
+
+  <!-- controller-down banner -->
+  <div class="banner down hidden" id="bDown">
+    <span class="dn-title">⚠ Controller not responding</span>
+    <span class="dn-sub" id="downSub">—</span>
+  </div>
+
+  <!-- context tiles -->
+  <div class="tiles">
+    <div class="tile"><div class="k">Indoor</div><div class="v" id="tIndoor">—<u>F</u></div><div class="s" id="tIndoorSub">—</div></div>
+    <div class="tile"><div class="k">Setpoint in effect</div><div class="v ice" id="tSet">—<u>F</u></div><div class="s" id="tSetSub">—</div></div>
+    <div class="tile"><div class="k">Outdoor</div><div class="v" id="tOut">—<u>F</u></div><div class="s" id="tOutSub">—</div></div>
+    <div class="tile"><div class="k">Compressor</div><div class="v small" id="tComp">—</div><div class="s" id="tCompSub">—</div></div>
+  </div>
+
+  <!-- footer -->
+  <div class="footer">
+    <div>
+      <div class="rib-head"><span>Last 24 hours</span><span class="legend"><span class="n">● normal</span><span class="e">● elevated</span><span class="s">● scarcity</span></span></div>
+      <div class="ribbon" id="ribbon"><div class="ribguide e"></div><div class="ribguide s"></div></div>
+    </div>
+    <div>
+      <div class="events-head">Recent spikes</div>
+      <div class="events" id="events"></div>
+    </div>
+  </div>
+
+  <div class="offnote" id="offnote">Reconnecting… showing last known</div>
+  <div class="dbg" id="dbg"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var DEMO = params.get('demo');            // resting|engaged|release|down
+  var DEBUG = params.get('debug') === '1';
+  var THEME_OVERRIDE = params.get('theme');  // day|night
+
+  var DOMAIN = 25; // price track domain in cents (0..25); scarcity 20 sits at 80%
+
+  // ---------- helpers ----------
+  function f1(x){ return (x==null||isNaN(x)) ? '\u2014' : (Math.round(x*10)/10).toFixed(1); }
+  function f0(x){ return (x==null||isNaN(x)) ? '\u2014' : String(Math.round(x)); }
+  function tierColor(t){ return t==='scarcity' ? 'var(--danger)' : t==='elevated' ? 'var(--warn)' : 'var(--live)'; }
+  function cap(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : s; }
+  function ageStr(sec){ if(sec==null) return '\u2014'; return sec<60 ? Math.round(sec)+'s ago' : Math.round(sec/60)+'m ago'; }
+  function usd(x){ return x==null ? '$0.00' : '$'+Number(x).toFixed(2); }
+  function tierFromCents(c, thr){
+    var s = (thr&&thr.scarcity_at)||20, e=(thr&&thr.elevated_at)||10;
+    return c>=s ? 'scarcity' : c>=e ? 'elevated' : 'normal';
+  }
+  function ctTime(iso){
+    if(!iso) return '\u2014';
+    try { return new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+    catch(e){ return String(iso); }
+  }
+
+  function currentTheme(){
+    if (THEME_OVERRIDE==='day' || THEME_OVERRIDE==='night') return THEME_OVERRIDE;
+    var h = new Date().getHours();
+    return (h>=7 && h<19) ? 'day' : 'night';   // day mode for glare, dark at night
+  }
+  function applyTheme(){ $('vigil').setAttribute('data-theme', currentTheme()); }
+
+  // ---------- render ----------
+  var lastNow=null, lastTimeline=null, lastEvents=null;
+
+  function render(){
+    applyTheme();
+    var root = $('vigil');
+    var now = lastNow || FIXTURES.resting.now;
+
+    // posture
+    var alive = !(now.liveness && now.liveness.alive===false);
+    var down = !alive || (now.liveness && now.liveness.watchdog_down);
+    var posture = now.posture || (tierFromCents(now.price.cents, now.tier)!=='normal' || now.hold ? 'engaged' : 'resting');
+    var engaged = posture==='engaged' && !down && !!now.hold;
+    // release: a just-ended spike, back to normal, not engaged, not down
+    var justEnded = now.this_spike && now.this_spike.ended;
+    var release = !down && !engaged && !!justEnded;
+
+    var tier = (now.tier && now.tier.current) || tierFromCents(now.price.cents, now.tier);
+    var priceCol = down ? 'var(--ink-3)' : tierColor(tier);
+    root.style.setProperty('--priceCol', priceCol);
+    root.style.setProperty('--amb', down ? '4%' : engaged ? '20%' : '12%');
+    root.style.setProperty('--ambField', down ? '.25' : engaged ? '.95' : '.7');
+    root.style.setProperty('--priceGlow', down ? '8%' : engaged ? '34%' : '22%');
+
+    // clock
+    var asof = now.as_of || {};
+    $('clock').textContent = now.clock || ctTime(asof.ct || asof.utc) || '';
+    $('date').textContent = now.date || (asof.ct ? new Date(asof.ct).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}).toUpperCase() : '');
+
+    // liveness
+    var lc = $('livechip');
+    lc.className = 'livechip ' + (alive ? 'alive' : 'down');
+    $('liveLabel').textContent = (alive ? 'Controller live' : 'Controller down') + ' · ' + ageStr(now.liveness && now.liveness.last_tick_age_sec);
+
+    // hero
+    $('price').textContent = f1(now.price.cents);
+    var thr = now.tier || {};
+    var headroom;
+    if (tier==='normal') headroom = f1((thr.elevated_at||10) - now.price.cents) + '\u00a2 headroom to elevated';
+    else if (tier==='elevated') headroom = f1((thr.scarcity_at||20) - now.price.cents) + '\u00a2 to scarcity';
+    else headroom = f1(now.price.cents - (thr.scarcity_at||20)) + '\u00a2 into scarcity';
+    $('subline').textContent = 'hourly avg ' + f1(now.price.hourly_avg_cents) + '\u00a2 · ' + headroom;
+    $('why').textContent = now.why || '';
+
+    // track
+    var pct = Math.max(0, Math.min(1, now.price.cents / DOMAIN)) * 100;
+    $('trackfill').style.width = pct + '%';
+    $('trackdot').style.left = pct + '%';
+    $('tickE').style.left = ((thr.elevated_at||10)/DOMAIN*100) + '%';
+    $('tickS').style.left = ((thr.scarcity_at||20)/DOMAIN*100) + '%';
+    $('tlN').style.color = tier==='normal' ? 'var(--live)' : 'var(--ink-4)';
+    $('tlE').style.color = tier==='elevated' ? 'var(--warn)' : 'var(--ink-4)';
+    $('tlS').style.color = tier==='scarcity' ? 'var(--danger)' : 'var(--ink-4)';
+
+    // banners
+    $('bEngaged').classList.toggle('hidden', !engaged);
+    $('bRelease').classList.toggle('hidden', !release);
+    $('bDown').classList.toggle('hidden', !down);
+
+    if (engaged && now.hold) {
+      $('engCommanded').textContent = f1(now.hold.commanded_cool_f) + '\u00b0';
+      $('engProgram').textContent = 'program ' + f1(now.hold.schedule_cool_f) + '\u00b0 · ' + (now.hold.coasting ? 'coasting · compressor off' : 'compressor on');
+      $('engHeld').textContent = (now.hold.minutes_held!=null ? now.hold.minutes_held + ' min' : '\u2014');
+      $('engRecheck').textContent = '\u2264 ' + (now.hold.minutes_to_expiry!=null ? now.hold.minutes_to_expiry + ' min' : '\u2014');
+      var sp = now.this_spike || {};
+      $('engAvoided').textContent = usd(sp.est_avoided_cost_usd);
+      $('engSpikeHead').textContent = 'This spike · peak ' + (sp.peak_cents!=null ? f1(sp.peak_cents)+'\u00a2' : '\u2014');
+      renderTrace(sp.tiers_walked || []);
+    }
+    if (release) {
+      var s = now.this_spike || {};
+      $('relSub').textContent = (s.duration_min!=null ? s.duration_min+' min' : '\u2014') + ' spike · peak ' + (s.peak_cents!=null ? f1(s.peak_cents)+'\u00a2' : '\u2014') + ' · back on your schedule';
+      $('relTotal').innerHTML = usd(s.est_avoided_cost_usd) + ' <small>est.</small>';
+    }
+    if (down) {
+      $('downSub').textContent = 'last tick ' + ageStr(now.liveness && now.liveness.last_tick_age_sec) + ' · watchdog down · thermostat is on its own program — no interventions until it recovers.';
+    }
+
+    // tiles
+    $('tIndoor').innerHTML = f1(now.thermostat.indoor_temp_f) + '\u00b0<u>F</u>';
+    var hg = now.humidity_guard || {};
+    $('tIndoorSub').textContent = 'RH ' + f0(hg.indoor_rh_pct) + '% ' + (hg.gated ? '· gate active' : '· under ' + f0(hg.rh_max_pct) + '% gate');
+    $('tSet').innerHTML = f1(now.thermostat.cool_setpoint_f) + '\u00b0<u>F</u>';
+    $('tSetSub').textContent = down ? 'sample stale' : (now.thermostat.hold_mode || '\u2014');
+    $('tOut').innerHTML = f1(now.outdoor.temp_f) + '\u00b0<u>F</u>';
+    $('tOutSub').textContent = 'RH ' + f0(now.outdoor.rh_pct) + '% · dew ' + f0(now.outdoor.dewpoint_f) + '\u00b0';
+    var compOn = now.thermostat.compressor_on;
+    var compLabel = compOn ? 'Cooling' : (now.hold && now.hold.coasting) ? 'Coasting' : 'Off';
+    var compCol = compOn ? 'var(--ice)' : (now.hold && now.hold.coasting) ? 'var(--accent)' : 'var(--ink-3)';
+    $('tComp').textContent = compLabel; $('tComp').style.color = compCol;
+    $('tCompSub').textContent = 'fan · ' + (now.thermostat.fan_mode || '\u2014');
+
+    renderRibbon();
+    renderEvents();
+  }
+
+  function renderTrace(walked){
+    var host = $('engTrace'); host.innerHTML = '';
+    walked.forEach(function(step){
+      var wrap = document.createElement('div'); wrap.className = 'tstep';
+      var col = document.createElement('div'); col.className = 'col';
+      var lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.style.color = tierColor(step.tier);
+      lbl.innerHTML = '<span class="dot" style="background:'+tierColor(step.tier)+'"></span>' + cap(step.tier);
+      var at = document.createElement('span'); at.className = 'at'; at.textContent = ctTime(step.at) || step.at || '';
+      col.appendChild(lbl); col.appendChild(at); wrap.appendChild(col);
+      var conn = document.createElement('span'); conn.className = 'tconn'; wrap.appendChild(conn);
+      host.appendChild(wrap);
+    });
+    var now = document.createElement('span'); now.className = 'tnow'; now.textContent = 'now \u2192';
+    host.appendChild(now);
+  }
+
+  function renderRibbon(){
+    var host = $('ribbon');
+    // remove old bars + band (keep the two guide lines)
+    Array.prototype.slice.call(host.querySelectorAll('.bar,.holdband')).forEach(function(n){ n.remove(); });
+    var tl = lastTimeline || FIXTURES.resting.timeline;
+    var series = (tl && tl.price_series) || [];
+    var thr = (tl && tl.thresholds) || {elevated_at:10, scarcity_at:20};
+    // hold band (first hold window), positioned by index fraction
+    var holds = (tl && tl.holds) || [];
+    if (holds.length && series.length){
+      var t0 = +new Date(series[0].t), t1 = +new Date(series[series.length-1].t), span = (t1-t0)||1;
+      var hb = holds[0];
+      var l = Math.max(0, ( +new Date(hb.from) - t0 ) / span) * 100;
+      var w = Math.max(1, ( +new Date(hb.to) - +new Date(hb.from) ) / span) * 100;
+      var band = document.createElement('div'); band.className='holdband'; band.style.left=l+'%'; band.style.width=w+'%';
+      host.appendChild(band);
+    }
+    series.forEach(function(pt){
+      var c = pt.cents;
+      var col = c>=(thr.scarcity_at||20) ? 'var(--danger)' : c>=(thr.elevated_at||10) ? 'var(--warn)' : 'var(--live)';
+      var bar = document.createElement('div'); bar.className='bar';
+      bar.style.height = Math.max(4, Math.min(100, c/DOMAIN*100)) + '%';
+      bar.style.background = col;
+      host.appendChild(bar);
+    });
+  }
+
+  function renderEvents(){
+    var host = $('events'); host.innerHTML = '';
+    var evs = (lastEvents && lastEvents.events) || FIXTURES.resting.events.events || [];
+    evs.slice(0,3).forEach(function(e){
+      var tiers = e.tiers_walked || [];
+      var peakTier = tiers.indexOf('scarcity')>=0 ? 'scarcity' : 'elevated';
+      var row = document.createElement('div'); row.className='ev';
+      row.innerHTML =
+        '<span class="dot" style="background:'+tierColor(peakTier)+'"></span>' +
+        '<span class="when">'+ (e.started_at_ct ? ctTime(e.started_at_ct) : ctTime(e.started_at)) +'</span>' +
+        '<span class="peak">'+ f1(e.peak_cents) +'\u00a2</span>' +
+        '<span class="meta">'+ (e.duration_min!=null ? e.duration_min+' min' : '\u2014') +' · '+ (e.resolution||'') +'</span>' +
+        '<span class="av">'+ usd(e.est_avoided_cost_usd) +' est.</span>';
+      host.appendChild(row);
+    });
+  }
+
+  // ---------- data ----------
+  function fetchJSON(url){
+    var ctrl = new AbortController();
+    var to = setTimeout(function(){ ctrl.abort(); }, 8000);
+    return fetch(url, {signal: ctrl.signal, cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+      .finally(function(){ clearTimeout(to); });
+  }
+
+  var failCount = 0;
+  function markOnline(ok){
+    if (ok){ failCount=0; $('offnote').classList.remove('show'); }
+    else { failCount++; if (failCount>=2 && lastNow) $('offnote').classList.add('show'); }
+  }
+
+  function pollNow(){
+    if (DEMO) return;
+    fetchJSON('/api/vigil/now').then(function(d){ lastNow=d; markOnline(true); render(); })
+      .catch(function(){ markOnline(false); if(!lastNow){ lastNow=FIXTURES.resting.now; render(); } });
+  }
+  function pollSlow(){
+    if (DEMO) return;
+    fetchJSON('/api/vigil/timeline?hours=24').then(function(d){ lastTimeline=d; render(); }).catch(function(){});
+    fetchJSON('/api/vigil/events?limit=10').then(function(d){ lastEvents=d; render(); }).catch(function(){});
+  }
+
+  // ---------- fixtures (offline fallback + ?demo=) ----------
+  function genSeries(spike){
+    var N=48, out=[]; var end=Date.now(); var step=24*60*60*1000/(N-1);
+    for(var i=0;i<N;i++){
+      var h=i/(N-1);
+      var c=3.0 + 2.4*Math.sin(h*Math.PI*1.15-0.5) + 1.6*Math.sin(h*7.0);
+      c=Math.max(1.2,c);
+      if(spike && i>=36 && i<=44){ var t=(i-36)/8; c += spike*Math.sin(t*Math.PI); }
+      out.push({ t:new Date(end-(N-1-i)*step).toISOString(), cents:+c.toFixed(1) });
+    }
+    return out;
+  }
+  var THR = {elevated_at:10, scarcity_at:20};
+  var FIXTURES = {
+    resting: {
+      now: { clock:'2:14 PM', date:'MON · JUL 7', posture:'resting',
+        price:{cents:3.4, hourly_avg_cents:6.1, fresh:true},
+        tier:Object.assign({current:'normal'},THR),
+        why:"Cheap power, 3.4\u00a2 \u2014 thermostat's running its own schedule.",
+        thermostat:{indoor_temp_f:74.2, cool_setpoint_f:73.4, hold_mode:'Off', compressor_on:false, fan_mode:'Follow Schedule'},
+        humidity_guard:{indoor_rh_pct:44, rh_max_pct:61, gated:false},
+        outdoor:{temp_f:88.5, rh_pct:39, dewpoint_f:60.1},
+        hold:null, this_spike:null, liveness:{alive:true, last_tick_age_sec:14, watchdog_down:false} },
+      timeline:{ hours:24, thresholds:THR, price_series:genSeries(0), holds:[] },
+      events:{ events:[
+        {started_at_ct:'2026-07-07T12:48:00-05:00', peak_cents:13.6, duration_min:26, resolution:'released', est_avoided_cost_usd:0.18, tiers_walked:['elevated']},
+        {started_at_ct:'2026-07-06T17:31:00-05:00', peak_cents:41.0, duration_min:52, resolution:'released', est_avoided_cost_usd:0.94, tiers_walked:['elevated','scarcity']}
+      ]}
+    },
+    engaged: {
+      now: { clock:'4:42 PM', date:'MON · JUL 7', posture:'engaged',
+        price:{cents:24.8, hourly_avg_cents:18.2, fresh:true},
+        tier:Object.assign({current:'scarcity'},THR),
+        why:"SCARCITY, 24.8\u00a2 \u2014 holding 85\u00b0, riding the thermal battery, ~8 min left on this hold.",
+        thermostat:{indoor_temp_f:77.1, cool_setpoint_f:85.1, hold_mode:'Hold Until', compressor_on:false, fan_mode:'Follow Schedule'},
+        humidity_guard:{indoor_rh_pct:47, rh_max_pct:61, gated:false},
+        outdoor:{temp_f:96.2, rh_pct:34, dewpoint_f:63},
+        hold:{commanded_cool_f:85.1, schedule_cool_f:77.9, minutes_held:22, minutes_to_expiry:8, coasting:true},
+        this_spike:{tiers_walked:[{tier:'elevated',at:'2026-07-07T16:20:00-05:00'},{tier:'scarcity',at:'2026-07-07T16:31:00-05:00'}], peak_cents:24.8, est_avoided_cost_usd:0.31},
+        liveness:{alive:true, last_tick_age_sec:12, watchdog_down:false} },
+      timeline:{ hours:24, thresholds:THR, price_series:genSeries(24),
+        holds:[{from:new Date(Date.now()-38*60*1000*36/48).toISOString(), to:new Date(Date.now()-6*60*1000).toISOString(), tier:'scarcity'}] },
+      events:{ events:[
+        {started_at_ct:'2026-07-07T16:22:00-05:00', peak_cents:24.8, duration_min:19, resolution:'ongoing', est_avoided_cost_usd:0.31, tiers_walked:['elevated','scarcity']},
+        {started_at_ct:'2026-07-07T12:48:00-05:00', peak_cents:13.6, duration_min:26, resolution:'released', est_avoided_cost_usd:0.18, tiers_walked:['elevated']},
+        {started_at_ct:'2026-07-06T17:31:00-05:00', peak_cents:41.0, duration_min:52, resolution:'released', est_avoided_cost_usd:0.94, tiers_walked:['elevated','scarcity']}
+      ]}
+    },
+    release: {
+      now: { clock:'5:03 PM', date:'MON · JUL 7', posture:'resting',
+        price:{cents:7.1, hourly_avg_cents:14.6, fresh:true},
+        tier:Object.assign({current:'normal'},THR),
+        why:'Spike over \u2014 releasing back to your schedule.',
+        thermostat:{indoor_temp_f:78.6, cool_setpoint_f:73.4, hold_mode:'Off', compressor_on:true, fan_mode:'Follow Schedule'},
+        humidity_guard:{indoor_rh_pct:49, rh_max_pct:61, gated:false},
+        outdoor:{temp_f:94, rh_pct:36, dewpoint_f:62},
+        hold:null,
+        this_spike:{tiers_walked:[{tier:'elevated',at:'2026-07-07T16:22:00-05:00'},{tier:'scarcity',at:'2026-07-07T16:31:00-05:00'},{tier:'elevated',at:'2026-07-07T16:58:00-05:00'}], peak_cents:31.2, duration_min:41, est_avoided_cost_usd:0.63, ended:true},
+        liveness:{alive:true, last_tick_age_sec:9, watchdog_down:false} },
+      timeline:{ hours:24, thresholds:THR, price_series:genSeries(30),
+        holds:[{from:new Date(Date.now()-45*60*1000).toISOString(), to:new Date(Date.now()-4*60*1000).toISOString(), tier:'scarcity'}] },
+      events:{ events:[
+        {started_at_ct:'2026-07-07T16:22:00-05:00', peak_cents:31.2, duration_min:41, resolution:'released', est_avoided_cost_usd:0.63, tiers_walked:['elevated','scarcity']},
+        {started_at_ct:'2026-07-07T12:48:00-05:00', peak_cents:13.6, duration_min:26, resolution:'released', est_avoided_cost_usd:0.18, tiers_walked:['elevated']}
+      ]}
+    },
+    down: {
+      now: { clock:'2:19 PM', date:'MON · JUL 7', posture:'resting',
+        price:{cents:5.2, hourly_avg_cents:6.4, fresh:true},
+        tier:Object.assign({current:'normal'},THR),
+        why:'\u26a0 Controller not responding \u2014 thermostat is on its own program.',
+        thermostat:{indoor_temp_f:74.9, cool_setpoint_f:73.4, hold_mode:'Off', compressor_on:false, fan_mode:'Follow Schedule'},
+        humidity_guard:{indoor_rh_pct:45, rh_max_pct:61, gated:false},
+        outdoor:{temp_f:89.1, rh_pct:38, dewpoint_f:60.6},
+        hold:null, this_spike:null, liveness:{alive:false, last_tick_age_sec:640, watchdog_down:true} },
+      timeline:{ hours:24, thresholds:THR, price_series:genSeries(0), holds:[] },
+      events:{ events:[
+        {started_at_ct:'2026-07-07T12:48:00-05:00', peak_cents:13.6, duration_min:26, resolution:'released', est_avoided_cost_usd:0.18, tiers_walked:['elevated']}
+      ]}
+    }
+  };
+
+  // ---------- debug switcher ----------
+  function setupDebug(){
+    if (!DEBUG) return;
+    var host=$('dbg'); host.classList.add('show');
+    ['resting','engaged','release','down'].forEach(function(k){
+      var b=document.createElement('button'); b.textContent=k;
+      b.onclick=function(){ DEMO=k; loadDemo(k); [].forEach.call(host.children,function(c){c.classList.toggle('on', c.textContent===k);}); };
+      host.appendChild(b);
+    });
+  }
+  function loadDemo(k){
+    var fx=FIXTURES[k]||FIXTURES.resting;
+    lastNow=fx.now; lastTimeline=fx.timeline; lastEvents=fx.events; render();
+  }
+
+  // ---------- boot ----------
+  applyTheme();
+  setupDebug();
+  if (DEMO && FIXTURES[DEMO]) {
+    loadDemo(DEMO);
+  } else if (DEMO) {
+    loadDemo('resting');
+  } else {
+    render();          // paints fixture immediately so the wall is never blank
+    pollNow(); pollSlow();
+    setInterval(pollNow, 15000);
+    setInterval(pollSlow, 120000);
+  }
+  setInterval(applyTheme, 60000);   // re-check day/night each minute
+})();
+</script>
+</body>
 </html>

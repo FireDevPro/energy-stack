@@ -1,11 +1,11 @@
 #requires -Version 7.0
-# Controller Cockpit dev launcher (workstation).
+# The Vigil cockpit dev launcher (workstation).
 #
 # The canonical cockpit is the `cockpit` compose service on Pi-lab
-# (http://192.168.20.10:8765/). This script is the local dev loop:
-# sources .env.local, kills any prior cockpit backend/frontend bound to
-# :8765 / :5173, then spawns uvicorn (live mode) + Vite in two visible
-# pwsh windows and opens the cockpit in the default browser.
+# (http://192.168.20.10:8765/). This script is the local dev loop: sources
+# .env.local, kills any prior cockpit backend on :8765, then runs uvicorn —
+# which serves BOTH the /api/vigil/* endpoints and the single-file board
+# same-origin on :8765 (no separate frontend server, no build step).
 #
 # First-time setup:
 #   1. Copy .env.example -> .env.local; fill in INFLUXDB_TOKEN
@@ -15,11 +15,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir    = $PSScriptRoot
-$FrontendDir  = Join-Path $ScriptDir 'frontend'
-$LogDir       = Join-Path $ScriptDir 'logs'
-$BackendPort  = 8765
-$FrontendPort = 5173
+$ScriptDir = $PSScriptRoot
+$LogDir    = Join-Path $ScriptDir 'logs'
+$Port      = 8765
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
@@ -36,7 +34,7 @@ if (-not (Test-Path $EnvFile)) {
   exit 1
 }
 
-$required = @('INFLUXDB_URL','INFLUXDB_TOKEN','INFLUXDB_ORG','INFLUXDB_BUCKET','LOKI_URL')
+$required = @('INFLUXDB_URL','INFLUXDB_TOKEN','INFLUXDB_ORG','INFLUXDB_BUCKET')
 $loaded   = @{}
 foreach ($line in Get-Content $EnvFile) {
   $trim = $line.Trim()
@@ -57,78 +55,49 @@ if ($missing) {
   exit 1
 }
 
-$env:COCKPIT_BACKEND_MODE = 'live'
 $env:PYTHONPATH = $ScriptDir
 
-# ---- 2. Targeted cleanup of prior cockpit processes -------------------
+# ---- 2. Targeted cleanup of a prior cockpit backend on :8765 ----------
 
-function Stop-CockpitOnPort {
-  param([int]$Port, [string]$Pattern, [string]$Label)
-  $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-  foreach ($c in $conns) {
-    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)" -ErrorAction SilentlyContinue
-    if (-not $proc) { continue }
-    $cmd = if ($proc.CommandLine) { $proc.CommandLine } else { '' }
-    if ($cmd -match $Pattern) {
-      Write-Host "  stopping prior $Label (PID $($proc.ProcessId)) on :$Port"
-      Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-    } else {
-      $head = $cmd.Substring(0, [Math]::Min(80, $cmd.Length))
-      Write-Warning "  PID $($proc.ProcessId) on :$Port is NOT cockpit-owned (cmd: $head). Leaving alone."
-    }
+$conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+foreach ($c in $conns) {
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)" -ErrorAction SilentlyContinue
+  if (-not $proc) { continue }
+  $cmd = if ($proc.CommandLine) { $proc.CommandLine } else { '' }
+  if ($cmd -match 'backend\.app:app|cockpit[\\/]+backend') {
+    Write-Host "  stopping prior backend (PID $($proc.ProcessId)) on :$Port"
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+  } else {
+    $head = $cmd.Substring(0, [Math]::Min(80, $cmd.Length))
+    Write-Warning "  PID $($proc.ProcessId) on :$Port is NOT cockpit-owned (cmd: $head). Leaving alone."
   }
 }
-
-Write-Host 'Cleaning up prior cockpit processes...' -ForegroundColor Cyan
-Stop-CockpitOnPort -Port $BackendPort  -Pattern 'backend\.app:app|cockpit[\\/]+backend' -Label 'backend'
-Stop-CockpitOnPort -Port $FrontendPort -Pattern 'vite|cockpit[\\/]+frontend' -Label 'frontend'
 Start-Sleep -Milliseconds 400
 
-# ---- 3. Spawn backend + frontend in visible pwsh windows -------------
+# ---- 3. Spawn uvicorn (serves API + board on :8765) -------------------
 
-$BackendLog  = Join-Path $LogDir 'backend.log'
-$FrontendLog = Join-Path $LogDir 'frontend.log'
-$BackendCmd  = "Set-Location '$ScriptDir'; uvicorn backend.app:app --host 127.0.0.1 --port $BackendPort *> '$BackendLog'"
-$FrontendCmd = "Set-Location '$FrontendDir'; npm run dev *> '$FrontendLog'"
+$Log = Join-Path $LogDir 'backend.log'
+$Cmd = "Set-Location '$ScriptDir'; uvicorn backend.app:app --host 127.0.0.1 --port $Port *> '$Log'"
+Write-Host "Starting cockpit on :$Port (log: $Log)..." -ForegroundColor Cyan
+$proc = Start-Process pwsh -ArgumentList '-NoExit','-Command',$Cmd -PassThru -WindowStyle Hidden
 
-Write-Host "Starting backend on :$BackendPort (log: $BackendLog)..." -ForegroundColor Cyan
-$beProc = Start-Process pwsh -ArgumentList '-NoExit','-Command',$BackendCmd -PassThru -WindowStyle Hidden
+# ---- 4. Wait for health, open browser --------------------------------
 
-Write-Host "Starting frontend on :$FrontendPort (log: $FrontendLog)..." -ForegroundColor Cyan
-$feProc = Start-Process pwsh -ArgumentList '-NoExit','-Command',$FrontendCmd -PassThru -WindowStyle Hidden
-
-# ---- 4. Wait for both health endpoints -------------------------------
-
-function Wait-Url {
-  param([string]$Url, [int]$TimeoutSec, [string]$Label)
-  $deadline = (Get-Date).AddSeconds($TimeoutSec)
-  while ((Get-Date) -lt $deadline) {
-    try {
-      $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-      if ($r.StatusCode -lt 500) { return $true }
-    } catch { Start-Sleep -Milliseconds 500 }
-  }
-  Write-Warning "  $Label did not become healthy at $Url within ${TimeoutSec}s"
-  return $false
+$deadline = (Get-Date).AddSeconds(30)
+$ok = $false
+while ((Get-Date) -lt $deadline) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://localhost:$Port/api/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+    if ($r.StatusCode -lt 500) { $ok = $true; break }
+  } catch { Start-Sleep -Milliseconds 500 }
 }
 
-Write-Host 'Waiting for services (Vite cold-start can take 30-60s)...' -ForegroundColor Cyan
-$beOk = Wait-Url -Url "http://localhost:$BackendPort/api/health" -TimeoutSec 60 -Label 'backend'
-$feOk = Wait-Url -Url "http://localhost:$FrontendPort/"            -TimeoutSec 90 -Label 'frontend'
-
-# ---- 5. Open browser -------------------------------------------------
-
 Write-Host ''
-if ($beOk -and $feOk) {
-  Write-Host 'Cockpit is up:' -ForegroundColor Green
-} else {
-  Write-Host 'Health check timed out — services may still be starting.' -ForegroundColor Yellow
-  Write-Host 'Opening browser anyway; refresh after services finish booting.' -ForegroundColor Yellow
-}
-Write-Host "  http://localhost:$FrontendPort/"
-Write-Host "  http://localhost:$BackendPort/api/snapshot (raw JSON)"
-Start-Process "http://localhost:$FrontendPort/"
+if ($ok) { Write-Host 'Cockpit is up:' -ForegroundColor Green }
+else { Write-Host 'Health check timed out — opening anyway; refresh shortly.' -ForegroundColor Yellow }
+Write-Host "  http://localhost:$Port/            (the board)"
+Write-Host "  http://localhost:$Port/api/vigil/now  (raw JSON)"
+Start-Process "http://localhost:$Port/"
 Write-Host ''
-Write-Host "Backend  PID $($beProc.Id)   log: $BackendLog"
-Write-Host "Frontend PID $($feProc.Id)   log: $FrontendLog"
-Write-Host 'To stop: double-click the "Stop Cockpit" desktop icon, or run stop-cockpit.ps1.'
+Write-Host "Backend PID $($proc.Id)   log: $Log"
+Write-Host 'To stop: run stop-cockpit.ps1 (or re-run start-cockpit.ps1).'

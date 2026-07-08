@@ -36,6 +36,17 @@ def c_to_f(c: float | None) -> float | None:
     return round(c * 9.0 / 5.0 + 32.0, 1)
 
 
+def to_display_f(raw: float | None) -> float | None:
+    """Thermostat indoor/setpoint fields are historically named ``*_f`` but the
+    CTK04 runs in °C-display mode (2026-06-02), so the poller stores °C into
+    them. Convert when the magnitude is in the °C indoor range (< 50 — no
+    overlap with any plausible indoor °F reading); pass through otherwise.
+    Self-heals if the device is ever switched back to °F."""
+    if raw is None:
+        return None
+    return c_to_f(raw) if raw < 50 else round(float(raw), 1)
+
+
 def tier_from_cents(cents: float | None, elevated_at: float, scarcity_at: float) -> str:
     if cents is None:
         return "normal"
@@ -114,8 +125,11 @@ def build_episodes(
                 duration_min=0, representative_cents=0.0,
             )
             cur_prices = []
-        cur["tiers_walked"].append({"tier": r["tier"], "at": _iso(r["at"])})
-        cur["tiers_walked_strs"].append(r["tier"])
+        # dedupe consecutive same-tier transitions — the ladder shows the walk,
+        # not every re-affirming write
+        if not cur["tiers_walked_strs"] or cur["tiers_walked_strs"][-1] != r["tier"]:
+            cur["tiers_walked"].append({"tier": r["tier"], "at": _iso(r["at"])})
+            cur["tiers_walked_strs"].append(r["tier"])
         cur_prices.append(r["cents"])
 
     if cur is not None:

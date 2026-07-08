@@ -12,6 +12,7 @@ from ..vigil_derive import (
     compose_why,
     this_spike_from_episodes,
     tier_from_cents,
+    to_display_f,
 )
 
 UTC = timezone.utc
@@ -25,6 +26,29 @@ def test_c_to_f() -> None:
     assert c_to_f(25.0) == 77.0
     assert c_to_f(29.5) == 85.1
     assert c_to_f(None) is None
+
+
+def test_to_display_f_celsius_mode() -> None:
+    # CTK04 is in °C mode: poller stores °C in the *_f fields.
+    assert to_display_f(24.5) == 76.1   # 24.5°C indoor
+    assert to_display_f(23.0) == 73.4   # 23°C setpoint
+    # already-°F values (>= 50) pass through unchanged (self-heals on flip)
+    assert to_display_f(74.2) == 74.2
+    assert to_display_f(85.1) == 85.1
+    assert to_display_f(None) is None
+
+
+def test_build_episodes_dedupes_consecutive_tiers() -> None:
+    now = datetime(2026, 7, 7, 21, 0, tzinfo=UTC)
+    trans = [
+        {"tier": "scarcity", "at": _t(50, now), "cents": 21.0},
+        {"tier": "scarcity", "at": _t(45, now), "cents": 30.0},  # re-affirm, deduped
+        {"tier": "elevated", "at": _t(30, now), "cents": 12.0},
+        {"tier": "normal", "at": _t(5, now), "cents": 6.0},
+    ]
+    eps = build_episodes(trans, now=now)
+    assert eps[0]["tiers_walked_strs"] == ["scarcity", "elevated"]
+    assert eps[0]["peak_cents"] == 30.0  # peak still from all transition prices
 
 
 def test_tier_boundaries() -> None:

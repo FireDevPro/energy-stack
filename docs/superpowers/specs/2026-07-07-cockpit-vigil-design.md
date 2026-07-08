@@ -1,7 +1,7 @@
 ---
 date: 2026-07-07
 owner: chris
-status: draft
+status: accepted
 role-label: code-team
 supersedes_intent_of: the rev-3 narrative cockpit (decision-pipeline board) at deploy/energy-stack/cockpit/, which went blind at the 2026-07-06 rev 4 cutover
 ---
