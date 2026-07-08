@@ -85,10 +85,9 @@ services:
       - "8081"
 
   cockpit:
-    # Controller Cockpit — read-only HVAC dashboard. FastAPI proxy plus the
-    # built React frontend served same-origin on :8765. Supersedes the
-    # workstation-local launcher as the canonical way to run it
-    # (cockpit/start-cockpit.ps1 remains the dev loop).
+    # The Vigil — read-only rev-4.1 wall board. FastAPI serves three live
+    # /api/vigil/* polls from InfluxDB plus the single-file frontend
+    # same-origin on :8765 (cockpit/start-cockpit.ps1 remains the dev loop).
     build: ./cockpit
     container_name: cockpit
     restart: unless-stopped
@@ -97,15 +96,15 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
-      loki:
-        condition: service_healthy
     environment:
-      COCKPIT_BACKEND_MODE: live
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
-      LOKI_URL: http://loki:3100
+    volumes:
+      # Read-only, single source of truth for tier thresholds: the SAME
+      # commissioning-controller.yaml the controller reads. Edit once, both see it.
+      - ./hvac_scheduler/commissioning-controller.yaml:/config/commissioning-controller.yaml:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/api/health', timeout=3)"]
       interval: 30s
