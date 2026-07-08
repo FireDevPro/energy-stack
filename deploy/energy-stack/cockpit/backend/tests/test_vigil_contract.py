@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from .. import app as app_module
@@ -159,7 +160,7 @@ def test_events_shape() -> None:
     assert "started_at_ct" in ev
 
 
-def test_route_is_json_serializable(monkeypatch) -> None:
+def test_route_is_json_serializable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_module, "_get_query_api", lambda: _engaged())
     monkeypatch.setattr(app_module, "_get_config", lambda: CFG)
     monkeypatch.setenv("INFLUXDB_BUCKET", "b")

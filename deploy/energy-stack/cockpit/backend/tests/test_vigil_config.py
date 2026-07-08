@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ..vigil_config import config_path, load_config
 
 # The real controller config, reachable from the repo at test time.
@@ -22,6 +24,6 @@ def test_loads_real_controller_config() -> None:
     assert cfg.hold_ttl_minutes == 30
 
 
-def test_env_override_wins(monkeypatch) -> None:
+def test_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VIGIL_CONFIG_PATH", str(_REAL))
     assert config_path() == _REAL

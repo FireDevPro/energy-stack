@@ -145,7 +145,7 @@ from(bucket: "{bucket}")
     if row is None:
         return False
     v = row.get("_value")
-    return bool(v) and v > 0
+    return v is not None and v > 0
 
 
 def query_outdoor_now(client: QueryApi, *, bucket: str) -> dict[str, Any] | None:
@@ -185,10 +185,10 @@ from(bucket: "{bucket}")
 """
     out: list[dict[str, Any]] = []
     for row in _series_rows(client.query(flux)):
-        t, v = row.get("_time"), row.get("_value")
+        t, v = _aware(row.get("_time")), row.get("_value")
         if t is None or v is None:
             continue
-        out.append({"t": _aware(t).isoformat(), "cents": round(float(v), 1)})
+        out.append({"t": t.isoformat(), "cents": round(float(v), 1)})
     return out
 
 

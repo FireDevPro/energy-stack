@@ -63,10 +63,11 @@ ignore_missing_imports = true
 module = [
     "hvac_scheduler.test_freshness",
     "hvac_scheduler.test_influx_adapter",
-    # Cockpit-backend test modules (added in PR 4; `backend` is the
-    # top-level package rooted at deploy/energy-stack/cockpit/)
-    "backend.tests.test_snapshot",
-    "backend.tests.test_live_assembler",
+    # Cockpit-backend test modules (`backend` is the top-level package
+    # rooted at deploy/energy-stack/cockpit/)
+    "backend.tests.test_vigil_config",
+    "backend.tests.test_vigil_derive",
+    "backend.tests.test_vigil_contract",
     # comed-poller test modules (added in PR 5)
     "comed_poller.test_comed_poller",
     # pjm-dm2-poller test modules (added in PR 6)

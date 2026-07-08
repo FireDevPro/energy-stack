@@ -13,12 +13,6 @@ ALIVE_THRESHOLD_SEC = 600  # matches the watchdog's 10-min DOWN threshold
 RELEASE_DISPLAY_MIN = 15  # how long the stand-down banner lingers after a spike
 
 
-class Transition(TypedDict):
-    tier: str          # new_tier
-    at: datetime       # transition time (UTC)
-    cents: float       # current_price_cents at the transition
-
-
 class Episode(TypedDict):
     started_at: datetime
     ended_at: Optional[datetime]
@@ -78,14 +72,16 @@ def _iso(dt: datetime) -> str:
 
 
 def build_episodes(
-    transitions: Iterable[Transition],
+    transitions: Iterable[dict[str, Any]],
     *,
     now: datetime,
     peak_lookup: Optional[Iterable[tuple[datetime, float]]] = None,
 ) -> list[Episode]:
     """Group ``hvac.price_overlay`` tier-transition rows into engage→release
-    episodes. An episode opens when the tier leaves ``normal`` and closes on
-    the next transition back to ``normal``; a still-open run is ``ongoing``.
+    episodes. Each row is a dict with ``tier`` (new_tier, str), ``at``
+    (datetime), and ``cents`` (float). An episode opens when the tier leaves
+    ``normal`` and closes on the next transition back to ``normal``; a
+    still-open run is ``ongoing``.
 
     ``peak_lookup`` is the 5-min price series (``[(t, cents)]``); when given,
     ``peak_cents`` is the true max over the episode window rather than just
