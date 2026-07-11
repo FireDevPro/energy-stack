@@ -93,8 +93,16 @@ def normalize_text(text: str) -> str:
     # Insert space between letter-digit and digit-letter: "Charge1715" -> "Charge 1715"
     text = re.sub(r"([a-zA-Z])(\d)", r"\1 \2", text)
     text = re.sub(r"(\d)([a-zA-Z])", r"\1 \2", text)
+    # Detach a quantity glued to a closing paren: the TOD delivery lines print
+    # "Morning DFC (6am-1pm)524 kWh..." with the kWh count jammed onto the ")".
+    text = re.sub(r"(\))(\d)", r"\1 \2", text)
     # Insert space before $ if attached: "Charge$42.15" -> "Charge $42.15"
     text = re.sub(r"([a-zA-Z0-9])(\$)", r"\1 \2", text)
+    # Detach a negative amount glued to a label: "...Adjustment-$4.58". The rule
+    # above misses it because the "-" (not an alnum) sits between the letter and
+    # the "$". Letter-only on the left so credit rates like "X-0.03186-$54.64"
+    # (digit before "-$") stay intact for the line-item shapes to parse.
+    text = re.sub(r"([a-zA-Z])(-\$)", r"\1 \2", text)
     # Repair electrical units broken by the lower->upper rule.
     # "k Wh" -> "kWh", "k W" -> "kW". Use lookarounds instead of \b so we
     # also catch "k WX" (older fixtures jam W and the multiplier X together).
@@ -146,8 +154,15 @@ def parse_account_no(text: str) -> str:
 
 
 def parse_rate_plan(text: str) -> str:
-    """Returns 'Residential - Hourly Single' or 'Residential - Single'.
-    Order matters: try 'Hourly Single' first since 'Single' is a substring."""
+    """Returns the canonical rate-plan label. Order matters: match the most
+    specific plan first, since each is a substring of the next ('Hourly Single
+    - TOD' contains 'Hourly Single' contains 'Single'). ComEd abbreviates
+    'Residential' to 'Res' on the Time-of-Day plan; the return value normalizes
+    it back to the full 'Residential -' prefix so the Influx `rate_plan` tag
+    stays consistent with historical rows."""
+    m = re.search(r"Res(?:idential)?\s*-\s*Hourly\s*Single\s*-\s*TOD\b", text, re.IGNORECASE)
+    if m:
+        return "Residential - Hourly Single - TOD"
     m = re.search(r"Residential\s*-\s*Hourly\s*Single\b", text, re.IGNORECASE)
     if m:
         return "Residential - Hourly Single"
@@ -268,7 +283,9 @@ def extract_misc_block(text: str) -> tuple[float, str]:
 # ("X-0.03186-$54.64"). Quantities never have $.
 _AMOUNT = r"-?\$[\d,]+\.\d{2}"
 # Label: starts with capital, then word chars + spaces/&/-//. No digits, no $.
-_LABEL = r"[A-Z][A-Za-z][A-Za-z &/.\-]*?[A-Za-z]"
+# Optional trailing "(6am-1pm)"-style parenthetical so the TOD delivery buckets
+# (Morning/Mid-Day Peak/Evening/Overnight DFC) parse as labelled line items.
+_LABEL = r"[A-Z][A-Za-z][A-Za-z &/.\-]*?[A-Za-z](?:\s*\([^)]*\))?"
 
 # Shape A: label + qty + unit + X + rate + amount
 #   "Distribution Facility Charge 1,715 kWh X 0.06267 $107.48"
