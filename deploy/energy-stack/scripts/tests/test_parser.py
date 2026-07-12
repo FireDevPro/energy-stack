@@ -290,6 +290,66 @@ def test_parse_bill_validates_totals():
         parse_bill(bad)
 
 
+# ---- Res - Hourly Single - TOD (Time-of-Day delivery, live 2026-06) ----
+
+
+def test_normalize_text_detaches_glued_tod_tokens():
+    # kWh count jammed onto a closing paren, and a negative amount jammed onto a label
+    assert "(6 am-1 pm) 524" in normalize_text("Morning DFC (6am-1pm)524 kWh")
+    assert "Adjustment -$4.58" in normalize_text("Purchased Electricity Adjustment-$4.58")
+
+
+def test_parse_rate_plan_tod():
+    text = _norm_fixture("hourly_single_tod_jun2026.txt")
+    # 'Res' is normalized back to the full 'Residential -' prefix for tag continuity
+    assert parse_rate_plan(text) == "Residential - Hourly Single - TOD"
+
+
+def test_parse_line_items_delivery_tod_buckets():
+    """The four Time-of-Day Distribution Facility Charge buckets parse as
+    labelled line items with their per-window kWh and rate."""
+    text = _norm_fixture("hourly_single_tod_jun2026.txt")
+    total, body = extract_delivery_block(text)
+    items = parse_line_items(body, category="DELIVERY")
+    labels = {i.line_item: i for i in items}
+    mid = labels["Mid-Day Peak DFC (1 pm-7 pm)"]
+    assert (mid.quantity, mid.unit, mid.rate, mid.amount) == (445, "kWh", 0.11852, 52.74)
+    assert labels["Morning DFC (6 am-1 pm)"].rate == 0.04475
+    assert labels["Evening DFC (7 pm-9 pm)"].rate == 0.04185
+    assert labels["Overnight DFC (9 pm-6 am)"].rate == 0.03345
+    # every delivery item captured -> they sum to the block total
+    assert abs(sum(i.amount for i in items) - total) < 0.01
+
+
+def test_parse_line_items_supply_tod_captures_glued_credit():
+    """Purchased Electricity Adjustment prints glued to a negative amount
+    ('Adjustment-$4.58'); it must still parse (regression: it was dropped)."""
+    text = _norm_fixture("hourly_single_tod_jun2026.txt")
+    total, body = extract_supply_block(text)
+    items = parse_line_items(body, category="SUPPLY")
+    labels = {i.line_item: i for i in items}
+    assert labels["Purchased Electricity Adjustment"].amount == -4.58
+    assert abs(sum(i.amount for i in items) - total) < 0.01
+
+
+def test_parse_bill_tod_june():
+    text = _norm_fixture("hourly_single_tod_jun2026.txt")
+    bill = parse_bill(text)
+    assert bill.account_no == "9999999991"
+    assert bill.rate_plan == "Residential - Hourly Single - TOD"
+    assert bill.bill_type == "normal"
+    assert bill.service_from == date(2026, 5, 25)
+    assert bill.service_to == date(2026, 6, 23)
+    assert bill.service_days == 29
+    assert bill.kwh == 2400
+    assert bill.peak_kw == 7.01
+    assert bill.total_due == 338.83
+    assert bill.supply_total == 187.99
+    assert bill.delivery_total == 149.23
+    assert bill.taxes_total == 1.61
+    assert bill.misc_total == 0.00
+
+
 # ---- Task 11: PDF -> Bill ----
 
 
