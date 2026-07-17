@@ -13,7 +13,7 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 
 - [influxdb](#influxdb) — time-series storage
 - [influx-init](#influx-init) — one-shot longterm bucket + downsample task provisioning
-- [grafana](#grafana) — visualization
+- [grafana](#grafana) — deployed but UNUSED; real UI is the surface-kiosk (see [DASHBOARDS.md](DASHBOARDS.md))
 - [cockpit](#cockpit) — Controller Cockpit (read-only HVAC dashboard)
 - [eagle-poller](#eagle-poller) — billing-grade smart meter
 - [comed-poller](#comed-poller) — ComEd Hourly Pricing
@@ -126,6 +126,8 @@ Design: [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
 ---
 
 ## grafana
+
+> **Deployed but UNUSED (2026-07).** Grafana is no longer the visualization layer — the live UI is the **surface-kiosk** wall display (custom weather board + Vigil cockpit). See [DASHBOARDS.md](DASHBOARDS.md). The container still runs; this section documents it for reference (removal candidate).
 
 Image: `grafana/grafana-oss:11.4.0` · Port: `3000` · Volumes: `grafana_data`, `./grafana/provisioning:ro`, `./grafana/dashboards:ro`
 

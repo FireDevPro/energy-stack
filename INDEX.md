@@ -55,6 +55,10 @@ out to analysis.
 
 - [docs/SERVICES.md](docs/SERVICES.md) — per-service detail for every
   container in the deploy stack
+- [docs/DASHBOARDS.md](docs/DASHBOARDS.md) — visualization architecture:
+  the **surface-kiosk** wall display (custom weather board + Vigil cockpit)
+  is the live UI; **Grafana is deployed but unused**. Read this before
+  touching any dashboard
 - [docs/DEBUG_TELEMETRY.md](docs/DEBUG_TELEMETRY.md) — quick-reference
   catalog: per-measurement consumption status (FULL / PARTIAL / NONE)
   for every Influx measurement in the `energy` bucket; includes 5CP
