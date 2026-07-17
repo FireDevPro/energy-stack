@@ -181,6 +181,40 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
 
+  purpleair-poller:
+    build: ./purpleair_poller
+    container_name: purpleair-poller
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      PURPLEAIR_API_KEY: ${PURPLEAIR_API_KEY}
+      PURPLEAIR_SENSOR_ID: ${PURPLEAIR_SENSOR_ID:-290986}
+      PURPLEAIR_POLL_INTERVAL: ${PURPLEAIR_POLL_INTERVAL:-900}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+
+  airnow-poller:
+    build: ./airnow_poller
+    container_name: airnow-poller
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      AIRNOW_API_KEY: ${AIRNOW_API_KEY}
+      AIRNOW_LAT: ${AIRNOW_LAT:-41.653976}
+      AIRNOW_LON: ${AIRNOW_LON:--88.211868}
+      AIRNOW_DISTANCE_MI: ${AIRNOW_DISTANCE_MI:-50}
+      AIRNOW_POLL_INTERVAL: ${AIRNOW_POLL_INTERVAL:-1800}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
+
   pjm-dm2-poller:
     build: ./pjm_dm2_poller
     container_name: pjm-dm2-poller
