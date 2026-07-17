@@ -142,8 +142,10 @@ Pi-lab. Each is a small Python service that calls one upstream and writes to
 InfluxDB. The `refoss-poller` (Phase 5) replaced `sense-poller` (retired Phase 1.5).
 The thermostat path's Control4/pyControl4 actuation was retired in June 2026;
 the device client is TCC/`aiosomecomfort` behind the `ThermostatClient` seam
-(live since #109), driven by the rev 4.1 spike-only controller. The Windows-side `energy_proxy.py` and custom HTML
-dashboard are gone — Grafana is the sole visualization layer. State is durable:
+(live since #109), driven by the rev 4.1 spike-only controller. The Windows-side `energy_proxy.py` is gone.
+Visualization is the **surface-kiosk wall display** (a custom weather board + the
+Vigil cockpit); the `grafana` container still runs but is unused — see
+[DASHBOARDS.md](DASHBOARDS.md). State is durable:
 InfluxDB on a persistent volume, with a separate `energy-longterm` bucket for 1-min
 downsampled history.
 
