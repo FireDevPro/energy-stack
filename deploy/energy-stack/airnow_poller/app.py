@@ -44,6 +44,7 @@ from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined] 
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
+RETRY_BASE_S = 60.0  # backoff floor after a failed poll; doubles up to poll_interval
 AIRNOW_URL = "https://www.airnowapi.org/aq/observation/latLong/current/"
 
 # AirNow ParameterName -> Influx field key
@@ -155,21 +156,24 @@ def build_point(obs: list[dict[str, Any]]) -> Point | None:
     return p
 
 
-async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config) -> None:
+async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config) -> bool:
+    """Returns True on a successful write, False on a fetch failure or empty
+    response (so the caller can retry with backoff, not the full interval)."""
     try:
         obs = await fetch_observations(session, cfg)
     except Exception as exc:
         log("warn", "fetch_failed", error=str(exc), error_type=type(exc).__name__)
-        return
+        return False
     point = build_point(obs)
     if point is None:
         log("warn", "no_observations", count=len(obs))
-        return
+        return False
     write_api.write(bucket=cfg.influx_bucket, record=point)  # not caught -> Docker restarts on Influx error
     log("info", "poll_ok",
         pollutants=[o.get("ParameterName") for o in obs],
         aqis={o.get("ParameterName"): o.get("AQI") for o in obs})
     HEALTH_MARKER.touch()
+    return True
 
 
 def main() -> int:
@@ -188,14 +192,23 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_stop)
 
     async def run() -> None:
+        fail_streak = 0
         async with aiohttp.ClientSession() as session:
             while not stop.is_set():
+                ok = False
                 try:
-                    await poll_once(session, write_api, cfg)
+                    ok = await poll_once(session, write_api, cfg)
                 except Exception as exc:
                     log("error", "poll_unhandled_error", error=str(exc), error_type=type(exc).__name__)
+                if ok:
+                    fail_streak = 0
+                    delay = cfg.poll_interval_s
+                else:
+                    fail_streak += 1
+                    delay = min(RETRY_BASE_S * 2 ** (fail_streak - 1), cfg.poll_interval_s)
+                    log("info", "retry_backoff", fail_streak=fail_streak, delay_s=delay)
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=cfg.poll_interval_s)
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
                 except asyncio.TimeoutError:
                     pass
 

@@ -43,6 +43,7 @@ from influxdb_client import InfluxDBClient, Point  # type: ignore[attr-defined] 
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
+RETRY_BASE_S = 60.0  # backoff floor after a failed poll; doubles up to poll_interval
 PA_API = "https://api.purpleair.com/v1/sensors"
 # cf_1 is the variant the EPA correction was built on; pm2.5 (atm) + pm10 kept for reference.
 FIELDS = "name,humidity,temperature,pm2.5_cf_1,pm2.5,pm10.0,confidence,last_seen"
@@ -167,12 +168,14 @@ def build_point(s: dict[str, Any]) -> Point:
     return p
 
 
-async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config) -> None:
+async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config) -> bool:
+    """Returns True on a successful write, False on a fetch failure (so the
+    caller can retry with backoff instead of waiting the full interval)."""
     try:
         sensor = await fetch_sensor(session, cfg)
     except Exception as exc:
         log("warn", "fetch_failed", error=str(exc), error_type=type(exc).__name__)
-        return
+        return False
     point = build_point(sensor)
     write_api.write(bucket=cfg.influx_bucket, record=point)  # not caught -> Docker restarts on Influx error
     log("info", "poll_ok",
@@ -180,6 +183,7 @@ async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config)
         pm25_raw=sensor.get("pm2.5_cf_1"),
         aqi=point._fields.get("aqi") if hasattr(point, "_fields") else None)  # type: ignore[attr-defined]
     HEALTH_MARKER.touch()
+    return True
 
 
 def main() -> int:
@@ -198,14 +202,23 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_stop)
 
     async def run() -> None:
+        fail_streak = 0
         async with aiohttp.ClientSession() as session:
             while not stop.is_set():
+                ok = False
                 try:
-                    await poll_once(session, write_api, cfg)
+                    ok = await poll_once(session, write_api, cfg)
                 except Exception as exc:
                     log("error", "poll_unhandled_error", error=str(exc), error_type=type(exc).__name__)
+                if ok:
+                    fail_streak = 0
+                    delay = cfg.poll_interval_s
+                else:
+                    fail_streak += 1
+                    delay = min(RETRY_BASE_S * 2 ** (fail_streak - 1), cfg.poll_interval_s)
+                    log("info", "retry_backoff", fail_streak=fail_streak, delay_s=delay)
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=cfg.poll_interval_s)
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
                 except asyncio.TimeoutError:
                     pass
 
