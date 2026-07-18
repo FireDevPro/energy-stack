@@ -88,7 +88,8 @@ def test_adapter_maps_seam_to_snapshot():
 
     class FakeClient:
         def __init__(self): self.clim = FakeClim()
-        async def get_climate(self): return self.clim
+        async def get_climate(self, refresh=True): return self.clim
+        async def call_with_reauth(self, fn): return await fn()
 
     a = TccClimateAdapter(FakeClient())
     s = asyncio.run(a.snapshot())
@@ -97,6 +98,35 @@ def test_adapter_maps_seam_to_snapshot():
     assert ("cool", 29.5) in FakeClim.pushed and ("until", 870) in FakeClim.pushed
     asyncio.run(a.release())
     assert ("mode", "Schedule") in FakeClim.pushed
+
+
+def test_push_and_release_route_writes_through_reauth():
+    import asyncio
+    from .controller.device import TccClimateAdapter
+
+    class FakeClim:
+        def __init__(self): self.calls = []
+        async def set_heat_setpoint_f(self, v): self.calls.append(("heat", v))
+        async def set_cool_setpoint_f(self, v): self.calls.append(("cool", v))
+        async def set_hold_until(self, t): self.calls.append(("until", t.hour * 60 + t.minute))
+        async def set_hold_mode(self, m): self.calls.append(("mode", m))
+
+    class FakeClient:
+        def __init__(self):
+            self.clim = FakeClim(); self.reauth_count = 0; self.refresh_requested = None
+        async def get_climate(self, refresh=True):
+            self.refresh_requested = refresh; return self.clim
+        async def call_with_reauth(self, fn):
+            self.reauth_count += 1; return await fn()
+
+    c = FakeClient(); a = TccClimateAdapter(c)
+    asyncio.run(a.push(29.5, 18.5, 870))
+    assert c.refresh_requested is False          # no redundant refresh
+    assert c.reauth_count == 3                    # each write wrapped
+    assert ("cool", 29.5) in c.clim.calls and ("until", 870) in c.clim.calls
+    asyncio.run(a.release())
+    assert ("mode", "Schedule") in c.clim.calls
+    assert c.reauth_count == 4                     # release write also wrapped
 
 
 @dataclass
