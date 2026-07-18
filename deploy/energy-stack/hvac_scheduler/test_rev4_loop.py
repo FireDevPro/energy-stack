@@ -298,3 +298,12 @@ def test_arm_mode_row_production_branch():
                        scheduler_mode="production")
     assert Cap.lines[-1].startswith("hvac.arm_mode,")
     assert "mode_actual=" in Cap.lines[-1]
+
+
+def test_tick_failure_log_downgrades_timeout():
+    from .controller.loop import _tick_failure_log
+    t = datetime(2026, 7, 11, tzinfo=UTC)
+    assert _tick_failure_log(TimeoutError(), t)["level"] == "warn"
+    assert _tick_failure_log(ValueError("boom"), t)["level"] == "error"
+    rec = _tick_failure_log(TimeoutError(), t)
+    assert rec["msg"] == "rev4_tick_failed" and rec["error_type"] == "TimeoutError"
