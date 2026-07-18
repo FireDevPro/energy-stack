@@ -163,6 +163,19 @@ async def test_get_climate_logs_in_when_no_session() -> None:
     assert climate._dev is dev
 
 
+async def test_get_climate_refresh_false_skips_network_read() -> None:
+    """push()/release() already have a fresh session from snapshot() this tick,
+    so get_climate(refresh=False) must NOT issue another device.refresh()."""
+    client = TCCClient("u", "p", 4750378)
+    client._client = MagicMock()          # pretend already logged in
+    dev = _fake_device()
+    dev.refresh = AsyncMock()
+    client.device = dev
+    climate = await client.get_climate(refresh=False)
+    dev.refresh.assert_not_awaited()      # no redundant network read
+    assert climate._dev is dev
+
+
 def test_schedule_cool_and_hold_until_read_raw_ui_data():
     import asyncio
 

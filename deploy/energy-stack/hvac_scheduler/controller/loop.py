@@ -18,6 +18,24 @@ from .pricing import PriceSample
 from . import tiers
 
 
+def _tick_failure_log(exc: Exception, now_utc: datetime) -> dict[str, Any]:
+    # TCC 30s request timeouts are transient and self-heal on the next tick
+    # (the device holds via its 30-min TTL meanwhile). No alarm keys on this
+    # log at any level, so warn-vs-error changes no alarm coverage: SUSTAINED
+    # outages surface out-of-band (watchdog arm_mode staleness + thermostat-
+    # poller silence); the residual intermittent-during-spike gap is PR 2's
+    # device-stall alarm. So a lone TimeoutError is warn (log legibility) —
+    # genuine faults (any other exception type) stay at error.
+    transient = isinstance(exc, TimeoutError)
+    return {
+        "ts": now_utc.isoformat(),
+        "level": "warn" if transient else "error",
+        "msg": "rev4_tick_failed",
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+    }
+
+
 class ControllerLoop:
     def __init__(self, *, cfg: ControllerConfig, price_source: Any, climate: Any,
                  telemetry: Any, mode: str, tz_name: str, data_dir: str) -> None:
@@ -185,11 +203,8 @@ class ControllerLoop:
                     await self.tick(now)
                     pathlib.Path("/tmp/last_tick_ok").touch()  # Dockerfile healthcheck
                 except Exception as exc:
-                    print(_json.dumps({
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "level": "error", "msg": "rev4_tick_failed",
-                        "error_type": type(exc).__name__, "error": str(exc),
-                    }), flush=True)
+                    print(_json.dumps(_tick_failure_log(
+                        exc, datetime.now(timezone.utc))), flush=True)
                 nxt = now.replace(second=10, microsecond=0) + timedelta(minutes=1)
                 delay = max(1.0, (nxt - datetime.now(timezone.utc)).total_seconds())
                 try:

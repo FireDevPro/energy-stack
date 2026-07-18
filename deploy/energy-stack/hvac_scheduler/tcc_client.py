@@ -189,7 +189,7 @@ class TCCClient:
                 return loc.devices_by_id[self._device_id]
         raise RuntimeError(f"tcc device {self._device_id} not found")
 
-    async def get_climate(self) -> TCCClimate:
+    async def get_climate(self, refresh: bool = True) -> TCCClimate:
         if self._client is None or self.device is None:
             await self._login()
         # refresh() IS the network read for TCC — wrap it in reauth. (Unlike
@@ -198,7 +198,12 @@ class TCCClient:
         # read_snapshot call get_climate OUTSIDE their try/reauth block, so a
         # dead session at refresh would never re-login otherwise.) The lambda
         # re-reads self.device so a reauth-swapped ref is used on retry.
-        await self.call_with_reauth(lambda: self.device.refresh())
+        # Callers that already refreshed this tick (push()/release() run only
+        # after snapshot() per loop.py's `if snap is not None` guard) pass
+        # refresh=False to skip the redundant round-trip; the setters read
+        # only cached device._data.
+        if refresh:
+            await self.call_with_reauth(lambda: self.device.refresh())
         return TCCClimate(self)
 
     async def call_with_reauth(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
