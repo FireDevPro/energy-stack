@@ -134,26 +134,30 @@ def test_push_reauth_reruns_full_sequence_not_partial():
     """A 401 after set_heat succeeds must re-run the ENTIRE write sequence, so
     the device never ends with a moved heat setpoint and no cool hold."""
     import asyncio
-    from aiosomecomfort import UnauthorizedError
     from .controller.device import TccClimateAdapter
+
+    class _Auth(Exception):
+        """Stand-in for aiosomecomfort's UnauthorizedError — import-linter
+        forbids importing aiosomecomfort outside tcc_client, and the fake's
+        reauth handler is ours to define, so a local sentinel suffices."""
 
     class FakeClim:
         def __init__(self): self.calls = []; self._fail_cool_once = True
         async def set_heat_setpoint_f(self, v): self.calls.append(("heat", v))
         async def set_cool_setpoint_f(self, v):
-            if self._fail_cool_once:                 # 401 mid-sequence, once
+            if self._fail_cool_once:                 # auth failure mid-sequence, once
                 self._fail_cool_once = False
-                raise UnauthorizedError("401")
+                raise _Auth("401")
             self.calls.append(("cool", v))
         async def set_hold_until(self, t): self.calls.append(("until", t.hour * 60 + t.minute))
 
     class FakeClient:
         def __init__(self): self.clim = FakeClim(); self.logins = 0
         async def get_climate(self, refresh=True): return self.clim
-        async def call_with_reauth(self, fn):        # mirrors real TCCClient
+        async def call_with_reauth(self, fn):        # mirrors real TCCClient shape
             try:
                 return await fn()
-            except UnauthorizedError:
+            except _Auth:
                 self.logins += 1
                 return await fn()
 
