@@ -122,11 +122,48 @@ def test_push_and_release_route_writes_through_reauth():
     c = FakeClient(); a = TccClimateAdapter(c)
     asyncio.run(a.push(29.5, 18.5, 870))
     assert c.refresh_requested is False          # no redundant refresh
-    assert c.reauth_count == 3                    # each write wrapped
+    assert c.reauth_count == 1                    # WHOLE write-sequence wrapped once
+    assert ("heat", 18.5) in c.clim.calls
     assert ("cool", 29.5) in c.clim.calls and ("until", 870) in c.clim.calls
     asyncio.run(a.release())
     assert ("mode", "Schedule") in c.clim.calls
-    assert c.reauth_count == 4                     # release write also wrapped
+    assert c.reauth_count == 2                     # release write also wrapped
+
+
+def test_push_reauth_reruns_full_sequence_not_partial():
+    """A 401 after set_heat succeeds must re-run the ENTIRE write sequence, so
+    the device never ends with a moved heat setpoint and no cool hold."""
+    import asyncio
+    from aiosomecomfort import UnauthorizedError
+    from .controller.device import TccClimateAdapter
+
+    class FakeClim:
+        def __init__(self): self.calls = []; self._fail_cool_once = True
+        async def set_heat_setpoint_f(self, v): self.calls.append(("heat", v))
+        async def set_cool_setpoint_f(self, v):
+            if self._fail_cool_once:                 # 401 mid-sequence, once
+                self._fail_cool_once = False
+                raise UnauthorizedError("401")
+            self.calls.append(("cool", v))
+        async def set_hold_until(self, t): self.calls.append(("until", t.hour * 60 + t.minute))
+
+    class FakeClient:
+        def __init__(self): self.clim = FakeClim(); self.logins = 0
+        async def get_climate(self, refresh=True): return self.clim
+        async def call_with_reauth(self, fn):        # mirrors real TCCClient
+            try:
+                return await fn()
+            except UnauthorizedError:
+                self.logins += 1
+                return await fn()
+
+    c = FakeClient(); a = TccClimateAdapter(c)
+    asyncio.run(a.push(29.5, 18.5, 870))
+    assert c.logins == 1
+    # the retry re-ran the WHOLE sequence: heat applied on both attempts
+    # (idempotent), cool + hold established on the successful pass.
+    assert c.clim.calls.count(("heat", 18.5)) == 2
+    assert ("cool", 29.5) in c.clim.calls and ("until", 870) in c.clim.calls
 
 
 @dataclass

@@ -19,9 +19,12 @@ from . import tiers
 
 
 def _tick_failure_log(exc: Exception, now_utc: datetime) -> dict[str, Any]:
-    # TCC 30s request timeouts are transient and self-heal next tick; a
-    # SUSTAINED outage is caught out-of-band (watchdog arm_mode staleness +
-    # thermostat-poller silence). So a lone TimeoutError is warn, not error —
+    # TCC 30s request timeouts are transient and self-heal on the next tick
+    # (the device holds via its 30-min TTL meanwhile). No alarm keys on this
+    # log at any level, so warn-vs-error changes no alarm coverage: SUSTAINED
+    # outages surface out-of-band (watchdog arm_mode staleness + thermostat-
+    # poller silence); the residual intermittent-during-spike gap is PR 2's
+    # device-stall alarm. So a lone TimeoutError is warn (log legibility) —
     # genuine faults (any other exception type) stay at error.
     transient = isinstance(exc, TimeoutError)
     return {

@@ -46,15 +46,20 @@ class TccClimateAdapter:
     async def push(self, cool: float, heat: float, until_minutes: int) -> None:
         # snapshot() refreshed the session this tick (loop.py runs push only
         # after a successful snapshot); reuse it — no redundant refresh. Wrap
-        # each write in reauth so a session that 401-expires mid-sequence
-        # self-heals this tick instead of failing the push (setters are
-        # otherwise unwrapped).
+        # the WHOLE write sequence in ONE reauth so a mid-sequence 401 re-runs
+        # all three writes atomically (absolute, idempotent sets) — never
+        # leaving a moved heat setpoint with no cool hold. (A non-auth transient
+        # mid-sequence still self-heals on the next tick's REV4_ENGAGED_OVER_MANUAL
+        # re-push; TCC offers no transactional write.)
         clim = await self._client.get_climate(refresh=False)
-        await self._client.call_with_reauth(lambda: clim.set_heat_setpoint_f(heat))
-        await self._client.call_with_reauth(lambda: clim.set_cool_setpoint_f(cool))
-        await self._client.call_with_reauth(
-            lambda: clim.set_hold_until(dtime(hour=until_minutes // 60,
-                                              minute=until_minutes % 60)))
+
+        async def _writes() -> None:
+            await clim.set_heat_setpoint_f(heat)
+            await clim.set_cool_setpoint_f(cool)
+            await clim.set_hold_until(dtime(hour=until_minutes // 60,
+                                            minute=until_minutes % 60))
+
+        await self._client.call_with_reauth(_writes)
 
     async def release(self) -> None:
         clim = await self._client.get_climate(refresh=False)
