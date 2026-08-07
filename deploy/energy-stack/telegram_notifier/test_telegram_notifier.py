@@ -26,6 +26,7 @@ from .app import (
     Alert,
     PJM_FEED_SLAS,
     check_controller_down,
+    check_device_status_failures,
     check_hvac_action_errors,
     check_pjm_feed_failures,
     check_pjm_feed_freshness,
@@ -626,3 +627,50 @@ def test_push_failure_alert_requires_three_consecutive(monkeypatch):
     # benign not-cooling strings never count
     api_with(["hvac_mode_not_cooling ('Off')"] * 3)
     assert check_hvac_action_errors(MagicMock(), "energy") == []
+
+
+# ---- check_device_status_failures -------------------------------------------
+#
+# Consecutive-of-a-kind. Measured over 12.3 days of production: 109 failed
+# ticks, none reaching 3 consecutive, while the old any-class rule would have
+# fired ~1x/day on blips that self-healed on the very next tick.
+
+
+def test_device_status_alerts_on_three_consecutive_read_failures(monkeypatch):
+    rows = [{"success": "false", "op": "read", "error_type": "TimeoutError",
+             "error_msg": ""} for _ in range(3)]
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: rows if 'r.op == "read"' in f else [])
+    alerts = check_device_status_failures(MagicMock(), "energy")
+    assert len(alerts) == 1
+    assert alerts[0].key == "hvac_device:read"
+    assert "TimeoutError" in alerts[0].text
+
+
+def test_device_status_silent_when_a_success_interleaves(monkeypatch):
+    """The whole point of attempt rows: one success breaks the run."""
+    rows = [{"success": "false", "op": "read", "error_type": "TimeoutError", "error_msg": ""},
+            {"success": "true",  "op": "read", "error_type": "", "error_msg": ""},
+            {"success": "false", "op": "read", "error_type": "TimeoutError", "error_msg": ""}]
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: rows if 'r.op == "read"' in f else [])
+    assert check_device_status_failures(MagicMock(), "energy") == []
+
+
+def test_device_status_crash_alerts_on_one(monkeypatch):
+    rows = [{"success": "false", "op": "crash", "error_type": "ValueError",
+             "error_msg": "bad state"}]
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: rows if 'r.op == "crash"' in f else [])
+    alerts = check_device_status_failures(MagicMock(), "energy")
+    assert len(alerts) == 1 and alerts[0].key == "hvac_device:crash"
+    assert "bad state" in alerts[0].text
+
+
+def test_device_status_silent_with_too_few_rows(monkeypatch):
+    rows = [{"success": "false", "op": "read", "error_type": "TimeoutError", "error_msg": ""}]
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: rows if 'r.op == "read"' in f else [])
+    assert check_device_status_failures(MagicMock(), "energy") == []
+
+
+def test_device_status_query_failure_declines_to_alert(monkeypatch):
+    def boom(q, f): raise RuntimeError("influx down")
+    monkeypatch.setattr(app, "fetch_one", boom)
+    assert check_device_status_failures(MagicMock(), "energy") == []
