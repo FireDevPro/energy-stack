@@ -64,37 +64,52 @@ Smallest cut through every layer the feature touches: writer → measurement →
 
 Append to `test_rev4_acceptance.py`:
 
+This is the **north star for the whole feature**, not just Task 1. It stays
+`xfail(strict=True)` through Phases 1 and 2 and the marker comes off only in
+Task 7, when the last piece (the liveness decouple) lands — that is the sole
+definition of feature-complete.
+
 ```python
 import pytest
 
+from hvac_scheduler.controller.loop import ControllerLoop
 
-@pytest.mark.xfail(strict=True, reason="device_status telemetry not implemented until Phase 3")
-def test_sustained_read_outage_is_alertable_intermittent_is_not(tmp_path):
-    """North star: three unbroken failed device reads must be distinguishable
-    from three failures separated by successes. This is the entire point of
-    attempt rows — without success rows, both look identical."""
-    from .controller.telemetry import InfluxTelemetry
 
-    class Cap:
-        lines: list = []
-        def write(self, bucket, record):
-            Cap.lines.append(record.to_line_protocol())
+@pytest.mark.xfail(strict=True,
+                   reason="feature-complete only at Task 7 (liveness decouple)")
+def test_read_outage_records_attempts_and_preserves_liveness(tmp_path):
+    """North star: a sustained device-read outage must (a) record one read
+    attempt row per tick, all failures, so a reader can count consecutive
+    failures of a kind, and (b) leave the liveness beacon intact, so the
+    watchdog never false-trips a live controller."""
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
 
-    tel = InfluxTelemetry(write_api=Cap(), bucket="energy", unit="C",
-                          config_id="abc", tz_name="America/Chicago")
-    for _ in range(3):
-        tel.write_device_status(op="read", success=False, tier="elevated",
-                                dry_run=False, error_type="TimeoutError")
-    assert all("success=false" in ln for ln in Cap.lines[-3:])
-    assert all("op=read" in ln for ln in Cap.lines[-3:])
+    class BoomClimate:
+        async def snapshot(self): raise TimeoutError()
 
-    Cap.lines.clear()
-    tel.write_device_status(op="read", success=False, tier="elevated", dry_run=False,
-                            error_type="TimeoutError")
-    tel.write_device_status(op="read", success=True, tier="elevated", dry_run=False)
-    tel.write_device_status(op="read", success=False, tier="elevated", dry_run=False,
-                            error_type="TimeoutError")
-    assert [("success=false" in ln) for ln in Cap.lines] == [True, False, True]
+    tel = TelemetryRecorder()
+    loop = ControllerLoop(
+        cfg=make_cfg(tmp_path),
+        price_source=FakePriceFeed(buckets=[(now - timedelta(seconds=400), 12.8)]),
+        climate=BoomClimate(), telemetry=tel, mode="production",
+        tz_name=CT, data_dir=str(tmp_path))
+
+    for i in range(3):
+        asyncio.run(loop.tick(now + timedelta(minutes=i)))
+
+    reads = [r for r in tel.device_rows if r["op"] == "read"]
+    assert len(reads) == 3, "one read attempt recorded per tick"
+    assert all(r["success"] is False for r in reads)
+    assert tel.arm_rows, "liveness must survive a device outage"
+```
+
+Also add the recorder method so the fake matches the real telemetry contract —
+in `TelemetryRecorder` (~line 88):
+
+```python
+    device_rows: list[dict] = field(default_factory=list)
+
+    def write_device_status(self, **kw): self.device_rows.append(kw)
 ```
 
 - [ ] **Step 2: Run it, watch it fail**
@@ -204,15 +219,13 @@ In `telemetry.py`, immediately after `write_action` (ends ~line 75):
 Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_rev4_loop.py -q`
 Expected: PASS, including the two new tests.
 
-- [ ] **Step 8: Confirm the acceptance test now XPASSes, and remove its marker**
+- [ ] **Step 8: Confirm the acceptance test still XFAILs**
 
 Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_rev4_acceptance.py -q`
-Expected: **XPASS → reported as a FAILURE** because `strict=True`.
-
-This is the signal working as designed. The acceptance test only covered the writer, so it is now genuinely satisfied — delete its `@pytest.mark.xfail(...)` decorator and the now-unused `import pytest` if nothing else uses it, then re-run:
-
-Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_rev4_acceptance.py -q`
-Expected: PASS.
+Expected: **XFAIL** (not XPASS). The writer exists now, but nothing calls it
+from the loop yet and `arm_mode` still trails device I/O, so the north star is
+correctly still unmet. An XPASS here would be reported as a failure by
+`strict=True` and would mean the test is too weak — stop and strengthen it.
 
 - [ ] **Step 9: Typecheck + commit**
 
@@ -285,9 +298,10 @@ def test_successful_read_records_a_success_row(tmp_path):
 
     class OkClimate:
         async def snapshot(self):
-            return ControlSnapshot(cool_setpoint=24.0, heat_setpoint=18.5,
-                                   indoor_temp=23.0, humidity=50.0,
-                                   schedule_cool=24.0, hold_until=None)
+            return ControlSnapshot(schedule_cool=24.0, cool_setpoint=24.0,
+                                   heat_setpoint=18.5, hold_active=False,
+                                   hold_until_minutes=None, indoor_temp=23.0,
+                                   humidity=50.0)
         async def push(self, *a): return None
         async def release(self): return None
 
@@ -305,9 +319,10 @@ def test_normal_tier_records_no_read_row(tmp_path):
     assert loop.telemetry.device_rows == []
 ```
 
-> **Note for the implementer:** `ControlSnapshot`'s exact field names are in
-> `controller/device.py`. If the constructor above does not match, read that
-> file and use the real fields — do not invent them.
+> **`ControlSnapshot` fields** (verified 2026-08-07 against
+> `test_rev4_acceptance.py:47-58`): `schedule_cool`, `cool_setpoint`,
+> `heat_setpoint`, `hold_active`, `hold_until_minutes`, `indoor_temp`,
+> `humidity`. There is no `hold_until`.
 
 - [ ] **Step 3: Run them, watch them fail**
 
@@ -571,9 +586,10 @@ def test_write_failure_records_write_row_and_still_writes_action(tmp_path):
 
     class PushFails:
         async def snapshot(self):
-            return ControlSnapshot(cool_setpoint=24.0, heat_setpoint=18.5,
-                                   indoor_temp=23.0, humidity=50.0,
-                                   schedule_cool=24.0, hold_until=None)
+            return ControlSnapshot(schedule_cool=24.0, cool_setpoint=24.0,
+                                   heat_setpoint=18.5, hold_active=False,
+                                   hold_until_minutes=None, indoor_temp=23.0,
+                                   humidity=50.0)
         async def push(self, *a): raise TimeoutError()
         async def release(self): return None
 
@@ -869,29 +885,21 @@ In `loop.py`, immediately after the `self.telemetry.trace(...)` block (~line 76)
 
 Then DELETE the existing `self._maybe_write_arm_mode(now_utc)` at the end of `tick`.
 
-- [ ] **Step 4: Strengthen the acceptance test to its final form**
+- [ ] **Step 4: Take the marker off the north star — feature-complete**
 
-Replace the Task 1 acceptance test body with one that drives the real loop end to end:
+The acceptance test written in Task 1 has been `xfail(strict=True)` since Phase
+1. Its liveness assertion (`assert tel.arm_rows`) is exactly the piece Step 3
+just satisfied. Delete only the decorator:
 
 ```python
-def test_sustained_read_outage_is_alertable_intermittent_is_not(tmp_path):
-    """North star: the controller emits attempt rows that let a reader tell a
-    sustained outage from self-healing blips, and liveness survives both."""
-    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
-    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
-
-    class BoomClimate:
-        async def snapshot(self): raise TimeoutError()
-
-    loop = _wired(tmp_path, feed, BoomClimate())
-    for i in range(3):
-        asyncio.run(loop.tick(now + timedelta(minutes=i)))
-
-    reads = [r for r in loop.telemetry.device_rows if r["op"] == "read"]
-    assert len(reads) == 3
-    assert all(r["success"] is False for r in reads)
-    assert loop.telemetry.arm_rows, "liveness must survive a device outage"
+@pytest.mark.xfail(strict=True,
+                   reason="feature-complete only at Task 7 (liveness decouple)")
 ```
+
+Run: `cd deploy/energy-stack/hvac_scheduler && python -m pytest test_rev4_acceptance.py -q`
+Expected: PASS, against the real implementation with zero scaffolding. **That
+is the only definition of feature-complete** — if it needs any test-only
+accommodation to pass, the feature is not done.
 
 - [ ] **Step 5: Run everything, typecheck, commit, open the Phase 3 PR**
 
@@ -933,7 +941,8 @@ Phase 3 removes live coverage. Do not begin it until all of the following hold o
 ## Self-Review
 
 - **Spec coverage:** `hvac.device_status` own measurement ← Task 1; three classes ← Tasks 2/4/5; infra not a class ← Task 5; attempt rows ← Tasks 2/4; separate `error_type`/`error_msg` ← Task 1; thresholds 3/3/1 ← Task 3; `hvac.actions.error` deleted ← Task 6; `check_hvac_action_errors` retired ← Task 6; `arm_mode` before device I/O ← Task 7; alerting as a separate reader ← Task 3. The off-box dead-man is explicitly out of scope and carried to Post-merge.
-- **Placeholder scan:** none — every code step shows the exact block. The one deliberate exception is flagged inline: `ControlSnapshot`'s constructor args in Tasks 2/4 must be read from `controller/device.py` rather than trusted from this plan.
+- **Placeholder scan:** none — every code step shows the exact block. `ControlSnapshot`'s constructor args were verified against `test_rev4_acceptance.py:47-58` rather than guessed.
+- **Outside-in discipline:** one feature-level acceptance test, written first in Task 1, `xfail(strict=True)` across every PR boundary, marker removed only in Task 7. Never `skip` — a skip is silent across PRs and trains everyone to ignore the north star.
 - **Type consistency:** `write_device_status(*, op, success, tier, dry_run, error_type, error_msg)` is used identically in Tasks 1, 2, 4, and 5; the `Tel` fake gains the same method name; `DEVICE_FAILURE_THRESHOLDS` keys (`read`/`write`/`crash`) match the `op` values written by the loop.
 - **Known behavior change:** a device-read failure no longer produces `rev4_tick_failed`; it produces `device_read_failed` at `warn` plus an Influx row. Anything watching the old string in Loki must be updated — a repo grep found no such consumer.
 - **Ordering:** additive phases (1, 2) precede the subtractive one (3), and the `arm_mode` decouple lands after its replacement alert is verified in production.
