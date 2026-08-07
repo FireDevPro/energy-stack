@@ -441,3 +441,57 @@ def test_normal_tier_records_no_read_row(tmp_path):
     loop = _loop(tmp_path, Feed(out=(4.2, now - timedelta(seconds=400), 400.0)))
     asyncio.run(loop.tick(now))
     assert loop.telemetry.device_rows == []
+
+
+# ---- write-attempt recording ------------------------------------------------
+
+
+def test_write_failure_records_write_row_and_still_writes_action(tmp_path):
+    """A failed push records op=write,success=false AND still writes the
+    hvac.actions row with applied=false -- the action record stays complete."""
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class PushFails:
+        async def snapshot(self): return _ok_snapshot()
+        async def push(self, *a): raise TimeoutError()
+        async def release(self): return None
+
+    loop = _wired(tmp_path, feed, PushFails())
+    asyncio.run(loop.tick(now))
+    writes = [r for r in loop.telemetry.device_rows if r["op"] == "write"]
+    assert len(writes) == 1
+    assert writes[0]["success"] is False
+    assert writes[0]["error_type"] == "TimeoutError"
+    assert loop.telemetry.actions and loop.telemetry.actions[-1]["applied"] is False
+
+
+def test_successful_push_records_a_write_success_row(tmp_path):
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class PushOk:
+        async def snapshot(self): return _ok_snapshot()
+        async def push(self, *a): return None
+        async def release(self): return None
+
+    loop = _wired(tmp_path, feed, PushOk())
+    asyncio.run(loop.tick(now))
+    writes = [r for r in loop.telemetry.device_rows if r["op"] == "write"]
+    assert len(writes) == 1 and writes[0]["success"] is True
+    assert loop.telemetry.actions[-1]["applied"] is True
+
+
+def test_shadow_mode_records_no_write_attempt(tmp_path):
+    """Shadow returns before touching the device -- there was no attempt."""
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class PushOk:
+        async def snapshot(self): return _ok_snapshot()
+        async def push(self, *a): raise AssertionError("shadow must not push")
+        async def release(self): raise AssertionError("shadow must not release")
+
+    loop = _wired(tmp_path, feed, PushOk(), mode="shadow")
+    asyncio.run(loop.tick(now))
+    assert [r for r in loop.telemetry.device_rows if r["op"] == "write"] == []

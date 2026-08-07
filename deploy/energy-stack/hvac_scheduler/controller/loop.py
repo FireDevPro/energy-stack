@@ -167,22 +167,34 @@ class ControllerLoop:
         self._maybe_write_arm_mode(now_utc)
 
     async def _apply_push(self, cool: float, until: int) -> tuple[bool, str]:
+        # Shadow returns before touching the device: there is no attempt to
+        # record. Every real attempt writes one op="write" row (spec §Telemetry).
         if self.mode == "shadow":
             return False, ""
         try:
             await self.climate.push(cool, self.cfg.heat_floor, until)
-            return True, ""
         except Exception as exc:  # transient TCC errors self-heal next tick
+            self._record_write(success=False, exc=exc)
             return False, f"{type(exc).__name__}: {exc}"
+        self._record_write(success=True)
+        return True, ""
 
     async def _apply_release(self) -> tuple[bool, str]:
         if self.mode == "shadow":
             return False, ""
         try:
             await self.climate.release()
-            return True, ""
         except Exception as exc:
+            self._record_write(success=False, exc=exc)
             return False, f"{type(exc).__name__}: {exc}"
+        self._record_write(success=True)
+        return True, ""
+
+    def _record_write(self, *, success: bool, exc: Exception | None = None) -> None:
+        self.telemetry.write_device_status(
+            op="write", success=success, tier=self.tier_state.tier, dry_run=False,
+            error_type=("" if exc is None else type(exc).__name__),
+            error_msg=("" if exc is None else str(exc)))
 
     def _update_humidity_gate(self, snap: Any) -> None:
         rh = snap.humidity
