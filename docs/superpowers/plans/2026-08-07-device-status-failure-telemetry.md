@@ -923,8 +923,24 @@ Surface the PR URL. **Do not merge.**
 
 ## Verification gate (between Phase 1 merge and Phase 3 start)
 
-Phase 3 removes live coverage. Do not begin it until all of the following hold on Pi-lab:
+Phase 3 removes live coverage. Do not begin it until all of the following hold on Pi-lab.
 
+> **Silence is not evidence.** Device reads happen only on needs-device ticks —
+> spike tier or an active hold — so a quiet stretch produces **zero** rows and
+> **zero** alerts, which would pass a naive "no alerts fired" gate while proving
+> nothing. Measured 2026-08-07: 31 spike-tier entries in 7 days (~4.4/day), so
+> a 48h window should contain ~9 spike episodes. The minimum-evidence floor
+> below is what makes the rest of the gate meaningful.
+
+- [ ] **Minimum evidence: ≥100 `op=read` attempts spanning ≥3 distinct spike
+      episodes.** If the window was too quiet, the gate has NOT passed —
+      extend it until the floor is met. Do not substitute "nothing broke."
+  ```
+  from(bucket:"energy") |> range(start:-48h)
+    |> filter(fn:(r)=>r._measurement=="hvac.device_status"
+                   and r._field=="error_type" and r.op=="read")
+    |> group() |> count()
+  ```
 - [ ] `hvac.device_status` rows exist with `op=read` and both `success=true` and `success=false` values:
   ```
   from(bucket:"energy") |> range(start:-24h)
@@ -934,7 +950,7 @@ Phase 3 removes live coverage. Do not begin it until all of the following hold o
 - [ ] Success rows vastly outnumber failure rows (expected ≈ 26 failures/day against far more attempts). If failures dominate, the seam is misinstrumented — stop.
 - [ ] No `device_status_write_failed` warn lines in the scheduler logs:
   `docker compose logs --since 24h hvac-scheduler | grep device_status_write_failed`
-- [ ] No new `hvac_device:*` Telegram alerts fired for intermittent blips over at least 48h. Given the measured pattern (109 failures in 12.3 days, none reaching 3 consecutive) the expected count is **zero**. Any alert in this window means the threshold logic is wrong.
+- [ ] No new `hvac_device:*` Telegram alerts fired for intermittent blips over at least 48h **in which the minimum-evidence floor above was met**. Given the measured pattern (109 failures in 12.3 days, none reaching 3 consecutive) the expected count is **zero**. Any alert in this window means the threshold logic is wrong. Zero alerts across zero attempts means nothing at all.
 - [ ] The pre-existing alert `check_hvac_action_errors` has not fired either — confirming the two agree.
 
 ## Post-merge
