@@ -495,3 +495,61 @@ def test_shadow_mode_records_no_write_attempt(tmp_path):
     loop = _wired(tmp_path, feed, PushOk(), mode="shadow")
     asyncio.run(loop.tick(now))
     assert [r for r in loop.telemetry.device_rows if r["op"] == "write"] == []
+
+
+# ---- crash class, with infrastructure excluded ------------------------------
+#
+# Spec §Telemetry: infrastructure is NOT a domain error class. An Influx outage
+# gaps every measurement at once, so the record already shows it; recording it
+# as `crash` would mislabel a substrate blip as a controller fault.
+
+
+def test_price_query_failure_raises_infrastructure_not_crash(tmp_path):
+    import pytest
+    from .controller.errors import InfrastructureError
+
+    class BoomFeed:
+        def latest(self, now_utc): raise ConnectionError("influx unreachable")
+
+    loop = _wired(tmp_path, BoomFeed(), NeverClimate())
+    with pytest.raises(InfrastructureError):
+        asyncio.run(loop.tick(datetime(2026, 7, 10, 12, 0, tzinfo=UTC)))
+    assert [r for r in loop.telemetry.device_rows if r["op"] == "crash"] == []
+
+
+def test_hold_record_disk_failure_is_infrastructure(tmp_path, monkeypatch):
+    import pytest
+    from .controller import ownhold
+    from .controller.errors import InfrastructureError
+
+    def boom(*a, **kw): raise OSError("disk full")
+    monkeypatch.setattr(ownhold, "save_record", boom)
+
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class PushOk:
+        async def snapshot(self): return _ok_snapshot()
+        async def push(self, *a): return None
+        async def release(self): return None
+
+    loop = _wired(tmp_path, feed, PushOk())
+    with pytest.raises(InfrastructureError):
+        asyncio.run(loop.tick(now))
+
+
+def test_handler_records_crash_for_logic_faults(tmp_path):
+    loop = _wired(tmp_path, Feed(out=None), NeverClimate())
+    loop._handle_tick_exception(ValueError("bad state"))
+    crashes = [r for r in loop.telemetry.device_rows if r["op"] == "crash"]
+    assert len(crashes) == 1
+    assert crashes[0]["success"] is False
+    assert crashes[0]["error_type"] == "ValueError"
+    assert crashes[0]["error_msg"] == "bad state"
+
+
+def test_handler_does_not_record_crash_for_infrastructure(tmp_path):
+    from .controller.errors import InfrastructureError
+    loop = _wired(tmp_path, Feed(out=None), NeverClimate())
+    loop._handle_tick_exception(InfrastructureError("price query: ConnectionError"))
+    assert [r for r in loop.telemetry.device_rows if r["op"] == "crash"] == []
