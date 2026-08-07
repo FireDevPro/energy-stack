@@ -538,9 +538,7 @@ says nothing about the stack. A **second** check on the same account, pinged
 only when Influx has fresh data, closes the "host up, stack down" gap: both
 checks silent means the box is gone; the stack check alone silent means the
 box is up and the stack is not. Silence-based by construction, so it cannot
-fail quietly — unlike the pi-lab Wazuh agent, which sat disconnected from
-2026-06-09 through the 2026-06-10 power blip and reported nothing. Separate
-work item; no new service.
+fail quietly. Separate work item; no new service.
 
 ## Runtime
 

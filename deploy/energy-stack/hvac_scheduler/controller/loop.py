@@ -14,6 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import ControllerConfig
+from .errors import InfrastructureError
 from .pricing import PriceSample
 from . import tiers
 
@@ -34,6 +35,20 @@ def _tick_failure_log(exc: Exception, now_utc: datetime) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "error": str(exc),
     }
+
+
+def _infra(op: str, fn: Any, *args: Any) -> Any:
+    """Run a substrate operation, tagging any failure as infrastructure.
+
+    Local-disk hold-record I/O is the machine, not the controller's job. Spec
+    §Telemetry: infrastructure is not a domain error class, so these must not
+    reach the top-level handler as an unclassified exception and be recorded
+    as `crash`.
+    """
+    try:
+        return fn(*args)
+    except OSError as exc:
+        raise InfrastructureError(f"{op}: {exc}") from exc
 
 
 def _tick_warn(msg: str, exc: Exception) -> None:
@@ -66,7 +81,13 @@ class ControllerLoop:
 
     async def tick(self, now_utc: datetime) -> None:
         tick_id = uuid.uuid4().hex
-        raw = self.price_source.latest(now_utc)
+        try:
+            raw = self.price_source.latest(now_utc)
+        except Exception as exc:
+            # The price query runs against Influx — substrate, not a domain
+            # error (spec §Telemetry).
+            raise InfrastructureError(
+                f"price query: {type(exc).__name__}: {exc}") from exc
         sample = None
         if raw is not None:
             cents, bucket_time, age_sec = raw
@@ -126,7 +147,7 @@ class ControllerLoop:
                 applied, err = await self._apply_push(cool, until)
                 overlay_commanded = cool
                 if applied:
-                    save_record(self.data_dir, OwnHoldRecord(
+                    _infra("save_record", save_record, self.data_dir, OwnHoldRecord(
                         value=cool, until_minutes=until,
                         expiry_utc=self._slot_to_utc(until, now_local).isoformat()))
                 self.telemetry.write_action(
@@ -140,7 +161,7 @@ class ControllerLoop:
             elif kind == "release":
                 applied, err = await self._apply_release()
                 if applied:
-                    clear_record(self.data_dir)
+                    _infra("clear_record", clear_record, self.data_dir)
                 self.telemetry.write_action(
                     tier=self.tier_state.tier, action_label="RELEASE",
                     dry_run=(self.mode == "shadow"),
@@ -152,7 +173,7 @@ class ControllerLoop:
             else:
                 # record hygiene: normally-lapsed or foreign hold -> drop stale record
                 if own is not None and not holds._matches_own(own, snap):
-                    clear_record(self.data_dir)
+                    _infra("clear_record", clear_record, self.data_dir)
 
         # AFTER decide/act so commanded reflects the NEW target, not the old
         # setpoint (rev 3 contract: prev/new tier tags + triggered_at_utc).
@@ -167,22 +188,34 @@ class ControllerLoop:
         self._maybe_write_arm_mode(now_utc)
 
     async def _apply_push(self, cool: float, until: int) -> tuple[bool, str]:
+        # Shadow returns before touching the device: there is no attempt to
+        # record. Every real attempt writes one op="write" row (spec §Telemetry).
         if self.mode == "shadow":
             return False, ""
         try:
             await self.climate.push(cool, self.cfg.heat_floor, until)
-            return True, ""
         except Exception as exc:  # transient TCC errors self-heal next tick
+            self._record_write(success=False, exc=exc)
             return False, f"{type(exc).__name__}: {exc}"
+        self._record_write(success=True)
+        return True, ""
 
     async def _apply_release(self) -> tuple[bool, str]:
         if self.mode == "shadow":
             return False, ""
         try:
             await self.climate.release()
-            return True, ""
         except Exception as exc:
+            self._record_write(success=False, exc=exc)
             return False, f"{type(exc).__name__}: {exc}"
+        self._record_write(success=True)
+        return True, ""
+
+    def _record_write(self, *, success: bool, exc: Exception | None = None) -> None:
+        self.telemetry.write_device_status(
+            op="write", success=success, tier=self.tier_state.tier, dry_run=False,
+            error_type=("" if exc is None else type(exc).__name__),
+            error_msg=("" if exc is None else str(exc)))
 
     def _update_humidity_gate(self, snap: Any) -> None:
         rh = snap.humidity
@@ -199,6 +232,28 @@ class ControllerLoop:
             base += timedelta(days=1)
         return base.astimezone(timezone.utc)
 
+    def _handle_tick_exception(self, exc: Exception) -> None:
+        """Top-level per-tick error contract (spec §Telemetry).
+
+        `InfrastructureError` is the substrate failing, NOT a domain error: an
+        Influx outage gaps every measurement at once, so the record already
+        shows it, and total loss is the off-box dead-man's job. Anything else
+        reaching here is the controller's own decision/act logic raising —
+        class `crash`, which is why crash alerts on the first occurrence.
+
+        Device read and write failures never reach here: they are recorded and
+        handled at their own seams, so nothing is counted twice.
+        """
+        import json as _json
+        from datetime import timezone as _tz
+        if not isinstance(exc, InfrastructureError):
+            self.telemetry.write_device_status(
+                op="crash", success=False, tier=self.tier_state.tier,
+                dry_run=(self.mode == "shadow"),
+                error_type=type(exc).__name__, error_msg=str(exc))
+        print(_json.dumps(_tick_failure_log(
+            exc, datetime.now(_tz.utc))), flush=True)
+
     def _maybe_write_arm_mode(self, now_utc: datetime) -> None:
         if self._last_arm_write is not None and \
                 (now_utc - self._last_arm_write).total_seconds() < 300:
@@ -212,7 +267,6 @@ class ControllerLoop:
         (async-seam global constraint). Per-tick error contract: a transient
         failure logs one line and the loop continues."""
         import asyncio
-        import json as _json
         import pathlib
         import signal
         from datetime import timedelta, timezone
@@ -231,8 +285,7 @@ class ControllerLoop:
                     await self.tick(now)
                     pathlib.Path("/tmp/last_tick_ok").touch()  # Dockerfile healthcheck
                 except Exception as exc:
-                    print(_json.dumps(_tick_failure_log(
-                        exc, datetime.now(timezone.utc))), flush=True)
+                    self._handle_tick_exception(exc)
                 nxt = now.replace(second=10, microsecond=0) + timedelta(minutes=1)
                 delay = max(1.0, (nxt - datetime.now(timezone.utc)).total_seconds())
                 try:
