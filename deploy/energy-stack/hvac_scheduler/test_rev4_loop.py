@@ -38,10 +38,12 @@ class Tel:
     actions: list = field(default_factory=list)
     arm_rows: list = field(default_factory=list)
     overlay_rows: list = field(default_factory=list)
+    device_rows: list = field(default_factory=list)
     def trace(self, **kw): self.traces.append(kw)
     def write_action(self, **kw): self.actions.append(kw)
     def write_arm_mode(self, **kw): self.arm_rows.append(kw)
     def write_price_overlay(self, **kw): self.overlay_rows.append(kw)
+    def write_device_status(self, **kw): self.device_rows.append(kw)
 
 
 def _loop(tmp_path, feed):
@@ -388,3 +390,54 @@ def test_device_status_write_failure_is_swallowed():
     tel = InfluxTelemetry(write_api=Boom(), bucket="energy", unit="C",
                           config_id="abc", tz_name="America/Chicago")
     tel.write_device_status(op="read", success=True, tier="normal", dry_run=False)
+
+
+# ---- read-attempt recording -------------------------------------------------
+
+
+def _ok_snapshot():
+    from .controller.device import ControlSnapshot
+    return ControlSnapshot(schedule_cool=24.0, cool_setpoint=24.0,
+                           heat_setpoint=18.5, hold_active=False,
+                           hold_until_minutes=None, indoor_temp=23.0,
+                           humidity=50.0)
+
+
+def test_read_failure_records_row_and_ends_tick(tmp_path):
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))  # elevated
+
+    class BoomClimate:
+        async def snapshot(self): raise TimeoutError()
+
+    loop = _wired(tmp_path, feed, BoomClimate())
+    asyncio.run(loop.tick(now))          # does NOT raise
+    rows = [r for r in loop.telemetry.device_rows if r["op"] == "read"]
+    assert len(rows) == 1
+    assert rows[0]["success"] is False
+    assert rows[0]["error_type"] == "TimeoutError"
+    assert rows[0]["tier"] == "elevated"
+    assert loop.telemetry.actions == []   # tick ended before deciding
+
+
+def test_successful_read_records_a_success_row(tmp_path):
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class OkClimate:
+        async def snapshot(self): return _ok_snapshot()
+        async def push(self, *a): return None
+        async def release(self): return None
+
+    loop = _wired(tmp_path, feed, OkClimate())
+    asyncio.run(loop.tick(now))
+    reads = [r for r in loop.telemetry.device_rows if r["op"] == "read"]
+    assert len(reads) == 1 and reads[0]["success"] is True
+
+
+def test_normal_tier_records_no_read_row(tmp_path):
+    """Pure normal ticks read nothing, so there is no attempt to record."""
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    loop = _loop(tmp_path, Feed(out=(4.2, now - timedelta(seconds=400), 400.0)))
+    asyncio.run(loop.tick(now))
+    assert loop.telemetry.device_rows == []

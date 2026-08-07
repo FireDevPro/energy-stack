@@ -265,13 +265,19 @@ In `test_rev4_loop.py`, add to the `Tel` dataclass (after `overlay_rows`, ~line 
 
 Append to `test_rev4_loop.py`:
 
+> **Do NOT define a `_wired` helper** — one already exists at
+> `test_rev4_loop.py:213` with signature `_wired(tmp_path, feed, dev, mode="production")`.
+> Defining a second one shadows it and breaks
+> `test_humidity_release_shadow_gate_dry_run` and
+> `test_shadow_gate_never_writes_device`, which pass `mode=`. Use the existing one.
+
 ```python
-def _wired(tmp_path, feed, climate):
-    p = tmp_path / "c.yaml"; p.write_text(CFG_YAML, encoding="utf-8")
-    cfg = load_config(str(p), temp_scale_env="C")
-    return ControllerLoop(cfg=cfg, price_source=feed, climate=climate,
-                          telemetry=Tel(), mode="production",
-                          tz_name="America/Chicago", data_dir=str(tmp_path))
+def _ok_snapshot():
+    from .controller.device import ControlSnapshot
+    return ControlSnapshot(schedule_cool=24.0, cool_setpoint=24.0,
+                           heat_setpoint=18.5, hold_active=False,
+                           hold_until_minutes=None, indoor_temp=23.0,
+                           humidity=50.0)
 
 
 def test_read_failure_records_row_and_ends_tick(tmp_path):

@@ -36,6 +36,18 @@ def _tick_failure_log(exc: Exception, now_utc: datetime) -> dict[str, Any]:
     }
 
 
+def _tick_warn(msg: str, exc: Exception) -> None:
+    """Loki line for a RECORDED domain failure. The Influx row is the alerting
+    signal; this is for human log-reading only."""
+    import json as _json
+    from datetime import timezone as _tz
+    print(_json.dumps({
+        "ts": datetime.now(_tz.utc).isoformat(),
+        "level": "warn", "msg": msg,
+        "error_type": type(exc).__name__, "error": str(exc),
+    }), flush=True)
+
+
 class ControllerLoop:
     def __init__(self, *, cfg: ControllerConfig, price_source: Any, climate: Any,
                  telemetry: Any, mode: str, tz_name: str, data_dir: str) -> None:
@@ -83,7 +95,23 @@ class ControllerLoop:
 
         needs_device = self.tier_state.tier != tiers.NORMAL or own is not None
         if needs_device:
-            snap = await self.climate.snapshot()
+            try:
+                snap = await self.climate.snapshot()
+            except Exception as exc:
+                # Domain error, class `read` (spec §Telemetry). Recorded as an
+                # attempt row, then the tick ends: with no snapshot there is
+                # nothing to decide and nothing to act on. Deliberately NOT
+                # re-raised — the top-level handler records `crash`, and a TCC
+                # timeout is not a crash.
+                self.telemetry.write_device_status(
+                    op="read", success=False, tier=self.tier_state.tier,
+                    dry_run=(self.mode == "shadow"),
+                    error_type=type(exc).__name__, error_msg=str(exc))
+                _tick_warn("device_read_failed", exc)
+                return
+            self.telemetry.write_device_status(
+                op="read", success=True, tier=self.tier_state.tier,
+                dry_run=(self.mode == "shadow"))
             self._update_humidity_gate(snap)
 
         overlay_commanded = snap.cool_setpoint if snap else 0.0
