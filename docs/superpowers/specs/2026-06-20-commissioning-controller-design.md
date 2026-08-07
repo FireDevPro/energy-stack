@@ -1,6 +1,6 @@
 ---
 date: 2026-06-20
-revised: 2026-07-07
+revised: 2026-08-07
 owner: chris
 status: active (revision 4.1 — live in production since 2026-07-06; go-active validation record below)
 role-label: code-team
@@ -447,10 +447,14 @@ hold.
   - normal tier emits **traces, not writes** — the per-tick decision trace
     continues 24/7 so "controller alive and deciding" stays observable even
     when it never touches the device;
-  - **the `applied` / `error` / `dry_run` fields survive the reshape** —
-    telegram-notifier's existing action-error alert filters on `error` and
-    thermostat-poller's `fetch_last_action` filters on `dry_run`; dropping them
-    silently kills a live alert.
+  - **the `applied` / `dry_run` fields survive the reshape** —
+    thermostat-poller's `fetch_last_action` filters on `dry_run`; dropping it
+    silently kills a live consumer. **`error` does not survive** — failure
+    reporting moves wholesale to `hvac.device_status` (below), so an
+    `hvac.actions` row is purely the decision/action record. Why an action
+    didn't apply is recovered by joining `hvac.device_status` on timestamp;
+    `applied=false` with `dry_run=true` is shadow mode, with `dry_run=false`
+    is a real failure.
 - **thermostat-poller's override detection is retired.** It compares device
   setpoints to the most recent `hvac.actions` row; under spike-only that row
   is days old or absent, and manual holds are now first-class operator action,
@@ -461,21 +465,82 @@ hold.
   snapshots with effective dates.
 - **`hvac.price_overlay` carries three tiers** (extreme retired — observers
   note the enum change).
-- **`hvac.arm_mode` keeps emitting** (watchdog liveness — unchanged; liveness
-  never depended on holds). `required_feeds_for_arm_mode` derived from the
-  enabled-mode set, unchanged.
+- **`hvac.arm_mode` keeps emitting** (watchdog liveness — liveness never
+  depended on holds). It is written **before any device I/O in the tick**
+  (immediately after the decision trace), so a device-read failure cannot
+  suppress the beacon and false-trip a "controller DOWN": the beacon means
+  "control loop alive," decoupled from TCC reachability. Liveness is a
+  separate subsystem from error reporting and the two do not share a signal.
+  `required_feeds_for_arm_mode` derived from the enabled-mode set, unchanged.
 - **Alerting (new, closes 2026-07-03 gaps):**
   - **Down-beacon alert:** telegram-notifier alerts when the watchdog's
     `hvac.heartbeat controller_alive=false` beacon appears (controller dead >
     threshold). On 2026-07-03 the controller was down 2 h with zero
     notification while the beacon wrote faithfully — detection existed,
     consumption didn't.
-  - **Push-failure alert:** a failed hold push/extension (spike engage
-    included) alerts after `PUSH_FAILURE_ALERT_N` consecutive failures
-    (constant, seed 3) — a missed engage is a silently missed spike, the
-    system's one job. This **extends** telegram-notifier's existing
-    `check_hvac_action_errors` (which already watches `hvac.actions.error`);
-    it is not a new alert built from scratch.
+  - **Failure alerting reads `hvac.device_status`, per class** (below).
+    `check_hvac_action_errors` and its `_BENIGN_HVAC_ERRORS` list are
+    **retired**: the list guarded `hvac_mode_not_cooling`, a string the
+    controller stopped producing at the rev-4 cutover (PR #120), and the
+    check's "newest 3 error rows in an hour, any class" rule fires on
+    unrelated self-healed blips — measured, 13 such episodes in 12.3 days
+    (~1/day), none of them a real outage.
+
+### Failure telemetry — `hvac.device_status`
+
+> **Status: designed 2026-08-07, not yet implemented.** Everything else in
+> this spec describes live production; this subsection describes intent. Until
+> it lands, device *read* failures remain uncovered by any alert — they emit
+> only a `rev4_tick_failed` Loki line that nothing consumes.
+
+Modeled on `pjm.feed_status` (build discipline: reuse, don't reinvent). One
+measurement, one writer, one reader — not error fields scattered across the
+measurements they interrupt.
+
+- **Three domain classes: `read` / `write` / `crash`.** Read = couldn't read
+  the thermostat; write = couldn't command it; crash = the controller's own
+  decision/act logic raised. Crash is scoped **narrowly** to controller logic:
+  infrastructure failures (Influx unreachable, local disk) must not land in
+  it, or a substrate blip gets recorded as a controller fault.
+- **Infrastructure is not a class.** When Influx is down every measurement
+  gaps simultaneously; a thermostat read failure gaps only `hvac.*` while
+  every other feed keeps flowing. The record already disambiguates the two, so
+  a self-reported infra class would encode what the data already shows. Total
+  loss is the off-box dead-man's job, not the controller's.
+- **A row per attempt, success and failure** (read and write). This makes
+  "consecutive failures" mean *unbroken attempts* rather than consecutive
+  error rows — without it, three isolated failures spread across a day look
+  consecutive, because nothing sits between them. It also supplies the
+  denominator: how often the thermostat answered, not merely when it broke.
+  Crash has no meaningful success row (a completed tick is already
+  `arm_mode`), so crash is failure-only.
+- **Schema:** class and success as **tags**; `error_type` and `error_msg` as
+  **separate fields**, never concatenated. The one write failure recorded in
+  90 days reads `"TimeoutError: "` — message half empty — because the old path
+  formatted `f"{type(exc).__name__}: {exc}"`.
+- **In-stream reconciliation:** a failure row is timestamped in the slot the
+  normal measurement would have occupied, so at analysis a co-located failure
+  accounts for the missing measurement. Errors are experimental data.
+- **Per-class thresholds — read 3, write 3, crash 1.** Read and write are
+  network I/O against TCC: transient and self-healing, and
+  consecutive-of-a-kind separates blips from outages cleanly (measured: 109
+  failed ticks in 12.3 days, **none** reaching 3 consecutive, while a
+  sustained outage fails every tick and so trips in ~3 min). A crash is a code
+  fault and does not self-heal, so one is enough; the notifier's existing
+  dedupe window keeps a persistent fault from spamming.
+- **Alerting is a separate reader** over `hvac.device_status`, never woven
+  into the controller.
+
+**Total-loss coverage is off-box and out of scope here.** healthchecks.io
+already carries a 5-minute unconditional host ping from pi-lab
+(`healthcheck-ping.timer`), which proves the Pi is powered and networked but
+says nothing about the stack. A **second** check on the same account, pinged
+only when Influx has fresh data, closes the "host up, stack down" gap: both
+checks silent means the box is gone; the stack check alone silent means the
+box is up and the stack is not. Silence-based by construction, so it cannot
+fail quietly — unlike the pi-lab Wazuh agent, which sat disconnected from
+2026-06-09 through the 2026-06-10 power blip and reported nothing. Separate
+work item; no new service.
 
 ## Runtime
 
