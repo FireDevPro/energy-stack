@@ -9,6 +9,8 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 UTC = timezone.utc
 CT = "America/Chicago"
 
@@ -85,11 +87,13 @@ class TelemetryRecorder:
     arm_rows: list[dict] = field(default_factory=list)
     overlay_rows: list[dict] = field(default_factory=list)
     traces: list[dict] = field(default_factory=list)
+    device_rows: list[dict] = field(default_factory=list)
 
     def write_action(self, **kw): self.actions.append(kw)
     def write_arm_mode(self, **kw): self.arm_rows.append(kw)
     def write_price_overlay(self, **kw): self.overlay_rows.append(kw)
     def trace(self, **kw): self.traces.append(kw)
+    def write_device_status(self, **kw): self.device_rows.append(kw)
 
 
 def make_cfg(tmp_path):
@@ -232,3 +236,45 @@ def test_full_spike_story(tmp_path):
     # precise assertion: no push occurred (target 29.5 is NOT warmer than held 30.0)
     assert len(dev.pushes) == pushes_at_release
     assert dev.releases == 2               # and no release either: manual holds never touched
+
+
+# ---- Feature-level north star: failure telemetry + liveness ----------------
+#
+# Spec §Telemetry -> Failure telemetry. Stays xfail(strict=True) across every
+# PR boundary of the device_status feature; the marker comes off only when the
+# liveness decouple lands (plan 2026-08-07, Task 7). Never `skip` -- a skip is
+# silent across PRs and trains everyone to ignore the north star.
+
+
+@pytest.mark.xfail(strict=True,
+                   reason="feature-complete only at Task 7 (liveness decouple)")
+def test_read_outage_records_attempts_and_preserves_liveness(tmp_path):
+    """A sustained device-read outage must (a) record one read attempt row per
+    tick, all failures, so a reader can count consecutive failures of a kind,
+    and (b) leave the liveness beacon intact, so the watchdog never
+    false-trips a live controller."""
+    from hvac_scheduler.controller.loop import ControllerLoop
+
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+
+    class BoomClimate:
+        async def snapshot(self):
+            raise TimeoutError()
+
+    # A fresh 12.8c bucket 60s before each tick -> elevated tier every tick, so
+    # every tick genuinely attempts a device read.
+    feed = FakePriceFeed(buckets=[
+        (now + timedelta(minutes=i) - timedelta(seconds=60), 12.8) for i in range(3)
+    ])
+    tel = TelemetryRecorder()
+    loop = ControllerLoop(cfg=make_cfg(tmp_path), price_source=feed,
+                          climate=BoomClimate(), telemetry=tel,
+                          mode="production", tz_name=CT, data_dir=str(tmp_path))
+
+    for i in range(3):
+        asyncio.run(loop.tick(now + timedelta(minutes=i)))
+
+    reads = [r for r in tel.device_rows if r["op"] == "read"]
+    assert len(reads) == 3, "one read attempt recorded per tick"
+    assert all(r["success"] is False for r in reads)
+    assert tel.arm_rows, "liveness must survive a device outage"

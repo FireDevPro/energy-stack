@@ -348,3 +348,43 @@ def test_tick_failure_log_downgrades_timeout():
     assert _tick_failure_log(ValueError("boom"), t)["level"] == "error"
     rec = _tick_failure_log(TimeoutError(), t)
     assert rec["msg"] == "rev4_tick_failed" and rec["error_type"] == "TimeoutError"
+
+
+# ---- hvac.device_status writer ---------------------------------------------
+#
+# Spec §Telemetry -> Failure telemetry. Mirrors pjm.feed_status: one row per
+# attempt, tagged by class, with error_type/error_msg as SEPARATE fields.
+
+
+def test_device_status_line_contract():
+    from .controller.telemetry import InfluxTelemetry
+
+    class Cap:
+        lines: list = []
+        def write(self, bucket, record): Cap.lines.append(record.to_line_protocol())
+
+    tel = InfluxTelemetry(write_api=Cap(), bucket="energy", unit="C",
+                          config_id="abc", tz_name="America/Chicago")
+    tel.write_device_status(op="read", success=False, tier="elevated",
+                            dry_run=False, error_type="TimeoutError", error_msg="")
+    lp = Cap.lines[-1]
+    assert lp.startswith("hvac.device_status,")
+    assert "op=read" in lp
+    assert "success=false" in lp
+    assert "tier=elevated" in lp
+    assert 'error_type="TimeoutError"' in lp
+    assert 'error_msg=""' in lp
+
+
+def test_device_status_write_failure_is_swallowed():
+    """Monitoring must never fail the control cycle (pjm.feed_status precedent).
+    This is also what stops a failing Influx write from masking the device
+    error it was trying to report."""
+    from .controller.telemetry import InfluxTelemetry
+
+    class Boom:
+        def write(self, bucket, record): raise ConnectionError("influx down")
+
+    tel = InfluxTelemetry(write_api=Boom(), bucket="energy", unit="C",
+                          config_id="abc", tz_name="America/Chicago")
+    tel.write_device_status(op="read", success=True, tier="normal", dry_run=False)
