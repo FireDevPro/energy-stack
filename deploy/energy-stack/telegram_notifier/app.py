@@ -845,6 +845,61 @@ from(bucket: "{bucket}")
     )]
 
 
+# Per-class consecutive-failure thresholds (spec §Telemetry). Constants, not
+# env vars. Read/write are TCC network I/O: transient and self-healing, and
+# consecutive-of-a-kind cleanly separates blips from outages — measured over
+# 12.3 days, 109 failed ticks, none reaching 3 consecutive, while a sustained
+# outage fails every tick and so trips in ~3 min. A crash is a code fault and
+# does not self-heal, so one is enough.
+DEVICE_FAILURE_THRESHOLDS = {"read": 3, "write": 3, "crash": 1}
+
+
+def check_device_status_failures(query_api: Any, bucket: str) -> list[Alert]:
+    """Alert when the newest N attempts of a class are ALL failures.
+
+    The controller writes a row per attempt (success AND failure), so a single
+    success between failures breaks the run — which is exactly what keeps
+    self-healing blips from alerting.
+
+    `_field` is pre-filtered to one key before `group()`; grouping mixed field
+    types is a Flux runtime error.
+    """
+    alerts: list[Alert] = []
+    for op, threshold in DEVICE_FAILURE_THRESHOLDS.items():
+        flux = f'''
+from(bucket: "{bucket}")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "hvac.device_status"
+                    and r.op == "{op}"
+                    and r._field == "error_type")
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: {threshold})
+'''
+        try:
+            rows = fetch_one(query_api, flux)
+        except Exception as exc:
+            log("warn", "device_status_check_skipped", op=op,
+                error=str(exc), error_type=type(exc).__name__)
+            continue
+        if len(rows) < threshold:
+            continue
+        if not all(r.get("success") == "false" for r in rows[:threshold]):
+            continue
+        newest = rows[0]
+        err_type = newest.get("error_type") or "Exception"
+        err_msg = (newest.get("error_msg") or "").strip()
+        detail = f"<code>{err_type}</code>"
+        if err_msg:
+            detail += f": {err_msg[:200]}"
+        alerts.append(Alert(
+            key=f"hvac_device:{op}",
+            text=(f"🌡️ <b>HVAC device {op} failing</b> — "
+                  f"{threshold} consecutive.\n  • {detail}"),
+        ))
+    return alerts
+
+
 def check_controller_down(query_api: Any, bucket: str) -> list[Alert]:
     flux = f'''
 from(bucket: "{bucket}")
@@ -901,6 +956,7 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
             alerts.extend(check_poller_silence(query_api, cfg.influx_bucket, cfg.poller_silent_min))
             alerts.extend(check_price_spike(query_api, cfg.influx_bucket, cfg.price_spike_threshold_c))
             alerts.extend(check_hvac_action_errors(query_api, cfg.influx_bucket))
+            alerts.extend(check_device_status_failures(query_api, cfg.influx_bucket))
             alerts.extend(check_controller_down(query_api, cfg.influx_bucket))
             alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
             alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))

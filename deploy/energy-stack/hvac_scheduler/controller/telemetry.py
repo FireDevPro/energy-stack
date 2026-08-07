@@ -74,6 +74,34 @@ class InfluxTelemetry:
         write_point(self.write_api, self.bucket, "hvac.actions",
                     tags=tags, fields=fields)
 
+    def write_device_status(self, *, op: str, success: bool, tier: str,
+                            dry_run: bool, error_type: str = "",
+                            error_msg: str = "") -> None:
+        """One row per device attempt, success or failure. Spec §Telemetry.
+
+        Mirrors `pjm.feed_status`: `op` and `success` are tags so the alert
+        reader can count consecutive failures OF A KIND; `error_type` and
+        `error_msg` stay separate fields (never concatenated — the old
+        `f"{type(exc).__name__}: {exc}"` path produced `"TimeoutError: "`
+        with the message half empty).
+
+        A failure writing this row is logged and swallowed: monitoring must
+        never fail the control cycle, and a failing Influx write must never
+        mask the device error it was trying to report.
+        """
+        try:
+            write_point(self.write_api, self.bucket, "hvac.device_status",
+                        tags={"unit": self.unit, "op": op,
+                              "success": "true" if success else "false",
+                              "tier": tier,
+                              "dry_run": "true" if dry_run else "false"},
+                        fields={"error_type": error_type,
+                                "error_msg": error_msg[:200],
+                                "config_id": self.config_id})
+        except Exception as exc:
+            _log("warn", "device_status_write_failed", op=op,
+                 error=str(exc), error_type=type(exc).__name__)
+
     def write_price_overlay(self, *, prev_tier: str, new_tier: str,
                             current_price_cents: float, baseline_cool: float,
                             commanded_cool: float, triggered_at_utc: str) -> None:
