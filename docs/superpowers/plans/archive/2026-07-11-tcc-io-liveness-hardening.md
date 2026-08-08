@@ -1,12 +1,29 @@
 ---
 date: 2026-07-11
-updated: 2026-07-18
+updated: 2026-08-08
 owner: chris
-status: in-progress
+status: archived (PR 1 shipped as #132, 2026-07-18; PR 2 superseded)
 role-label: code-team
 ---
 
 # TCC I/O + Liveness Hardening Implementation Plan
+
+> **Archived 2026-08-08. Historical record — the body below is left as written.**
+>
+> **PR 1 shipped** as [#132](https://github.com/FireDevPro/energy-stack/pull/132)
+> (TCC write hardening), merged 2026-07-18.
+>
+> **PR 2 was never merged and no longer exists.** Its branch
+> (`harden/liveness-device-stall`) was superseded the same morning it was written
+> and deleted 2026-08-07; it is archived at tag
+> `archive/liveness-device-stall-2026-07-18`. Its `device_unreachable` marker —
+> a fourth bespoke error path bolted onto `hvac.actions` — was replaced by the
+> unified `hvac.device_status` design in
+> [2026-08-07-device-status-failure-telemetry.md](../2026-08-07-device-status-failure-telemetry.md).
+>
+> So **references below to "PR 2" describe a plan that was abandoned**, not
+> pending work. The `arm_mode` liveness decouple they describe is real and still
+> intended — it lands as Task 7 of the device-status plan.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (inline) to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

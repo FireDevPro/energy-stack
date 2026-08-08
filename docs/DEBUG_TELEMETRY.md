@@ -81,7 +81,7 @@ Every measurement currently in the `energy` bucket, with consumption status. **F
 | `hvac.price_overlay` | **FULL** | Scheduler-emit telemetry → analysis (`queries/hvac.price_overlay.flux`) |
 | `hvac.5cp_state` | **FULL** | Scheduler-emit telemetry → analysis (`queries/hvac.5cp_state.flux`) |
 | `hvac.heartbeat` | **FULL** | hvac_scheduler liveness → cockpit |
-| `hvac.input_feed_health` | **NONE** | Emitted by scheduler, no active reader in production code path (visibility only) |
+| `hvac.input_feed_health` | **NONE** | dead since the rev-4 cutover (#120) — no writer in current code, historical rows only (last write 2026-07-06) |
 | `hvac.comfortnet` | **PARTIAL** | `cool_actual_pct`, `cool_demand_pct`, `heat_*`, `fan_*`, `blower_cfm`, `humidify_*`, `dehumidify_*` consumed by analysis + thermal_observer. **`outdoor_temp_f` NOT consumed — condenser-exhaust contaminated (+10°F when compressor running); use `ecowitt.weather.ch1_temp_f` instead** |
 | `haven.indoor` | **NONE** | HAVEN air-quality sensor indoor — stored for future thermal-model work |
 | `haven.outdoor` | **NONE** | HAVEN outdoor — stored, no current consumer |
