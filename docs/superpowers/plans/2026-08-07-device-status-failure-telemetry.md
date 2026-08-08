@@ -1,7 +1,8 @@
 ---
 date: 2026-08-07
+updated: 2026-08-08
 owner: chris
-status: draft
+status: in-progress (phases 1-2 merged as #138/#139; phase 3 blocked on the production gate)
 role-label: code-team
 ---
 
