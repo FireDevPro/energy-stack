@@ -315,15 +315,18 @@ def test_influx_telemetry_action_row_contract():
     snap = ControlSnapshot(25.5, 27.0, 18.5, True, 870, 25.0, 52.0)
     tel.write_action(tier="elevated", action_label="SPIKE", dry_run=False,
                      commanded_cool=27.0, commanded_heat=18.5, schedule_cool=25.5,
-                     applied=True, error="", hold_expires_at="2026-07-10T19:30:00+00:00",
+                     applied=True, hold_expires_at="2026-07-10T19:30:00+00:00",
                      snapshot_before=snap, setpoint_reason="REV4_ENGAGED",
                      humidity_gated=False)
     lp = Cap.lines[-1]
     assert lp.startswith("hvac.actions,")
     for token in ("commanded_cool=27", "baseline_cool=25.5", "schedule_cool=25.5",
-                  "drift=1.5", "applied=1i", 'error=""', "config_id="):
+                  "drift=1.5", "applied=1i", "config_id="):
         assert token in lp, token
     assert "dry_run=false" in lp  # tag
+    # `error` moved wholesale to hvac.device_status (spec §Telemetry): an
+    # hvac.actions row is purely the decision/action record now.
+    assert "error=" not in lp
 
 
 def test_arm_mode_row_production_branch():

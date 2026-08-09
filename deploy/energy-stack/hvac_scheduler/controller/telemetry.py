@@ -49,9 +49,14 @@ class InfluxTelemetry:
 
     def write_action(self, *, tier: str, action_label: str, dry_run: bool,
                      commanded_cool: float, commanded_heat: float,
-                     schedule_cool: float, applied: bool, error: str,
+                     schedule_cool: float, applied: bool,
                      hold_expires_at: str, snapshot_before: Any,
                      setpoint_reason: str, humidity_gated: bool) -> None:
+        # No `error` field: failure reporting lives in hvac.device_status
+        # (spec §Telemetry). An hvac.actions row is purely the decision/action
+        # record. Why an action didn't apply is recovered by joining
+        # hvac.device_status on timestamp; applied=false with dry_run=true is
+        # shadow mode, with dry_run=false is a real failure.
         tags = {"unit": self.unit, "tier": tier, "action_label": action_label,
                 "dry_run": "true" if dry_run else "false"}
         fields: dict[str, float | int | bool | str] = {
@@ -63,7 +68,6 @@ class InfluxTelemetry:
             "humidity_gated": int(humidity_gated),
             "setpoint_reason": setpoint_reason,
             "applied": int(applied),
-            "error": error or "",
             "config_id": self.config_id,
             "hold_expires_at": hold_expires_at or "",
             "actual_indoor_temp": float(snapshot_before.indoor_temp or 0),

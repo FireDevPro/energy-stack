@@ -144,7 +144,7 @@ class ControllerLoop:
                 now_utc, now_local, self.humidity_blocked)
             if kind == "push":
                 assert cool is not None and until is not None  # decide() contract; narrows for mypy
-                applied, err = await self._apply_push(cool, until)
+                applied, _err = await self._apply_push(cool, until)
                 overlay_commanded = cool
                 if applied:
                     _infra("save_record", save_record, self.data_dir, OwnHoldRecord(
@@ -155,11 +155,11 @@ class ControllerLoop:
                     dry_run=(self.mode == "shadow"), commanded_cool=cool,
                     commanded_heat=self.cfg.heat_floor,
                     schedule_cool=snap.schedule_cool or 0.0, applied=applied,
-                    error=err, hold_expires_at=self._slot_to_utc(until, now_local).isoformat(),
+                    hold_expires_at=self._slot_to_utc(until, now_local).isoformat(),
                     snapshot_before=snap, setpoint_reason=dreason,
                     humidity_gated=self.humidity_blocked)
             elif kind == "release":
-                applied, err = await self._apply_release()
+                applied, _err = await self._apply_release()
                 if applied:
                     _infra("clear_record", clear_record, self.data_dir)
                 self.telemetry.write_action(
@@ -168,7 +168,7 @@ class ControllerLoop:
                     commanded_cool=snap.schedule_cool or 0.0,
                     commanded_heat=self.cfg.heat_floor,
                     schedule_cool=snap.schedule_cool or 0.0, applied=applied,
-                    error=err, hold_expires_at="", snapshot_before=snap,
+                    hold_expires_at="", snapshot_before=snap,
                     setpoint_reason=dreason, humidity_gated=self.humidity_blocked)
             else:
                 # record hygiene: normally-lapsed or foreign hold -> drop stale record

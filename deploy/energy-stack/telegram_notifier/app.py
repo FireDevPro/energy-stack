@@ -8,8 +8,8 @@ Two background tasks:
      - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map)
      - ComEd 5-min price spike > PRICE_SPIKE_THRESHOLD_C cents
      - Fridge/freezer power anomaly vs 14-day baseline
-     - Last PUSH_FAILURE_ALERT_N (=3) hvac.actions rows ALL carry a
-       non-benign error (N-consecutive push failures)
+     - HVAC device failures per class from `hvac.device_status`: the newest
+       N attempts of a class ALL failures (read 3, write 3, crash 1)
      - HVAC controller down-beacon: `hvac.heartbeat` controller_alive=false
        in the last 10 min (watchdog beacon; absence = healthy)
      - PJM `pjm.feed_status` per-feed freshness against per-feed SLAs
@@ -805,46 +805,6 @@ def check_pjm_feed_failures(query_api: Any, bucket: str,
     return alerts
 
 
-# N consecutive hvac.actions errors required before the push-failure alert
-# fires (spec: constant, seed 3 — not an env var). A single transient error
-# followed by a success stays silent; N-in-a-row is the "this is actually
-# broken" signal (e.g. a missed spike engage).
-PUSH_FAILURE_ALERT_N = 3
-
-# Benign "device not in cooling mode" strings the controller writes as
-# errors; they never count toward the consecutive-failure window.
-_BENIGN_HVAC_ERRORS = (
-    "hvac_mode_not_cooling ('Heat')",
-    "hvac_mode_not_cooling ('Off')",
-)
-
-
-def check_hvac_action_errors(query_api: Any, bucket: str) -> list[Alert]:
-    # group() merges the per-series tables (hvac.actions is multi-tagged) so
-    # sort+limit yield the global newest N rows; safe here because _field is
-    # pre-filtered to "error" (single-field group, no schema collision).
-    flux = f'''
-from(bucket: "{bucket}")
-  |> range(start: -1h)
-  |> filter(fn: (r) => r._measurement == "hvac.actions" and r._field == "error")
-  |> group()
-  |> sort(columns: ["_time"], desc: true)
-  |> limit(n: {PUSH_FAILURE_ALERT_N})
-'''
-    rows = fetch_one(query_api, flux)
-    # newest first; a None _value normalizes to "" (counts as no-failure)
-    errors: list[str] = [r.get("_value") or "" for r in rows[:PUSH_FAILURE_ALERT_N]]
-    if len(errors) < PUSH_FAILURE_ALERT_N:
-        return []
-    if not all(e and e not in _BENIGN_HVAC_ERRORS for e in errors):
-        return []
-    err = errors[0]
-    return [Alert(
-        key=f"hvac_error:{err[:40]}",
-        text=f"🌡️ <b>HVAC scheduler error</b>\n<code>{err}</code>"
-    )]
-
-
 # Per-class consecutive-failure thresholds (spec §Telemetry). Constants, not
 # env vars. Read/write are TCC network I/O: transient and self-healing, and
 # consecutive-of-a-kind cleanly separates blips from outages — measured over
@@ -955,7 +915,6 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
             alerts: list[Alert] = []
             alerts.extend(check_poller_silence(query_api, cfg.influx_bucket, cfg.poller_silent_min))
             alerts.extend(check_price_spike(query_api, cfg.influx_bucket, cfg.price_spike_threshold_c))
-            alerts.extend(check_hvac_action_errors(query_api, cfg.influx_bucket))
             alerts.extend(check_device_status_failures(query_api, cfg.influx_bucket))
             alerts.extend(check_controller_down(query_api, cfg.influx_bucket))
             alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
