@@ -19,7 +19,7 @@ role-label: code-team
 > `archive/liveness-device-stall-2026-07-18`. Its `device_unreachable` marker —
 > a fourth bespoke error path bolted onto `hvac.actions` — was replaced by the
 > unified `hvac.device_status` design in
-> [2026-08-07-device-status-failure-telemetry.md](../2026-08-07-device-status-failure-telemetry.md).
+> [2026-08-07-device-status-failure-telemetry.md](2026-08-07-device-status-failure-telemetry.md).
 >
 > So **references below to "PR 2" describe a plan that was abandoned**, not
 > pending work. The `arm_mode` liveness decouple they describe is real and still

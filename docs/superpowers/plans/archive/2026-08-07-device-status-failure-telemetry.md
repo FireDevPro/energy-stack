@@ -1,12 +1,29 @@
 ---
 date: 2026-08-07
-updated: 2026-08-08
+updated: 2026-08-09
 owner: chris
-status: in-progress (phases 1-2 merged as #138/#139; phase 3 blocked on the production gate)
+status: complete (phases 1-3 shipped; gate met 2026-08-09)
 role-label: code-team
 ---
 
 # `hvac.device_status` Failure Telemetry Implementation Plan
+
+> **Complete and archived 2026-08-09.** Phase 1 → #138, Phase 2 → #139,
+> Phase 3 → the PR closing this feature.
+>
+> **The production gate was met, not waived** (measured 2026-08-09, ~50h after
+> the Phase 1 deploy): **129** device-read attempts across **3** distinct spike
+> episodes, **11 real read failures**, **zero** `hvac_device:*` alerts, zero
+> `device_status_write_failed`. The consecutive-of-a-kind rule held through
+> every one of those 11 failures.
+>
+> A note on the old alert also being silent in that window: that was **not**
+> agreement. `check_hvac_action_errors` read `hvac.actions.error`, where read
+> failures never wrote — it was blind to the class, not lenient about it. That
+> blindness is why this work existed.
+>
+> Unplanned confirmation: `rev4_tick_failed` went from ~26/day to **0**, because
+> read failures are now handled at their seam instead of propagating.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -16,7 +33,7 @@ role-label: code-team
 
 **Tech Stack:** Python 3.13, `influxdb_client` (via `influx_adapter.write_point` only), pytest (`asyncio_mode=auto`), Docker Compose on Pi-lab.
 
-**Spec:** [2026-06-20-commissioning-controller-design.md §Telemetry → Failure telemetry](../specs/2026-06-20-commissioning-controller-design.md) (PR #137).
+**Spec:** [2026-06-20-commissioning-controller-design.md §Telemetry → Failure telemetry](../../specs/2026-06-20-commissioning-controller-design.md) (PR #137).
 
 ## Global Constraints
 
