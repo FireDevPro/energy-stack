@@ -108,6 +108,13 @@ class ControllerLoop:
             config_id=self.cfg.config_id,
         )
 
+        # Liveness beacon BEFORE any device I/O (spec §Telemetry). A device-read
+        # failure must not suppress arm_mode, or the watchdog false-trips
+        # "controller DOWN" on a live controller: the beacon means "control loop
+        # alive," decoupled from TCC reachability. The read-class device_status
+        # alert is what covers device reachability instead.
+        self._maybe_write_arm_mode(now_utc)
+
         own = None
         snap = None
         from .ownhold import OwnHoldRecord, clear_record, load_record, save_record
@@ -184,8 +191,6 @@ class ControllerLoop:
                 baseline_cool=(snap.schedule_cool if snap and snap.schedule_cool else 0.0),
                 commanded_cool=overlay_commanded,
                 triggered_at_utc=now_utc.isoformat())
-
-        self._maybe_write_arm_mode(now_utc)
 
     async def _apply_push(self, cool: float, until: int) -> tuple[bool, str]:
         # Shadow returns before touching the device: there is no attempt to

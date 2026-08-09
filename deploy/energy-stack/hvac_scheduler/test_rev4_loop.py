@@ -556,3 +556,21 @@ def test_handler_does_not_record_crash_for_infrastructure(tmp_path):
     loop = _wired(tmp_path, Feed(out=None), NeverClimate())
     loop._handle_tick_exception(InfrastructureError("price query: ConnectionError"))
     assert [r for r in loop.telemetry.device_rows if r["op"] == "crash"] == []
+
+
+# ---- liveness decoupled from device I/O -------------------------------------
+
+
+def test_arm_mode_written_before_device_read(tmp_path):
+    """The beacon means 'control loop alive', not 'TCC reachable'. A device
+    read failure must not suppress it, or the watchdog false-trips a
+    controller-DOWN on a live controller."""
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class BoomClimate:
+        async def snapshot(self): raise TimeoutError()
+
+    loop = _wired(tmp_path, feed, BoomClimate())
+    asyncio.run(loop.tick(now))
+    assert len(loop.telemetry.arm_rows) == 1
