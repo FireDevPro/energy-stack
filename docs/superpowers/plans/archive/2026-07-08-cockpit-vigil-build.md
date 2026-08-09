@@ -1,4 +1,23 @@
+---
+date: 2026-07-08
+updated: 2026-08-09
+owner: chris
+status: complete (shipped as #126, 2026-07-08)
+role-label: code-team
+---
+
 # Cockpit "The Vigil" Build — Implementation Plan
+
+> **Complete and archived 2026-08-09.** Shipped as
+> [#126](https://github.com/FireDevPro/energy-stack/pull/126), merged
+> 2026-07-08. The `vigil_config` / `vigil_derive` / `vigil_events` /
+> `vigil_now` / `vigil_queries` / `vigil_timeline` modules are live in
+> `deploy/energy-stack/cockpit/backend/`, and the board is the Surface wall
+> kiosk's Vigil panel.
+>
+> The step checkboxes below were never ticked: the plan and its implementation
+> landed together in one PR, so execution never ran against the file. They are
+> a record of intent, not outstanding work.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans or
 > subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
