@@ -246,8 +246,6 @@ def test_full_spike_story(tmp_path):
 # silent across PRs and trains everyone to ignore the north star.
 
 
-@pytest.mark.xfail(strict=True,
-                   reason="feature-complete only at Task 7 (liveness decouple)")
 def test_read_outage_records_attempts_and_preserves_liveness(tmp_path):
     """A sustained device-read outage must (a) record one read attempt row per
     tick, all failures, so a reader can count consecutive failures of a kind,

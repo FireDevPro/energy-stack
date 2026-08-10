@@ -1,6 +1,6 @@
 ---
 date: 2026-06-20
-revised: 2026-08-07
+revised: 2026-08-09
 owner: chris
 status: active (revision 4.1 — live in production since 2026-07-06; go-active validation record below)
 role-label: code-team
@@ -487,11 +487,6 @@ hold.
     (~1/day), none of them a real outage.
 
 ### Failure telemetry — `hvac.device_status`
-
-> **Status: designed 2026-08-07, not yet implemented.** Everything else in
-> this spec describes live production; this subsection describes intent. Until
-> it lands, device *read* failures remain uncovered by any alert — they emit
-> only a `rev4_tick_failed` Loki line that nothing consumes.
 
 Modeled on `pjm.feed_status` (build discipline: reuse, don't reinvent). One
 measurement, one writer, one reader — not error fields scattered across the

@@ -315,15 +315,18 @@ def test_influx_telemetry_action_row_contract():
     snap = ControlSnapshot(25.5, 27.0, 18.5, True, 870, 25.0, 52.0)
     tel.write_action(tier="elevated", action_label="SPIKE", dry_run=False,
                      commanded_cool=27.0, commanded_heat=18.5, schedule_cool=25.5,
-                     applied=True, error="", hold_expires_at="2026-07-10T19:30:00+00:00",
+                     applied=True, hold_expires_at="2026-07-10T19:30:00+00:00",
                      snapshot_before=snap, setpoint_reason="REV4_ENGAGED",
                      humidity_gated=False)
     lp = Cap.lines[-1]
     assert lp.startswith("hvac.actions,")
     for token in ("commanded_cool=27", "baseline_cool=25.5", "schedule_cool=25.5",
-                  "drift=1.5", "applied=1i", 'error=""', "config_id="):
+                  "drift=1.5", "applied=1i", "config_id="):
         assert token in lp, token
     assert "dry_run=false" in lp  # tag
+    # `error` moved wholesale to hvac.device_status (spec §Telemetry): an
+    # hvac.actions row is purely the decision/action record now.
+    assert "error=" not in lp
 
 
 def test_arm_mode_row_production_branch():
@@ -553,3 +556,21 @@ def test_handler_does_not_record_crash_for_infrastructure(tmp_path):
     loop = _wired(tmp_path, Feed(out=None), NeverClimate())
     loop._handle_tick_exception(InfrastructureError("price query: ConnectionError"))
     assert [r for r in loop.telemetry.device_rows if r["op"] == "crash"] == []
+
+
+# ---- liveness decoupled from device I/O -------------------------------------
+
+
+def test_arm_mode_written_before_device_read(tmp_path):
+    """The beacon means 'control loop alive', not 'TCC reachable'. A device
+    read failure must not suppress it, or the watchdog false-trips a
+    controller-DOWN on a live controller."""
+    now = datetime(2026, 7, 10, 19, 0, tzinfo=UTC)
+    feed = Feed(out=(12.8, now - timedelta(seconds=400), 400.0))
+
+    class BoomClimate:
+        async def snapshot(self): raise TimeoutError()
+
+    loop = _wired(tmp_path, feed, BoomClimate())
+    asyncio.run(loop.tick(now))
+    assert len(loop.telemetry.arm_rows) == 1

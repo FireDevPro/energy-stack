@@ -353,7 +353,7 @@ A **humidity guard** (hysteresis on thermostat RH: blocks at `rh_max_pct`, clear
 
 **Modes:** `SCHEDULER_MODE=shadow` computes + traces every tick with zero device writes (including cleanup releases); `production` writes live. Sole write gate; invalid value → exit 2.
 
-**Alert pair (telegram-notifier):** `check_controller_down` fires on the watchdog's `hvac.heartbeat controller_alive=false` down-beacon (controller silent ≥ 10 min); `check_hvac_action_errors` fires on N consecutive non-benign `hvac.actions` push failures. Unit-tested in `telegram_notifier/`.
+**Alert pair (telegram-notifier):** `check_controller_down` fires on the watchdog's `hvac.heartbeat controller_alive=false` down-beacon (controller silent ≥ 10 min); `check_device_status_failures` fires per class when the newest N `hvac.device_status` attempts of that class are all failures (read 3, write 3, crash 1). Because the controller writes a row per attempt — success *and* failure — a single success breaks the run, so self-healing blips stay silent. Unit-tested in `telegram_notifier/`.
 
 **Config** (`commissioning-controller.yaml`, mounted read-only — **the experimental surface, tune freely**): `temp_scale`, `price_tiers_cents` (`elevated_at`/`scarcity_at`/`hysteresis_cents`), `elevated_offset`, `scarcity_absolute`, `heat_floor`, `humidity_guard` (`rh_max_pct`/`rh_clear_pct`), `hold_ttl_minutes`, `release_confirm_buckets`, `stale_release_minutes`. Every key is **required** — no code defaults; a missing key is a startup error naming the key. Temps must sit on the scale's grid (0.5 °C / 1 °F). `config_id` (SHA256 of the file bytes) is stamped into telemetry so tuning epochs stay interpretable. Schema example: `commissioning-controller.example.yaml`.
 
