@@ -17,6 +17,9 @@ Two background tasks:
      - PJM `pjm.feed_status` direct failure rows (one alert per feed with
        the actual error_type/error_msg from the poller).
      Dedupe: same alert won't re-fire within ALERT_DEDUPE_MIN.
+     Mute: alerts whose key starts with any ALERT_MUTE_PREFIXES entry are
+     logged (`alert_muted`) and never sent. Operator knob for known-broken
+     inputs (e.g. Eagle meter link, PJM credentials) while they are fixed.
 
 Reuses the Life Engine Telegram bot (same token + chat_id), so messages land in
 the same channel Chris already uses.
@@ -29,6 +32,8 @@ Environment variables:
     POLLER_SILENT_MIN           Min minutes before flagging a silent poller (default 10)
     PRICE_SPIKE_THRESHOLD_C     Cents/kWh above which to alert (default 20)
     ALERT_DEDUPE_MIN            Don't repeat same alert within N min (default 30)
+    ALERT_MUTE_PREFIXES         Comma-separated alert-key prefixes to suppress
+                                (e.g. "silent:eagle-poller,pjm_feed_"); default none
     SCHEDULER_TZ                IANA tz (default America/Chicago)
     INFLUXDB_URL / TOKEN / ORG / BUCKET
 """
@@ -42,7 +47,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -64,6 +69,7 @@ class Config:
     poller_silent_min: int
     price_spike_threshold_c: float
     alert_dedupe_min: int
+    alert_mute_prefixes: tuple[str, ...]
     tz_name: str
     influx_url: str
     influx_token: str
@@ -86,6 +92,9 @@ class Config:
             poller_silent_min=int(os.environ.get("POLLER_SILENT_MIN", "10")),
             price_spike_threshold_c=float(os.environ.get("PRICE_SPIKE_THRESHOLD_C", "20")),
             alert_dedupe_min=int(os.environ.get("ALERT_DEDUPE_MIN", "30")),
+            alert_mute_prefixes=tuple(
+                p.strip() for p in os.environ.get("ALERT_MUTE_PREFIXES", "").split(",") if p.strip()
+            ),
             tz_name=os.environ.get("SCHEDULER_TZ", "America/Chicago"),
             influx_url=os.environ.get("INFLUXDB_URL", "http://influxdb:8086"),
             influx_token=required("INFLUXDB_TOKEN"),
@@ -483,6 +492,18 @@ def check_poller_silence(query_api: Any, bucket: str, threshold_min: int) -> lis
                 text=f"⚠️ <b>{poller}</b> silent for {age_min:.0f} min (tolerance {tol} min)."
             ))
     return out
+
+
+def filter_muted(alerts: list[Alert], prefixes: Sequence[str]) -> list[Alert]:
+    """Drop alerts whose key starts with any muted prefix. Muted alerts are
+    logged so the suppression is visible in the container log."""
+    kept: list[Alert] = []
+    for a in alerts:
+        if any(a.key.startswith(p) for p in prefixes):
+            log("info", "alert_muted", key=a.key)
+        else:
+            kept.append(a)
+    return kept
 
 
 def check_price_spike(query_api: Any, bucket: str, threshold_c: float) -> list[Alert]:
@@ -921,7 +942,7 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
             alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
             alerts.extend(check_pjm_feed_failures(query_api, cfg.influx_bucket))
             now = datetime.now(timezone.utc)
-            for a in alerts:
+            for a in filter_muted(alerts, cfg.alert_mute_prefixes):
                 if a.key in last_sent and (now - last_sent[a.key]).total_seconds() < cfg.alert_dedupe_min * 60:
                     continue
                 ok = await send_telegram(cfg, a.text)

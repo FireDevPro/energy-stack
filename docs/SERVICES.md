@@ -536,6 +536,7 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 - `POLLER_SILENT_MIN` — minutes of silence before flagging a poller (default 10)
 - `PRICE_SPIKE_THRESHOLD_C` — ¢/kWh threshold for price-spike alert (default 20)
 - `ALERT_DEDUPE_MIN` — minutes to suppress repeated identical alerts (default 30)
+- `ALERT_MUTE_PREFIXES` — comma-separated alert-key prefixes to suppress entirely, e.g. `silent:eagle-poller,pjm_feed_stale:,pjm_feed_failed:` (default none; set via `TELEGRAM_ALERT_MUTE_PREFIXES` in `.env`)
 - `SCHEDULER_TZ` — for "8 AM local" interpretation (default `America/Chicago`)
 - `INFLUXDB_*`
 

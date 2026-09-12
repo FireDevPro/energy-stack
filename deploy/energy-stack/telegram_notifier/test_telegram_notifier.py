@@ -31,6 +31,7 @@ from .app import (
     check_pjm_feed_freshness,
     check_poller_silence,
     check_price_spike,
+    filter_muted,
     poller_last_writes,
 )
 
@@ -180,6 +181,42 @@ def test_check_poller_silence_dedupe_key_format():
     layer suppresses repeats per poller."""
     a = Alert(key="silent:foo", text="...")
     assert a.key.startswith("silent:")
+
+
+# ---- filter_muted ---------------------------------------------------------
+
+
+def test_filter_muted_drops_alerts_whose_key_starts_with_a_prefix():
+    alerts = [
+        Alert(key="silent:eagle-poller", text="a"),
+        Alert(key="silent:comed-poller", text="b"),
+        Alert(key="pjm_feed_stale:da_hrl_lmps", text="c"),
+        Alert(key="pjm_feed_failed:inst_load", text="d"),
+        Alert(key="price_spike", text="e"),
+    ]
+    kept = filter_muted(alerts, ["silent:eagle-poller", "pjm_feed_"])
+    assert [a.key for a in kept] == ["silent:comed-poller", "price_spike"]
+
+
+def test_filter_muted_no_prefixes_is_passthrough():
+    alerts = [Alert(key="silent:eagle-poller", text="a")]
+    assert filter_muted(alerts, []) == alerts
+
+
+def test_config_parses_mute_prefixes_from_env(monkeypatch):
+    for k, v in {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c",
+                 "INFLUXDB_TOKEN": "x", "INFLUXDB_ORG": "o", "INFLUXDB_BUCKET": "b",
+                 "ALERT_MUTE_PREFIXES": " silent:eagle-poller, pjm_feed_ ,,"}.items():
+        monkeypatch.setenv(k, v)
+    assert app.Config.from_env().alert_mute_prefixes == ("silent:eagle-poller", "pjm_feed_")
+
+
+def test_config_mute_prefixes_default_empty(monkeypatch):
+    for k, v in {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c",
+                 "INFLUXDB_TOKEN": "x", "INFLUXDB_ORG": "o", "INFLUXDB_BUCKET": "b"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ALERT_MUTE_PREFIXES", raising=False)
+    assert app.Config.from_env().alert_mute_prefixes == ()
 
 
 # ---- check_price_spike ----------------------------------------------------
