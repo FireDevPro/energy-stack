@@ -18,6 +18,12 @@ Measurement: ``airnow.aqi``
 
 AirNow updates hourly; polling every 30 min is plenty. Free API key required.
 
+2026-10-01: AirNow retired ``/aq/observation/latLong/current/`` (HTTP 410).
+Replacement is ``/aq/observation/current/ziplatlong/`` (same key, lowerCamelCase
+keys, ``nowcastAQI``, ``OZONE`` instead of ``O3``, ``hourObserved`` as "HH:MM",
+and a 200 ``WebServiceError`` envelope when nothing is in range). The Influx
+schema above is kept unchanged: ``OZONE`` is normalised back to ``O3``.
+
 Env:
   AIRNOW_API_KEY       (required)
   AIRNOW_LAT           (default 41.6151)
@@ -45,9 +51,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
 RETRY_BASE_S = 60.0  # backoff floor after a failed poll; doubles up to poll_interval
-AIRNOW_URL = "https://www.airnowapi.org/aq/observation/latLong/current/"
+AIRNOW_URL = "https://www.airnowapi.org/aq/observation/current/ziplatlong/"
 
-# AirNow ParameterName -> Influx field key
+# ziplatlong parameterName -> legacy name (keeps `dominant` vocabulary stable)
+_PARAM_NAME = {"OZONE": "O3"}
+# AirNow parameter name -> Influx field key
 _PARAM_FIELD = {
     "O3": "o3_aqi", "PM2.5": "pm25_aqi", "PM10": "pm10_aqi",
     "NO2": "no2_aqi", "CO": "co_aqi", "SO2": "so2_aqi",
@@ -104,17 +112,26 @@ async def fetch_observations(session: aiohttp.ClientSession, cfg: Config) -> lis
     async with session.get(AIRNOW_URL, params=params,
                            timeout=aiohttp.ClientTimeout(total=30)) as r:
         r.raise_for_status()
-        return cast(list[dict[str, Any]], await r.json())
+        return parse_observations(await r.json())
+
+
+def parse_observations(body: Any) -> list[dict[str, Any]]:
+    """ziplatlong returns a list of observations, or a 200 ``{"WebServiceError":
+    [...]}`` envelope when nothing is in range (the old service returned ``[]``)."""
+    if isinstance(body, list):
+        return cast(list[dict[str, Any]], body)
+    log("warn", "service_error", body=body)
+    return []
 
 
 def _obs_age_min(obs: list[dict[str, Any]]) -> int:
-    """Minutes since the observation hour (AirNow stamps DateObserved + HourObserved
-    in the area's LocalTimeZone; treat that hour as the observation instant)."""
+    """Minutes since the observation hour (AirNow stamps dateObserved + hourObserved
+    "HH:MM" in the area's localTimeZone; treat that hour as the observation instant)."""
     try:
         o = obs[0]
-        # LocalTimeZone like "CST"/"EST"; AirNow hours are standard time, no DST.
-        tz_off = {"CST": -6, "CDT": -5, "EST": -5, "EDT": -4, "MST": -7, "PST": -8}.get(o.get("LocalTimeZone", ""), -6)
-        d = datetime.strptime(f"{o['DateObserved'].strip()} {int(o['HourObserved']):02d}", "%Y-%m-%d %H")
+        tz_off = {"CST": -6, "CDT": -5, "EST": -5, "EDT": -4, "MST": -7, "PST": -8}.get(o.get("localTimeZone", ""), -6)
+        hour = int(str(o["hourObserved"]).split(":")[0])
+        d = datetime.strptime(f"{o['dateObserved'].strip()} {hour:02d}", "%Y-%m-%d %H")
         obs_utc = d.replace(tzinfo=timezone.utc) - _tzdelta(tz_off)
         return max(0, int((datetime.now(timezone.utc) - obs_utc).total_seconds() // 60))
     except Exception:
@@ -126,17 +143,22 @@ def _tzdelta(hours: int):
     return timedelta(hours=hours)
 
 
+def _param_name(o: dict[str, Any]) -> str:
+    name = str(o.get("parameterName", ""))
+    return _PARAM_NAME.get(name, name)
+
+
 def build_point(obs: list[dict[str, Any]]) -> Point | None:
     if not obs:
         return None
-    area = str(obs[0].get("ReportingArea", ""))
+    area = str(obs[0].get("reportingAreaName", ""))
     p = Point("airnow.aqi").tag("reporting_area", area)  # type: ignore[no-untyped-call]
     overall = -1
     dominant = ""
     dom_cat = ""
     for o in obs:
-        name = o.get("ParameterName", "")
-        aqi = o.get("AQI")
+        name = _param_name(o)
+        aqi = o.get("nowcastAQI")
         if aqi is None:
             continue
         aqi = int(aqi)
@@ -146,7 +168,7 @@ def build_point(obs: list[dict[str, Any]]) -> Point | None:
         if aqi > overall:
             overall = aqi
             dominant = name
-            dom_cat = (o.get("Category") or {}).get("Name", "")
+            dom_cat = str(o.get("aqiCategoryName") or "")
     if overall < 0:
         return None
     p = (p.field("overall_aqi", overall)
@@ -170,8 +192,8 @@ async def poll_once(session: aiohttp.ClientSession, write_api: Any, cfg: Config)
         return False
     write_api.write(bucket=cfg.influx_bucket, record=point)  # not caught -> Docker restarts on Influx error
     log("info", "poll_ok",
-        pollutants=[o.get("ParameterName") for o in obs],
-        aqis={o.get("ParameterName"): o.get("AQI") for o in obs})
+        pollutants=[_param_name(o) for o in obs],
+        aqis={_param_name(o): o.get("nowcastAQI") for o in obs})
     HEALTH_MARKER.touch()
     return True
 
