@@ -16,8 +16,9 @@ USER tstatpoll
 
 ENV PYTHONUNBUFFERED=1
 
-# Polls every 600s default. Anything older than 15 min is unhealthy.
+# Polls every 600s default. Unhealthy = two consecutive polls missed (the
+# marker is touched only on poll_ok): 25 min tolerates one failed cycle.
 HEALTHCHECK --interval=120s --timeout=5s --start-period=60s --retries=3 \
-  CMD test -n "$(find /tmp/last_poll_ok -mmin -15 2>/dev/null)" || exit 1
+  CMD test -n "$(find /tmp/last_poll_ok -mmin -25 2>/dev/null)" || exit 1
 
 CMD ["python", "-m", "thermostat_poller.poller"]

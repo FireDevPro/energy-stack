@@ -430,7 +430,7 @@ Override detection (`hvac.overrides`) was **retired at the rev 4 cutover** (July
 - `THERMOSTAT_POLL_INTERVAL` — seconds (default 600)
 - `INFLUXDB_*` — standard
 
-**Healthcheck:** `/tmp/last_poll_ok` marker, `find -mmin -15` (allows up to 15 min staleness on a 10-min poll interval).
+**Healthcheck:** `/tmp/last_poll_ok` marker, `find -mmin -25` (tolerates one missed 10-min cycle; two consecutive misses = unhealthy). A TCC `TimeoutError` (~11% of reads) is retried once in-cycle after 45 s (`poll_retry` log line) before counting as `poll_failed`.
 
 **Why this exists:** the `hvac-scheduler` snapshots thermostat state only at action moments. That's too sparse for proper time-series correlation against Haven's 5-min cadence. This poller fills the gap.
 
