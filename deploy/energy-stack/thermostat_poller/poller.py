@@ -52,6 +52,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from .tcc_client import TCCClient
 
 HEALTH_MARKER = Path("/tmp/last_poll_ok")
+# TCC times out (aiosomecomfort's 30 s limit) on ~11% of polls, independently
+# per call. One in-cycle retry after a short pause turns a 20-min data gap
+# into a ~1-min delay; two consecutive timeouts (~1%) still surface as
+# poll_failed. Not config: operational constant, not an experimental knob.
+RETRY_DELAY_S = 45.0
 
 
 def log(level: str, msg: str, **fields: Any) -> None:
@@ -227,7 +232,12 @@ async def main_async(cfg: Config) -> int:
     try:
         while not stop.is_set():
             try:
-                snap = await read_snapshot(c4)
+                try:
+                    snap = await read_snapshot(c4)
+                except Exception as exc:
+                    log("warn", "poll_retry", error=str(exc), error_type=type(exc).__name__)
+                    await asyncio.sleep(RETRY_DELAY_S)
+                    snap = await read_snapshot(c4)
                 write_snapshot(write_api, cfg, snap)
                 log("info", "poll_ok",
                     indoor_temp_f=snap.get("indoor_temp_f"),

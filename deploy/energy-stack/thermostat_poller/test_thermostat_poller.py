@@ -131,3 +131,87 @@ async def test_poll_cycle_writes_thermostat_row_without_override_fields(
     for rec in poll_ok:
         assert "override_detected" not in rec
         assert "override" not in rec
+
+
+# ---- Transient read failure: retry once before declaring poll_failed -------
+
+
+async def _run_one_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reads: list[Any],
+) -> tuple[_FakeInflux, Path]:
+    """Drive main_async through one poll cycle. `reads` is consumed per
+    read_snapshot call: an Exception instance is raised, anything else is
+    returned as the snapshot."""
+    cfg = _cfg()
+    fake_influx = _FakeInflux()
+    marker = tmp_path / "last_poll_ok"
+    monkeypatch.setattr(poller, "InfluxDBClient", lambda **_: fake_influx)
+    monkeypatch.setattr(poller, "HEALTH_MARKER", marker)
+    monkeypatch.setattr(poller, "RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+
+    async def fake_read(c4: Any) -> dict[str, Any]:
+        item = reads.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return dict(item)
+
+    monkeypatch.setattr(poller, "read_snapshot", fake_read)
+
+    task = asyncio.ensure_future(poller.main_async(cfg))
+    for _ in range(500):
+        if not reads:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    return fake_influx, marker
+
+
+_SNAP = {
+    "indoor_temp_f": 74.0, "cool_setpoint_f": 71.0, "heat_setpoint_f": 67.0,
+    "hvac_mode": "Cool", "hvac_state": "Off", "fan_mode": "Auto",
+    "hold_mode": "Off", "humidity_pct": 45.0,
+}
+
+
+async def test_timeout_then_success_retries_within_same_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """TCC times out ~11% of polls. A single TimeoutError must NOT cost the
+    whole 10-min cycle: retry once, write the row, touch the marker."""
+    fake_influx, marker = await _run_one_cycle(
+        monkeypatch, tmp_path, [TimeoutError(), dict(_SNAP)])
+
+    assert len(fake_influx.write_api_obj.records) == 1
+    assert marker.exists()
+
+    msgs = [json.loads(l)["msg"] for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert "poll_retry" in msgs
+    assert "poll_ok" in msgs
+    assert "poll_failed" not in msgs
+
+
+async def test_timeout_twice_is_poll_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exactly one retry. Two consecutive failures = poll_failed, no write,
+    no marker touch (the healthcheck must see this)."""
+    fake_influx, marker = await _run_one_cycle(
+        monkeypatch, tmp_path, [TimeoutError(), TimeoutError()])
+
+    assert fake_influx.write_api_obj.records == []
+    assert not marker.exists()
+
+    msgs = [json.loads(l)["msg"] for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert msgs.count("poll_retry") == 1
+    assert msgs.count("poll_failed") == 1
+    assert "poll_ok" not in msgs
