@@ -14,8 +14,11 @@ Run from this directory:
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import aiohttp
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -24,7 +27,10 @@ import pytest
 from . import app
 from .app import (
     Alert,
+    Config,
     PJM_FEED_SLAS,
+    PriceSpikeTracker,
+    post_intake,
     check_controller_down,
     check_device_status_failures,
     check_pjm_feed_failures,
@@ -232,24 +238,191 @@ def test_daily_summary_loop_exits_immediately_when_summary_hour_negative():
 # ---- check_price_spike ----------------------------------------------------
 
 
-def test_check_price_spike_no_rows_no_alert(monkeypatch):
+
+# ---- price spikes: episodes, not readings ----------------------------------
+#
+# Chris's ruling (2026-10-20): the spike alerts stay (he sheds load on them), but
+# one per episode event, not one per 5-minute price. Start when the price
+# crosses the threshold, one more when it climbs through a band, one when it
+# has been under the threshold for two consecutive readings. All pass through
+# to Chris (lane "chris"); the Chief does not reason over them.
+
+T0 = datetime(2026, 10, 20, 15, 0, tzinfo=timezone.utc)
+
+
+def T() -> PriceSpikeTracker:
+    return PriceSpikeTracker(threshold_c=20, bands_c=(30, 40), end_readings=2)
+
+
+def at(minutes: int) -> datetime:
+    return T0 + timedelta(minutes=minutes)
+
+
+def test_tracker_start_once_then_silent():
+    t = T()
+    a = t.update(24.0, at(0))
+    assert [x.lane for x in a] == ["chris"]
+    assert a[0].key.startswith("price_spike:start:")
+    assert "24.0" in a[0].title
+    assert t.update(27.0, at(5)) == []          # a wandering price is the same episode
+    assert t.update(21.3, at(10)) == []
+
+
+def test_tracker_bands_fire_once_each_in_order():
+    t = T()
+    t.update(24.0, at(0))
+    a = t.update(45.0, at(5))
+    assert [x.key.split(":")[2] for x in a] == ["30", "40"]
+    assert all(x.lane == "chris" for x in a)
+    assert t.update(46.0, at(10)) == []
+
+
+def test_tracker_one_reading_dip_is_not_an_end():
+    t = T()
+    t.update(24.0, at(0))
+    assert t.update(18.0, at(5)) == []
+    assert t.update(25.0, at(10)) == []         # still the same episode, no new start
+
+
+def test_tracker_end_after_two_below_with_duration_and_peak():
+    t = T()
+    t.update(24.0, at(0))
+    t.update(34.0, at(5))
+    assert t.update(18.0, at(95)) == []
+    a = t.update(8.1, at(100))
+    assert len(a) == 1
+    assert a[0].severity == "ok"
+    assert "1h40m" in a[0].text and "34.0" in a[0].text
+    assert "8.1" in a[0].title
+    assert a[0].key.startswith("price_spike:end:")
+    b = t.update(24.0, at(105))
+    assert b[0].key.startswith("price_spike:start:")   # a new episode
+
+
+def test_tracker_none_is_ignored():
+    assert T().update(None, at(0)) == []
+
+
+def test_fresh_tracker_above_threshold_starts():
+    # a restart mid-episode loses state and emits one more start; never a silent miss
+    assert len(T().update(21.0, at(0))) == 1
+
+
+def test_tracker_threshold_is_inclusive():
+    assert len(T().update(20.0, at(0))) == 1
+    assert T().update(19.9, at(0)) == []
+
+
+def test_check_price_spike_feeds_tracker(monkeypatch):
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [{"_value": 20.0}])
+    t = T()
+    assert len(check_price_spike(MagicMock(), "energy", t, at(0))) == 1
     monkeypatch.setattr(app, "fetch_one", lambda q, f: [])
-    assert check_price_spike(MagicMock(), "energy", threshold_c=20) == []
+    assert check_price_spike(MagicMock(), "energy", t, at(5)) == []
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [{"_value": None}])
+    assert check_price_spike(MagicMock(), "energy", t, at(10)) == []
 
 
-def test_check_price_spike_below_threshold_no_alert(monkeypatch):
-    monkeypatch.setattr(app, "fetch_one",
-                        lambda q, f: [{"_value": 19.9}])
-    assert check_price_spike(MagicMock(), "energy", threshold_c=20) == []
+# ---- the intake is the only destination ------------------------------------
+
+_BASE_CFG = Config(intake_url="http://intake.test/alert", summary_hour=8, alert_check_interval_s=300,
+                   poller_silent_min=10, price_spike_threshold_c=20.0, price_spike_bands_c=(30.0, 40.0),
+                   price_spike_end_readings=2, alert_dedupe_min=30, alert_mute_prefixes=(),
+                   tz_name="America/Chicago", influx_url="http://influx", influx_token="t",
+                   influx_org="o", influx_bucket="energy")
 
 
-def test_check_price_spike_at_threshold_fires(monkeypatch):
-    """Threshold is inclusive — exactly-at fires."""
-    monkeypatch.setattr(app, "fetch_one",
-                        lambda q, f: [{"_value": 20.0}])
-    alerts = check_price_spike(MagicMock(), "energy", threshold_c=20)
-    assert len(alerts) == 1
-    assert "20.0" in alerts[0].text
+def _cfg(**over: Any) -> Config:
+    return dataclasses.replace(_BASE_CFG, **over)
+
+
+class _FakeResp:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    async def text(self) -> str:
+        return ""
+
+    async def __aenter__(self) -> "_FakeResp":
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+
+class _FakeSession:
+    posted: list[tuple[str, dict[str, Any]]] = []
+    status = 200
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+    def post(self, url: str, json: dict[str, Any], timeout: Any = None) -> _FakeResp:
+        _FakeSession.posted.append((url, json))
+        return _FakeResp(_FakeSession.status)
+
+
+async def test_post_intake_payload(monkeypatch):
+    _FakeSession.posted.clear()
+    _FakeSession.status = 200
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+    ok = await post_intake(_cfg(), Alert(key="price_spike:start:x", text="Defer big loads if possible.",
+                                         title="ComEd price spike: 24.0¢/kWh", lane="chris", severity="warn"))
+    assert ok is True
+    url, body = _FakeSession.posted[0]
+    assert url == "http://intake.test/alert"
+    assert body["source"] == "energy" and body["lane_hint"] == "chris" and body["severity"] == "warn"
+    assert body["title"] == "ComEd price spike: 24.0¢/kWh" and body["body"] == "Defer big loads if possible."
+    assert body["dedupe_key"] == "price_spike:start:x" and body["html"] is False and body["kind"] == "alert"
+
+
+async def test_post_intake_defaults_title_to_first_line_and_reports_failure(monkeypatch):
+    _FakeSession.posted.clear()
+    _FakeSession.status = 500
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+    ok = await post_intake(_cfg(), Alert(key="silent:eagle-poller", text="eagle-poller silent 12 min\nlast write 14:02"))
+    assert ok is False
+    _, body = _FakeSession.posted[0]
+    assert body["title"] == "eagle-poller silent 12 min" and body["lane_hint"] == "chief"
+
+
+async def test_alert_loop_posts_by_lane_and_keeps_failed_keys(monkeypatch):
+    import asyncio
+    posted: list[dict[str, Any]] = []
+    fail_first = {"n": 0}
+
+    async def fake_post(cfg: Config, alert: Alert) -> bool:
+        posted.append({"key": alert.key, "lane": alert.lane})
+        fail_first["n"] += 1
+        return fail_first["n"] != 1          # the first post fails, the rest succeed
+
+    monkeypatch.setattr(app, "post_intake", fake_post)
+    for name in ("check_poller_silence", "check_device_status_failures", "check_controller_down",
+                 "check_fridge_anomalies", "check_pjm_feed_freshness", "check_pjm_feed_failures"):
+        monkeypatch.setattr(app, name, lambda *a, **k: [])
+    monkeypatch.setattr(app, "check_poller_silence", lambda *a, **k: [Alert(key="silent:x", text="x silent")])
+    monkeypatch.setattr(app, "check_price_spike",
+                        lambda q, b, tracker, now: [Alert(key="price_spike:start:s", text="d", title="t", lane="chris")])
+    stop = asyncio.Event()
+    cfg = _cfg(alert_check_interval_s=1)
+
+    async def run_two_ticks() -> None:
+        task = asyncio.create_task(app.alert_loop(cfg, MagicMock(), stop))
+        await asyncio.sleep(1.5)
+        stop.set()
+        await task
+
+    await run_two_ticks()
+    lanes = [(p["key"], p["lane"]) for p in posted]
+    assert ("silent:x", "chief") in lanes and ("price_spike:start:s", "chris") in lanes
+    # the first post failed, so that key was posted again on the second tick
+    assert lanes.count(lanes[0]) == 2
 
 
 # ---- poller_last_writes ---------------------------------------------------
@@ -313,22 +486,6 @@ def test_poller_last_writes_returns_none_when_no_rows(monkeypatch: pytest.Monkey
     result = poller_last_writes(MagicMock(), "energy")
     for poller, ts in result.items():
         assert ts is None, f"{poller} got {ts}, expected None"
-
-
-def test_check_price_spike_well_above_threshold_fires(monkeypatch):
-    monkeypatch.setattr(app, "fetch_one",
-                        lambda q, f: [{"_value": 47.5}])
-    alerts = check_price_spike(MagicMock(), "energy", threshold_c=20)
-    assert len(alerts) == 1
-    assert alerts[0].key == "price_spike:47"
-    assert "47.5" in alerts[0].text
-
-
-def test_check_price_spike_null_value_no_alert(monkeypatch):
-    """If the row exists but _value is None, don't crash."""
-    monkeypatch.setattr(app, "fetch_one",
-                        lambda q, f: [{"_value": None}])
-    assert check_price_spike(MagicMock(), "energy", threshold_c=20) == []
 
 
 # ---- check_pjm_feed_freshness ---------------------------------------------
