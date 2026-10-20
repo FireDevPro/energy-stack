@@ -323,6 +323,46 @@ def test_check_price_spike_feeds_tracker(monkeypatch):
     assert check_price_spike(MagicMock(), "energy", t, at(10)) == []
 
 
+
+async def test_tracker_alerts_survive_a_failed_post_and_a_raising_check(monkeypatch):
+    """Review 2026-10-20: the tracker mutates state before the post, so a start whose post
+    fails (intake restarting) or a tick whose later check raises must still reach Chris
+    next tick. The loop keeps tracker alerts pending until they post."""
+    import asyncio
+    posted: list[str] = []
+    attempts = {"n": 0}
+
+    async def fake_post(cfg: Config, alert: Alert) -> bool:
+        attempts["n"] += 1
+        if attempts["n"] <= 2:          # tick 1: the start fails to post; tick 2: a later check raises
+            return False
+        posted.append(alert.key)
+        return True
+
+    monkeypatch.setattr(app, "post_intake", fake_post)
+    for name in ("check_poller_silence", "check_controller_down", "check_fridge_anomalies",
+                 "check_pjm_feed_freshness", "check_pjm_feed_failures"):
+        monkeypatch.setattr(app, name, lambda *a, **k: [])
+    ticks = {"n": 0}
+
+    def device_check(*a: Any, **k: Any) -> list[Alert]:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            raise RuntimeError("influx hiccup")
+        return []
+
+    monkeypatch.setattr(app, "check_device_status_failures", device_check)
+    prices = iter([24.0, 24.0, 24.0, 24.0])
+    monkeypatch.setattr(app, "fetch_one", lambda q, f: [{"_value": next(prices, 24.0)}])
+    stop = asyncio.Event()
+    cfg = _cfg(alert_check_interval_s=1)
+    task = asyncio.create_task(app.alert_loop(cfg, MagicMock(), stop))
+    await asyncio.sleep(3.5)
+    stop.set()
+    await task
+    starts = [k for k in posted if k.startswith("price_spike:start:")]
+    assert len(starts) == 1, posted            # the one start reached the intake, exactly once
+
 # ---- the intake is the only destination ------------------------------------
 
 _BASE_CFG = Config(intake_url="http://intake.test/alert", summary_hour=8, alert_check_interval_s=300,
@@ -407,8 +447,8 @@ async def test_alert_loop_posts_by_lane_and_keeps_failed_keys(monkeypatch):
                  "check_fridge_anomalies", "check_pjm_feed_freshness", "check_pjm_feed_failures"):
         monkeypatch.setattr(app, name, lambda *a, **k: [])
     monkeypatch.setattr(app, "check_poller_silence", lambda *a, **k: [Alert(key="silent:x", text="x silent")])
-    monkeypatch.setattr(app, "check_price_spike",
-                        lambda q, b, tracker, now: [Alert(key="price_spike:start:s", text="d", title="t", lane="chris")])
+    spike_once = iter([[Alert(key="price_spike:start:s", text="d", title="t", lane="chris")]])   # a tracker emits a start once
+    monkeypatch.setattr(app, "check_price_spike", lambda q, b, tracker, now: next(spike_once, []))
     stop = asyncio.Event()
     cfg = _cfg(alert_check_interval_s=1)
 
@@ -421,8 +461,10 @@ async def test_alert_loop_posts_by_lane_and_keeps_failed_keys(monkeypatch):
     await run_two_ticks()
     lanes = [(p["key"], p["lane"]) for p in posted]
     assert ("silent:x", "chief") in lanes and ("price_spike:start:s", "chris") in lanes
-    # the first post failed, so that key was posted again on the second tick
-    assert lanes.count(lanes[0]) == 2
+    # tick 1: the start (pending first) fails to post, the chief alert posts; tick 2: the start posts,
+    # the chief alert is inside its dedupe window. Two attempts for the start, one for the chief alert.
+    assert lanes.count(("price_spike:start:s", "chris")) == 2
+    assert lanes.count(("silent:x", "chief")) == 1
 
 
 # ---- poller_last_writes ---------------------------------------------------
