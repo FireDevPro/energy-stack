@@ -48,13 +48,15 @@ mode plus nginx. **No Grafana on this host.** It shows a swipe carousel
 - **Deploy:** merge changes under `deploy/energy-stack/cockpit/` to `main` (normal
   energy-proxy deploy).
 
-## Grafana: deployed but unused
-The `grafana` container (+ `grafana-image-renderer`) still runs in the
-`energy-stack` compose (Pi-lab :3000; provisioned dashboards under
-`deploy/energy-stack/grafana/dashboards/`, legacy JSON also in the
-grafana-dashboards repo's `energy-proxy/`). **Nobody views it; it is not part of
-any live workflow** — retained/vestigial and a removal candidate, **not** the
-visualization layer. [`docs/SERVICES.md#grafana`](SERVICES.md#grafana) documents
+## Grafana: defined but stopped
+The `grafana` service is still defined in the `energy-stack` compose but sits
+behind the `grafana` profile since 2026-09-13, so a normal `docker compose up -d`
+does not start it (start on demand with `docker compose --profile grafana up -d
+grafana`; Pi-lab :3000). The `grafana-image-renderer` sidecar was removed the same
+day. Provisioned dashboards remain under `deploy/energy-stack/grafana/dashboards/`,
+legacy JSON also in the grafana-dashboards repo's `energy-proxy/`. **Nobody views
+it; it is not part of any live workflow** — retained/vestigial and a removal
+candidate, **not** the visualization layer. [`docs/SERVICES.md#grafana`](SERVICES.md#grafana) documents
 the still-running service for reference only.
 
 ## Adding a panel — where it goes
