@@ -27,7 +27,8 @@ the same channel Chris already uses.
 Environment variables:
     TELEGRAM_BOT_TOKEN          Bot token (from BotFather)
     TELEGRAM_CHAT_ID            Chat to send to (numeric ID, possibly negative for groups)
-    SUMMARY_HOUR                Hour-of-day to send daily summary (default 8 = 8 AM)
+    SUMMARY_HOUR                Hour-of-day to send daily summary (default 8 = 8 AM);
+                                -1 disables the daily summary entirely
     ALERT_CHECK_INTERVAL_S      Seconds between alert checks (default 300)
     POLLER_SILENT_MIN           Min minutes before flagging a silent poller (default 10)
     PRICE_SPIKE_THRESHOLD_C     Cents/kWh above which to alert (default 20)
@@ -903,6 +904,9 @@ from(bucket: "{bucket}")
 # ---- Main loop -------------------------------------------------------------
 
 async def daily_summary_loop(cfg: Config, query_api: Any, tz: ZoneInfo, stop: asyncio.Event) -> None:
+    if cfg.summary_hour < 0:
+        log("info", "daily_summary_disabled", summary_hour=cfg.summary_hour)
+        return
     log("info", "daily_summary_loop_starting", summary_hour=cfg.summary_hour)
     while not stop.is_set():
         now_local = datetime.now(tz)
