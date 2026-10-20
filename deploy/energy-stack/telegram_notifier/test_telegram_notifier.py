@@ -14,8 +14,11 @@ Run from this directory:
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import aiohttp
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -322,14 +325,15 @@ def test_check_price_spike_feeds_tracker(monkeypatch):
 
 # ---- the intake is the only destination ------------------------------------
 
+_BASE_CFG = Config(intake_url="http://intake.test/alert", summary_hour=8, alert_check_interval_s=300,
+                   poller_silent_min=10, price_spike_threshold_c=20.0, price_spike_bands_c=(30.0, 40.0),
+                   price_spike_end_readings=2, alert_dedupe_min=30, alert_mute_prefixes=(),
+                   tz_name="America/Chicago", influx_url="http://influx", influx_token="t",
+                   influx_org="o", influx_bucket="energy")
+
+
 def _cfg(**over: Any) -> Config:
-    base = dict(intake_url="http://intake.test/alert", summary_hour=8, alert_check_interval_s=300,
-                poller_silent_min=10, price_spike_threshold_c=20.0, price_spike_bands_c=(30.0, 40.0),
-                price_spike_end_readings=2, alert_dedupe_min=30, alert_mute_prefixes=(),
-                tz_name="America/Chicago", influx_url="http://influx", influx_token="t",
-                influx_org="o", influx_bucket="energy")
-    base.update(over)
-    return Config(**base)
+    return dataclasses.replace(_BASE_CFG, **over)
 
 
 class _FakeResp:
@@ -367,7 +371,7 @@ class _FakeSession:
 async def test_post_intake_payload(monkeypatch):
     _FakeSession.posted.clear()
     _FakeSession.status = 200
-    monkeypatch.setattr(app.aiohttp, "ClientSession", _FakeSession)
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
     ok = await post_intake(_cfg(), Alert(key="price_spike:start:x", text="Defer big loads if possible.",
                                          title="ComEd price spike: 24.0¢/kWh", lane="chris", severity="warn"))
     assert ok is True
@@ -381,7 +385,7 @@ async def test_post_intake_payload(monkeypatch):
 async def test_post_intake_defaults_title_to_first_line_and_reports_failure(monkeypatch):
     _FakeSession.posted.clear()
     _FakeSession.status = 500
-    monkeypatch.setattr(app.aiohttp, "ClientSession", _FakeSession)
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
     ok = await post_intake(_cfg(), Alert(key="silent:eagle-poller", text="eagle-poller silent 12 min\nlast write 14:02"))
     assert ok is False
     _, body = _FakeSession.posted[0]
