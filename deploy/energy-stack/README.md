@@ -31,7 +31,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
 | `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → `ch1_*` (canonical analysis field per spec §6) + gateway alias `outdoor_*` (descriptive), WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
-| `telegram-notifier` | Daily 8 AM summary + 5-min alert checker | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
+| `telegram-notifier` | Daily 8 AM summary + 5-min alert checker; posts to the Chief's alert intake (pi-lab:4014), not Telegram, since 2026-10-20; price spikes are episode alerts (start / band / end) | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
 | `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `promtail` | Container log shipper → Loki | — | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |

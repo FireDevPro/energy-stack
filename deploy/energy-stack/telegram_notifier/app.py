@@ -1,4 +1,15 @@
-"""Telegram notifier for energy-stack.
+"""Energy-stack notifier: every alert goes to the Chief's alert intake.
+
+Since 2026-10-20 (plan 3 of the alert-triage design in chris-brain) this service
+posts to the intake on pi-lab (INTAKE_URL, port 4014) instead of the Telegram
+API. The intake writes a ledger row and routes by the lane each alert declares:
+  chris  pass-through to Telegram with no model turn: the ComEd price-spike
+         episode alerts (Chris sheds load on them) and the 8 AM daily summary
+         (an HTML message, sent verbatim).
+  chief  everything else (silent pollers, controller down, device failures,
+         fridge anomalies, PJM feeds): the Chief triages it.
+The container name stays telegram-notifier; the Telegram token is no longer
+read here.
 
 Two background tasks:
   1. Daily summary -- once a day at SUMMARY_HOUR (default 08:00 local), sends
@@ -6,7 +17,12 @@ Two background tasks:
      HVAC scheduler activity, tomorrow's forecast.
   2. Alert checker -- runs every ALERT_CHECK_INTERVAL_S (default 300s), checks:
      - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map)
-     - ComEd 5-min price spike > PRICE_SPIKE_THRESHOLD_C cents
+     - ComEd price spikes as EPISODES (PriceSpikeTracker): one alert when the
+       5-min price first reaches PRICE_SPIKE_THRESHOLD_C, one more when it
+       climbs through each PRICE_SPIKE_BANDS_C band, one when it has been
+       below the threshold for PRICE_SPIKE_END_READINGS consecutive readings
+       (duration and peak in the text). A restart mid-episode emits one more
+       start, never a silent miss.
      - Fridge/freezer power anomaly vs 14-day baseline
      - HVAC device failures per class from `hvac.device_status`: the newest
        N attempts of a class ALL failures (read 3, write 3, crash 1)
@@ -21,12 +37,10 @@ Two background tasks:
      logged (`alert_muted`) and never sent. Operator knob for known-broken
      inputs (e.g. Eagle meter link, PJM credentials) while they are fixed.
 
-Reuses the Life Engine Telegram bot (same token + chat_id), so messages land in
-the same channel Chris already uses.
-
 Environment variables:
-    TELEGRAM_BOT_TOKEN          Bot token (from BotFather)
-    TELEGRAM_CHAT_ID            Chat to send to (numeric ID, possibly negative for groups)
+    INTAKE_URL                  The alert intake (default http://192.168.20.10:4014/alert)
+    PRICE_SPIKE_BANDS_C         Comma list of higher bands that re-alert once each (default "30,40")
+    PRICE_SPIKE_END_READINGS    Consecutive readings below threshold that end an episode (default 2)
     SUMMARY_HOUR                Hour-of-day to send daily summary (default 8 = 8 AM);
                                 -1 disables the daily summary entirely
     ALERT_CHECK_INTERVAL_S      Seconds between alert checks (default 300)
@@ -63,12 +77,13 @@ def log(level: str, msg: str, **fields: Any) -> None:
 
 @dataclass(frozen=True)
 class Config:
-    bot_token: str
-    chat_id: str
+    intake_url: str
     summary_hour: int
     alert_check_interval_s: int
     poller_silent_min: int
     price_spike_threshold_c: float
+    price_spike_bands_c: tuple[float, ...]
+    price_spike_end_readings: int
     alert_dedupe_min: int
     alert_mute_prefixes: tuple[str, ...]
     tz_name: str
@@ -86,12 +101,15 @@ class Config:
                 sys.exit(2)
             return v
         return Config(
-            bot_token=required("TELEGRAM_BOT_TOKEN"),
-            chat_id=required("TELEGRAM_CHAT_ID"),
+            intake_url=os.environ.get("INTAKE_URL", "http://192.168.20.10:4014/alert"),
             summary_hour=int(os.environ.get("SUMMARY_HOUR", "8")),
             alert_check_interval_s=int(os.environ.get("ALERT_CHECK_INTERVAL_S", "300")),
             poller_silent_min=int(os.environ.get("POLLER_SILENT_MIN", "10")),
             price_spike_threshold_c=float(os.environ.get("PRICE_SPIKE_THRESHOLD_C", "20")),
+            price_spike_bands_c=tuple(
+                float(b) for b in os.environ.get("PRICE_SPIKE_BANDS_C", "30,40").split(",") if b.strip()
+            ),
+            price_spike_end_readings=int(os.environ.get("PRICE_SPIKE_END_READINGS", "2")),
             alert_dedupe_min=int(os.environ.get("ALERT_DEDUPE_MIN", "30")),
             alert_mute_prefixes=tuple(
                 p.strip() for p in os.environ.get("ALERT_MUTE_PREFIXES", "").split(",") if p.strip()
@@ -104,23 +122,33 @@ class Config:
         )
 
 
-# ---- Telegram client -------------------------------------------------------
+# ---- The alert intake (the only destination) --------------------------------
 
-async def send_telegram(cfg: Config, text: str, parse_mode: str = "HTML") -> bool:
-    url = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
-    payload = {"chat_id": cfg.chat_id, "text": text, "parse_mode": parse_mode,
-               "disable_web_page_preview": True}
+async def post_intake(cfg: Config, alert: "Alert") -> bool:
+    """POST one alert to the Chief's intake. True on HTTP 200. The intake's
+    contract: docs/alert-intake.md in chris-brain."""
+    title = alert.title or alert.text.strip().split("\n", 1)[0]
+    payload = {
+        "source": "energy",
+        "kind": alert.kind,
+        "severity": alert.severity,
+        "title": title,
+        "body": alert.text,
+        "lane_hint": alert.lane,
+        "dedupe_key": alert.key,
+        "html": alert.html,
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload,
-                                     timeout=aiohttp.ClientTimeout(total=15)) as r:
+            async with session.post(cfg.intake_url, json=payload,
+                                     timeout=aiohttp.ClientTimeout(total=10)) as r:
                 ok = r.status == 200
                 if not ok:
                     body = await r.text()
-                    log("warn", "telegram_send_failed", status=r.status, body=body[:300])
+                    log("warn", "intake_post_failed", status=r.status, body=body[:300], key=alert.key)
                 return ok
     except Exception as exc:
-        log("warn", "telegram_send_error", error=str(exc), error_type=type(exc).__name__)
+        log("warn", "intake_post_error", error=str(exc), error_type=type(exc).__name__, key=alert.key)
         return False
 
 
@@ -455,8 +483,73 @@ def build_daily_summary(query_api: Any, bucket: str, tz: ZoneInfo) -> str:
 
 @dataclass(frozen=True)
 class Alert:
-    key: str   # dedupe key
-    text: str  # message body
+    key: str                 # dedupe key (unique per episode event for price spikes)
+    text: str                # message body
+    title: str = ""          # first line at the intake; defaults to the body's first line
+    lane: str = "chief"      # "chief": the Chief triages; "chris": pass-through to Telegram
+    severity: str = "warn"   # the sender's own word: warn, crit, ok, info
+    kind: str = "alert"      # "message" for the daily summary (sent verbatim)
+    html: bool = False       # chris lane only: title and body are Telegram HTML
+
+
+class PriceSpikeTracker:
+    """ComEd price spikes as episodes. update(price, now) returns the alerts
+    this reading earns: start, band crossings (once each, ascending), end."""
+
+    def __init__(self, threshold_c: float, bands_c: tuple[float, ...], end_readings: int) -> None:
+        self.threshold_c = threshold_c
+        self.bands_c = tuple(sorted(bands_c))
+        self.end_readings = max(1, end_readings)
+        self.active = False
+        self.start_at: datetime | None = None
+        self.peak = 0.0
+        self.below = 0
+        self.bands_hit: set[float] = set()
+
+    def update(self, price: float | None, now: datetime) -> list[Alert]:
+        if price is None:
+            return []
+        out: list[Alert] = []
+        if not self.active:
+            if price >= self.threshold_c:
+                self.active = True
+                self.start_at = now
+                self.peak = price
+                self.below = 0
+                self.bands_hit = set()
+                tag = now.strftime("%Y%m%dT%H%M%SZ")
+                out.append(Alert(key=f"price_spike:start:{tag}", lane="chris", severity="warn",
+                                 title=f"ComEd price spike: {price:.1f}¢/kWh",
+                                 text="Defer big loads if possible."))
+                out.extend(self._bands(price, tag))
+            return out
+        tag = (self.start_at or now).strftime("%Y%m%dT%H%M%SZ")
+        if price >= self.threshold_c:
+            self.below = 0
+            self.peak = max(self.peak, price)
+            out.extend(self._bands(price, tag))
+            return out
+        self.below += 1
+        if self.below >= self.end_readings:
+            minutes = int(((now - (self.start_at or now)).total_seconds()) // 60)
+            out.append(Alert(key=f"price_spike:end:{tag}", lane="chris", severity="ok",
+                             title=f"ComEd spike over: back to {price:.1f}¢/kWh",
+                             text=f"Lasted {minutes // 60}h{minutes % 60:02d}m, peak {self.peak:.1f}¢."))
+            self.active = False
+            self.start_at = None
+            self.below = 0
+            self.bands_hit = set()
+        return out
+
+    def _bands(self, price: float, tag: str) -> list[Alert]:
+        out: list[Alert] = []
+        for b in self.bands_c:
+            if price >= b and b not in self.bands_hit:
+                self.bands_hit.add(b)
+                out.append(Alert(key=f"price_spike:band:{b:g}:{tag}", lane="chris", severity="warn",
+                                 title=f"ComEd price now {price:.1f}¢/kWh, above {b:g}¢",
+                                 text=f"Peak so far {self.peak:.1f}¢."))
+        return out
 
 
 def check_poller_silence(query_api: Any, bucket: str, threshold_min: int) -> list[Alert]:
@@ -507,7 +600,7 @@ def filter_muted(alerts: list[Alert], prefixes: Sequence[str]) -> list[Alert]:
     return kept
 
 
-def check_price_spike(query_api: Any, bucket: str, threshold_c: float) -> list[Alert]:
+def check_price_spike(query_api: Any, bucket: str, tracker: PriceSpikeTracker, now: datetime) -> list[Alert]:
     flux = f'''
 from(bucket: "{bucket}")
   |> range(start: -15m)
@@ -520,12 +613,7 @@ from(bucket: "{bucket}")
     if not rows:
         return []
     price = rows[0].get("_value")
-    if price is not None and price >= threshold_c:
-        return [Alert(
-            key=f"price_spike:{int(price)}",
-            text=f"⚡ <b>ComEd price spike: {price:.1f}¢/kWh</b>\nDefer big loads if possible."
-        )]
-    return []
+    return tracker.update(price if price is None else float(price), now)
 
 
 def check_fridge_anomalies(query_api: Any, bucket: str) -> list[Alert]:
@@ -923,7 +1011,9 @@ async def daily_summary_loop(cfg: Config, query_api: Any, tz: ZoneInfo, stop: as
         # Fire summary
         try:
             text = build_daily_summary(query_api, cfg.influx_bucket, tz)
-            ok = await send_telegram(cfg, text)
+            ok = await post_intake(cfg, Alert(key=f"daily_summary:{now_local.date().isoformat()}", kind="message",
+                                              lane="chris", severity="info", html=True,
+                                              title="<b>Energy summary</b>", text=text))
             log("info", "daily_summary_sent", ok=ok)
         except Exception as exc:
             log("error", "daily_summary_failed", error=str(exc), error_type=type(exc).__name__)
@@ -935,26 +1025,48 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
     tz = ZoneInfo(cfg.tz_name)
     log("info", "alert_loop_starting", interval_s=cfg.alert_check_interval_s)
     last_sent: dict[str, datetime] = {}
+    tracker = PriceSpikeTracker(cfg.price_spike_threshold_c, cfg.price_spike_bands_c, cfg.price_spike_end_readings)
+    # Tracker alerts are one-shot (the tracker has already moved on), so they wait here
+    # until the intake takes them; the stateless checks simply re-emit next tick.
+    pending: list[Alert] = []
+
+    def run_check(name: str, fn: Any, *args: Any) -> list[Alert]:
+        try:
+            return list(fn(*args))
+        except Exception as exc:   # one failing check must not cost the others their tick
+            log("error", "alert_check_failed", check=name, error=str(exc), error_type=type(exc).__name__)
+            return []
+
     while not stop.is_set():
         try:
-            alerts: list[Alert] = []
-            alerts.extend(check_poller_silence(query_api, cfg.influx_bucket, cfg.poller_silent_min))
-            alerts.extend(check_price_spike(query_api, cfg.influx_bucket, cfg.price_spike_threshold_c))
-            alerts.extend(check_device_status_failures(query_api, cfg.influx_bucket))
-            alerts.extend(check_controller_down(query_api, cfg.influx_bucket))
-            alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
-            alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
-            alerts.extend(check_pjm_feed_failures(query_api, cfg.influx_bucket))
             now = datetime.now(timezone.utc)
+            pending.extend(run_check("price_spike", check_price_spike, query_api, cfg.influx_bucket, tracker, now))
+            alerts: list[Alert] = []
+            alerts.extend(run_check("poller_silence", check_poller_silence, query_api, cfg.influx_bucket, cfg.poller_silent_min))
+            alerts.extend(run_check("device_status", check_device_status_failures, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("controller_down", check_controller_down, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("fridge", check_fridge_anomalies, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("pjm_freshness", check_pjm_feed_freshness, query_api, cfg.influx_bucket, tz))
+            alerts.extend(run_check("pjm_failures", check_pjm_feed_failures, query_api, cfg.influx_bucket))
+
+            still_pending: list[Alert] = []
+            for a in pending:
+                if await post_intake(cfg, a):
+                    last_sent[a.key] = now
+                    log("info", "alert_sent", key=a.key, lane=a.lane)
+                else:
+                    still_pending.append(a)
+            pending = still_pending
+
             for a in filter_muted(alerts, cfg.alert_mute_prefixes):
                 if a.key in last_sent and (now - last_sent[a.key]).total_seconds() < cfg.alert_dedupe_min * 60:
                     continue
-                ok = await send_telegram(cfg, a.text)
+                ok = await post_intake(cfg, a)
                 if ok:
                     last_sent[a.key] = now
-                    log("info", "alert_sent", key=a.key)
+                    log("info", "alert_sent", key=a.key, lane=a.lane)
         except Exception as exc:
-            log("error", "alert_check_failed", error=str(exc), error_type=type(exc).__name__)
+            log("error", "alert_loop_failed", error=str(exc), error_type=type(exc).__name__)
         try:
             health_marker.touch()
         except Exception:
@@ -973,13 +1085,11 @@ async def main_async(cfg: Config) -> int:
         alert_check_interval_s=cfg.alert_check_interval_s,
         poller_silent_min=cfg.poller_silent_min,
         price_spike_threshold_c=cfg.price_spike_threshold_c,
-        chat_id=cfg.chat_id)
+        price_spike_bands_c=cfg.price_spike_bands_c,
+        intake_url=cfg.intake_url)
 
     influx = InfluxDBClient(url=cfg.influx_url, token=cfg.influx_token, org=cfg.influx_org)
     query_api = influx.query_api()
-
-    # Send startup ping so we know the channel works
-    await send_telegram(cfg, "🟢 <b>energy-stack telegram-notifier</b> started.")
 
     stop = asyncio.Event()
 
