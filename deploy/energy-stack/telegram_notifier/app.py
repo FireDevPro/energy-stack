@@ -1026,17 +1026,38 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
     log("info", "alert_loop_starting", interval_s=cfg.alert_check_interval_s)
     last_sent: dict[str, datetime] = {}
     tracker = PriceSpikeTracker(cfg.price_spike_threshold_c, cfg.price_spike_bands_c, cfg.price_spike_end_readings)
+    # Tracker alerts are one-shot (the tracker has already moved on), so they wait here
+    # until the intake takes them; the stateless checks simply re-emit next tick.
+    pending: list[Alert] = []
+
+    def run_check(name: str, fn: Any, *args: Any) -> list[Alert]:
+        try:
+            return list(fn(*args))
+        except Exception as exc:   # one failing check must not cost the others their tick
+            log("error", "alert_check_failed", check=name, error=str(exc), error_type=type(exc).__name__)
+            return []
+
     while not stop.is_set():
         try:
             now = datetime.now(timezone.utc)
+            pending.extend(run_check("price_spike", check_price_spike, query_api, cfg.influx_bucket, tracker, now))
             alerts: list[Alert] = []
-            alerts.extend(check_poller_silence(query_api, cfg.influx_bucket, cfg.poller_silent_min))
-            alerts.extend(check_price_spike(query_api, cfg.influx_bucket, tracker, now))
-            alerts.extend(check_device_status_failures(query_api, cfg.influx_bucket))
-            alerts.extend(check_controller_down(query_api, cfg.influx_bucket))
-            alerts.extend(check_fridge_anomalies(query_api, cfg.influx_bucket))
-            alerts.extend(check_pjm_feed_freshness(query_api, cfg.influx_bucket, tz))
-            alerts.extend(check_pjm_feed_failures(query_api, cfg.influx_bucket))
+            alerts.extend(run_check("poller_silence", check_poller_silence, query_api, cfg.influx_bucket, cfg.poller_silent_min))
+            alerts.extend(run_check("device_status", check_device_status_failures, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("controller_down", check_controller_down, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("fridge", check_fridge_anomalies, query_api, cfg.influx_bucket))
+            alerts.extend(run_check("pjm_freshness", check_pjm_feed_freshness, query_api, cfg.influx_bucket, tz))
+            alerts.extend(run_check("pjm_failures", check_pjm_feed_failures, query_api, cfg.influx_bucket))
+
+            still_pending: list[Alert] = []
+            for a in pending:
+                if await post_intake(cfg, a):
+                    last_sent[a.key] = now
+                    log("info", "alert_sent", key=a.key, lane=a.lane)
+                else:
+                    still_pending.append(a)
+            pending = still_pending
+
             for a in filter_muted(alerts, cfg.alert_mute_prefixes):
                 if a.key in last_sent and (now - last_sent[a.key]).total_seconds() < cfg.alert_dedupe_min * 60:
                     continue
@@ -1045,7 +1066,7 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
                     last_sent[a.key] = now
                     log("info", "alert_sent", key=a.key, lane=a.lane)
         except Exception as exc:
-            log("error", "alert_check_failed", error=str(exc), error_type=type(exc).__name__)
+            log("error", "alert_loop_failed", error=str(exc), error_type=type(exc).__name__)
         try:
             health_marker.touch()
         except Exception:
