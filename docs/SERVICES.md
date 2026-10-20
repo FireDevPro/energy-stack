@@ -531,7 +531,7 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 
 **Env:**
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — bot creds + recipient
-- `SUMMARY_HOUR` — hour-of-day for daily summary (default 8)
+- `SUMMARY_HOUR` — hour-of-day for daily summary (default 8); `-1` disables it
 - `ALERT_CHECK_INTERVAL_S` — seconds between alert checks (default 300)
 - `POLLER_SILENT_MIN` — minutes of silence before flagging a poller (default 10)
 - `PRICE_SPIKE_THRESHOLD_C` — ¢/kWh threshold for price-spike alert (default 20)

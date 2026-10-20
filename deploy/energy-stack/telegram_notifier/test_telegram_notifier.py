@@ -219,6 +219,16 @@ def test_config_mute_prefixes_default_empty(monkeypatch):
     assert app.Config.from_env().alert_mute_prefixes == ()
 
 
+def test_daily_summary_loop_exits_immediately_when_summary_hour_negative():
+    import asyncio
+    cfg = MagicMock(summary_hour=-1)
+    stop = asyncio.Event()
+    # Never-set stop event: without the disable guard this would sleep until
+    # the next summary hour. It must return at once with no query/send.
+    asyncio.run(asyncio.wait_for(
+        app.daily_summary_loop(cfg, None, ZoneInfo("America/Chicago"), stop), timeout=2))
+
+
 # ---- check_price_spike ----------------------------------------------------
 
 
