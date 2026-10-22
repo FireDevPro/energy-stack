@@ -16,7 +16,13 @@ Two background tasks:
      a formatted summary message: yesterday's usage, today's stats so far,
      HVAC scheduler activity, tomorrow's forecast.
   2. Alert checker -- runs every ALERT_CHECK_INTERVAL_S (default 300s), checks:
-     - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map)
+     - Any poller silent > POLLER_SILENT_MIN minutes (per-poller tolerance map),
+       except comed-poller, which is tracked as an OUTAGE (FeedOutageTracker,
+       Chris 2026-10-21): one "ComEd price feed down" alert (warn) the first
+       tick its silence passes COMED_SILENT_TOL_MIN, nothing while it lasts,
+       one "ComEd price feed back" alert (ok) the first tick data lands again.
+       Both carry dedupe key silent:comed-poller so the Chief pairs them. A
+       restart mid-outage emits one more down alert, never a silent miss.
      - ComEd price spikes as EPISODES (PriceSpikeTracker): one alert when the
        5-min price first reaches PRICE_SPIKE_THRESHOLD_C, one more when it
        climbs through each PRICE_SPIKE_BANDS_C band, one when it has been
@@ -412,26 +418,31 @@ def poller_last_writes(query_api: Any, bucket: str) -> dict[str, datetime | None
         # heartbeats inside the lookback window.
         ("pjm.poller_heartbeat", "pjm-dm2-poller"),
     ]
-    out: dict[str, datetime | None] = {}
-    for meas, name in measurements:
-        flux = f'''
+    return {name: measurement_last_write(query_api, bucket, meas) for meas, name in measurements}
+
+
+LAST_WRITE_LOOKBACK_H = 3
+
+
+def measurement_last_write(query_api: Any, bucket: str, measurement: str) -> datetime | None:
+    """Newest write to one measurement inside the LAST_WRITE_LOOKBACK_H window (UTC), or None."""
+    flux = f'''
 from(bucket: "{bucket}")
-  |> range(start: -3h)
-  |> filter(fn: (r) => r._measurement == "{meas}")
+  |> range(start: -{LAST_WRITE_LOOKBACK_H}h)
+  |> filter(fn: (r) => r._measurement == "{measurement}")
   |> last()
   |> keep(columns: ["_time"])
 '''
-        # |> last() returns ONE row per series. Multi-series measurements
-        # like comed.prices (period_type=5min AND period_type=hourly_avg)
-        # yield N rows where N = distinct series count. Take the MAX
-        # `_time` across rows so a poller counts as "writing" if ANY of
-        # its series is recent. Picking rows[0] arbitrarily would catch
-        # a stale series like hourly_avg (written once per hour) and
-        # produce false "silent for 27 min" alerts.
-        rows = fetch_one(query_api, flux)
-        times = [t for t in (r.get("_time") for r in rows) if t is not None]
-        out[name] = max(times) if times else None
-    return out
+    # |> last() returns ONE row per series. Multi-series measurements
+    # like comed.prices (period_type=5min AND period_type=hourly_avg)
+    # yield N rows where N = distinct series count. Take the MAX
+    # `_time` across rows so a poller counts as "writing" if ANY of
+    # its series is recent. Picking rows[0] arbitrarily would catch
+    # a stale series like hourly_avg (written once per hour) and
+    # produce false "silent for 27 min" alerts.
+    rows = fetch_one(query_api, flux)
+    times = [t for t in (r.get("_time") for r in rows) if t is not None]
+    return max(times) if times else None
 
 
 # ---- Daily summary ---------------------------------------------------------
@@ -552,11 +563,77 @@ class PriceSpikeTracker:
         return out
 
 
+# ComEd's API answers every 60 s; 25 min of silence is ~25 missed polls, far
+# past a backend hiccup, so the first tick past it is the outage being real.
+COMED_SILENT_TOL_MIN = 25
+
+# Pollers whose silence is an outage episode (FeedOutageTracker), not a
+# re-ringing stateless alert. check_poller_silence skips them.
+OUTAGE_TRACKED_POLLERS = frozenset({"comed-poller"})
+
+
+class FeedOutageTracker:
+    """One poller's silence as an OUTAGE (Chris, 2026-10-21, ComEd feed only).
+    update(last_write, now) returns the alerts this tick earns: one down alert
+    (severity warn) the first tick the silence passes the tolerance, nothing
+    while it lasts, one recovery alert (severity ok) the first tick a fresh
+    write lands. Both use key silent:<poller> so the Chief pairs them. State is
+    in memory: a restart mid-outage emits one more down, never a silent miss."""
+
+    def __init__(self, poller: str, label: str, tolerance_min: float, tz: ZoneInfo) -> None:
+        self.poller = poller
+        self.label = label
+        self.tolerance_min = tolerance_min
+        self.tz = tz
+        self.down = False
+        self.last_good: datetime | None = None   # newest write before the outage, if inside the look-back
+
+    def _at(self, ts: datetime) -> str:
+        return ts.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z")
+
+    def update(self, last_write: datetime | None, now: datetime) -> list[Alert]:
+        key = f"silent:{self.poller}"
+        if last_write is not None and (now - last_write).total_seconds() / 60 <= self.tolerance_min:
+            if not self.down:
+                return []
+            self.down = False
+            start, self.last_good = self.last_good, None
+            if start is None:
+                span = f"it began before the notifier's {LAST_WRITE_LOOKBACK_H}-hour look-back."
+            else:
+                gap = int((last_write - start).total_seconds() // 60)
+                span = (f"silent from {self._at(start)}, about {gap // 60}h{gap % 60:02d}m "
+                        f"(to within one check interval).")
+            return [Alert(key=key, severity="ok", title=f"{self.label} back ({self.poller})",
+                          text=f"Data resumed; newest point {self._at(last_write)}. The outage: {span}")]
+        if self.down:
+            return []
+        self.down = True
+        self.last_good = last_write
+        if last_write is None:
+            detail = (f"No data in the notifier's {LAST_WRITE_LOOKBACK_H}-hour look-back, "
+                      f"so the outage began before that.")
+        else:
+            age_min = (now - last_write).total_seconds() / 60
+            detail = (f"No data for {age_min:.0f} min (tolerance {self.tolerance_min:g} min); "
+                      f"last data {self._at(last_write)}.")
+        return [Alert(key=key, severity="warn", title=f"{self.label} down ({self.poller})",
+                      text=f"{detail} One alert per outage: the next alert on this key is the recovery.")]
+
+
+def check_comed_feed(query_api: Any, bucket: str, tracker: FeedOutageTracker, now: datetime) -> list[Alert]:
+    """Feed the ComEd outage tracker the comed.prices last write. A failed query
+    raises before the tracker moves, so an Influx hiccup is neither down nor back."""
+    return tracker.update(measurement_last_write(query_api, bucket, "comed.prices"), now)
+
+
 def check_poller_silence(query_api: Any, bucket: str, threshold_min: int) -> list[Alert]:
     last_writes = poller_last_writes(query_api, bucket)
     now = datetime.now(timezone.utc)
     out: list[Alert] = []
     for poller, last_ts in last_writes.items():
+        if poller in OUTAGE_TRACKED_POLLERS:
+            continue            # one down + one back per outage, from its FeedOutageTracker
         if last_ts is None:
             out.append(Alert(
                 key=f"silent:{poller}",
@@ -571,8 +648,8 @@ def check_poller_silence(query_api: Any, bucket: str, threshold_min: int) -> lis
         # Native intervals: comed 60s, refoss 30s, eagle 30s, nws 30 min, thermostat 10 min.
         # ComfortNet has no fixed interval (event-driven by bus traffic);
         # observed idle rate is one furnace decode every ~5 min.
+        # comed-poller is not here: it is outage-tracked (COMED_SILENT_TOL_MIN).
         tol = {
-            "comed-poller": 25,        # 60s × 25 = lots of buffer for ComEd backend hiccups
             "refoss-poller": threshold_min,  # default 10 min for sub-minute pollers
             "eagle-poller": threshold_min,
             "nws-poller": 70,          # 30 min × 2 + buffer; one miss is fine, two = real
@@ -1026,8 +1103,10 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
     log("info", "alert_loop_starting", interval_s=cfg.alert_check_interval_s)
     last_sent: dict[str, datetime] = {}
     tracker = PriceSpikeTracker(cfg.price_spike_threshold_c, cfg.price_spike_bands_c, cfg.price_spike_end_readings)
+    comed_feed = FeedOutageTracker("comed-poller", "ComEd price feed", COMED_SILENT_TOL_MIN, tz)
     # Tracker alerts are one-shot (the tracker has already moved on), so they wait here
-    # until the intake takes them; the stateless checks simply re-emit next tick.
+    # until the intake takes them, outside the dedupe window (a short outage's down and
+    # back share a key); the stateless checks simply re-emit next tick.
     pending: list[Alert] = []
 
     def run_check(name: str, fn: Any, *args: Any) -> list[Alert]:
@@ -1041,6 +1120,8 @@ async def alert_loop(cfg: Config, query_api: Any, stop: asyncio.Event) -> None:
         try:
             now = datetime.now(timezone.utc)
             pending.extend(run_check("price_spike", check_price_spike, query_api, cfg.influx_bucket, tracker, now))
+            pending.extend(filter_muted(run_check("comed_feed", check_comed_feed, query_api, cfg.influx_bucket,
+                                                  comed_feed, now), cfg.alert_mute_prefixes))
             alerts: list[Alert] = []
             alerts.extend(run_check("poller_silence", check_poller_silence, query_api, cfg.influx_bucket, cfg.poller_silent_min))
             alerts.extend(run_check("device_status", check_device_status_failures, query_api, cfg.influx_bucket))
