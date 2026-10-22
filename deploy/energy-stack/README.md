@@ -32,7 +32,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → `ch1_*` (canonical analysis field per spec §6) + gateway alias `outdoor_*` (descriptive), WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker; posts to the Chief's alert intake (pi-lab:4014), not Telegram, since 2026-10-20; price spikes are episode alerts (start / band / end) | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
-| `loki` | Log storage (7-day retention) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
+| `loki` | Debug log store (7-day retention; read on demand, no service depends on it) | 3100 | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `promtail` | Container log shipper → Loki | — | [SERVICES.md#loki--promtail](../../docs/SERVICES.md#loki--promtail) |
 | `mosquitto` | MQTT broker for ComfortNet pipeline (TLS, profile=mqtt) | 8883 | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |
 | `mosquitto-init` | Generates broker password file from env vars (one-shot) | — | [COMFORTNET_USE_CASES.md](../../docs/COMFORTNET_USE_CASES.md) · [comfortnet repo](https://github.com/Promithius-DR/comfortnet) |
@@ -180,7 +180,7 @@ The wrapper invokes mypy per-target (each service in `service_dirs`, plus `cockp
 |---|---|---|
 | 8086 | InfluxDB API + UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 | 3000 | Grafana UI | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
-| 3100 | Loki (Grafana + cockpit query it via container network) | Reachable on the homelab 192.168.20.x subnet (used by the workstation dev cockpit per `cockpit/.env.example`) + Pi-lab localhost |
+| 3100 | Loki (ad-hoc debug queries; Grafana reads it via container network when its profile is up) | Reachable on the homelab 192.168.20.x subnet + Pi-lab localhost |
 | 8088 | ecowitt-ingest HTTP receiver | LAN — GW1200B pushes here every 60 s |
 | 8765 | cockpit (Controller Cockpit UI + API) | Trusted VLAN 10 (ZBF: Trusted→Homelab), Pi-lab localhost |
 
