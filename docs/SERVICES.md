@@ -522,6 +522,7 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 - **Daily summary** at 8 AM local (HTML-formatted): yesterday's cost, kWh, peak demand, fridge anomaly check, HVAC schedule fired, weather forecast for today.
 - **Alerts**, checked every 5 min (deduplicated 30 min):
   - **Poller silent**: no recent write to its measurement, per-poller tolerance — sub-minute pollers default 10 min, NWS 70 min, thermostat / comfortnet-publisher 30 min, pjm-dm2-poller 130 min (hourly heartbeat, two missed cycles fire).
+  - **ComEd price feed outage** (comed-poller only, since 2026-10-21): exactly two alerts per outage instead of a re-ring every 30 min. `ComEd price feed down (comed-poller)`, severity `warn`, the first check after `comed.prices` has been silent more than 25 min; nothing while it stays down; `ComEd price feed back (comed-poller)`, severity `ok`, the first check after data lands again, with the outage span in the body. Both carry dedupe key `silent:comed-poller` (the mute prefix still applies). State is in memory, so a notifier restart mid-outage sends one more down alert.
   - **Price spike**: current 5-min ComEd price > `$TELEGRAM_PRICE_SPIKE_C` ¢/kWh.
   - **Fridge anomaly**: recent-6h mean > 1.5× and Δ > 50 W vs. 14-day baseline.
   - **HVAC scheduler errors**: latest `hvac.actions` row in the last hour with a non-skip error.
