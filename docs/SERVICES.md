@@ -26,7 +26,7 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
 - [ecowitt-ingest](#ecowitt-ingest) — Ecowitt GW1200 push receiver (`ecowitt.weather`)
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
-- [loki & promtail](#loki--promtail) — log aggregation
+- [loki & promtail](#loki--promtail) — debug log store (read on demand; no service depends on it)
 - [mosquitto, mosquitto-init, telegraf](#mosquitto-mosquitto-init-telegraf-comfortnet-pipeline-profile-mqtt) — ComfortNet MQTT pipeline (profile `mqtt`)
 
 ---
@@ -127,11 +127,11 @@ Design: [`docs/INFLUXDB_RETENTION.md`](INFLUXDB_RETENTION.md).
 
 ## grafana
 
-> **Deployed but UNUSED (2026-07).** Grafana is no longer the visualization layer — the live UI is the **surface-kiosk** wall display (custom weather board + Vigil cockpit). See [DASHBOARDS.md](DASHBOARDS.md). The container still runs; this section documents it for reference (removal candidate).
+> **Deployed but UNUSED (2026-07).** Grafana is no longer the visualization layer — the live UI is the **surface-kiosk** wall display (custom weather board + Vigil cockpit). See [DASHBOARDS.md](DASHBOARDS.md). Since 2026-09-13 it sits behind the compose `grafana` profile, so a plain `up -d` leaves it stopped; this section documents it for reference (removal candidate).
 
 Image: `grafana/grafana-oss:11.4.0` · Port: `3000` · Volumes: `grafana_data`, `./grafana/provisioning:ro`, `./grafana/dashboards:ro`
 
-InfluxDB and Loki provisioned as datasources (read-only via `editable: false`). Five dashboards provisioned from disk (`grafana/dashboards/`):
+InfluxDB and Loki provisioned as datasources (read-only via `editable: false`); start with `docker compose --profile grafana up -d grafana` to use Explore against Loki. Five dashboards provisioned from disk (`grafana/dashboards/`):
 
 Dashboards are maintained in the separate [FireDevPro/grafana-dashboards](https://github.com/FireDevPro/grafana-dashboards) repo (mounted on the Pi at `/opt/grafana-dashboards`); listed here for reference only.
 
@@ -158,12 +158,10 @@ Dashboards are maintained in the separate [FireDevPro/grafana-dashboards](https:
 
 Build: `./cockpit` (multi-stage: Node builds the Vite frontend, Python runtime serves it) · Port: `8765`
 
-Controller Cockpit — read-only narrative HVAC dashboard at `http://192.168.20.10:8765/`. One container serves both the FastAPI proxy (`/api/snapshot`, `/api/health`, `/api/day_ahead`, `/api/today_actions`, `/api/day_at_a_glance`) and the production frontend build, same-origin. Assembles its snapshot from existing `hvac.*` Influx measurements and `decision_trace.*` Loki logs; no writes, no control-path surface. Full detail in [`deploy/energy-stack/cockpit/README.md`](../deploy/energy-stack/cockpit/README.md), including the workstation dev loop.
+The Vigil — read-only rev-4.1 wall board at `http://192.168.20.10:8765/`. One container serves the FastAPI polls (`/api/health`, `/api/vigil/now`, `/api/vigil/timeline`, `/api/vigil/events`) and the single-file frontend, same-origin. Reads InfluxDB only (rev-4 `hvac.*`, `comed.prices`, `ecowitt.weather`); no Loki dependency, no writes, no control-path surface. Tier thresholds come from a read-only mount of the controller's `commissioning-controller.yaml`. Full detail in [`deploy/energy-stack/cockpit/README.md`](../deploy/energy-stack/cockpit/README.md), including the workstation dev loop.
 
 **Env:**
-- `COCKPIT_BACKEND_MODE=live` — live Influx/Loki assembly (`canned` serves the offline fixture)
 - `INFLUXDB_URL`, `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` — Influx reads
-- `LOKI_URL` (+ optional `LOKI_CONTAINER`, default `hvac-scheduler`) — decision-trace reads
 
 **Healthcheck:** `GET /api/health` every 30 s.
 
@@ -548,11 +546,13 @@ Single-bot Telegram client (`@EnergyStackBot`, separate from any other Telegram 
 
 ## loki & promtail
 
-Images: `grafana/loki:3.3.2`, `grafana/promtail:3.3.2` · Loki port: `3100` (Pi-localhost only) · Volumes: `loki_data`, `promtail_positions`, `/var/lib/docker/containers:ro`, `/var/run/docker.sock:ro`
+Images: `grafana/loki:3.3.2`, `grafana/promtail:3.3.2` · Loki port: `3100` (published on all Pi interfaces) · Volumes: `loki_data`, `promtail_positions`, `/var/lib/docker/containers:ro`, `/var/run/docker.sock:ro`
+
+**Role: debug log store, read on demand. No service depends on it.** It is the only container-log history that survives a deploy (a `deploy/**` merge recreates containers, which wipes `docker logs`). Readers are humans and AI sessions doing health checks or incident digs; the cockpit and controller never query it.
 
 Single-node Loki, 7-day retention, tsdb v13 schema, filesystem storage. Promtail uses Docker service discovery filtered to `com.docker.compose.project=energy-stack` so it only ships logs from this stack's containers (not all Docker activity on the Pi).
 
-JSON parsing pipeline lifts `level` and `msg` fields from each log line as Loki labels, so Grafana Explore queries can filter by `{compose_service="hvac-scheduler", level="error"}`.
+Labels: `service` (compose service name), `container`, `project`, `stream`. The JSON parsing stage extracts `level` and `msg` but only promotes `level` to a label, so queries can filter by `{service="hvac-scheduler", level="error"}`.
 
 **No env on either container** — config files mount-mounted from `loki/loki-config.yml` and `promtail/promtail-config.yml`.
 
@@ -561,12 +561,18 @@ JSON parsing pipeline lifts `level` and `msg` fields from each log line as Loki 
 **Querying logs:**
 
 ```logql
-{compose_service="hvac-scheduler"}                       # all logs from one service
-{compose_service="hvac-scheduler", level="error"}         # only errors
-{compose_service=~"eagle-poller|refoss-poller"} |= "fail" # multi-service grep
+{service="hvac-scheduler"}                       # all logs from one service
+{project="energy-stack", level="error"}          # errors across the whole stack
+{service=~"eagle-poller|refoss-poller"} |= "fail" # multi-service grep
 ```
 
-Available in Grafana → Explore → Loki datasource.
+With Grafana stopped, query the HTTP API directly from Pi-lab:
+
+```bash
+curl -sG localhost:3100/loki/api/v1/query_range   --data-urlencode 'query={project="energy-stack", level="error"}'   --data-urlencode 'since=24h' --data-urlencode 'limit=200'
+```
+
+Or Grafana → Explore → Loki datasource, after starting Grafana with its profile.
 
 ---
 

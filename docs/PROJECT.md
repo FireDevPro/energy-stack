@@ -135,7 +135,7 @@ Ecowitt GW1200 (push, ~60s) ────────┤    ecowitt / thermostat 
 Thermostat client → CTK04AE (10min) ─┘   hvac-scheduler + watchdog)
 ```
 
-Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (log aggregation), `influx-init` (one-shot retention/downsample setup), the read-only **Controller Cockpit** (`cockpit`, :8765), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. Per-service detail in [`docs/SERVICES.md`](SERVICES.md).
+Plus ancillary services in the same compose project: `telegram-notifier` (daily summary at 08:00 + 5-min alert checker), `loki` + `promtail` (debug log store, read on demand; no service depends on it), `influx-init` (one-shot retention/downsample setup), the read-only **Controller Cockpit** (`cockpit`, :8765), and a `mqtt` profile (`mosquitto` + `telegraf`) for the ComfortNet pipeline. Per-service detail in [`docs/SERVICES.md`](SERVICES.md).
 
 All pollers run as containers in the `energy-stack` Docker compose project on
 Pi-lab. Each is a small Python service that calls one upstream and writes to
@@ -306,6 +306,8 @@ The retained apparatus describes a deterministic-alternation comparison of the C
 
 ### Controller Cockpit ✅ (May 2026; moved to Pi-lab 2026-06-11)
 Read-only dashboard at [`deploy/energy-stack/cockpit/`](../deploy/energy-stack/cockpit/), deployed as the `cockpit` compose service on Pi-lab: one container serves the FastAPI proxy (live InfluxDB + Loki) and the production frontend build same-origin on `:8765`. Renders the `decision_trace.*` events the controller emits as a real-time flow board (the flow stages — Weather → Day Type → Schedule / RTP Spike / 5CP → Winner → Supervisor → Action — reflect the old day-type/supervisor controller; the rev 4 cutover changed the telemetry event names and `hvac.actions` shape, so the flow board and several panels are **expectedly broken** pending the cockpit rebuild, which conforms to rev 4 telemetry). Surfaces `hvac.heartbeat` controller liveness, ComEd 5-min price tier, and a feed-health strip for the upstream measurements the controller depends on. Snapshot contract paired with backend pytest (30 cases). Read-only by design — no setpoint writes back to the controller. Originally workstation-local (Vite dev server + one-click launcher); the launcher remains as the dev loop. Companion to the daily decision-trace report (live-tape vs end-of-day-tape).
+
+> Superseded July 2026 by **The Vigil** (rev 4.1): reads InfluxDB only, no Loki dependency. Current detail in [`deploy/energy-stack/cockpit/README.md`](../deploy/energy-stack/cockpit/README.md).
 
 ### Phase 12 — Rev 4 Spike-Only Controller ✅ (July 2026)
 
