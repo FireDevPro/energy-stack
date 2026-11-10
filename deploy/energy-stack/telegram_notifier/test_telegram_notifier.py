@@ -27,10 +27,13 @@ import pytest
 from . import app
 from .app import (
     Alert,
+    COMED_SILENT_TOL_MIN,
     Config,
+    FeedOutageTracker,
     PJM_FEED_SLAS,
     PriceSpikeTracker,
     post_intake,
+    check_comed_feed,
     check_controller_down,
     check_device_status_failures,
     check_pjm_feed_failures,
@@ -341,7 +344,7 @@ async def test_tracker_alerts_survive_a_failed_post_and_a_raising_check(monkeypa
 
     monkeypatch.setattr(app, "post_intake", fake_post)
     for name in ("check_poller_silence", "check_controller_down", "check_fridge_anomalies",
-                 "check_pjm_feed_freshness", "check_pjm_feed_failures"):
+                 "check_pjm_feed_freshness", "check_pjm_feed_failures", "check_comed_feed"):
         monkeypatch.setattr(app, name, lambda *a, **k: [])
     ticks = {"n": 0}
 
@@ -362,6 +365,137 @@ async def test_tracker_alerts_survive_a_failed_post_and_a_raising_check(monkeypa
     await task
     starts = [k for k in posted if k.startswith("price_spike:start:")]
     assert len(starts) == 1, posted            # the one start reached the intake, exactly once
+
+# ---- ComEd feed outage: one down, one back (Chris, 2026-10-21) --------------
+
+OUTAGE_LAST_GOOD = datetime(2026, 10, 21, 17, 8, tzinfo=timezone.utc)    # 12:08 PM CDT, last poll_ok
+OUTAGE_RESUMED = datetime(2026, 10, 22, 2, 16, tzinfo=timezone.utc)      # 9:16 PM CDT, first poll_ok after
+
+
+def F() -> FeedOutageTracker:
+    return FeedOutageTracker("comed-poller", "ComEd price feed", COMED_SILENT_TOL_MIN, CHICAGO)
+
+
+def test_feed_outage_replay_of_2026_10_21_is_exactly_two_alerts():
+    """The real outage: 18 re-rings under two wordings and no recovery. Replayed at the 5-min tick
+    with measurement_last_write's 3-hour look-back (None after it), it is one down and one back."""
+    t = F()
+    out: list[tuple[datetime, Alert]] = []
+    tick = OUTAGE_LAST_GOOD + timedelta(seconds=30)
+    while tick < OUTAGE_RESUMED + timedelta(minutes=30):
+        if tick >= OUTAGE_RESUMED:
+            last = tick - timedelta(seconds=20)
+        elif tick - OUTAGE_LAST_GOOD <= timedelta(hours=3):
+            last = OUTAGE_LAST_GOOD
+        else:
+            last = None
+        out.extend((tick, a) for a in t.update(last, tick))
+        tick += timedelta(minutes=5)
+    assert [(a.severity, a.title) for _, a in out] == [
+        ("warn", "ComEd price feed down (comed-poller)"),
+        ("ok", "ComEd price feed back (comed-poller)"),
+    ]
+    (down_at, down), (back_at, back) = out
+    assert down.key == back.key == "silent:comed-poller"
+    assert down.lane == back.lane == "chief" and down.kind == back.kind == "alert"
+    assert down_at == OUTAGE_LAST_GOOD + timedelta(minutes=25, seconds=30)    # first tick past 25 min
+    assert down.text.startswith("No data for 26 min (tolerance 25 min); last data 2026-10-21 12:08 CDT.")
+    assert back_at - OUTAGE_RESUMED < timedelta(minutes=5)                     # first tick after it resumed
+    assert "silent from 2026-10-21 12:08 CDT, about 9h" in back.text
+
+
+def test_feed_outage_tolerance_is_exclusive_and_fresh_is_quiet():
+    t, now = F(), OUTAGE_LAST_GOOD
+    assert t.update(now - timedelta(minutes=COMED_SILENT_TOL_MIN), now) == []
+    assert t.update(now - timedelta(seconds=10), now) == []                    # healthy, never down: no "back"
+    assert len(t.update(now - timedelta(minutes=COMED_SILENT_TOL_MIN, seconds=1), now)) == 1
+
+
+def test_feed_outage_flap_is_a_new_outage():
+    t, now = F(), OUTAGE_LAST_GOOD
+    sev = [a.severity for a in t.update(now - timedelta(minutes=30), now)]
+    sev += [a.severity for a in t.update(now, now)]
+    sev += [a.severity for a in t.update(now, now + timedelta(minutes=40))]
+    sev += [a.severity for a in t.update(now + timedelta(minutes=45), now + timedelta(minutes=46))]
+    assert sev == ["warn", "ok", "warn", "ok"]
+
+
+def test_feed_outage_restart_mid_outage_emits_one_down_and_an_honest_back():
+    """A restart loses state; past the look-back the down cannot name the start, and neither can the back."""
+    t = F()
+    down = t.update(None, OUTAGE_RESUMED - timedelta(hours=1))
+    assert [a.severity for a in down] == ["warn"]
+    assert "3-hour look-back" in down[0].text
+    assert t.update(None, OUTAGE_RESUMED - timedelta(minutes=30)) == []
+    back = t.update(OUTAGE_RESUMED, OUTAGE_RESUMED + timedelta(minutes=2))
+    assert [a.severity for a in back] == ["ok"]
+    assert "newest point 2026-10-21 21:16 CDT" in back[0].text and "began before" in back[0].text
+
+
+def test_check_comed_feed_reads_comed_prices_and_a_failed_query_moves_nothing(monkeypatch):
+    t = F()
+    seen: list[str] = []
+
+    def stale(q: Any, flux: str) -> list[dict[str, Any]]:
+        seen.append(flux)
+        return [{"_time": OUTAGE_LAST_GOOD}]
+
+    monkeypatch.setattr(app, "fetch_one", stale)
+    assert [a.severity for a in check_comed_feed(MagicMock(), "energy", t, OUTAGE_LAST_GOOD + timedelta(hours=1))] == ["warn"]
+    assert 'r._measurement == "comed.prices"' in seen[0]
+
+    def boom(q: Any, flux: str) -> list[dict[str, Any]]:
+        raise RuntimeError("influx down")
+
+    monkeypatch.setattr(app, "fetch_one", boom)
+    with pytest.raises(RuntimeError):
+        check_comed_feed(MagicMock(), "energy", t, OUTAGE_RESUMED)
+    assert t.down is True                                                      # an Influx hiccup is not a recovery
+
+
+def test_check_poller_silence_leaves_comed_to_its_outage_tracker(monkeypatch):
+    monkeypatch.setattr(app, "poller_last_writes",
+                        lambda q, b: _last_writes(stale_minutes_ago={"comed-poller": 600, "eagle-poller": 11}))
+    assert [a.key for a in check_poller_silence(MagicMock(), "energy", threshold_min=10)] == ["silent:eagle-poller"]
+    monkeypatch.setattr(app, "poller_last_writes", lambda q, b: _last_writes(missing_pollers=["comed-poller"]))
+    assert check_poller_silence(MagicMock(), "energy", threshold_min=10) == []
+
+
+async def _run_loop_with_comed(monkeypatch: pytest.MonkeyPatch, emits: list[list[Alert]], **cfg_over: Any) -> list[tuple[str, str]]:
+    import asyncio
+    posted: list[tuple[str, str]] = []
+
+    async def fake_post(cfg: Config, alert: Alert) -> bool:
+        posted.append((alert.key, alert.severity))
+        return True
+
+    monkeypatch.setattr(app, "post_intake", fake_post)
+    for name in ("check_price_spike", "check_poller_silence", "check_device_status_failures",
+                 "check_controller_down", "check_fridge_anomalies", "check_pjm_feed_freshness",
+                 "check_pjm_feed_failures"):
+        monkeypatch.setattr(app, name, lambda *a, **k: [])
+    seq = iter(emits)
+    monkeypatch.setattr(app, "check_comed_feed", lambda q, b, tracker, now: next(seq, []))
+    stop = asyncio.Event()
+    task = asyncio.create_task(app.alert_loop(_cfg(alert_check_interval_s=1, **cfg_over), MagicMock(), stop))
+    await asyncio.sleep(1.5)
+    stop.set()
+    await task
+    return posted
+
+
+async def test_alert_loop_short_outage_posts_down_and_back_inside_the_dedupe_window(monkeypatch):
+    down = Alert(key="silent:comed-poller", severity="warn", title="ComEd price feed down (comed-poller)", text="d")
+    back = Alert(key="silent:comed-poller", severity="ok", title="ComEd price feed back (comed-poller)", text="b")
+    posted = await _run_loop_with_comed(monkeypatch, [[down], [back]])
+    assert posted == [("silent:comed-poller", "warn"), ("silent:comed-poller", "ok")]
+
+
+async def test_alert_loop_mute_prefix_still_silences_the_comed_feed(monkeypatch):
+    down = Alert(key="silent:comed-poller", severity="warn", title="t", text="d")
+    posted = await _run_loop_with_comed(monkeypatch, [[down]], alert_mute_prefixes=("silent:comed-poller",))
+    assert posted == []
+
 
 # ---- the intake is the only destination ------------------------------------
 
@@ -444,7 +578,8 @@ async def test_alert_loop_posts_by_lane_and_keeps_failed_keys(monkeypatch):
 
     monkeypatch.setattr(app, "post_intake", fake_post)
     for name in ("check_poller_silence", "check_device_status_failures", "check_controller_down",
-                 "check_fridge_anomalies", "check_pjm_feed_freshness", "check_pjm_feed_failures"):
+                 "check_fridge_anomalies", "check_pjm_feed_freshness", "check_pjm_feed_failures",
+                 "check_comed_feed"):
         monkeypatch.setattr(app, name, lambda *a, **k: [])
     monkeypatch.setattr(app, "check_poller_silence", lambda *a, **k: [Alert(key="silent:x", text="x silent")])
     spike_once = iter([[Alert(key="price_spike:start:s", text="d", title="t", lane="chris")]])   # a tracker emits a start once
