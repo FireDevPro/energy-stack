@@ -334,7 +334,7 @@ record in the spec's Go-active section.
 
 - **Commissioning controller — ✅ DONE (rev 4.1 live in production 2026-07-06)**: spec rev 4.1 + 15-task plan executed across PRs #114–#121; rev 3 deleted; live validation record in the spec's Go-active section. The arm apparatus (`arm_calendar`, `hvac.arm_mode`, watchdog) is retained for the deferred 2027 Arm-A-vs-Arm-B comparison.
 - **Cockpit rebuild + daily decision-trace report refresh**: both consume rev-3 telemetry event names and are expectedly broken since the rev 4 cutover; rebuild conforms to rev 4 (`decision_trace.rev4_tick`, reshaped `hvac.actions`, 3-tier `hvac.price_overlay`).
-- **SOPS `.env` resync**: `deploy/energy-stack/secrets/env.sops.env` is stale (pre-production values, missing TCC creds); re-encrypt the live Pi `.env`.
+- **SOPS `.env` resync** ✅ DONE 2026-11-18: `secrets/env.sops.env` re-encrypted from the live Pi `.env` (all key=value pairs verified identical on decrypt), after the dead HAVEN cloud vars were removed.
 - **haven-ingest auth** ✅ RETIRED 2026-11-18: haven-ingest polls the monitor's local HTTP API; no Auth0 token any more.
 - **Knowledge graph rebuild + ONBOARDING regeneration** ✅ DONE 2026-07-07: graph rebuilt against the post-cleanup tree (621 nodes / 941 edges / 8 layers at db0bfe7); [docs/ONBOARDING.md](ONBOARDING.md) regenerated (prior version archived).
 - **Open live validations (backstopped, unit-tested)**: zombie-release on a real power event; RH-guard fire on a humid hold (or via temporary `rh_max_pct` lowering).
