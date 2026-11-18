@@ -130,7 +130,7 @@ ComEd Pricing API (public, 60s) ────┤
 Refoss EM16P (local HTTP, 30s) ─────┤   Pi-lab (192.168.20.10)
 NWS forecast (public, 30min) ───────┼──► energy-stack compose ──► InfluxDB ──► Grafana
 PJM Data Miner 2 (public, per-feed)─┤   (eagle / comed / refoss /     (storage)    (dashboards)
-HAVEN IAQ API (cloud, 5min) ────────┤    nws / pjm-dm2 / haven /
+HAVEN monitor (local HTTP, 5min) ───┤    nws / pjm-dm2 / haven /
 Ecowitt GW1200 (push, ~60s) ────────┤    ecowitt / thermostat /
 Thermostat client → CTK04AE (10min) ─┘   hvac-scheduler + watchdog)
 ```
@@ -335,7 +335,7 @@ record in the spec's Go-active section.
 - **Commissioning controller — ✅ DONE (rev 4.1 live in production 2026-07-06)**: spec rev 4.1 + 15-task plan executed across PRs #114–#121; rev 3 deleted; live validation record in the spec's Go-active section. The arm apparatus (`arm_calendar`, `hvac.arm_mode`, watchdog) is retained for the deferred 2027 Arm-A-vs-Arm-B comparison.
 - **Cockpit rebuild + daily decision-trace report refresh**: both consume rev-3 telemetry event names and are expectedly broken since the rev 4 cutover; rebuild conforms to rev 4 (`decision_trace.rev4_tick`, reshaped `hvac.actions`, 3-tier `hvac.price_overlay`).
 - **SOPS `.env` resync**: `deploy/energy-stack/secrets/env.sops.env` is stale (pre-production values, missing TCC creds); re-encrypt the live Pi `.env`.
-- **haven-ingest auth**: 403 from the HAVEN Auth0 token endpoint since 2026-07-01; refresh-token bootstrap needs redoing.
+- **haven-ingest auth** ✅ RETIRED 2026-11-18: haven-ingest polls the monitor's local HTTP API; no Auth0 token any more.
 - **Knowledge graph rebuild + ONBOARDING regeneration** ✅ DONE 2026-07-07: graph rebuilt against the post-cleanup tree (621 nodes / 941 edges / 8 layers at db0bfe7); [docs/ONBOARDING.md](ONBOARDING.md) regenerated (prior version archived).
 - **Open live validations (backstopped, unit-tested)**: zombie-release on a real power event; RH-guard fire on a humid hold (or via temporary `rh_max_pct` lowering).
 - **ComfortNet decoder extension (write-side opcodes)**: full pipeline is live (broker + telegraf consumer in compose under profile `mqtt`; Pi-3B publisher live as of May 6 2026; `hvac.comfortnet` measurement flowing). The current decoder handles read-side user-menu traffic (`0xC1` GetUserMenuResponse); capturing a setting change to extract the write-side SetUserMenu opcode is an open follow-on. See [`Promithius-DR/comfortnet`](https://github.com/Promithius-DR/comfortnet) `docs/SETTING_REVIEW.md` for the capture protocol; historical design context at [`docs/archive/COMFORTNET_PIPELINE.md`](archive/COMFORTNET_PIPELINE.md).
@@ -495,12 +495,13 @@ The "Haven data is unreachable" conclusion was wrong twice:
 
 1. **First pivot (May 3, 2026)** — discovered the homeowner portal at `my.haveniaq.com` has a CSV export per device. Initial `haven-ingest` shipped as a CSV watcher (drop file in inbox → service parses).
 2. **Second pivot (mid-May 2026)** — replaced the CSV watcher with a direct HAVEN API poller (commit `3cccd63`, "Replace haven-ingest CSV watcher with HAVEN API poller"). Hits the official HAVEN Pro API at `https://havenapi.tzoa.io` directly. Auth uses Auth0 refresh-token rotation: the bootstrap `HAVEN_REFRESH_TOKEN` is captured once from a browser login session at `my.haveniaq.com`, and the poller persists the rotating refresh token to its `/data` volume across restarts. Per-poll backfill bounded by `HAVEN_BACKFILL_DAYS` (default 7).
+3. **Third pivot (2026-11-18)** — HAVEN opened a local HTTP API on the monitor (firmware 2.5.1+, enabled per device in the HAVEN app). `haven-ingest` now polls `http://192.168.1.227/api/v1/sensors` and writes `haven.indoor` only, keeping the legacy field names; the Auth0 token, the startup backfill and `haven.outdoor` (cloud-only) were removed. Outdoor history up to 2026-11-18 stays in InfluxDB.
 
 Continuous fields are temp/RH/tVOC; PM2.5 and airflow CFM are flow-dependent and only populate when the blower is moving air past the return-duct sensor. That flow-dependence is a feature, not a defect: non-null airflow CFM rows give blower-runtime ground truth (cross-validates against Refoss `em:9` furnace blower power), and the measured CFM at that moment becomes useful for delivered-BTU calc when paired with future supply-air temp instrumentation.
 
 Two new services shipped:
 
-- **`haven-ingest`** — polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
+- **`haven-ingest`** — (as shipped in May; local API since 2026-11-18, see pivot 3 above) polls the HAVEN cloud API every `HAVEN_POLL_INTERVAL` seconds (default 300), writes `haven.indoor` (one device, indoor sensor) and `haven.outdoor` (paired outdoor station) measurements. Idempotent on timestamp.
 - **`thermostat-poller`** — continuous 10-min reads of CTK04AE state through the device client (TCC rate-limit floor; the Control4/pyControl4 read path has been retired behind a stubbed `ThermostatClient` seam). Writes `hvac.thermostat` measurement on every poll. It also implemented **automatic override detection** (writing `hvac.overrides` rows on setpoint divergence) — retired at the 2026-07-06 rev 4 cutover: manual holds are first-class operator action under the spike-only design. This unlocks the comfort-aware scheduling research's #1 recommendation ("log every override as training data") essentially for free.
 
 Enabled because: the existing `hvac-scheduler` snapshots thermostat state only at action-firing moments (4-7 timestamps per day) — too sparse for proper time-series correlation against Haven's 5-min cadence, and provides no foundation for override detection. The poller fills both gaps.

@@ -84,7 +84,7 @@ Every measurement currently in the `energy` bucket, with consumption status. **F
 | `hvac.input_feed_health` | **NONE** | dead since the rev-4 cutover (#120) — no writer in current code, historical rows only (last write 2026-07-06) |
 | `hvac.comfortnet` | **PARTIAL** | `cool_actual_pct`, `cool_demand_pct`, `heat_*`, `fan_*`, `blower_cfm`, `humidify_*`, `dehumidify_*` consumed by analysis + thermal_observer. **`outdoor_temp_f` NOT consumed — condenser-exhaust contaminated (+10°F when compressor running); use `ecowitt.weather.ch1_temp_f` instead** |
 | `haven.indoor` | **NONE** | HAVEN air-quality sensor indoor — stored for future thermal-model work |
-| `haven.outdoor` | **NONE** | HAVEN outdoor — stored, no current consumer |
+| `haven.outdoor` | **NONE** | HAVEN outdoor — no longer written (cloud-only; writer removed 2026-11-18); history kept |
 | `haven.airquality` | **NONE** | HAVEN air-quality fields — stored, no current consumer |
 | `sense.device` | **NONE** | Sense energy-monitor device list — legacy, superseded by Refoss + EAGLE |
 | `sense.realtime` | **NONE** | Sense real-time power — legacy |

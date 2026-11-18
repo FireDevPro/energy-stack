@@ -1,264 +1,173 @@
-"""Tests for haven-ingest's pure-logic helpers and the TokenManager
-file/refresh state.
+"""Tests for haven-ingest's local-API mapping and device check.
 
-Auth0 refresh-token rotation is the most fragile part of this service —
-if the rotated refresh_token isn't persisted, the container loses all
-HAVEN access on the next restart. These tests pin down the file I/O
-and rotation handling.
+The /sensors → haven.indoor mapping carries the legacy cloud field names that
+Grafana and the kiosk read, so these tests pin the names, the unit conversion,
+the reading timestamp, and the skip rules.
 
-Run from this directory:
-    python -m pytest tests.py
+Run from deploy/energy-stack:
+    python -m pytest haven_ingest/test_haven_ingest.py
 """
 from __future__ import annotations
 
-import json
-import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
-from . import app
-from .app import Config, TokenManager, indoor_reading_to_point, outdoor_reading_to_point
+from .app import DeviceMismatch, VOC_PPB_TO_UGM3, check_info, sensors_to_point
+
+POLLED_AT = datetime(2026, 11, 18, 15, 0, 0, tzinfo=timezone.utc)
 
 
-# ---- TokenManager fixtures ------------------------------------------------
-
-
-def _make_cfg(token_file: Path, refresh_token: str = "env-token") -> Config:
-    return Config(
-        auth0_domain="haven-production.auth0.com",
-        client_id="test-client-id",
-        refresh_token=refresh_token,
-        device_id="3645",
-        outdoor_id="60585",
-        poll_interval=300.0,
-        backfill_days=7,
-        token_file=token_file,
-        influx_url="http://influxdb:8086",
-        influx_token="t",
-        influx_org="o",
-        influx_bucket="energy",
-    )
-
-
-# ---- TokenManager: load precedence ---------------------------------------
-
-
-def test_token_manager_loads_from_file_when_present(tmp_path: Path) -> None:
-    """File takes precedence over env; this is the steady-state path
-    after the first refresh has rotated the bootstrap token."""
-    token_file = tmp_path / "haven_token.json"
-    token_file.write_text(json.dumps({"refresh_token": "from-file"}))
-    tm = TokenManager(_make_cfg(token_file, refresh_token="env-token"))
-    assert tm._refresh_token == "from-file"
-
-
-def test_token_manager_falls_back_to_env_when_file_missing(tmp_path: Path) -> None:
-    """Bootstrap path: no file yet, use the env var."""
-    token_file = tmp_path / "haven_token.json"
-    tm = TokenManager(_make_cfg(token_file, refresh_token="env-token"))
-    assert tm._refresh_token == "env-token"
-
-
-def test_token_manager_falls_back_to_env_on_unreadable_file(tmp_path: Path) -> None:
-    """Corrupt token file shouldn't kill the service — fall back to env."""
-    token_file = tmp_path / "haven_token.json"
-    token_file.write_text("not-json{")
-    tm = TokenManager(_make_cfg(token_file, refresh_token="env-token"))
-    assert tm._refresh_token == "env-token"
-
-
-def test_token_manager_exits_when_neither_source_has_token(tmp_path: Path) -> None:
-    """No file AND no env var → service can't function. Exit cleanly so
-    Docker restarts and the operator sees a clear error."""
-    token_file = tmp_path / "haven_token.json"
-    cfg = _make_cfg(token_file, refresh_token="")
-    with pytest.raises(SystemExit) as excinfo:
-        TokenManager(cfg)
-    assert excinfo.value.code == 2
-
-
-def test_token_manager_uses_empty_refresh_token_in_file_as_missing(tmp_path: Path) -> None:
-    """File present but refresh_token empty → fall back to env (don't use
-    the empty string as a token)."""
-    token_file = tmp_path / "haven_token.json"
-    token_file.write_text(json.dumps({"refresh_token": ""}))
-    tm = TokenManager(_make_cfg(token_file, refresh_token="env-token"))
-    assert tm._refresh_token == "env-token"
-
-
-# ---- TokenManager: rotation persistence ----------------------------------
-
-
-class _FakeResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._payload = payload
-    def raise_for_status(self) -> None:
-        pass
-    def json(self) -> dict[str, Any]:
-        return self._payload
-
-
-def test_token_manager_persists_rotated_refresh_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The CRITICAL test: when Auth0 returns a new refresh_token in the
-    response, it MUST be written to the file. Without this persistence,
-    the container loses access on restart."""
-    token_file = tmp_path / "haven_token.json"
-    cfg = _make_cfg(token_file, refresh_token="env-token-bootstrap")
-    tm = TokenManager(cfg)
-
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
-        "access_token": "new-access-token",
-        "expires_in": 86400,
-        "refresh_token": "rotated-refresh-token",
-    }))
-
-    tm._do_refresh()
-
-    # In-memory state updated.
-    assert tm._access_token == "new-access-token"
-    assert tm._refresh_token == "rotated-refresh-token"
-    # File persisted so container restart doesn't lose access.
-    assert token_file.exists()
-    persisted = json.loads(token_file.read_text())
-    assert persisted == {"refresh_token": "rotated-refresh-token"}
-
-
-def test_token_manager_does_not_break_when_response_omits_refresh_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Auth0 may not rotate every time — if the response omits
-    refresh_token, keep using the existing one."""
-    token_file = tmp_path / "haven_token.json"
-    cfg = _make_cfg(token_file, refresh_token="kept-token")
-    tm = TokenManager(cfg)
-
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
-        "access_token": "new-access-token",
-        "expires_in": 86400,
-        # no refresh_token key
-    }))
-
-    tm._do_refresh()
-    assert tm._refresh_token == "kept-token"
-    # File should NOT have been written (no rotation = no persistence needed).
-    assert not token_file.exists()
-
-
-def test_token_manager_get_token_refreshes_when_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_get_token must trigger refresh when within 60s of expiry."""
-    token_file = tmp_path / "haven_token.json"
-    tm = TokenManager(_make_cfg(token_file, refresh_token="t"))
-    tm._access_token = "old"
-    tm._expires_at = time.monotonic() - 10  # already expired
-
-    monkeypatch.setattr(app.requests, "post", lambda *a, **kw: _FakeResponse({  # type: ignore[attr-defined]  # requests is module-level import in app.py, not in __all__
-        "access_token": "fresh",
-        "expires_in": 86400,
-    }))
-
-    assert tm._get_token() == "fresh"
-
-
-def test_token_manager_get_token_does_not_refresh_when_fresh(tmp_path: Path) -> None:
-    """If access token is fresh, _get_token returns cached without an HTTP call."""
-    token_file = tmp_path / "haven_token.json"
-    tm = TokenManager(_make_cfg(token_file, refresh_token="t"))
-    tm._access_token = "still-good"
-    tm._expires_at = time.monotonic() + 3600  # 1 hour out
-
-    # If a refresh call were attempted it would hit the real Auth0 endpoint
-    # and fail. Just calling without monkeypatch verifies no refresh happened.
-    assert tm._get_token() == "still-good"
-
-
-# ---- indoor_reading_to_point ---------------------------------------------
-
-
-def _indoor_reading() -> dict[str, Any]:
+def _sensors() -> dict[str, Any]:
+    # Shape of a real /api/v1/sensors response (fw 2.5.2, 2026-11-18).
     return {
-        "timestamp": "2026-05-06T12:00:00+00:00",
-        "airflow": 0.45,
-        "voc_count": 12.0,
-        "voc_mc": 80.0,
-        "pm_count": 50.0,
-        "pm_mc": 5.0,
-        "temperature": 22.0,
-        "humidity": 45.0,
-        "voc_status": "good",
-        "pm_status": "good",
-        "humidity_status": "good",
-        "combined_status": "good",
+        "sensor_ready": True,
+        "latest_sensor_age_s": 43,
+        "temperature_c": 20.4475231170654,
+        "humidity_pct": 41.9679985046387,
+        "pressure_kpa": 100.708168029785,
+        "co2_ppm": 401,
+        "tvoc_ppb": 2,
+        "pm25_ugm3": 0.876318514347076,
+        "pm10_ugm3": 1.20634853839874,
+        "pm25_count_cm3": 1.5306590795517,
+        "pm10_count_cm3": 1.54580795764923,
+        "airflow_mps": -1.05666673183441,
+        "airflow_duration_s": 24.264,
     }
 
 
-def test_indoor_reading_to_point_carries_device_tag():
-    p = indoor_reading_to_point(_indoor_reading(), "3645")
+def _info(**over: Any) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "api_version": 1,
+        "serial_number": "0000-6267",
+        "device_id": "D2047-05924",
+        "manufacturer": "HAVEN IAQ",
+        "model": "Central Air Monitor",
+        "product_type": "cam",
+        "fw_ver": "2.5.2.9a69e2e6.0ca16ce",
+        "capabilities": ["air_quality", "airflow"],
+    }
+    info.update(over)
+    return info
+
+
+# ---- sensors_to_point ----------------------------------------------------
+
+
+def test_point_measurement_and_tag() -> None:
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
+    assert p is not None
+    assert p._name == "haven.indoor"
     assert dict(p._tags) == {"device_id": "3645"}
 
 
-def test_indoor_reading_to_point_carries_all_fields():
-    p = indoor_reading_to_point(_indoor_reading(), "3645")
-    fields = dict(p._fields)
-    for required in ("airflow", "voc_count", "voc_mc", "pm_count", "pm_mc",
-                      "temperature_c", "humidity",
-                      "voc_status", "pm_status", "humidity_status",
-                      "combined_status"):
-        assert required in fields, f"missing field: {required}"
-
-
-def test_indoor_reading_to_point_uses_explicit_ts_when_provided():
-    """The poll path passes an explicit ts (current poll time) instead of
-    the reading's own timestamp — verify the override works."""
-    explicit = datetime(2026, 7, 4, 18, 0, tzinfo=timezone.utc)
-    p = indoor_reading_to_point(_indoor_reading(), "3645", ts=explicit)
-    # Point's _time is set; can't easily inspect from outside but this at
-    # least verifies the code path doesn't crash with an explicit ts.
+def test_point_keeps_legacy_field_names() -> None:
+    """Grafana iaq-comparison and the kiosk read these names."""
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
     assert p is not None
+    f = dict(p._fields)
+    assert f["temperature_c"] == pytest.approx(20.4475231170654)
+    assert f["humidity"] == pytest.approx(41.9679985046387)
+    assert f["pm_mc"] == pytest.approx(0.876318514347076)
+    assert f["pm_count"] == pytest.approx(1.5306590795517)
+    assert f["airflow"] == pytest.approx(-1.05666673183441)
+    assert f["voc_count"] == 2.0
 
 
-# ---- outdoor_reading_to_point --------------------------------------------
+def test_point_derives_voc_mc_with_cloud_factor() -> None:
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
+    assert p is not None
+    assert dict(p._fields)["voc_mc"] == pytest.approx(2 * VOC_PPB_TO_UGM3)
+    assert VOC_PPB_TO_UGM3 == pytest.approx(2.3529411764705883)
 
 
-def _outdoor_reading() -> dict[str, Any]:
-    return {
-        "timestamp": "2026-05-06T12:00:00+00:00",
-        "temperature": 18.0,
-        "humidity": 55.0,
-        "dew_point": 9.0,
-        "aqi": 42,
-        "co": 0.3,
-        "o3": 0.05,
-        "no2": 0.02,
-        "so2": 0.01,
-        "pm25": 8.0,
-        "pm10": 12.0,
-        "condition": 1,
-        "hazel": 0.0,
-        "alder": 0.0,
-        "birch": 1.0,
-        "oak": 2.0,
-        "grass": 5.0,
-        "mugwort": 0.0,
-        "ragweed": 0.0,
-    }
+def test_point_carries_local_only_fields() -> None:
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
+    assert p is not None
+    f = dict(p._fields)
+    for name in ("pressure_kpa", "pm10_ugm3", "pm10_count_cm3", "airflow_duration_s"):
+        assert name in f, f"missing field: {name}"
+    assert f["sensor_age_s"] == 43.0
 
 
-def test_outdoor_reading_to_point_carries_station_tag():
-    p = outdoor_reading_to_point(_outdoor_reading(), "60585")
-    assert dict(p._tags) == {"station_id": "60585"}
+def test_point_omits_co2_and_float_types() -> None:
+    """The CAM has no CO2 sensor; its co2_ppm is a placeholder. All written
+    fields are floats so an int reading never conflicts with an existing
+    float series in InfluxDB."""
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
+    assert p is not None
+    f = dict(p._fields)
+    assert "co2_ppm" not in f
+    assert all(isinstance(v, float) for v in f.values())
 
 
-def test_outdoor_reading_to_point_carries_air_quality_fields():
-    p = outdoor_reading_to_point(_outdoor_reading(), "60585")
-    fields = dict(p._fields)
-    for required in ("temperature_c", "humidity", "dew_point", "aqi",
-                      "co", "o3", "no2", "so2", "pm25", "pm10", "condition"):
-        assert required in fields, f"missing field: {required}"
+def test_point_time_is_reading_time() -> None:
+    p = sensors_to_point(_sensors(), "3645", POLLED_AT)
+    assert p is not None
+    assert p._time == POLLED_AT - timedelta(seconds=43)
 
 
-def test_outdoor_reading_to_point_carries_pollen_fields():
-    p = outdoor_reading_to_point(_outdoor_reading(), "60585")
-    fields = dict(p._fields)
-    for pollen in ("hazel", "alder", "birch", "oak", "grass", "mugwort", "ragweed"):
-        assert pollen in fields, f"missing pollen field: {pollen}"
+def test_point_time_falls_back_to_poll_time_without_age() -> None:
+    s = _sensors()
+    del s["latest_sensor_age_s"]
+    p = sensors_to_point(s, "3645", POLLED_AT)
+    assert p is not None
+    assert p._time == POLLED_AT
+    assert "sensor_age_s" not in dict(p._fields)
+
+
+def test_point_skips_missing_and_non_numeric_values() -> None:
+    s = _sensors()
+    del s["pm10_ugm3"]
+    s["pressure_kpa"] = None
+    s["humidity_pct"] = True  # bool must not be read as 1.0
+    s["airflow_mps"] = "fast"
+    p = sensors_to_point(s, "3645", POLLED_AT)
+    assert p is not None
+    f = dict(p._fields)
+    for name in ("pm10_ugm3", "pressure_kpa", "humidity", "airflow"):
+        assert name not in f
+    assert "temperature_c" in f
+
+
+def test_point_none_when_sensor_not_ready() -> None:
+    s = _sensors()
+    s["sensor_ready"] = False
+    assert sensors_to_point(s, "3645", POLLED_AT) is None
+
+
+def test_point_none_when_sensor_ready_missing() -> None:
+    s = _sensors()
+    del s["sensor_ready"]
+    assert sensors_to_point(s, "3645", POLLED_AT) is None
+
+
+def test_point_none_when_no_readings() -> None:
+    assert sensors_to_point({"sensor_ready": True, "latest_sensor_age_s": 5},
+                            "3645", POLLED_AT) is None
+
+
+# ---- check_info -----------------------------------------------------------
+
+
+def test_check_info_accepts_central_air_monitor() -> None:
+    check_info(_info(), "")
+    check_info(_info(), "0000-6267")
+
+
+@pytest.mark.parametrize("over", [
+    {"api_version": 2},
+    {"api_version": None},
+    {"product_type": "ram"},
+    {"product_type": "cac"},
+])
+def test_check_info_rejects_unsupported_device(over: dict[str, Any]) -> None:
+    with pytest.raises(DeviceMismatch):
+        check_info(_info(**over), "")
+
+
+def test_check_info_rejects_wrong_serial() -> None:
+    with pytest.raises(DeviceMismatch):
+        check_info(_info(serial_number="0000-9999"), "0000-6267")

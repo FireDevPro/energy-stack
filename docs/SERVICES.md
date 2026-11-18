@@ -23,7 +23,7 @@ Per-service reference for the energy-stack Docker Compose project. Companion to 
 - [hvac-scheduler](#hvac-scheduler) — rev 4 spike-only controller (warm-only timed holds on RTP spikes; device program is the baseline; device-owned safety)
 - [hvac-scheduler-watchdog](#hvac-scheduler-watchdog) — out-of-band controller-liveness beacon (`hvac.heartbeat`)
 - [thermostat-poller](#thermostat-poller) — continuous thermostat reads
-- [haven-ingest](#haven-ingest) — HAVEN IAQ cloud API poller
+- [haven-ingest](#haven-ingest) — HAVEN Central Air Monitor local API poller
 - [ecowitt-ingest](#ecowitt-ingest) — Ecowitt GW1200 push receiver (`ecowitt.weather`)
 - [telegram-notifier](#telegram-notifier) — daily summary + alert checker
 - [loki & promtail](#loki--promtail) — debug log store (read on demand; no service depends on it)
@@ -79,13 +79,13 @@ Single-node InfluxDB 2.7. Bootstraps org/bucket/admin user **only on first run**
 | `hvac.thermostat` | thermostat-poller | continuous 10-min thermostat state |
 | `ecowitt.weather` | ecowitt-ingest | tag `gateway` (GW1200 PASSKEY). Field families: **canonical analysis source per spec §6** is `ch1_temp_f` / `ch1_rh_pct` / `ch1_dewpoint_f` (the paired WN31 channel; ch1 is the shaded N/E-wall sensor by Chris's wiring). Gateway also writes a descriptive alias `outdoor_temp_f` / `outdoor_rh_pct` / `outdoor_dewpoint_f` mirroring the configured shaded channel when `ECOWITT_SHADED_CHANNEL` is set — descriptive only, NOT consumed by the analysis weather vector. WS90 sun-exposed comparator + wind/solar/UV/rain (`ws90_temp_f`/`rh_pct`/`dewpoint_f`, `wind_mph`, `solar_wm2`, `rain_*_in`, etc.); GW1200 internal (`indoor_temp_f`, `indoor_rh_pct`, `baro_abs_inhg`, `pressure_inhg`). Plus `ch{N}_temp_f`/`rh_pct`/`dewpoint_f` for any other paired WH31 channels. |
 | `haven.indoor` | haven-ingest | tagged `device_id`; temp/RH/tVOC continuous, PM2.5/airflow CFM flow-dependent |
-| `haven.outdoor` | haven-ingest | tagged `station_id`; outdoor station readings |
+| `haven.outdoor` | — | tagged `station_id`; HAVEN cloud outdoor station; not written since 2026-11-18 (history only) |
 | `comed.bill` | `parse_comed_bill.py` (manual) | one point per bill |
 | `comed.bill_lineitems` | `parse_comed_bill.py` (manual) | full GL breakdown |
 | `hvac.comfortnet` | telegraf MQTT consumer | live (May 2026); fields `cool_actual_pct`, `heat_actual_pct`, `fan_actual_pct`, `blower_cfm`, `dehumidify_actual_pct` flowing from the Pi-3B publisher |
 | `telegram.alerts` | telegram-notifier | dedupe state for fired alerts |
 
-**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `mqtt_consumer` (telegraf default measurement name from an earlier config); `hvac.overrides` (thermostat-poller override detection retired at the rev 4 cutover, July 2026 — manual holds are first-class operator action now; the `tools/log_override.py` annotation script was deleted in the 2026-07-06 repo cleanup); `hvac.switch_event`, `hvac.input_feed_health` (rev 3 scheduler measurements; writers deleted at the rev 4 cutover); `hvac.decisions`, `hvac.precool_window`, `hvac.5cp_state` (day-type/precool/5CP writers removed in the June 2026 demolition). No new writes occur to any of these.
+**Legacy measurements still present in the `energy` bucket** (not actively written; documented here so they don't surprise an operator running `schema.measurements`): `sense.device`, `sense.realtime`, `sense.trend` (sense-poller retired April 2026); `haven.airquality` (CSV-watcher predecessor of haven-ingest, retired mid-May 2026); `haven.outdoor` (HAVEN cloud outdoor station, writer removed 2026-11-18 when haven-ingest moved to the monitor's local API); `mqtt_consumer` (telegraf default measurement name from an earlier config); `hvac.overrides` (thermostat-poller override detection retired at the rev 4 cutover, July 2026 — manual holds are first-class operator action now; the `tools/log_override.py` annotation script was deleted in the 2026-07-06 repo cleanup); `hvac.switch_event`, `hvac.input_feed_health` (rev 3 scheduler measurements; writers deleted at the rev 4 cutover); `hvac.decisions`, `hvac.precool_window`, `hvac.5cp_state` (day-type/precool/5CP writers removed in the June 2026 demolition). No new writes occur to any of these.
 
 **Operations:**
 
@@ -436,32 +436,28 @@ Override detection (`hvac.overrides`) was **retired at the rev 4 cutover** (July
 
 ## haven-ingest
 
-Build: `./haven-ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) · Volume: `haven_ingest_data` (`/data`)
+Build: `./haven_ingest` · Cycle: `HAVEN_POLL_INTERVAL` (default 300 s = 5 min) · No volume
 
-Polls the official HAVEN Pro API at `https://havenapi.tzoa.io` every 5 minutes for one indoor device + paired outdoor station. Auth flow: Auth0 refresh-token grant against `${HAVEN_AUTH0_DOMAIN}` using `HAVEN_CLIENT_ID` + `HAVEN_REFRESH_TOKEN`. The refresh token rotates on every refresh; the new token is persisted to `/data/haven_token.json` so restarts survive across rotations. The bootstrap `HAVEN_REFRESH_TOKEN` is captured once from a browser login session at `my.haveniaq.com`; if the refresh token expires (typically 30-90 days of disuse), a new bootstrap token is obtained via fresh browser login. On startup, the service backfills the last `HAVEN_BACKFILL_DAYS` of history (default 7) via the API range endpoints before entering steady-state polling.
+Polls the HAVEN Central Air Monitor's local HTTP API (`http://${HAVEN_HOST}/api/v1`, no auth) and writes `haven.indoor`. At startup it reads `/info` and refuses to run (exit 2) unless the device reports API version 1, product type `cam` and, when `HAVEN_EXPECTED_SERIAL` is set, that serial; an unreachable device is retried every 30 s. Each poll reads `/sensors` (the device's cached latest reading, refreshed about once a minute) and skips the write when `sensor_ready` is false. The point time is the device's reading time: poll time minus `latest_sensor_age_s`.
 
-**History:** Originally shipped as a CSV watcher (May 3, 2026) that monitored an inbox directory for `CAM_*.csv` exports from `my.haveniaq.com`. Replaced with this API-based poller mid-May 2026 (commit `3cccd63`) using the official `havenapi.tzoa.io` Pro API endpoints. Code references: API base URL at [`deploy/energy-stack/haven_ingest/app.py:62`](../deploy/energy-stack/haven_ingest/app.py#L62), endpoint paths at lines 189, 195, 205.
+**Prerequisites (outside this repo):** the local API is off by default and is turned on by enabling "Home Assistant" for the monitor in the HAVEN app (firmware 2.5.1+; running 2.5.2). The monitor sits on the Default network (Automation zone) at `192.168.1.227`, reserved in UniFi; pi-lab reaches it through the UniFi zone policy "Allow Pi -> HAVEN local API 80" (`192.168.20.10` → `192.168.1.227`, TCP 80 only, added 2026-11-18). Home Assistant polls the same API once a minute through its built-in `haven_iaq` integration; the two pollers are independent.
+
+**History:** CSV watcher (May 3, 2026) → HAVEN cloud Pro API poller at `havenapi.tzoa.io` with an Auth0 refresh token that had to be re-captured from a browser login about every 30 days (mid-May 2026, commit `3cccd63`) → local HTTP API (2026-11-18). The cloud version also wrote `haven.outdoor` (a paired outdoor station: AQI, pollutants, pollen) and backfilled 7 days at startup; neither exists locally, so both went with the token. Outdoor history up to 2026-11-18 stays in InfluxDB; `airnow-poller`, `purpleair-poller`, `nws-poller` and `ecowitt-ingest` cover outdoor AQI, PM and weather. Pollen has no replacement.
 
 **Env:**
-- `HAVEN_AUTH0_DOMAIN` — Auth0 tenant (default `haven-production.auth0.com`)
-- `HAVEN_CLIENT_ID` — Auth0 client ID for the HAVEN tenant
-- `HAVEN_REFRESH_TOKEN` — bootstrap refresh token captured from a browser login session; rotates per-call after first use, persisted to `/data/haven_token.json`. Re-bootstrap from a fresh browser login if the persisted token expires (typically 30-90 days of disuse).
-- `HAVEN_DEVICE_ID` — indoor sensor device ID (default `3645`)
-- `HAVEN_OUTDOOR_ID` — paired outdoor station ID (default `60585`)
+- `HAVEN_HOST` — monitor address (default `192.168.1.227`)
+- `HAVEN_DEVICE_ID` — `device_id` tag value (default `3645`, the cloud device ID the series has always carried; kept so existing series continue)
+- `HAVEN_EXPECTED_SERIAL` — optional serial guard (compose default `0000-6267`)
 - `HAVEN_POLL_INTERVAL` — seconds between polls (default 300)
-- `HAVEN_BACKFILL_DAYS` — startup backfill window (default 7)
 - `INFLUXDB_*` — standard
 
 **Writes:**
 
-| Measurement | Tags | Fields | Coverage |
+| Measurement | Tags | Fields | Notes |
 |---|---|---|---|
-| `haven.indoor` | `device_id` | `temp_f`, `temp_c`, `humidity_pct`, `tvoc_ppb`, status enums | 100% on temp/RH/tVOC; `pm25_ugm3` and `airflow_cfm` are flow-dependent (~3%) |
-| `haven.outdoor` | `station_id` | `temperature_c` (Celsius only), `humidity`, `dew_point`, AQI/pollutants, pollen | 100% |
+| `haven.indoor` | `device_id` | `temperature_c`, `humidity`, `pm_mc`, `pm_count`, `airflow`, `voc_count`, `voc_mc`, `pressure_kpa`, `pm10_ugm3`, `pm10_count_cm3`, `airflow_duration_s`, `sensor_age_s` | All floats. Legacy cloud names kept for Grafana and the kiosk |
 
-**Note on `haven.outdoor` units:** unlike `haven.indoor` which writes both `temp_f` and `temp_c`, `haven.outdoor` writes outdoor temperature in Celsius only (field name `temperature_c`). Downstream queries that need Fahrenheit must convert: `temp_f = temp_c * 9/5 + 32`. Consumers (Grafana panels, scheduler queries, etc.) should account for this asymmetry. If we need outdoor Fahrenheit as a first-class field for Arm B controller queries, the haven-ingest service should be extended to write `temp_f` alongside `temp_c` for symmetry with `haven.indoor`.
-
-**Idempotent on timestamp.** Backfill on startup re-writes the same `(measurement, device_id, ts)` tuples that the prior run wrote — Influx upserts and the data doesn't double.
+Local → `haven.indoor` mapping (checked against simultaneous cloud and local reads on 2026-11-18): `temperature_c` ← `temperature_c`; `humidity` ← `humidity_pct` (%); `pm_mc` ← `pm25_ugm3`; `pm_count` ← `pm25_count_cm3` (particles/cm³); `airflow` ← `airflow_mps` (m/s, signed); `voc_count` ← `tvoc_ppb` (the cloud's `voc_count` was integer ppb); `voc_mc` ← `tvoc_ppb × 40/17` (the cloud's ppb → µg/m³ factor, constant across 30 days of cloud data). Local only: `pressure_kpa`, `pm10_ugm3`, `pm10_count_cm3`, `airflow_duration_s`, and `sensor_age_s`. Not written: `co2_ppm` (HAVEN states the Central Air Monitor does not measure CO2; it reads a flat ~400) and the cloud's `voc_status` / `pm_status` / `humidity_status` / `combined_status` grades, which the device does not expose; their history up to 2026-11-18 remains.
 
 **Healthcheck:** `/tmp/last_poll_ok` marker.
 
