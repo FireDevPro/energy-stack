@@ -41,7 +41,7 @@ Every measurement currently or imminently writing to the `energy` bucket, classi
 | `nws.forecast` | `nws-poller` | 30 min | already coarse | Direct write to longterm |
 | `ecowitt.weather` | `ecowitt-ingest` (Ecowitt GW1200 push receiver) | 60 s (gateway upload interval) | per-frame continuous | Raw 90 d → 1-min `mean`+`max` longterm (canonical weather source per spec §6) |
 | `haven.indoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
-| `haven.outdoor` | `haven-ingest` | 5 min | already coarse | Direct write to longterm |
+| `haven.outdoor` | — (writer removed 2026-11-18) | — | — | History only |
 | `pjm.lmp_da_hourly` | `pjm-dm2-poller` | hourly (per-feed schedule) | already coarse | Direct write to longterm |
 | `pjm.load_forecast` | `pjm-dm2-poller` | 2× daily (per-feed schedule) | already coarse | Direct write to longterm |
 | `pjm.metered_load` | `pjm-dm2-poller` | hourly (per-scope: `zone=CE` ComEd + `zone=RTO` aggregate) | already coarse | Direct write to longterm |

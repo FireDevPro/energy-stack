@@ -315,19 +315,14 @@ services:
       influxdb:
         condition: service_healthy
     environment:
-      HAVEN_AUTH0_DOMAIN: ${HAVEN_AUTH0_DOMAIN:-haven-production.auth0.com}
-      HAVEN_CLIENT_ID: ${HAVEN_CLIENT_ID}
-      HAVEN_REFRESH_TOKEN: ${HAVEN_REFRESH_TOKEN}
+      HAVEN_HOST: ${HAVEN_HOST:-192.168.1.227}
       HAVEN_DEVICE_ID: ${HAVEN_DEVICE_ID:-3645}
-      HAVEN_OUTDOOR_ID: ${HAVEN_OUTDOOR_ID:-60585}
+      HAVEN_EXPECTED_SERIAL: ${HAVEN_EXPECTED_SERIAL:-0000-6267}
       HAVEN_POLL_INTERVAL: ${HAVEN_POLL_INTERVAL:-300}
-      HAVEN_BACKFILL_DAYS: ${HAVEN_BACKFILL_DAYS:-7}
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_INIT_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_INIT_BUCKET}
-    volumes:
-      - haven_ingest_data:/data
 
   telegram-notifier:
     build: ./telegram_notifier
@@ -464,7 +459,6 @@ volumes:
   grafana_data:
   hvac_scheduler_data:
   thermostat_poller_data:
-  haven_ingest_data:
   loki_data:
   promtail_positions:
   mosquitto_passwords:

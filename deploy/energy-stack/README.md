@@ -28,7 +28,7 @@ Docker Compose project running on Pi-lab (`192.168.20.10`) — InfluxDB + Grafan
 | `hvac-scheduler` | Price-reactive comfort controller (comfort baseline + warm-only RTP drift); device writes via stubbed `ThermostatClient` seam | — | [SERVICES.md#hvac-scheduler](../../docs/SERVICES.md#hvac-scheduler) |
 | `hvac-scheduler-watchdog` | Out-of-band controller-liveness beacon (writes `hvac.heartbeat controller_alive=false` when no `hvac.arm_mode` row appears in 10 min) | — | [SERVICES.md#hvac-scheduler-watchdog](../../docs/SERVICES.md#hvac-scheduler-watchdog) |
 | `thermostat-poller` | Continuous 10-min thermostat reads (stubbed `ThermostatClient` seam) + override detection | — | [SERVICES.md#thermostat-poller](../../docs/SERVICES.md#thermostat-poller) |
-| `haven-ingest` | HAVEN cloud API poller → `haven.indoor` + `haven.outdoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
+| `haven-ingest` | HAVEN Central Air Monitor local HTTP API poller → `haven.indoor` (5-min cadence) | — | [SERVICES.md#haven-ingest](../../docs/SERVICES.md#haven-ingest) |
 | `ecowitt-ingest` | GW1200 push receiver: WN31 shaded → `ch1_*` (canonical analysis field per spec §6) + gateway alias `outdoor_*` (descriptive), WS90 sun → `ws90_*` + wind/solar/rain, 60-s cadence | 8088 | [SERVICES.md#ecowitt-ingest](../../docs/SERVICES.md#ecowitt-ingest) |
 | `influx-init` | One-shot: provisions `energy-longterm` bucket + 1-min downsample task | — | [SERVICES.md#influx-init](../../docs/SERVICES.md#influx-init) |
 | `telegram-notifier` | Daily 8 AM summary + 5-min alert checker; posts to the Chief's alert intake (pi-lab:4014), not Telegram, since 2026-10-20; price spikes are episode alerts (start / band / end) | — | [SERVICES.md#telegram-notifier](../../docs/SERVICES.md#telegram-notifier) |
@@ -242,7 +242,6 @@ Opens in `$EDITOR` with values decrypted; re-encrypts on save.
 | `grafana_data` | grafana | Dashboards (only modifications; provisioned dashboards are read-only mounts), users, alerts state |
 | `hvac_scheduler_data` | hvac-scheduler | `/data/overrides.json` (manual / vacation overrides). (`/data/director_token.json` was the Control4 token of the retired pyControl4 path — no longer written behind the `ThermostatClient` seam.) |
 | `thermostat_poller_data` | thermostat-poller | (`/data/director_token.json` was its own Control4 token under the retired pyControl4 path — no longer written behind the `ThermostatClient` seam.) |
-| `haven_ingest_data` | haven-ingest | `/data/haven_token.json` (path overridable via `HAVEN_TOKEN_FILE`) — HAVEN Auth0 refresh token, rotates on every refresh and persisted across restarts |
 | `loki_data` | loki | Log chunks (7-day retention configured in `loki/loki-config.yml`) |
 | `promtail_positions` | promtail | Cursor positions per container log file (avoids re-shipping after restart) |
 
