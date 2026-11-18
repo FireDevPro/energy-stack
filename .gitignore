@@ -74,3 +74,6 @@ docs/replay-validation/**/findings_draft.md
 .understand-anything/intermediate/
 .understand-anything/tmp/
 .understand-anything/diff-overlay.json
+
+# mypy
+.mypy_cache/
