@@ -80,6 +80,11 @@ The science layer: what counts as evidence, how it's validated.
   — empirical fit (AC-off drift) sanity-checking hand-tuned constants;
   surfaced the wrong-variable choice in pyControl4 that motivated the
   `indoor_temp_f_hires` telemetry field
+- [docs/THERMAL_MODEL_2026-11.md](docs/THERMAL_MODEL_2026-11.md)
+  — first credible thermal model (one-node RC, τ ≈ 40 h, 0.85°F day-ahead
+  error on held-out September, replays summer HVAC energy within 1%) and the
+  steady-hold vs setback counterfactual (setback program is cheapest in every
+  scenario); seasonal south-glazing solar finding; heating not yet fit
 
 ## Stack operations
 
@@ -97,6 +102,9 @@ self-contained mini-projects with their own READMEs.
 
 - [tools/decision-trace-report/README.md](tools/decision-trace-report/README.md)
   — daily decision-trace commissioning report tooling
+- [tools/thermal_model/README.md](tools/thermal_model/README.md)
+  — grey-box thermal model: Influx pull over SSH, fit, replay-gated
+  closed-loop schedule counterfactuals; lists the telemetry unit/naming traps
 
 ---
 
