@@ -34,15 +34,19 @@ experiment is still the authoritative cost test. Code: [`tools/thermal_model/`](
   partly cancel. The model **under-predicts hot-afternoon heat** (peak ~1°F
   low) and **energy in the most expensive hours by ~30%**. See
   [Independent validation](#independent-validation).
-- **The setback program beats a steady hold on cost.** Steady 75°F costs
-  **16–25% more**. The program moves ~1,200 kWh of cooling out of the 2–7pm window.
-- **Comfort is cheaper than the program implies.** Holding sleep comfort at
-  the program's 75°F, a **fixed pre-cool program keeps afternoons ≤76°F
-  instead of 79°F for +2.5–4% (~$10–15 per summer by the model; up to ~$35
-  allowing for its afternoon bias)**. A planner using day-ahead
-  prices does it for **~8–10% less** than the current program. Each degree of
-  afternoon comfort is worth ~$20–40 per summer under fixed schedules and ~$0–4
-  with good timing. See [Comfort vs cost](#comfort-vs-cost).
+- **Costs use your actual ComEd DTOD delivery rates** (Mid-Day Peak 1–7pm
+  11.85¢ vs 3.3–4.5¢ otherwise, from the ingested bills) plus hourly supply.
+  An earlier version used a flat 7¢, which understated the value of timing.
+- **The setback program beats a steady hold by a wide margin.** Steady 75°F
+  costs **55–66% more**, because it puts ~1,500–1,700 kWh into the 1–7pm DTOD
+  peak versus the program's ~85.
+- **A simple 3-period program can beat the current one on cost *and* comfort.**
+  Pre-cool to 22–22.5°C from 3am, then let the house coast from 1pm with a
+  24.5–25°C setpoint. That costs **3–10% less** than the current program with
+  afternoons at ≤76.5–77.4°F instead of 79°F; the price is ~72°F mornings. A
+  day-ahead-price planner does better still (−11 to −13%). Under fixed
+  schedules, each degree of afternoon comfort costs ~$40–50 per summer. See
+  [Comfort vs cost](#comfort-vs-cost).
 - **Solar gain is seasonal (new finding).** Sun sensitivity rises every month
   from June to November, consistent with south glazing.
 - **Heating is not modeled yet.**
@@ -146,8 +150,23 @@ at or below the setpoint. Its reading is the modelled house mean plus the
 measured thermostat-vs-house offset by hour (−0.6 to +0.2°F).
 ComfortNet % → kW comes from the measured Refoss curve: stage 1 ("50%") draws
 2.6 kW, stage 2 3.9 kW. Weather and ComEd 5-min prices are the actual Jun 1 –
-Sep 30 values. Bill = actual hourly supply price + 7¢/kWh delivery. The 7¢ is
-from 2026 bills: delivery ÷ kWh is 7.3–7.7¢, including the fixed charge.
+Sep 30 values. **Bill = actual hourly supply price + ComEd DTOD delivery.**
+DTOD rates are by window and billing period, from the ingested Jun–Oct 2026
+bills (`comed.bill_lineitems`):
+
+| DTOD window | Distribution Facility Charge |
+|---|---|
+| Overnight 9pm–6am | 3.345–3.349¢ |
+| Morning 6am–1pm | 4.475–4.479¢ |
+| **Mid-Day Peak 1pm–7pm** | **11.852–11.863¢** |
+| Evening 7pm–9pm | 4.185–4.189¢ |
+
+Each bill period also adds the flat per-kWh items: IL Electricity
+Distribution (0.128¢), Transmission Services (~1.07¢), and the Carbon-Free
+Energy Resource credit (−0.1 to −1.6¢, varying by month). The capacity charge
+($/kW-month on the PLC set by the prior summer's 5CP), fixed charges and the
+lump Purchased Electricity Adjustment are excluded: this summer's usage
+doesn't change them on this summer's bill.
 
 ### Replay check (does the simulator use the right energy?)
 
@@ -157,11 +176,15 @@ Driven by the actual setpoint history, Jun 25 – Sep 30:
 |---|---|---|
 | HVAC energy | 2,776 kWh | 2,748 kWh |
 | Supply cost | $129 | $140 |
+| DTOD delivery cost (HVAC) | $117 | $119 |
 | Daily kWh correlation / mean abs error | r = 0.94 / 4.8 kWh | |
 | Indoor temp RMSE (continuous, 3 months) | 0.82°F | |
 
-Energy matches within 1%. Supply cost runs ~8% low (sub-hour spike timing), so
-**treat the dollar figures as relative, not absolute.**
+Energy matches within 1%, and DTOD delivery within 2%, so the model puts energy
+in the right delivery windows. Measured HVAC energy over this window was 61%
+overnight, 15% morning, 17% evening and **7.7% in the 1–7pm peak**. Supply cost
+runs ~8% low (sub-hour spike timing), so **treat the dollar figures as
+relative, not absolute.**
 
 **This is a consistency check, not an independent prediction.** No parameter
 was fit to the energy total, but the total *was* used to choose the one-node
@@ -176,38 +199,39 @@ identified, so two bounds are shown.
 
 **Stage 1 = 50% of capacity (data's best fit):**
 
-| Schedule | kWh | Bill | vs program | Avg supply ¢ paid | 2–7pm kWh | Sleep-hours mean | Afternoon max (median day) |
-|---|---|---|---|---|---|---|---|
-| **Program (75 / 79 pm)** | 3,212 | **$435** | — | 6.6 | **85** | 75.1°F | 78.3°F |
-| Steady 75 | 3,640 | $542 | **+25%** | 7.9 | 1,360 | 74.9°F | 75.7°F |
-| Steady 76 | 3,387 | $510 | +17% | 8.1 | 1,301 | 75.7°F | 76.6°F |
-| Steady 77 | 3,135 | $478 | +10% | 8.3 | 1,240 | 76.5°F | 77.5°F |
+| Schedule | kWh | Supply | DTOD delivery | Bill | vs program | 1–7pm kWh | Sleep-hours mean | Afternoon max (median day) |
+|---|---|---|---|---|---|---|---|---|
+| **Program (75 / 79 pm)** | 3,212 | $211 | $129 | **$340** | — | **85** | 75.1°F | 78.3°F |
+| Steady 75 | 3,640 | $288 | $277 | $564 | **+66%** | 1,673 | 74.9°F | 75.7°F |
+| Steady 76 | 3,387 | $273 | $261 | $534 | +57% | 1,602 | 75.7°F | 76.6°F |
+| Steady 77 | 3,135 | $259 | $245 | $504 | +48% | 1,529 | 76.5°F | 77.5°F |
 
 **Stage 1 = 70% of capacity (typical two-stage spec):**
 
 | Schedule | kWh | Bill | vs program |
 |---|---|---|---|
-| **Program** | 3,171 | **$430** | — |
-| Steady 75 | 3,270 | $499 | +16% |
-| Steady 76 | 3,037 | $466 | +8% |
-| Steady 77 | 2,808 | $434 | +1% |
+| **Program** | 3,171 | **$335** | — |
+| Steady 75 | 3,270 | $519 | +55% |
+| Steady 76 | 3,037 | $488 | +46% |
+| Steady 77 | 2,808 | $457 | +36% |
 
 ### Reading the results
 
 - **On energy alone it's close.** Depending on the stage-1 assumption, steady
   holds use −11% to +13% kWh relative to the program.
-- **On cost, the program wins in every case.** It runs only ~85 kWh of cooling
-  in the 2–7pm window all summer; a steady hold runs ~1,100–1,360 kWh there.
-  The average supply price paid rises from 6.6¢ to ~8¢. June's worry was
-  confirmed: without the morning pre-cool and afternoon coast, cooling lands in
-  peak hours.
-- **Steady 77 is the only near-tie, and it is worse for sleep.** Nights run
-  ~1.4°F warmer (76.5 vs 75.1°F) for no saving.
+- **On cost, the program wins by a wide margin.** It runs ~85 kWh of cooling
+  in the 1–7pm DTOD peak all summer; a steady hold runs ~1,400–1,700 kWh there,
+  each paying 11.85¢ delivery on top of the highest supply prices. Delivery
+  alone roughly doubles. June's worry was confirmed: without the coast,
+  cooling lands in peak hours.
+- **Even steady 77 costs 36–48% more,** and it is worse for sleep (nights
+  ~1.4°F warmer).
 - **What the program costs is afternoon comfort.** The house mean reaches
   ~78.3°F on a median day, with ~290 h above 78°F over the summer.
 - **Not in the dollar figures, and it favors the program further:** PJM
-  capacity (the PLC set by summer-afternoon 5CP hours) bills the following year.
-  The program's ~15× lower 2–7pm load directly lowers that.
+  capacity (the PLC set by summer-afternoon 5CP hours) bills the following
+  year. It is currently $70.89/month (7.01 kW × $10.11), and the program's
+  ~15–20× lower afternoon load directly lowers it.
 
 ## Independent validation
 
@@ -283,7 +307,7 @@ worth?
 ### Method
 
 1. **Plan.** A linear program over Jun 25 – Sep 30 chooses cooling every 15 min
-   to minimize (supply price + 7¢ delivery) × kW, subject to the one-node
+   to minimize (supply price + DTOD delivery) × kW, subject to the one-node
    dynamics, house mean ≤ cap, and a soft 72°F pre-cool floor.
    **Sleep comfort is held at the program's level** (house ≤ 75.2°F, 10pm–7am)
    for every cap. Without that constraint, the cheap plans buy their savings
@@ -302,56 +326,81 @@ worth?
 
 ### Results (Jun 25 – Sep 30; stage-1 = 50% / 70% where they differ)
 
-| Strategy | Afternoon max (median day) | Season max | Bill | vs program |
-|---|---|---|---|---|
-| **Current program** (75 / 79 pm) | 78.3°F | 79.2°F | $381 / $375 | — |
-| Fixed 76°F day, 75 night | 76.0 | 76.6–76.9 | $470 / $429 | +23% / +14% |
-| Fixed 78°F day, 75 night | 78.0 | 78.4–78.6 | $403 / $379 | +6% / +1% |
-| **Derived fixed program, cap 76** | 75.5 | **76.0** | $394 / $384 | **+3.6% / +2.5%** |
-| Planner, cap 76, hour-of-day prices | 75.8 | 76.1 | $360 / $369 | −5.6% / −1.5% |
-| **Planner, cap 76, day-ahead prices** | 75.7 | 76.1 | $347 / $346 | **−9% / −8%** |
-| Planner, cap 76, perfect prices | 75.8 | 76.1 | $313 / $317 | −18% / −15% |
+| Strategy | Afternoon max (median day) | Season max | 1–7pm kWh | Bill | vs program |
+|---|---|---|---|---|---|
+| **Current program** (75 / 79 pm) | 78.3°F | 79.2°F | 82 | $301 / $296 | — |
+| Fixed 76°F day, 75 night | 76.0 | 76.6–76.9 | 1,140–1,284 | $480 / $436 | +59% / +47% |
+| Fixed 78°F day, 75 night | 78.0 | 78.4–78.6 | 831–910 | $385 / $358 | +28% / +21% |
+| Derived hourly program, cap 76 | 75.5 | 76.0 | 217–220 | $305 / $295 | +1.4% / −0.3% |
+| Planner, cap 76, hour-of-day prices | 75.8 | 76.1 | 69–85 | $273 / $273 | −9.5% / −7.9% |
+| **Planner, cap 76, day-ahead prices** | 75.8 | 76.1 | 90–106 | $262 / $264 | **−13% / −11%** |
+| Planner, cap 76, perfect prices | 75.9 | 76.1 | 120–139 | $237 / $244 | −21% / −18% |
 
-The derived fixed program (house-mean targets) pre-cools through the morning
-and coasts up through the afternoon: 75°F overnight → 74°F at 8am → 73°F
-10am–noon → rising to 75°F by 5pm → 76°F at 7–8pm → 75°F by 10pm.
+Under DTOD, every optimized plan **pre-cools overnight and through the
+morning** (3.3–4.5¢ delivery) and coasts through the 11.85¢ peak. The derived
+hourly program (house-mean targets) holds 75°F until ~2am, pulls down to ~72°F
+by 6am, holds ~72°F to noon, then coasts up to ~76°F by 8pm and back to 75°F
+by 10pm. Nights average ~74°F, below the 75.2°F cap, because overnight
+cooling is cheap.
+
+### Implementable 3-period programs
+
+The CTK04 runs a few program periods in °C half-steps, so the hourly plan was
+approximated with three periods: night (10pm), pre-cool (from 1–4am) and coast
+(from 1pm). Same window, simulator and DTOD billing:
+
+| Program (°C) | Bill vs current (50% / 70% stage-1) | Afternoon max median / season | 1–7pm kWh | Morning low |
+|---|---|---|---|---|
+| Current: 24 → 26 (1–7pm) → 24.5 → 24 | — | 78.3 / 79.2°F | 82 | ~72°F |
+| 24.0 → **22.0 from 3am → 24.5 from 1pm** | **−4.5% / −3.1%** | 75.2 / 76.5°F | 38–48 | ~70°F |
+| 24.0 → **22.5 from 3am → 25.0 from 1pm** | **−10.4% / −10.2%** | 76.0 / 77.4°F | 30–36 | ~70.5°F |
+| 24.0 → 22.5 from 3am → 24.5 from 1pm | +3.6% / +1.4% | 76.0 / 76.5°F | 127–132 | ~70.5°F |
+| 24.0 → 23.0 from 3am → 24.5 from 1pm | +13.7% / +8.8% | 76.5 / 76.6°F | 309–329 | ~71°F |
+| 24.0 → 22.5 from **1am** / **4am** → 24.5 from 1pm | +3.1% / +4.7% (50%) | 76.0 / 76.5°F | 127 | ~70.5°F |
+
+**The pre-cool depth matters more than its start time.** At 23°C the house
+runs out of stored coolness and the AC comes on during the peak. At 22–22.5°C
+it coasts through. The coast setpoint (24.5 vs 25.0°C) decides whether the AC
+touches the peak at all. In exchange, mornings run ~72°F (season low ~70°F).
 
 ### Reading the curve
 
 - **With smart timing, afternoon comfort is almost free.** Once sleep is held
-  at 75°F, the optimal plans stop changing above a 77°F cap. The cheapest way
-  to reach 75°F by bedtime is not to let the afternoon climb past ~77°F. A
-  76°F cap costs $0–4 more than no cap.
-- **With fixed schedules, each degree costs ~$20–40 per summer.** Fixed
-  76 → 80°F runs $470 → $334 (50% stage-1) and $429 → $322 (70%). "Fixed at
-  79/80" look cheaper than the program only because they miss the sleep target:
-  pulling down from 80°F runs past 10pm, and nights average 75.8–76.2°F.
-- **3°F cooler afternoons for ~$10–15 per summer** with the derived fixed
-  program, no forecasting needed. Adjusting for the model's ~30% peak-hour
-  under-prediction (it cools more in the afternoon than the program does)
-  could raise that to roughly $25–35. This is a trial-worthy change, not a
-  settled number.
-- **Day-ahead price knowledge is worth ~8–10%** and is robust to the stage-1
-  assumption. The hour-of-day planner's −1.5 to −5.6% is not robust and is within
-  model error.
+  at 75°F, the optimal plans stop changing above a 77°F cap. A 76°F cap costs
+  $0–6 more than no cap.
+- **With fixed schedules, each degree costs ~$40–50 per summer** under DTOD.
+  Fixed 76 → 80°F runs $480 → $276 (50% stage-1) and $436 → $262 (70%).
+  "Fixed at 80" looks cheaper than the program only because it misses the
+  sleep target (nights 76.2°F).
+- **The current program is already well shaped for DTOD** (7.7% of measured
+  HVAC kWh in the peak). The remaining gain comes from pre-cooling *deeper and
+  earlier* so the coast lasts through 7pm, rather than holding 75°F all morning.
+- **A planner adds 7–13%,** robust to the stage-1 assumption: −8 to −10% with
+  only the typical daily price shape, −11 to −13% with day-ahead prices.
 - **The ceiling is low in absolute terms.** Even perfect foresight saves
-  ~$60–70 over this 14-week window (~15–18% of a ~$380 HVAC cooling bill).
+  ~$52–64 over this 14-week window (~18–21% of a ~$300 HVAC cooling bill).
   That bounds the summer payback for any HVAC-timing investment.
-- **Bias direction:** every optimized plan cools *more* in the afternoon than
-  the program (~160–500 vs ~82 kWh in 2–7pm). That is exactly where the model
-  under-predicts load, so the optimized savings are optimistic. Of the
-  optimized plans, the day-ahead results have the most margin.
+- **Bias direction is now favorable.** The better plans and 3-period programs
+  put *less* energy in the 1–7pm peak than the current program (30–48 vs 82
+  kWh), so the model's afternoon under-prediction mostly hits the current
+  program. What it does put at risk is the coast itself: on the hottest days
+  the real house warms ~1°F more than modelled, so a 24.5°C coast may trigger
+  some peak cooling the model doesn't show. The 25.0°C coast has the most margin.
 
 ## Reproducibility
 
-`pull` into an empty cache (`THERMAL_MODEL_CACHE=<new dir>`) followed by `fit`
-and `counterfactual` reproduces every number in this doc exactly
-(2026-11-19, data through 2026-11-19 18:00 UTC).
+`pull` into an empty cache (`THERMAL_MODEL_CACHE=<new dir>`) followed by `fit`,
+`counterfactual`, `validate` and `costcurve` reproduces every number in this
+doc exactly (2026-11-19, data through 2026-11-19 18:00 UTC; DTOD rates from
+the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
 ## Limits
 
 - One summer, one house. Internal gains are a constant (no occupancy or
   cooking schedule). August shows what that costs.
+- DTOD rates come from the Jun–Oct 2026 bills. Capacity, fixed charges and the
+  Purchased Electricity Adjustment are excluded. The Aug and Sep bills used
+  estimated meter reads, which doesn't affect the per-kWh rates used here.
 - **Peak-hour bias:** hot-afternoon heat and expensive-slot energy are
   under-predicted by ~1°F and ~30% respectively (see above).
 - The thermostat is idealized (no deadband or staging logic) and uses an
@@ -363,9 +412,11 @@ and `counterfactual` reproduces every number in this doc exactly
 
 ## Next steps
 
-1. **Trial the derived fixed program** for a few hot weeks next summer.
-   Matched-day comparison against the current program is the real test of the
-   "3°F cooler for ~$10–35" claim and of the model's afternoon bias.
+1. **Trial a 3-period program next summer**, e.g. 24.0°C night, 22.5°C from 3am,
+   25.0°C from 1pm. Run it on matched hot days against the current program,
+   checking 1–7pm kWh and afternoon peak temperature. That is the real test of
+   the "cheaper and 2–3°F cooler" result and of the model's afternoon bias.
+   Arm B's spike holds anchor on the program value, so they stay compatible.
 2. **Weather-dependent thermostat offset:** model the thermostat room
    separately on hot afternoons. This is the cheapest fix for half the peak miss.
 3. **Winter refit** from mid-December, with the south-vertical solar term.

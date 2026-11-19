@@ -39,11 +39,66 @@ SCENARIOS: dict[str, dict[int, float]] = {
     "steady 77": {h: 77.0 for h in range(24)},
 }
 
+def three_period_program(night_c: float, precool_c: float, precool_start: int, coast_c: float,
+                         coast_start: int = 13, night_start: int = 22) -> dict[int, float]:
+    """CTK04-style program in deg C half-steps: night (from 10pm), pre-cool, coast (from 1pm). Returns deg F by hour."""
+    def f(c: float) -> float:
+        return c * 9 / 5 + 32
+    return {h: f(night_c) if (h >= night_start or h < precool_start) else f(precool_c) if h < coast_start else f(coast_c)
+            for h in range(24)}
+
+
+THREE_PERIOD_PROGRAMS: dict[str, dict[int, float]] = {
+    "24.0 | 22.0 from 3am | 24.5 from 1pm": three_period_program(24.0, 22.0, 3, 24.5),
+    "24.0 | 22.5 from 3am | 25.0 from 1pm": three_period_program(24.0, 22.5, 3, 25.0),
+    "24.0 | 22.5 from 3am | 24.5 from 1pm": three_period_program(24.0, 22.5, 3, 24.5),
+    "24.0 | 23.0 from 3am | 24.5 from 1pm": three_period_program(24.0, 23.0, 3, 24.5),
+    "24.0 | 22.5 from 1am | 24.5 from 1pm": three_period_program(24.0, 22.5, 1, 24.5),
+    "24.0 | 22.5 from 4am | 24.5 from 1pm": three_period_program(24.0, 22.5, 4, 24.5),
+}
+
 PEAK_HOURS = range(14, 19)  # 2-7pm local
-# Per-kWh delivery adder. 2026 ComEd bills (comed.bill) run 7.3-7.7 c/kWh of
-# delivery_total / kwh, which includes the fixed customer charge, so the true
-# marginal rate is a little lower. Supply cost uses the actual hourly prices.
-DELIVERY_CENTS_PER_KWH = 7.0
+DTOD_PEAK_HOURS = range(13, 19)  # ComEd DTOD Mid-Day Peak, 1-7pm
+
+# ComEd DTOD (Delivery Time-of-Day) Distribution Facility Charge plus the other
+# per-kWh bill items, by billing period, from the ingested bills
+# (comed.bill_lineitems). Units are c/kWh. Windows are local clock hours:
+# Overnight 9pm-6am, Morning 6am-1pm, Mid-Day Peak 1-7pm, Evening 7-9pm.
+# "flat" = IL Electricity Distribution + Transmission Services + Carbon-Free
+# Energy Resource Adj. These are time-invariant within a bill; the CFE credit
+# moves month to month. Excluded: fixed charges (customer, metering), the
+# Capacity Charge ($/kW-month PLC, set by last summer's 5CP), and the lump
+# Purchased Electricity Adjustment.
+DTOD_PERIODS: tuple[tuple[str, dict[str, float]], ...] = (
+    ("2026-05-25", {"overnight": 3.345, "morning": 4.475, "midday": 11.852, "evening": 4.185, "flat": 0.128 + 1.074 - 1.344}),
+    ("2026-06-23", {"overnight": 3.345, "morning": 4.475, "midday": 11.852, "evening": 4.185, "flat": 0.128 + 1.074 - 1.228}),
+    ("2026-07-23", {"overnight": 3.345, "morning": 4.475, "midday": 11.852, "evening": 4.185, "flat": 0.128 + 1.074 - 0.690}),
+    ("2026-08-21", {"overnight": 3.349, "morning": 4.479, "midday": 11.863, "evening": 4.189, "flat": 0.128 + 1.073 - 1.628}),
+    ("2026-09-23", {"overnight": 3.349, "morning": 4.479, "midday": 11.863, "evening": 4.189, "flat": 0.128 + 1.075 - 0.115}),
+)
+
+
+def _dtod_window(hour: int) -> str:
+    if 13 <= hour < 19:
+        return "midday"
+    if 6 <= hour < 13:
+        return "morning"
+    if 19 <= hour < 21:
+        return "evening"
+    return "overnight"
+
+
+def delivery_cents_per_kwh(index: pd.DatetimeIndex) -> np.ndarray:
+    """Per-kWh delivery + flat bill items (c/kWh) at each timestamp, per DTOD window and bill period."""
+    starts = pd.DatetimeIndex([pd.Timestamp(d, tz=index.tz) for d, _ in DTOD_PERIODS])
+    period = np.clip(np.searchsorted(starts, index, side="right") - 1, 0, len(DTOD_PERIODS) - 1)
+    out = np.empty(len(index))
+    for i, (h, per) in enumerate(zip(index.hour, period, strict=True)):
+        rates = DTOD_PERIODS[per][1]
+        out[i] = rates[_dtod_window(int(h))] + rates["flat"]
+    return out
+
+
 SLEEP_HOURS = (*range(22, 24), *range(0, 7))
 
 
@@ -118,6 +173,7 @@ def run(
             "kw": kw,
             "kwh": kw * 0.25,
             "cost_usd": kw * 0.25 * d["price_cents_per_kwh"].to_numpy(float) / 100,
+            "delivery_usd": kw * 0.25 * delivery_cents_per_kwh(pd.DatetimeIndex(d.index)) / 100,
             "out_f": to,
         },
         index=d.index,
@@ -130,8 +186,10 @@ def summarize(tr: pd.DataFrame) -> dict[str, float]:
     return {
         "kwh": float(tr["kwh"].sum()),
         "cost_usd": float(tr["cost_usd"].sum()),
-        "bill_usd": float(tr["cost_usd"].sum() + tr["kwh"].sum() * DELIVERY_CENTS_PER_KWH / 100),
+        "delivery_usd": float(tr["delivery_usd"].sum()),
+        "bill_usd": float(tr["cost_usd"].sum() + tr["delivery_usd"].sum()),
         "peak_2_7pm_kwh": float(tr.loc[peak, "kwh"].sum()),
+        "dtod_peak_1_7pm_kwh": float(tr.loc[tr.index.hour.isin(DTOD_PEAK_HOURS), "kwh"].sum()),
         "avg_price_paid_c": float(100 * tr["cost_usd"].sum() / tr["kwh"].sum()) if tr["kwh"].sum() else 0.0,
         "sleep_mean_f": float(tr.loc[sleep, "house_f"].mean()),
         "afternoon_max_f_median": float(tr.loc[peak, "house_f"].resample("D").max().median()),

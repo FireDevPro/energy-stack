@@ -4,7 +4,7 @@ Two stages, so the reported cost always comes from the replay-validated simulato
 
 1. Plan. A linear program over the whole season, with perfect foresight of
    weather and ComEd prices, chooses delivered cooling g_k in [0, 1] each 15 min
-   to minimise sum (price_k + delivery) * kW(g_k), subject to the 1R1C dynamics
+   to minimise sum (price_k + DTOD delivery_k) * kW(g_k), subject to the 1R1C dynamics
    and floor <= house_f <= cap. kW(g) is the lower convex hull of the measured
    operating points (stage 1, stage 2), which is what an LP can represent.
    Cap violations are allowed but heavily penalised, so infeasible hours are
@@ -53,7 +53,8 @@ def plan(
     d[["out_f", "solar", "price_cents_per_kwh"]] = d[["out_f", "solar", "price_cents_per_kwh"]].interpolate(limit_direction="both")
     n = len(d)
     to, s = d["out_f"].to_numpy(float), d["solar"].to_numpy(float) / 1000
-    price = (d["price_cents_per_kwh"].to_numpy(float) + cf.DELIVERY_CENTS_PER_KWH) / 100  # $/kWh
+    # $/kWh: (believed) supply + DTOD delivery (known in advance)
+    price = (d["price_cents_per_kwh"].to_numpy(float) + cf.delivery_cents_per_kwh(pd.DatetimeIndex(d.index))) / 100
 
     # exact composition of the SUBSTEPS Euler updates for the linear 1R1C model
     h = DT / SUBSTEPS
@@ -162,6 +163,8 @@ def _metrics(tr: pd.DataFrame, w: pd.DataFrame) -> dict[str, float]:
     peak = tr.index.hour.isin(cf.PEAK_HOURS)
     return {
         "bill_usd": s["bill_usd"],
+        "delivery_usd": s["delivery_usd"],
+        "dtod_peak_kwh": s["dtod_peak_1_7pm_kwh"],
         "kwh": s["kwh"],
         "peak_2_7pm_kwh": s["peak_2_7pm_kwh"],
         "avg_supply_c": s["avg_price_paid_c"],

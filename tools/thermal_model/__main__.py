@@ -101,11 +101,15 @@ def cmd_counterfactual(w: pd.DataFrame) -> None:
             "daily_corr": float(dc[["sim_kwh", "meas_kwh"]].corr().iloc[0, 1]),
             "daily_mae_kwh": float((dc.sim_kwh - dc.meas_kwh).abs().mean()),
             "indoor_rmse_f": float(((rep.house_f - w.loc[rep.index, "house_f"]) ** 2).mean() ** 0.5),
+            "sim_delivery": float(rep.delivery_usd.sum()),
+            "meas_delivery": float((w.loc[rep.index, "hvac_kw"] * 0.25
+                                    * cf.delivery_cents_per_kwh(pd.DatetimeIndex(rep.index)) / 100).sum()),
         }
         out[tag]["replay"] = rv
         print(f"replay {start}..{SEASON[1]}: sim {rv['sim_kwh']:.0f} kWh / ${rv['sim_cost']:.0f}  vs measured "
               f"{rv['meas_kwh']:.0f} kWh / ${rv['meas_cost']:.0f};  daily r={rv['daily_corr']:.2f}, "
-              f"daily MAE {rv['daily_mae_kwh']:.1f} kWh, indoor RMSE {rv['indoor_rmse_f']:.2f}F")
+              f"daily MAE {rv['daily_mae_kwh']:.1f} kWh, indoor RMSE {rv['indoor_rmse_f']:.2f}F; "
+              f"DTOD delivery sim ${rv['sim_delivery']:.0f} vs measured ${rv['meas_delivery']:.0f}")
 
         rows = {}
         for name, prog in cf.SCENARIOS.items():
@@ -121,7 +125,7 @@ def cmd_counterfactual(w: pd.DataFrame) -> None:
         df["cost_vs_program"] = (df.cost_usd / base.cost_usd - 1) * 100
         df["bill_vs_program"] = (df.bill_usd / base.bill_usd - 1) * 100
         out[tag]["scenarios"] = df.to_dict(orient="index")
-        cols = ["kwh", "kwh_vs_program", "cost_usd", "cost_vs_program", "bill_usd", "bill_vs_program", "avg_price_paid_c", "peak_2_7pm_kwh",
+        cols = ["kwh", "kwh_vs_program", "cost_usd", "delivery_usd", "bill_usd", "bill_vs_program", "avg_price_paid_c", "dtod_peak_1_7pm_kwh",
                 "hot_day_kwh_per_day", "sleep_mean_f", "afternoon_max_f_median", "hours_above_78"]
         print(f"scenarios {SEASON[0]}..{SEASON[1]} (actual weather + ComEd prices):")
         print(df[cols].round(1).to_string())
@@ -177,12 +181,15 @@ def cmd_costcurve(w: pd.DataFrame) -> None:
             prog = opt.derived_program(traj, off)
             programs[f"{cap:.0f}"] = prog
             tr = cf.run(p, w, s, e, cf.program_series(idx, prog), curve, off)
-            derived_rows[f"derived fixed program (cap {cap:.0f})"] = {"cap_f": cap, **opt._metrics(tr, w)}
+            derived_rows[f"derived hourly program (cap {cap:.0f})"] = {"cap_f": cap, **opt._metrics(tr, w)}
+        for name, prog in cf.THREE_PERIOD_PROGRAMS.items():
+            tr = cf.run(p, w, s, e, cf.program_series(idx, prog), curve, off)
+            derived_rows[f"3-period {name}"] = {"cap_f": float("nan"), **opt._metrics(tr, w)}
         df = pd.concat([df, pd.DataFrame(derived_rows).T])
         base = df.loc["program (75 / 79 pm)", "bill_usd"]
         df["bill_vs_program_pct"] = (df["bill_usd"] / base - 1) * 100
-        cols = ["bill_usd", "bill_vs_program_pct", "kwh", "peak_2_7pm_kwh", "avg_supply_c", "max_house_f",
-                "afternoon_max_f_median", "sleep_mean_f"]
+        cols = ["bill_usd", "bill_vs_program_pct", "delivery_usd", "kwh", "dtod_peak_kwh", "avg_supply_c", "max_house_f",
+                "afternoon_max_f_median", "sleep_mean_f", "min_house_f"]
         print(f"\n######## stage-1 capacity = {s1:.0%}; {s}..{e}; sleep (10pm-7am) <= {SLEEP_CAP_F}F ########")
         print(df[cols].round(1).to_string())
         out[f"stage1_{s1}"] = {"table": df.to_dict(orient="index"), "derived_programs_tstat_f": programs}
