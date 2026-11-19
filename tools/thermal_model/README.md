@@ -26,6 +26,7 @@ python -m tools.thermal_model counterfactual  # replay check + steady-hold vs se
 python -m tools.thermal_model validate        # leave-one-month-out energy, peak events, pulldown rates
 python -m tools.thermal_model costcurve       # cheapest cooling per afternoon cap (LP planner)
 python -m tools.thermal_model fourway         # schedule x controller, rev 4.1 controller emulated
+python -m tools.thermal_model pjm             # PJM forecasts: spike predictability, forecast-gated strategies, 5CP
 ```
 
 Set `THERMAL_MODEL_CACHE=<dir>` to pull into a separate cache. Running `pull` into
@@ -46,6 +47,7 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 | `counterfactual.py` | Closed-loop thermostat simulation, kW curve, cost, scenario programs |
 | `validate.py` | Leave-one-month-out energy replay, peak-event and pulldown checks |
 | `controller_sim.py` | Port of the rev 4.1 spike controller (tiers, warm-only targets, humidity gate, 10-min publish lag), checked against `hvac.actions` |
+| `pjm_value.py` | Day-ahead/day-of predictors, forecast-triggered strategies (controller on), estimated 5CP hours and PLC impact |
 | `optimize.py` | LP planner (perfect / day-ahead / hour-of-day price beliefs), re-priced through the simulator; derived fixed programs |
 | `__main__.py` | CLI and the fixed analysis windows |
 

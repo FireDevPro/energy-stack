@@ -52,6 +52,15 @@ experiment is still the authoritative cost test. Code: [`tools/thermal_model/`](
   afternoons, evenings and nights all cooler, at the cost of ~1.6°F cooler
   mornings. The deeper 22.5°C pre-cool first proposed costs **+$7** once the
   controller is included: it and the controller avoid the same hours.
+- **PJM forecasts matter most for capacity, not energy.** The estimated 2026
+  5CP hours (Jul 1, 2, 3, 15, 16, 4–5pm) caught the house at **2.35 kW**
+  against today's 7.01 kW PLC. That points to a capacity charge roughly
+  **~$510–560/yr lower** from June 2027 if the estimate and ComEd's scaling hold.
+  The morning-of RTO peak forecast ranked those five days #1–5. Using
+  forecasts to pre-cool on flagged days changes the energy bill by only
+  $0–6 a summer. Targeted at the ~23 forecast-hot days, though, it cuts
+  >80°F hours by 55–66%, and a capacity-peak protocol on those days takes
+  5CP-hour HVAC to ~0. See [PJM forecasts](#pjm-forecasts-what-would-they-have-changed).
 - *Schedule-only results* (no controller) in
   [Comfort vs cost](#comfort-vs-cost) show what each schedule does on its own.
   They are not a comparison against the current system.
@@ -508,10 +517,91 @@ Comfort (house mean, hours over the 12 weeks):
   thermostat. That is modelled, but the CTK04 program here is idealized: one
   fixed 3-period schedule, every day.
 
+## PJM forecasts: what would they have changed?
+
+`python -m tools.thermal_model pjm`. Window: Jun 1 – Sep 30, 2026, with the
+controller emulated throughout (it went live Jul 6; the earlier weeks are
+hypothetical).
+
+### Were the spike days predictable?
+
+105 of 122 days had at least one afternoon bucket at ≥10¢, so a bare "spike
+day" is common. What matters is the *big* days: the top 10% of days hold 34%
+of the 229 afternoon spike-hours. Each predictor is scored using only what was
+known in time:
+
+| Flag | Known | Days flagged | Of which no spike | Share of spike-hours on flagged days | Top-10% days caught |
+|---|---|---|---|---|---|
+| Day-ahead LMP (12–9pm max) ≥ 7.5¢ | day before ~1:30pm | 69 | 4 | 78% | 86% |
+| Day-ahead LMP ≥ 10¢ | day before | 39 | 2 | 58% | 79% |
+| ComEd-zone peak load forecast ≥ 17 GW | day before (noon issue) | 23 | **0** | 46% | 79% |
+| ComEd-zone forecast ≥ 19 GW | day before | 13 | 0 | 30% | 57% |
+| PJM RTO peak forecast ≥ 140 GW | same day ~5–7am | 22 | **0** | 39% | 64% |
+| PJM RTO peak forecast ≥ 150 GW | same day | 10 | 0 | 26% | 57% |
+
+The load forecasts never false-alarm. Day-ahead LMP casts a wider net.
+
+### Would acting on them have changed the bill?
+
+With the controller always on, the current program on normal days, and a
+switch to the 23.0 → 25.5°C pre-cool program only on flagged days. Day-before
+flags start the pre-cool at 3am; same-day flags at 7am. Bills are supply +
+DTOD, Jun 1 – Sep 30; ranges cover the 50% / 70% stage-1 assumptions.
+
+| Strategy (+ controller) | Flagged days | Bill vs current | >80°F h | >78°F h | <72°F h | Morning mean |
+|---|---|---|---|---|---|---|
+| Current program | 0 | $241–242 | 51.5–60 | 394–424 | 4–6 | 74.9–75.0 |
+| Pre-cool every day | 122 | −$5.6 to −6.1 | 15.5–24 | 150–179 | 15–17 | 73.4 |
+| Pre-cool if DA ≥ 7.5¢ | 69 | −$5.6 to −5.8 | 20–28 | 238–273 | 8–11 | 74.0 |
+| **Pre-cool if ComEd fcst ≥ 17 GW** | 23 | **−$3.5 to −4.0** | **17.5–26** | 320–357 | **4–6** | 74.6–74.7 |
+| Pre-cool if RTO fcst ≥ 140 GW (7am start) | 22 | −$0 to −1.3 | 25.5–33 | 337–370 | 4–6 | 74.8 |
+
+- **Energy: forecasts barely move the bill** (−$0 to −6 over four months).
+  The controller already reacts within ~10 minutes of a published price, and
+  most spikes are short.
+- **Comfort: the gain is targeted.** The controller's >80°F excursions come
+  from scarcity holds on the big days. Pre-cooling only on the ~23 days the
+  ComEd forecast flags removes 55–66% of them. Unlike daily
+  pre-cooling, it adds no cold mornings on the other ~100 days.
+- A same-day 7am start is too late to bank much coolness. Day-before flags
+  are what make pre-cooling work.
+
+### Capacity (5CP): the bigger lever
+
+PJM's 5CP hours set the next delivery year's PLC. The 2025 hours produced
+today's **7.01 kW** PLC ($70.89/month). 2026's official hours are not
+published yet; estimated from metered RTO load:
+
+| Estimated 2026 5CP hour | RTO MW | House kW (measured) | HVAC kW | RTO morning fcst rank | ComEd day-before fcst rank |
+|---|---|---|---|---|---|
+| Thu Jul 2, 4pm | 162,221 | 1.56 | 0.00 | 1 | 5 |
+| Wed Jul 1, 4pm | 161,600 | 2.82 | 1.61 | 3 | 3 |
+| Wed Jul 15, 4pm | 158,676 | 3.10 | 1.28 | 2 | 2 |
+| Fri Jul 3, 4pm | 154,388 | 2.15 | 0.00 | 4 | 19 |
+| Thu Jul 16, 4pm | 153,784 | 2.10 | 0.06 | 5 | 7 |
+| **Mean** | | **2.35** | **0.59** | | |
+
+- **The house was already lightly loaded at the 5CP hours.** The afternoon
+  setback and the price holds then active had the AC off on three of the
+  five. If the estimate is right, the June 2027 PLC falls from 7.01 kW to
+  roughly 2.4–2.8 kW (depending on ComEd's scaling factors), worth
+  **~$510–560/yr** at today's $10.11/kW-month. This is the largest dollar effect
+  in this analysis. Confirm it against PJM's official list and the June 2027 bill.
+- **The RTO morning forecast identified all five days exactly** (ranks 1–5).
+  The ComEd-zone forecast missed Jul 3 (rank 19, holiday-eve load), so the RTO
+  forecast is the 5CP signal.
+- **A capacity-peak protocol** (22.5°C pre-cool, AC effectively off 1–7pm,
+  then recover) on ComEd ≥ 19 GW days takes modelled 5CP-hour HVAC to 0.00 kW.
+  That's −$72/yr at today's rate, for −$0.1 to +$0.4 of energy cost. With the morning
+  RTO flag (7am start), HVAC falls to 0.00–0.22 kW.
+- **The remaining lever is non-HVAC load:** ~1.76 kW of the 2.35 kW at 5CP
+  hours. A "likely 5CP afternoon" alert from the RTO morning forecast, to defer
+  laundry and other large loads, would act on that. Only HVAC is modelled here.
+
 ## Reproducibility
 
 `pull` into an empty cache (`THERMAL_MODEL_CACHE=<new dir>`) followed by `fit`,
-`counterfactual`, `validate`, `costcurve` and `fourway` reproduces every number in this
+`counterfactual`, `validate`, `costcurve`, `fourway` and `pjm` reproduces every number in this
 doc exactly (2026-11-19, data through 2026-11-19 18:00 UTC; DTOD rates from
 the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
@@ -539,9 +629,17 @@ the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
    DTOD), 1–7pm kWh, hours above 78/80°F, and morning lows against the current
    program + controller. That is the real test of "cooler for the same money"
    and of the model's afternoon bias.
-2. **Weather-dependent thermostat offset:** model the thermostat room
+2. **5CP:** check PJM's official 2026 5CP list against the estimate here, and
+   the June 2027 bill's PLC against the ~2.4–2.8 kW expected. Consider a
+   morning "likely 5CP" alert (RTO peak forecast) plus a capacity-peak program
+   on those days. That targets the capacity charge, which the controller was
+   deliberately not designed for.
+3. **Forecast-gated pre-cool:** if afternoon comfort on hot days matters,
+   pre-cool only on days the ComEd-zone forecast (issued the day before) puts
+   at ≥ 17 GW.
+4. **Weather-dependent thermostat offset:** model the thermostat room
    separately on hot afternoons. This is the cheapest fix for half the peak miss.
-3. **Winter refit** from mid-December, with the south-vertical solar term.
-4. **Day-ahead planner:** if pursued, it is an Arm B design question for the
+5. **Winter refit** from mid-December, with the south-vertical solar term.
+6. **Day-ahead planner:** if pursued, it is an Arm B design question for the
    2027 experiment, not a mid-season change.
-5. Keep the 2027 A/B as the authoritative cost comparison.
+7. Keep the 2027 A/B as the authoritative cost comparison.

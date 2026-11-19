@@ -200,20 +200,22 @@ def raw_series(name: str, flux: str, refresh: bool = False) -> pd.DataFrame:
     return df
 
 
-CONTROLLER_WINDOW = ("2026-07-06T00:00:00Z", "2026-10-01T05:00:00Z")
+# Starts before the 2026-07-06 go-live so the emulator can run hypothetically over
+# all of June (5CP and forecast analysis). The log comparison uses only Jul 6 on.
+CONTROLLER_WINDOW = ("2026-05-31T05:00:00Z", "2026-10-01T05:00:00Z")
 
 
 def controller_inputs(refresh: bool = False) -> dict[str, pd.DataFrame]:
     """5-min ComEd prices, thermostat RH, and the controller's action log for the live window."""
     a, b = CONTROLLER_WINDOW
     rng = f"range(start: {a}, stop: {b})"
-    price = raw_series("price_5min", f'''from(bucket: "energy") |> {rng}
+    price = raw_series("price_5min_v2", f'''from(bucket: "energy") |> {rng}
   |> filter(fn: (r) => r._measurement == "comed.prices" and r.period_type == "5min" and r._field == "price_cents_per_kwh")
   |> keep(columns: ["_time", "_value"])''', refresh)
-    rh = raw_series("tstat_rh", f'''from(bucket: "energy") |> {rng}
+    rh = raw_series("tstat_rh_v2", f'''from(bucket: "energy") |> {rng}
   |> filter(fn: (r) => r._measurement == "hvac.thermostat" and r._field == "humidity_pct")
   |> keep(columns: ["_time", "_value"])''', refresh)
-    actions = raw_series("hvac_actions", f'''from(bucket: "energy") |> {rng}
+    actions = raw_series("hvac_actions_v2", f'''from(bucket: "energy") |> {rng}
   |> filter(fn: (r) => r._measurement == "hvac.actions")
   |> filter(fn: (r) => contains(value: r._field, set: ["commanded_cool", "schedule_cool", "applied", "humidity_gated", "setpoint_reason", "actual_humidity"]))
   |> map(fn: (r) => ({{r with _value: string(v: r._value)}}))  // fields mix int/float/string

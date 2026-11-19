@@ -124,15 +124,23 @@ PUBLISH_LAG_MIN = 10
 
 def run_controller(program_f_by_hour: dict[int, float], price_5min: pd.Series, rh: pd.Series,
                    index_15min: pd.DatetimeIndex, cfg: ControllerConfig | None = None,
-                   enabled: bool = True, publish_lag_min: int = PUBLISH_LAG_MIN) -> ControllerRun:
+                   enabled: bool = True, publish_lag_min: int = PUBLISH_LAG_MIN,
+                   day_programs: dict[pd.Timestamp, dict[int, float]] | None = None) -> ControllerRun:
     """Program (deg F by hour, as the CTK04 runs it in 0.5 C steps) plus optional controller,
-    returned as a 15-min setpoint series (mean of the three 5-min buckets)."""
+    returned as a 15-min setpoint series (mean of the three 5-min buckets).
+
+    ``day_programs`` overrides the program on specific local days (keyed by the
+    tz-aware local midnight), e.g. a pre-cool program on forecast-flagged days.
+    """
     cfg = cfg or ControllerConfig()
     grid = pd.date_range(index_15min[0], index_15min[-1] + pd.Timedelta(minutes=10), freq="5min")
     lagged = price_5min.copy()
     lagged.index = lagged.index + pd.Timedelta(minutes=publish_lag_min)
     px = lagged.reindex(grid, method="ffill").bfill()
-    prog_c = pd.Series([f_to_c_half(program_f_by_hour[int(h)]) for h in grid.hour], index=grid)
+    day_programs = day_programs or {}
+    days = grid.normalize()
+    prog_c = pd.Series([f_to_c_half(day_programs.get(d, program_f_by_hour)[int(h)])
+                        for d, h in zip(days, grid.hour, strict=True)], index=grid)
     tiers = tier_series(px, cfg)
     blocked = humidity_blocked(tiers, rh, cfg)
     if enabled:

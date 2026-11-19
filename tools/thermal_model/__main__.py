@@ -12,6 +12,7 @@ from . import controller_sim as ctl
 from . import counterfactual as cf
 from . import data
 from . import optimize as opt
+from . import pjm_value as pjm
 from . import validate as val
 from .model import Params, fit, score, segments
 from .solar import blended_solar
@@ -260,6 +261,35 @@ def cmd_fourway(w: pd.DataFrame) -> None:
     _save("fourway", out)
 
 
+def cmd_pjm(w: pd.DataFrame) -> None:
+    """Would PJM day-ahead / day-of information have changed anything? (controller always on)"""
+    out: dict[str, Any] = {}
+    for s1 in (0.5, 0.7):
+        p = fit(segments(w, *SEASON), stage1_capacity=s1, fixed=COOLING_ONLY).params
+        r = pjm.evaluate(p, w, cf.power_curve(w), cf.tstat_offset_by_hour(w))
+        if s1 == 0.5:
+            d = r["daily"]
+            print(f"== predictability, {pjm.WINDOW[0]}..{pjm.WINDOW[1]}: {len(d)} days, "
+                  f"{int((d.spike_pm_h > 0).sum())} with any afternoon spike tier, {d.spike_pm_h.sum():.0f} afternoon spike-hours; "
+                  f"top 10% of days hold {d.spike_pm_h.nlargest(int(len(d) * 0.1)).sum() / d.spike_pm_h.sum():.0%} of them")
+            print(r["flags"].round(2).to_string())
+            cp = r["cp"]
+            print("\n== estimated 2026 5CP hours (top RTO daily peaks; official list not yet published)")
+            print(cp.assign(hour=cp["hour"].dt.strftime("%a %m-%d %H:00")).round(2).to_string(index=False))
+            print(f"mean house load {cp.house_kw_measured.mean():.2f} kW (HVAC {cp.hvac_kw_measured.mean():.2f} kW) "
+                  f"vs current PLC {pjm.PLC_KW_NOW} kW from the 2025 5CP")
+            out["flags"] = r["flags"].to_dict(orient="index")
+            out["cp"] = cp.assign(hour=cp["hour"].astype(str)).to_dict(orient="records")
+        res = r["strategies"]
+        out[f"stage1_{s1}"] = res.to_dict(orient="index")
+        print(f"\n######## strategies with controller on, stage-1 = {s1:.0%}, {pjm.WINDOW[0]}..{pjm.WINDOW[1]} ########")
+        print(res[["flagged_days", "bill_usd", "bill_vs_current", "kwh", "dtod_peak_kwh", "hvac_kw_at_5cp",
+                   "capacity_usd_per_yr_vs_current"]].round(2).to_string())
+        print(res[["afternoon_max_f_median", "h_above_78", "h_above_80", "morning_6_12_mean_f", "h_below_72",
+                   "sleep_mean_f"]].round(1).to_string())
+    _save("pjm", out)
+
+
 def _fourway_metrics(tr: pd.DataFrame) -> dict[str, float]:
     sm = cf.summarize(tr)
     return {"bill_usd": sm["bill_usd"], "supply_usd": sm["cost_usd"], "delivery_usd": sm["delivery_usd"],
@@ -278,6 +308,7 @@ def main() -> None:
     sub.add_parser("validate", help="leave-one-month-out energy, peak events, pulldown rates")
     sub.add_parser("costcurve", help="cheapest cooling per afternoon cap (perfect / day-ahead / hourly-shape planners)")
     sub.add_parser("fourway", help="schedule x controller comparison with the rev 4.1 controller emulated on each schedule")
+    sub.add_parser("pjm", help="PJM day-ahead/day-of forecasts: spike predictability, forecast-triggered strategies, 5CP")
     a = ap.parse_args()
     if a.cmd == "pull":
         data.pull(a.start, a.stop, a.refresh)
@@ -285,7 +316,7 @@ def main() -> None:
         return
     w = data.load()
     {"fit": cmd_fit, "counterfactual": cmd_counterfactual, "validate": cmd_validate, "costcurve": cmd_costcurve,
-     "fourway": cmd_fourway}[a.cmd](w)
+     "fourway": cmd_fourway, "pjm": cmd_pjm}[a.cmd](w)
 
 
 if __name__ == "__main__":
