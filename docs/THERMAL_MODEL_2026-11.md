@@ -52,15 +52,23 @@ experiment is still the authoritative cost test. Code: [`tools/thermal_model/`](
   afternoons, evenings and nights all cooler, at the cost of ~1.6°F cooler
   mornings. The deeper 22.5°C pre-cool first proposed costs **+$7** once the
   controller is included: it and the controller avoid the same hours.
-- **PJM forecasts matter most for capacity, not energy.** The estimated 2026
-  5CP hours (Jul 1, 2, 3, 15, 16, 4–5pm) caught the house at **2.35 kW**
-  against today's 7.01 kW PLC. That points to a capacity charge roughly
-  **~$510–560/yr lower** from June 2027 if the estimate and ComEd's scaling hold.
-  The morning-of RTO peak forecast ranked those five days #1–5. Using
-  forecasts to pre-cool on flagged days changes the energy bill by only
-  $0–6 a summer. Targeted at the ~23 forecast-hot days, though, it cuts
-  >80°F hours by 55–66%, and a capacity-peak protocol on those days takes
-  5CP-hour HVAC to ~0. See [PJM forecasts](#pjm-forecasts-what-would-they-have-changed).
+- **PJM forecasts matter most for capacity, not energy.**
+  - **Capacity hours:** ComEd sets the capacity obligation from your average
+    demand over 10 hours of the prior summer (PJM's 5 system peaks plus ComEd's
+    5 zone peaks). Estimated 2026 hours caught the house at **2.67 kW** on
+    average.
+  - **Projection:** with ComEd's billing factors, today's 7.01 kW billed
+    obligation would fall to **~2.4–2.7 kW**, about $527–557/yr lower at
+    today's rate. That is projected, not realized: confirm it against the
+    official peak lists and the June 2027 bill.
+  - **Advance warning:** one day-before flag (ComEd-zone forecast ≥ 19 GW,
+    13 weekdays) covered every one of those days.
+  - **Energy:** forecast-gated pre-cooling barely changes the energy bill
+    ($0–6 a summer).
+  - **Comfort and protection:** pre-cool plus a 3–6pm window on flagged days
+    cuts >80°F hours on those days by ~60% and removes nearly all HVAC load
+    from the capacity hours (−$68–79/yr more), at ~$0 energy cost. See
+    [PJM forecasts](#pjm-forecasts-what-would-they-have-changed).
 - *Schedule-only results* (no controller) in
   [Comfort vs cost](#comfort-vs-cost) show what each schedule does on its own.
   They are not a comparison against the current system.
@@ -566,37 +574,142 @@ DTOD, Jun 1 – Sep 30; ranges cover the 50% / 70% stage-1 assumptions.
 - A same-day 7am start is too late to bank much coolness. Day-before flags
   are what make pre-cooling work.
 
-### Capacity (5CP): the bigger lever
+### Capacity: the bigger lever (projected, not yet realized)
 
-PJM's 5CP hours set the next delivery year's PLC. The 2025 hours produced
-today's **7.01 kW** PLC ($70.89/month). 2026's official hours are not
-published yet; estimated from metered RTO load:
+**How the obligation is set.**
+- **Ten hours, not five.** Per ComEd's Hourly Pricing FAQ, the capacity
+  obligation averages your demand over **10 hours of the prior summer**: the
+  5 PJM system peak hours *and* the 5 ComEd-zone peak hours. The average is
+  adjusted for T&D losses.
+- **The bill shows a scaled figure.** Per CUB (2026-06-23), the charge is
+  Capacity PLC × 0.97854 (scaling) × 0.9291 (forecast pool requirement) ×
+  rate. So the **7.01 kW on the bill is already scaled**: 7.01 × $10.11236 =
+  $70.89. The underlying Capacity PLC is ~7.71 kW.
+- **When it changes.** Summer 2026's hours set the obligation billed from
+  June 2027.
 
-| Estimated 2026 5CP hour | RTO MW | House kW (measured) | HVAC kW | RTO morning fcst rank | ComEd day-before fcst rank |
+**Estimated 2026 hours.** Official lists were not in Influx on 2026-11-19.
+Each set is the top 5 daily peaks on weekdays, NERC holidays excluded, from
+`pjm.metered_load`. Fri Jul 3 is kept because NERC does not shift a Saturday
+holiday; excluding it swaps in Sep 1 and changes the average by −0.04 kW.
+
+| Set | Hour | Zone MW | House kW | HVAC kW | Fcst rank: RTO morning / ComEd day-before |
 |---|---|---|---|---|---|
-| Thu Jul 2, 4pm | 162,221 | 1.56 | 0.00 | 1 | 5 |
-| Wed Jul 1, 4pm | 161,600 | 2.82 | 1.61 | 3 | 3 |
-| Wed Jul 15, 4pm | 158,676 | 3.10 | 1.28 | 2 | 2 |
-| Fri Jul 3, 4pm | 154,388 | 2.15 | 0.00 | 4 | 19 |
-| Thu Jul 16, 4pm | 153,784 | 2.10 | 0.06 | 5 | 7 |
-| **Mean** | | **2.35** | **0.59** | | |
+| PJM | Thu Jul 2, 4pm | 162,221 | 1.56 | 0.00 | 1 / 5 |
+| PJM | Wed Jul 1, 4pm | 161,600 | 2.82 | 1.61 | 3 / 3 |
+| PJM | Wed Jul 15, 4pm | 158,676 | 3.10 | 1.28 | 2 / 2 |
+| PJM | Fri Jul 3, 4pm | 154,388 | 2.15 | 0.00 | 4 / 18 |
+| PJM | Thu Jul 16, 4pm | 153,784 | 2.10 | 0.06 | 5 / 7 |
+| ComEd | Wed Sep 2, 4pm | 21,228 | 1.97 | 0.00 | 11 / 6 |
+| ComEd | **Tue Jun 30, 5pm** | 20,677 | **6.46** | **4.00** | 9 / 4 |
+| ComEd | Tue Sep 1, 4pm | 20,633 | 1.78 | 0.00 | 8 / 10 |
+| ComEd | Tue Jul 14, 5pm | 20,612 | 1.60 | 0.19 | 6 / 1 |
+| ComEd | Wed Jul 15, 4pm | 20,598 | 3.10 | 1.28 | 2 / 2 |
+| **10-hour mean** | | | **2.67** | **0.84** | |
 
-- **The house was already lightly loaded at the 5CP hours.** The afternoon
-  setback and the price holds then active had the AC off on three of the
-  five. If the estimate is right, the June 2027 PLC falls from 7.01 kW to
-  roughly 2.4–2.8 kW (depending on ComEd's scaling factors), worth
-  **~$510–560/yr** at today's $10.11/kW-month. This is the largest dollar effect
-  in this analysis. Confirm it against PJM's official list and the June 2027 bill.
-- **The RTO morning forecast identified all five days exactly** (ranks 1–5).
-  The ComEd-zone forecast missed Jul 3 (rank 19, holiday-eve load), so the RTO
-  forecast is the 5CP signal.
-- **A capacity-peak protocol** (22.5°C pre-cool, AC effectively off 1–7pm,
-  then recover) on ComEd ≥ 19 GW days takes modelled 5CP-hour HVAC to 0.00 kW.
-  That's −$72/yr at today's rate, for −$0.1 to +$0.4 of energy cost. With the morning
-  RTO flag (7am start), HVAC falls to 0.00–0.22 kW.
-- **The remaining lever is non-HVAC load:** ~1.76 kW of the 2.35 kW at 5CP
-  hours. A "likely 5CP afternoon" alert from the RTO morning forecast, to defer
-  laundry and other large loads, would act on that. Only HVAC is modelled here.
+**Projected billed obligation.** 2.67 kW × loss factor (1.00–1.10) × 0.9092
+gives **2.42–2.67 kW**, against 7.01 kW today. That's $527–557/yr lower *at
+today's rate and factors*. Shifting the hours by ±1 h moves the 10-hour mean
+by at most −0.4 kW.
+
+Why it is "projected":
+- the peak hours are estimates,
+- the loss factor is bracketed, not confirmed,
+- the 2027/28 rate and factors will differ.
+
+Book it only once the June 2027 bill shows the new figure.
+
+**What the data shows:**
+- **The afternoon setback already did most of the work.** HVAC was ~0 in six
+  of the ten hours. The exception is **Tue Jun 30, 5pm** (before the rev 4
+  controller went live): the AC ran flat out (4.0 kW). That one hour adds
+  ~0.4 kW to the 10-hour mean.
+- **Capacity peaks and price spikes are different events.** Jun 30 was not a
+  top-RTO day (rank 9), and its ComEd-zone peak needs a ComEd signal. A
+  capacity mode should not wait for a price spike. A capacity hour at a cheap
+  real-time price would otherwise let the AC run.
+- **The ComEd-zone day-before forecast is the better single trigger.** At
+  ≥ 19 GW (13 weekdays) it flagged **every one of the 8 distinct peak days**.
+  The RTO morning forecast ranked the PJM days well but put two ComEd-zone
+  days at 9 and 11.
+- **Hindsight check:** each `pjm.peak_forecast_rto` point is stamped with
+  PJM's `generated_at_ept`, i.e. as published. Every revision is stored, and
+  the ranking uses same-day 6:01/8:01 EPT issues. The ComEd forecast is
+  filtered on its `evaluated_at` publish time. The ≥ 19 GW threshold is
+  tuned on one summer only; it needs checking against earlier summers before
+  automating. 2025 forecasts are not in Influx.
+
+**Selective capacity protection** on the 13 flagged weekdays, controller on.
+Billed kW assumes a 1.05 loss factor; ranges are 50% / 70% stage-1.
+
+| Protocol on flagged days | HVAC at the 10 hours | Billed capacity | Capacity vs current | Energy | Flagged days: >80°F h | 3–6pm mean | Morning mean |
+|---|---|---|---|---|---|---|---|
+| Current program | 0.61 / 0.68 kW | 2.32 / 2.39 kW | — | — | 45 / 51 | 79.1 / 79.2°F | 75.4°F |
+| 26.5°C 3–6pm only | 0.39 kW | 2.12 kW | −$25 / −33 | −$1 | 49 / 55 | 79.1 / 79.3°F | 75.4°F |
+| **Pre-cool 23.0°C 3am–1pm + 26.5°C 3–6pm** | **0.00 / 0.09 kW** | **1.74 / 1.83 kW** | **−$70 / −68** | **+$0.2–0.4** | **15.5 / 21** | **77.6 / 77.8°F** | 73.7 / 73.9°F |
+| Full: 22.5°C pre-cool, 26.5°C 1–7pm | 0.00 kW | 1.74 kW | −$70 / −79 | −$0.1 to +$0.4 | 12.5 / 15 | 76.9 / 77.1°F | 73.1 / 73.3°F |
+
+- **A window without pre-cool barely helps** and makes the afternoon *hotter*.
+- **The selective pre-cool + 3–6pm window** removes nearly all HVAC load from
+  the capacity hours for ~$0 of energy. It also makes flagged days *more*
+  comfortable: ~60% fewer hours above 80°F, because the controller's 29.5°C
+  scarcity holds start from a cooler house. The cost is ~1.6°F cooler mornings
+  on 13 days.
+- **The model under-predicts hot afternoons by ~1°F**, so "0.00 kW" is
+  optimistic. The direction and comfort result are robust; the last fraction
+  of a kW is not.
+
+**Non-HVAC load at those hours** (Refoss, all 18 circuits). The ~1.8 kW is
+almost all **always-on baseline**, the same at 3–5am:
+
+| Circuit | At the 10 hours | 3–5am |
+|---|---|---|
+| **Unmonitored remainder** (mains − all CT'd circuits) | **0.99 kW** | **1.00 kW** |
+| AV rack (network/servers) | 0.29 | 0.32 |
+| Fridges/freezers (4 circuits) | 0.26 | 0.23 |
+| Room circuits | 0.23 | 0.23 |
+| Washer/dryer (the only deferrable load) | 0.00 | 0.01 |
+
+- **Nothing deferrable was running at the peak hours**, so a "defer laundry"
+  alert has little to act on.
+- **The lever is the ~1.0 kW unmonitored baseline that runs around the
+  clock.** The utility meter confirms it is real: the EAGLE and the Refoss
+  mains agree within 1% overnight (2.54 vs 2.56 kW), and the house rarely
+  drops below 1.4 kW (5th percentile; minimum 1.08 kW).
+- **What it is worth.** At ~1 kW continuous it is ~8,800 kWh/yr, on the
+  order of **~$850/yr in energy** (~10¢/kWh all-in), plus ~$110–120/yr of capacity per kW. It
+  may be essential (sump, dehumidifier, freezer) or waste; identifying which
+  circuit carries it is the next step.
+
+## Ops note: thermostat push failures (Jul 4 – Nov 19)
+
+Audited because the controller log showed failed pushes. Counts, reconciled:
+
+| Window | Failed hold pushes | Failed releases | Other | Total |
+|---|---|---|---|---|
+| Jul 6 – Sep 30 | 52 | 2 | — | 54 |
+| Jul 4 – Nov 19 | 80 | 7 | 4 rev-3 `BASELINE` rows (Jul 4–5) | 91 |
+| Aug 8 – Nov 19 | 59 | 6 | — | **65 = the 65 write failures in `hvac.device_status`** |
+
+**What the 80 hold pushes were:**
+- **53 while a hold was active** (39 renewals, 14 target corrections). The
+  hold stayed in force; retries succeeded within seconds.
+- **27 hold starts** (23 at spike onset, 4 over a manual hold). Median delay
+  3.5 min.
+
+**Causes.** All 65 write failures with a recorded cause were `TimeoutError`
+(aiosomecomfort's hard-coded 30 s TCC timeout; see the 2026-07-11 hardening
+plan). Read timeouts run at a flat ~8.6% across hours and tiers.
+
+**Impact.**
+- AC energy during requested-but-unapplied holds was **~3.7 kWh (~$0.50) for
+  the season**.
+- Failed reads delayed 72 of 428 engagements, by a median of 30 s.
+- Failed releases leave the warmer hold up to its 30-min TTL. That is a
+  comfort metric worth watching, not a cost.
+
+**Verdict.** Leave the retry architecture alone: device-owned timed holds and
+retry-next-tick absorb the flakiness.
 
 ## Reproducibility
 
@@ -629,11 +742,15 @@ the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
    DTOD), 1–7pm kWh, hours above 78/80°F, and morning lows against the current
    program + controller. That is the real test of "cooler for the same money"
    and of the model's afternoon bias.
-2. **5CP:** check PJM's official 2026 5CP list against the estimate here, and
-   the June 2027 bill's PLC against the ~2.4–2.8 kW expected. Consider a
-   morning "likely 5CP" alert (RTO peak forecast) plus a capacity-peak program
-   on those days. That targets the capacity charge, which the controller was
-   deliberately not designed for.
+2. **Capacity:**
+   - **Validate first.** Check PJM's official 2026 5CP and ComEd's zone peak
+     hours against the estimates here, and the June 2027 bill against the
+     ~2.4–2.7 kW expected.
+   - **Then a separate capacity mode,** independent of price tiers. Triggered
+     the day before by the ComEd-zone forecast (≥ 19 GW, to be checked
+     against prior summers), it would pre-cool to 23.0°C from 3am and hold
+     26.5°C 3–6pm, with a comfort ceiling.
+   - **Identify the ~1 kW always-on unmonitored load.
 3. **Forecast-gated pre-cool:** if afternoon comfort on hot days matters,
    pre-cool only on days the ComEd-zone forecast (issued the day before) puts
    at ≥ 17 GW.

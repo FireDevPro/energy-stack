@@ -89,9 +89,11 @@ The science layer: what counts as evidence, how it's validated.
   rev 4.1 controller emulated (97% hold-timing match to its log). The
   controller saves ~22%; a 23.0°C pre-cool baseline under it is cost-neutral
   with ~60% fewer hours above 78°F. PJM section: forecasts move the energy bill
-  little, but the estimated 2026 5CP hours caught the house at 2.35 kW vs a
-  7.01 kW PLC (~$510–560/yr lower capacity charge if confirmed), and the RTO
-  morning forecast ranked those 5 days #1–5.
+  little. Under ComEd's 10-hour capacity method (5 PJM + 5 ComEd peaks), the
+  estimated 2026 hours caught the house at 2.67 kW. That projects a billed
+  obligation of ~2.4–2.7 kW vs 7.01 kW (~$527–557/yr, unconfirmed). A
+  day-before ComEd forecast flags every peak day. Also: ~1 kW always-on
+  unmonitored load; thermostat push-failure audit (~$0.50/season impact).
   Also: the seasonal south-glazing solar finding; heating not yet fit
 
 ## Stack operations

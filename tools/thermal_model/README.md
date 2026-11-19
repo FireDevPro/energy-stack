@@ -47,7 +47,7 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 | `counterfactual.py` | Closed-loop thermostat simulation, kW curve, cost, scenario programs |
 | `validate.py` | Leave-one-month-out energy replay, peak-event and pulldown checks |
 | `controller_sim.py` | Port of the rev 4.1 spike controller (tiers, warm-only targets, humidity gate, 10-min publish lag), checked against `hvac.actions` |
-| `pjm_value.py` | Day-ahead/day-of predictors, forecast-triggered strategies (controller on), estimated 5CP hours and PLC impact |
+| `pjm_value.py` | Day-ahead/day-of predictors, forecast-triggered strategies (controller on), ComEd 10-hour capacity estimate (5 PJM + 5 ComEd peaks, billing factors), circuit breakdown + EAGLE check, selective capacity protocols |
 | `optimize.py` | LP planner (perfect / day-ahead / hour-of-day price beliefs), re-priced through the simulator; derived fixed programs |
 | `__main__.py` | CLI and the fixed analysis windows |
 

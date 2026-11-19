@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from . import controller_sim as ctl
@@ -274,19 +275,42 @@ def cmd_pjm(w: pd.DataFrame) -> None:
                   f"top 10% of days hold {d.spike_pm_h.nlargest(int(len(d) * 0.1)).sum() / d.spike_pm_h.sum():.0%} of them")
             print(r["flags"].round(2).to_string())
             cp = r["cp"]
-            print("\n== estimated 2026 5CP hours (top RTO daily peaks; official list not yet published)")
+            print("\n== estimated 2026 capacity hours: 5 PJM RTO + 5 ComEd-zone daily peaks, weekdays, NERC holidays out")
             print(cp.assign(hour=cp["hour"].dt.strftime("%a %m-%d %H:00")).round(2).to_string(index=False))
-            print(f"mean house load {cp.house_kw_measured.mean():.2f} kW (HVAC {cp.hvac_kw_measured.mean():.2f} kW) "
-                  f"vs current PLC {pjm.PLC_KW_NOW} kW from the 2025 5CP")
+            avg = float(cp.house_kw_measured.mean())
+            print(f"10-hour mean house load {avg:.2f} kW (HVAC {cp.hvac_kw_measured.mean():.2f}, other "
+                  f"{(cp.house_kw_measured - cp.hvac_kw_measured).mean():.2f}); PJM-5 {cp[cp.set == 'RTO'].house_kw_measured.mean():.2f}, "
+                  f"ComEd-5 {cp[cp.set == 'CE'].house_kw_measured.mean():.2f}")
+            alt = pjm.capacity_hours(exclude_july3=True)
+            mains = pjm.house_mains_hourly()
+            print(f"  with Fri Jul 3 excluded as a holiday: 10-hour mean {np.mean([mains.get(t) for t in alt.hour]):.2f} kW")
+            print(f"billed kW = Capacity PLC x {pjm.BILLED_FACTOR:.4f}; today's {pjm.PLC_KW_NOW} billed kW "
+                  f"-> Capacity PLC {pjm.PLC_KW_NOW / pjm.BILLED_FACTOR:.2f} kW")
+            for k, v in pjm.projected_billed_kw(avg).items():
+                print(f"  {k}: projected billed {v:.2f} kW -> ${v * pjm.CAPACITY_USD_PER_KW_MONTH:.2f}/mo vs "
+                      f"${pjm.PLC_KW_NOW * pjm.CAPACITY_USD_PER_KW_MONTH:.2f}; "
+                      f"${(pjm.PLC_KW_NOW - v) * pjm.CAPACITY_USD_PER_KW_MONTH * 12:,.0f}/yr lower at today's rate and factors")
+            print("\n== what makes up the load at those hours (Refoss circuits)")
+            print(pjm.circuit_breakdown(list(cp.hour)).round(2).to_string())
+            ev = pjm.eagle_vs_mains()
+            print("utility meter check:", {k: round(v, 3) for k, v in ev.items()})
+            out["capacity_hours"] = cp.assign(hour=cp["hour"].astype(str)).to_dict(orient="records")
+            out["eagle_vs_mains"] = ev
             out["flags"] = r["flags"].to_dict(orient="index")
-            out["cp"] = cp.assign(hour=cp["hour"].astype(str)).to_dict(orient="records")
         res = r["strategies"]
         out[f"stage1_{s1}"] = res.to_dict(orient="index")
         print(f"\n######## strategies with controller on, stage-1 = {s1:.0%}, {pjm.WINDOW[0]}..{pjm.WINDOW[1]} ########")
-        print(res[["flagged_days", "bill_usd", "bill_vs_current", "kwh", "dtod_peak_kwh", "hvac_kw_at_5cp",
-                   "capacity_usd_per_yr_vs_current"]].round(2).to_string())
+        print(res[["flagged_days", "bill_usd", "bill_vs_current", "kwh", "dtod_peak_kwh", "hvac_kw_at_peaks",
+                   "billed_cap_kw", "capacity_usd_per_yr_vs_current"]].round(2).to_string())
         print(res[["afternoon_max_f_median", "h_above_78", "h_above_80", "morning_6_12_mean_f", "h_below_72",
                    "sleep_mean_f"]].round(1).to_string())
+        prot = r["protocols"]
+        out[f"protocols_stage1_{s1}"] = prot.to_dict(orient="index")
+        print(f"\n-- selective capacity protocols on {r['protocol_flag_days']:.0f} weekdays flagged by ComEd day-before fcst >= 19 GW "
+              "(billed kW assumes loss factor 1.05)")
+        print(prot[["hvac_kw_at_peaks", "hvac_kw_at_peaks_max", "billed_cap_kw", "capacity_usd_per_yr_vs_current",
+                    "energy_vs_current", "flagdays_max_f", "flagdays_h_above_80", "flagdays_3_6pm_mean_f",
+                    "flagdays_morning_mean_f"]].round(2).to_string())
     _save("pjm", out)
 
 
