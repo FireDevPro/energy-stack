@@ -125,6 +125,20 @@ def test_parse_kwh_fixed():
     assert parse_kwh(text) == 1367
 
 
+@pytest.mark.parametrize(
+    "reads, kwh",
+    [("Actual Actual", 2926), ("Actual Estimate", 1917), ("Estimate Actual", 2214), ("Estimate Estimate", 1500)],
+)
+def test_parse_kwh_estimated_reads(reads, kwh):
+    """Estimated meter reads (Aug/Sep 2026 bills) still yield the billed kWh."""
+    text = (
+        "Read Dates Meter Number Load Type Reading Type Previous Present Difference "
+        f"Multiplier Usage 7/23-8/21273339142 General Service Total kWh {reads} {kwh} "
+        "METER INFORMATION Issued 8/27/26"
+    )
+    assert parse_kwh(text) == kwh
+
+
 def test_parse_kwh_transition_is_zero():
     text = _norm_fixture("transition_aug2025.txt")
     assert parse_kwh(text) == 0
