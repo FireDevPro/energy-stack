@@ -10,6 +10,8 @@ import pandas as pd
 
 from . import counterfactual as cf
 from . import data
+from . import optimize as opt
+from . import validate as val
 from .model import Params, fit, score, segments
 from .solar import blended_solar
 
@@ -126,6 +128,67 @@ def cmd_counterfactual(w: pd.DataFrame) -> None:
     _save("counterfactual", out)
 
 
+def cmd_validate(w: pd.DataFrame) -> None:
+    """Out-of-sample checks: leave-one-month-out energy, peak events, pulldown rates."""
+    tr, rows = val.lomo_replays(w)
+    df = pd.DataFrame(rows)
+    tot = df[["sim_kwh", "meas_kwh", "sim_cost", "meas_cost"]].sum()
+    print("== leave-one-month-out energy replay (params, kW curve, thermostat offset from the other 3 months)")
+    print(df.round(2).to_string(index=False))
+    print(f"total: sim {tot.sim_kwh:.0f} vs meas {tot.meas_kwh:.0f} kWh ({100 * (tot.sim_kwh / tot.meas_kwh - 1):+.1f}%), "
+          f"supply ${tot.sim_cost:.0f} vs ${tot.meas_cost:.0f}")
+    pe = val.peak_events(tr)
+    ha = pd.DataFrame(pe["hottest_afternoons"])
+    print("\n== hottest 10 afternoons (noon-8pm), held-out")
+    print(ha.round(1).to_string(index=False))
+    print(f"sum: sim {ha.sim_kwh.sum():.0f} vs meas {ha.meas_kwh.sum():.0f} kWh; mean peak-temp error {(ha.sim_max_f - ha.meas_max_f).mean():+.2f}F")
+    for k in ("all_evenings", "hot_evenings", "expensive_slots"):
+        print(k, {a: round(b, 2) if isinstance(b, float) else b for a, b in pe[k].items()})
+    p = fit(segments(w, *SEASON), fixed=COOLING_ONLY).params
+    pr = val.pulldown_rates(w, p)
+    cols = ["thermostat", "house mean", "2F hall", "2F S-BR", "1F office", "model", "out_minus_in"]
+    print("\n== evening full-stage-2 pulldown rate, F/h (median over runs)")
+    print(pr.groupby("period")[cols].median().round(2).to_string())
+    print(pr.groupby("period").size().to_string())
+    _save("validate", {"lomo": rows, "peak_events": pe,
+                       "pulldown_median": pr.groupby("period")[cols].median().to_dict(orient="index")})
+
+
+# Cost-curve window: day-ahead LMP coverage starts ~Jun 24.
+CURVE_WINDOW = ("2026-06-25", "2026-09-30")
+CAPS = [76.0, 77.0, 78.0, 79.0, 80.0]
+SLEEP_CAP_F = 75.2  # the program's overnight comfort, held fixed so the curve prices afternoon comfort only
+FLOOR_F = 72.0
+
+
+def cmd_costcurve(w: pd.DataFrame) -> None:
+    """Cheapest cooling per afternoon cap at fixed sleep comfort, by planner knowledge."""
+    out: dict[str, Any] = {}
+    s, e = CURVE_WINDOW
+    idx = pd.DatetimeIndex(w.loc[s:e].index)
+    for s1 in (0.5, 0.7):
+        p = fit(segments(w, *SEASON), stage1_capacity=s1, fixed=COOLING_ONLY).params
+        curve, off = cf.power_curve(w), cf.tstat_offset_by_hour(w)
+        df = opt.cost_curve(p, w, s, e, CAPS, FLOOR_F, curve, off, sleep_cap=SLEEP_CAP_F)
+        sig = opt.price_signals(w, s, e)["hour-of-day"]
+        derived_rows, programs = {}, {}
+        for cap in CAPS[:2]:
+            traj, _ = opt.plan(p, w, s, e, cap, FLOOR_F, curve, plan_price=sig, sleep_cap=SLEEP_CAP_F)
+            prog = opt.derived_program(traj, off)
+            programs[f"{cap:.0f}"] = prog
+            tr = cf.run(p, w, s, e, cf.program_series(idx, prog), curve, off)
+            derived_rows[f"derived fixed program (cap {cap:.0f})"] = {"cap_f": cap, **opt._metrics(tr, w)}
+        df = pd.concat([df, pd.DataFrame(derived_rows).T])
+        base = df.loc["program (75 / 79 pm)", "bill_usd"]
+        df["bill_vs_program_pct"] = (df["bill_usd"] / base - 1) * 100
+        cols = ["bill_usd", "bill_vs_program_pct", "kwh", "peak_2_7pm_kwh", "avg_supply_c", "max_house_f",
+                "afternoon_max_f_median", "sleep_mean_f"]
+        print(f"\n######## stage-1 capacity = {s1:.0%}; {s}..{e}; sleep (10pm-7am) <= {SLEEP_CAP_F}F ########")
+        print(df[cols].round(1).to_string())
+        out[f"stage1_{s1}"] = {"table": df.to_dict(orient="index"), "derived_programs_tstat_f": programs}
+    _save("costcurve", out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m tools.thermal_model")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -135,13 +198,15 @@ def main() -> None:
     pp.add_argument("--refresh", action="store_true")
     sub.add_parser("fit", help="validation fit, monthly stability, fall/solar diagnosis")
     sub.add_parser("counterfactual", help="replay validation + steady-hold vs setback scenarios")
+    sub.add_parser("validate", help="leave-one-month-out energy, peak events, pulldown rates")
+    sub.add_parser("costcurve", help="cheapest cooling per afternoon cap (perfect / day-ahead / hourly-shape planners)")
     a = ap.parse_args()
     if a.cmd == "pull":
         data.pull(a.start, a.stop, a.refresh)
         data.load(rebuild=True)
         return
     w = data.load()
-    {"fit": cmd_fit, "counterfactual": cmd_counterfactual}[a.cmd](w)
+    {"fit": cmd_fit, "counterfactual": cmd_counterfactual, "validate": cmd_validate, "costcurve": cmd_costcurve}[a.cmd](w)
 
 
 if __name__ == "__main__":

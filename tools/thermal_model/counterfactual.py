@@ -56,18 +56,26 @@ class PowerCurve:
         return np.interp(u, self.u, self.kw)
 
 
-def power_curve(w: pd.DataFrame) -> PowerCurve:
-    """Binned mean HVAC kW vs ComfortNet cool fraction (Jun-Sep), anchored at (0, 0)."""
-    d = w.loc["2026-06-01":"2026-09-30", ["cool", "hvac_kw"]].dropna()
+def _without(w: pd.DataFrame, start: str, stop: str, exclude: tuple[str, str] | None) -> pd.DataFrame:
+    d = w.loc[start:stop]
+    if exclude is not None:
+        d = d[(d.index < pd.Timestamp(exclude[0], tz=d.index.tz)) | (d.index >= pd.Timestamp(exclude[1], tz=d.index.tz) + pd.Timedelta(days=1))]
+    return d
+
+
+def power_curve(w: pd.DataFrame, exclude: tuple[str, str] | None = None) -> PowerCurve:
+    """Binned mean HVAC kW vs ComfortNet cool fraction (Jun-Sep, minus ``exclude``), anchored at (0, 0)."""
+    d = _without(w, "2026-06-01", "2026-09-30", exclude)[["cool", "hvac_kw"]].dropna()
     d = d[d["cool"] > 0.01]
     bins = pd.cut(d["cool"], [0.01, 0.15, 0.3, 0.45, 0.55, 0.7, 0.85, 0.95, 1.0])
     g = d.groupby(bins, observed=True).mean()
     return PowerCurve(np.r_[0.0, g["cool"].to_numpy()], np.r_[0.0, g["hvac_kw"].to_numpy()])
 
 
-def tstat_offset_by_hour(w: pd.DataFrame) -> dict[int, float]:
-    """Mean (thermostat reading - house mean) by hour of day, after the TCC cutover."""
-    d = (w["tstat_f"] - w["house_f"]).loc["2026-06-25":"2026-09-30"].dropna()
+def tstat_offset_by_hour(w: pd.DataFrame, exclude: tuple[str, str] | None = None) -> dict[int, float]:
+    """Mean (thermostat reading - house mean) by hour of day, after the TCC cutover (minus ``exclude``)."""
+    d = _without(w, "2026-06-25", "2026-09-30", exclude)
+    d = (d["tstat_f"] - d["house_f"]).dropna()
     return {int(h): float(v) for h, v in d.groupby(d.index.hour).mean().items()}
 
 

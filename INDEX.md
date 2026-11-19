@@ -82,9 +82,11 @@ The science layer: what counts as evidence, how it's validated.
   `indoor_temp_f_hires` telemetry field
 - [docs/THERMAL_MODEL_2026-11.md](docs/THERMAL_MODEL_2026-11.md)
   — first credible thermal model (one-node RC, τ ≈ 40 h, 0.85°F day-ahead
-  error on held-out September, replays summer HVAC energy within 1%) and the
-  steady-hold vs setback counterfactual (setback program is cheapest in every
-  scenario); seasonal south-glazing solar finding; heating not yet fit
+  error on held-out September; leave-one-month-out season energy +0.4%, but
+  peak-hour energy ~30% low). Includes the steady-hold vs setback
+  counterfactual (setback wins) and the comfort-vs-cost curve (a pre-cool
+  fixed program gives ≤76°F afternoons for ~+3%; a day-ahead planner −8–10%).
+  Also: the seasonal south-glazing solar finding; heating not yet fit
 
 ## Stack operations
 

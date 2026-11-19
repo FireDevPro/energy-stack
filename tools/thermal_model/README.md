@@ -23,7 +23,12 @@ installed (numpy, pandas, scipy):
 python -m tools.thermal_model pull            # SSH to pi-lab, pull May 26 -> now into tools/thermal_model/.data/
 python -m tools.thermal_model fit             # validation fit, monthly stability, fall/solar diagnosis
 python -m tools.thermal_model counterfactual  # replay check + steady-hold vs setback scenarios
+python -m tools.thermal_model validate        # leave-one-month-out energy, peak events, pulldown rates
+python -m tools.thermal_model costcurve       # cheapest cooling per afternoon cap (LP planner)
 ```
+
+Set `THERMAL_MODEL_CACHE=<dir>` to pull into a separate cache. Running `pull` into
+an empty directory reproduces every number in the doc.
 
 `pull` uses `ssh chris@192.168.20.10 docker exec influxdb influx query`, so no
 Influx token is needed locally. It caches month-chunked 15-min CSVs and is
@@ -38,6 +43,8 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 | `model.py` | RC model, whole-day simulation fit, scoring |
 | `solar.py` | Horizontal -> south-vertical irradiance approximation (seasonal window gain) |
 | `counterfactual.py` | Closed-loop thermostat simulation, kW curve, cost, scenario programs |
+| `validate.py` | Leave-one-month-out energy replay, peak-event and pulldown checks |
+| `optimize.py` | LP planner (perfect / day-ahead / hour-of-day price beliefs), re-priced through the simulator; derived fixed programs |
 | `__main__.py` | CLI and the fixed analysis windows |
 
 ## Data traps this code handles
@@ -53,6 +60,8 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 - **Two different fields share the name `indoor_temp_f`:** `ecowitt.weather` (the
   gateway) and `hvac.thermostat`. They are pulled separately, and the
   thermostat one is renamed `tstat_indoor_raw`.
+- **`pjm.lmp_da_hourly`** (ComEd zone, $/MWh) starts ~2026-06-24 with small gaps.
+  Planner gaps are filled with the typical hour-of-day price.
 - **`comed.prices` carries two `period_type`s** (`5min`, `hourly_avg`). Only `5min` is pulled.
 - **Refoss comes from `energy-longterm` 1-min aggregates.** Six months of raw
   30 s data from three channels is too heavy a query for the Pi.
@@ -67,4 +76,9 @@ measured 2,748. Day-by-day fitting re-initialises the hidden mass temperature
 every midnight, so the fit parks solar heat in the mass and never pays for
 releasing it overnight. Fitting on 7-day blocks did not fix it. 1R1C replays at
 2,776 kWh (1% off), so it is the primary model. Gate any future model change
-on the same replay check.
+on the same replay check, and on `validate` (which holds out parameters, not
+structure).
+
+Known weakness: hot-afternoon heat and the energy in the most expensive hours
+are under-predicted (~1°F, ~30%). Don't use the model to time individual heat
+events or recoveries.

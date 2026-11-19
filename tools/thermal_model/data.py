@@ -16,6 +16,7 @@ Units and naming traps handled here (see README):
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 from dataclasses import dataclass
 from itertools import pairwise
@@ -25,7 +26,8 @@ import numpy as np
 import pandas as pd
 
 PI_SSH = "chris@192.168.20.10"
-CACHE = Path(__file__).resolve().parent / ".data"
+# Override with THERMAL_MODEL_CACHE to pull into a separate (e.g. clean) cache.
+CACHE = Path(os.environ.get("THERMAL_MODEL_CACHE", Path(__file__).resolve().parent / ".data"))
 RAW = CACHE / "raw"
 TZ = "America/Chicago"
 
@@ -67,6 +69,12 @@ SOURCES: tuple[Source, ...] = (
         "px",
         "energy",
         'r._measurement == "comed.prices" and r._field == "price_cents_per_kwh" and r.period_type == "5min"',
+    ),
+    # PJM day-ahead LMP, ComEd zone ($/MWh): what a real controller could know a day ahead.
+    Source(
+        "da",
+        "energy",
+        'r._measurement == "pjm.lmp_da_hourly" and r._field == "total_lmp_da" and r.zone == "COMED"',
     ),
     # Refoss from the 1-min longterm aggregates: raw 30 s x 6 months is too heavy for the Pi.
     Source(
@@ -146,6 +154,8 @@ def assemble() -> pd.DataFrame:
         w[c] = _to_f(w[c])
 
     # Model target: mean of the three 0.1 degC Ecowitt rooms (2F hall, 2F south BR, 1F office).
+    if "total_lmp_da" in w:
+        w["da_cents_per_kwh"] = (w["total_lmp_da"] / 10).ffill(limit=3)  # hourly -> 15-min
     w["house_f"] = w[["ch2_temp_f", "ch3_temp_f", "indoor_temp_f"]].mean(axis=1, skipna=False)
     w["out_f"] = w["ch1_temp_f"]
     w["solar"] = w["solar_wm2"].clip(lower=0)
