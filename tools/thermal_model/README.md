@@ -25,6 +25,7 @@ python -m tools.thermal_model fit             # validation fit, monthly stabilit
 python -m tools.thermal_model counterfactual  # replay check + steady-hold vs setback scenarios
 python -m tools.thermal_model validate        # leave-one-month-out energy, peak events, pulldown rates
 python -m tools.thermal_model costcurve       # cheapest cooling per afternoon cap (LP planner)
+python -m tools.thermal_model fourway         # schedule x controller, rev 4.1 controller emulated
 ```
 
 Set `THERMAL_MODEL_CACHE=<dir>` to pull into a separate cache. Running `pull` into
@@ -44,6 +45,7 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 | `solar.py` | Horizontal -> south-vertical irradiance approximation (seasonal window gain) |
 | `counterfactual.py` | Closed-loop thermostat simulation, kW curve, cost, scenario programs |
 | `validate.py` | Leave-one-month-out energy replay, peak-event and pulldown checks |
+| `controller_sim.py` | Port of the rev 4.1 spike controller (tiers, warm-only targets, humidity gate, 10-min publish lag), checked against `hvac.actions` |
 | `optimize.py` | LP planner (perfect / day-ahead / hour-of-day price beliefs), re-priced through the simulator; derived fixed programs |
 | `__main__.py` | CLI and the fixed analysis windows |
 

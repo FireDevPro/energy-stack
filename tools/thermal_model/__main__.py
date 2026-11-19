@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from . import controller_sim as ctl
 from . import counterfactual as cf
 from . import data
 from . import optimize as opt
@@ -196,6 +197,75 @@ def cmd_costcurve(w: pd.DataFrame) -> None:
     _save("costcurve", out)
 
 
+FOURWAY_WINDOW = ("2026-07-06", "2026-09-30")  # controller live; config unchanged throughout
+FOURWAY_PROGRAMS = {
+    "current program": cf.OBSERVED_PROGRAM_F,
+    "3-period 22.5/25.0": cf.THREE_PERIOD_PROGRAMS["24.0 | 22.5 from 3am | 25.0 from 1pm"],
+    "3-period 22.0/24.5": cf.THREE_PERIOD_PROGRAMS["24.0 | 22.0 from 3am | 24.5 from 1pm"],
+    "3-period 23.0/25.5": cf.three_period_program(24.0, 23.0, 3, 25.5),
+    "3-period 23.0/26.0": cf.three_period_program(24.0, 23.0, 3, 26.0),
+    "3-period 23.5/26.0": cf.three_period_program(24.0, 23.5, 3, 26.0),
+}
+
+
+def cmd_fourway(w: pd.DataFrame) -> None:
+    """Schedule x controller comparison, with the controller emulated on each schedule."""
+    s, e = FOURWAY_WINDOW
+    idx = pd.DatetimeIndex(w.loc[s:e].index)
+    ci = data.controller_inputs()
+    price = ci["price"].set_index("_time")["_value"].sort_index()
+    price = price[~price.index.duplicated()]
+    rh = ci["rh"].set_index("_time")["_value"].sort_index()
+    out: dict[str, Any] = {}
+
+    v = ctl.validate_against_log(cf.OBSERVED_PROGRAM_F, price, rh, ci["actions"], idx)
+    out["emulator_validation"] = v
+    print(f"== controller emulator vs real action log ({s}..{e}, current program)")
+    print(f"   hold time emulated {v['emulated_hold_h']:.0f} h vs actual {v['actual_hold_h']:.0f} h; "
+          f"recall {v['recall']:.1%}, precision {v['precision']:.1%}, Jaccard {v['jaccard']:.2f}; "
+          f"episodes {v['emulated_episodes']:.0f} vs {v['actual_episodes']:.0f}; daily r {v['daily_hold_corr']:.2f}")
+
+    m = w.loc[s:e]
+    meas_supply = float((m.hvac_kw * 0.25 * m.price_cents_per_kwh / 100).sum())
+    meas_deliv = float((m.hvac_kw * 0.25 * cf.delivery_cents_per_kwh(pd.DatetimeIndex(m.index)) / 100).sum())
+    out["measured"] = {"bill_usd": meas_supply + meas_deliv, "supply_usd": meas_supply, "delivery_usd": meas_deliv,
+                       "kwh": float((m.hvac_kw * 0.25).sum()),
+                       "dtod_peak_kwh": float((m.hvac_kw * 0.25)[m.index.hour.isin(cf.DTOD_PEAK_HOURS)].sum())}
+
+    for s1 in (0.5, 0.7):
+        p = fit(segments(w, *SEASON), stage1_capacity=s1, fixed=COOLING_ONLY).params
+        curve, off = cf.power_curve(w), cf.tstat_offset_by_hour(w)
+        rows: dict[str, dict[str, float]] = {}
+        rep = cf.run(p, w, s, e, w["cool_setpoint_f"], curve, off)
+        rows["replay: actual setpoint history"] = {**_fourway_metrics(rep), "hold_h": float("nan")}
+        for pname, prog in FOURWAY_PROGRAMS.items():
+            for enabled in (False, True):
+                run = ctl.run_controller(prog, price, rh, idx, enabled=enabled)
+                tr = cf.run(p, w, s, e, run.setpoint_f_15min, curve, off)
+                tiered = (run.tier_5min > 0).groupby(run.tier_5min.index.floor("15min")).mean().reindex(idx).fillna(0)
+                label = f"{pname} {'+ controller' if enabled else '(no controller)'}"
+                rows[label] = {**_fourway_metrics(tr), "hold_h": float(run.hold_5min.sum() / 12),
+                               "spike_tier_usd": float(((tr.cost_usd + tr.delivery_usd) * tiered.to_numpy()).sum()),
+                               "spike_tier_kwh": float((tr.kwh * tiered.to_numpy()).sum())}
+        df = pd.DataFrame(rows).T
+        out[f"stage1_{s1}"] = df.to_dict(orient="index")
+        print(f"\n######## stage-1 capacity = {s1:.0%}; {s}..{e}; measured HVAC: "
+              f"${out['measured']['bill_usd']:.0f} (supply ${meas_supply:.0f} + DTOD ${meas_deliv:.0f}), "
+              f"{out['measured']['kwh']:.0f} kWh, {out['measured']['dtod_peak_kwh']:.0f} kWh 1-7pm ########")
+        print(df[["bill_usd", "supply_usd", "delivery_usd", "kwh", "dtod_peak_kwh", "hold_h", "spike_tier_kwh",
+                  "spike_tier_usd"]].round(1).to_string())
+        print(df[["afternoon_max_f_median", "max_f", "h_above_78", "h_above_80", "h_above_82", "morning_6_12_mean_f",
+                  "h_below_72", "h_below_70", "min_f", "evening_19_22_mean_f", "bedtime_22_mean_f",
+                  "sleep_mean_f"]].round(1).to_string())
+    _save("fourway", out)
+
+
+def _fourway_metrics(tr: pd.DataFrame) -> dict[str, float]:
+    sm = cf.summarize(tr)
+    return {"bill_usd": sm["bill_usd"], "supply_usd": sm["cost_usd"], "delivery_usd": sm["delivery_usd"],
+            "kwh": sm["kwh"], "dtod_peak_kwh": sm["dtod_peak_1_7pm_kwh"], **cf.excursions(tr)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m tools.thermal_model")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -207,13 +277,15 @@ def main() -> None:
     sub.add_parser("counterfactual", help="replay validation + steady-hold vs setback scenarios")
     sub.add_parser("validate", help="leave-one-month-out energy, peak events, pulldown rates")
     sub.add_parser("costcurve", help="cheapest cooling per afternoon cap (perfect / day-ahead / hourly-shape planners)")
+    sub.add_parser("fourway", help="schedule x controller comparison with the rev 4.1 controller emulated on each schedule")
     a = ap.parse_args()
     if a.cmd == "pull":
         data.pull(a.start, a.stop, a.refresh)
         data.load(rebuild=True)
         return
     w = data.load()
-    {"fit": cmd_fit, "counterfactual": cmd_counterfactual, "validate": cmd_validate, "costcurve": cmd_costcurve}[a.cmd](w)
+    {"fit": cmd_fit, "counterfactual": cmd_counterfactual, "validate": cmd_validate, "costcurve": cmd_costcurve,
+     "fourway": cmd_fourway}[a.cmd](w)
 
 
 if __name__ == "__main__":

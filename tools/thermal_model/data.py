@@ -177,3 +177,50 @@ def load(rebuild: bool = False) -> pd.DataFrame:
     w = assemble()
     w.to_pickle(pkl)
     return w
+
+
+def raw_series(name: str, flux: str, refresh: bool = False) -> pd.DataFrame:
+    """Run an un-aggregated Flux query over SSH, cache the CSV, return a long frame.
+
+    Used for inputs that must keep native resolution (5-min prices for the
+    controller emulator, the controller's own action log).
+    """
+    RAW.mkdir(parents=True, exist_ok=True)
+    out = CACHE / "raw_native" / f"{name}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if refresh or not out.exists():
+        res = subprocess.run(
+            ["ssh", PI_SSH, "docker exec -i influxdb influx query --raw -f /dev/stdin"],
+            input=flux, capture_output=True, text=True, timeout=600, check=True,
+        )
+        out.write_text(res.stdout)
+    df = _read(out)
+    if not df.empty:
+        df["_time"] = pd.to_datetime(df["_time"], utc=True).dt.tz_convert(TZ)
+    return df
+
+
+CONTROLLER_WINDOW = ("2026-07-06T00:00:00Z", "2026-10-01T05:00:00Z")
+
+
+def controller_inputs(refresh: bool = False) -> dict[str, pd.DataFrame]:
+    """5-min ComEd prices, thermostat RH, and the controller's action log for the live window."""
+    a, b = CONTROLLER_WINDOW
+    rng = f"range(start: {a}, stop: {b})"
+    price = raw_series("price_5min", f'''from(bucket: "energy") |> {rng}
+  |> filter(fn: (r) => r._measurement == "comed.prices" and r.period_type == "5min" and r._field == "price_cents_per_kwh")
+  |> keep(columns: ["_time", "_value"])''', refresh)
+    rh = raw_series("tstat_rh", f'''from(bucket: "energy") |> {rng}
+  |> filter(fn: (r) => r._measurement == "hvac.thermostat" and r._field == "humidity_pct")
+  |> keep(columns: ["_time", "_value"])''', refresh)
+    actions = raw_series("hvac_actions", f'''from(bucket: "energy") |> {rng}
+  |> filter(fn: (r) => r._measurement == "hvac.actions")
+  |> filter(fn: (r) => contains(value: r._field, set: ["commanded_cool", "schedule_cool", "applied", "humidity_gated", "setpoint_reason", "actual_humidity"]))
+  |> map(fn: (r) => ({{r with _value: string(v: r._value)}}))  // fields mix int/float/string
+  |> group()
+  |> pivot(rowKey: ["_time", "action_label", "tier", "dry_run"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "action_label", "tier", "dry_run", "commanded_cool", "schedule_cool", "applied", "humidity_gated", "setpoint_reason", "actual_humidity"])''', refresh)
+    for c in ("commanded_cool", "schedule_cool", "applied", "humidity_gated", "actual_humidity"):
+        if c in actions:
+            actions[c] = pd.to_numeric(actions[c], errors="coerce")
+    return {"price": price, "rh": rh, "actions": actions}

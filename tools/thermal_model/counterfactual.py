@@ -204,3 +204,23 @@ def daily_compare(sim: pd.DataFrame, w: pd.DataFrame) -> pd.DataFrame:
 
 def program_series(index: pd.DatetimeIndex, program: dict[int, float]) -> pd.Series:
     return pd.Series([program[int(h)] for h in index.hour], index=index)
+
+
+def excursions(tr: pd.DataFrame) -> dict[str, float]:
+    """Comfort excursions of the house mean, in hours, plus period means."""
+    h = tr.index.hour
+    q = 0.25
+    return {
+        "h_above_78": float((tr.house_f > 78).sum() * q),
+        "h_above_80": float((tr.house_f > 80).sum() * q),
+        "h_above_82": float((tr.house_f > 82).sum() * q),
+        "h_below_72": float((tr.house_f < 72).sum() * q),
+        "h_below_70": float((tr.house_f < 70).sum() * q),
+        "max_f": float(tr.house_f.max()),
+        "min_f": float(tr.house_f.min()),
+        "morning_6_12_mean_f": float(tr.house_f[(h >= 6) & (h < 12)].mean()),
+        "afternoon_max_f_median": float(tr.house_f[(h >= 13) & (h < 19)].resample("D").max().median()),
+        "evening_19_22_mean_f": float(tr.house_f[(h >= 19) & (h < 22)].mean()),
+        "bedtime_22_mean_f": float(tr.house_f[h == 22].mean()),
+        "sleep_mean_f": float(tr.house_f[np.isin(h, SLEEP_HOURS)].mean()),
+    }

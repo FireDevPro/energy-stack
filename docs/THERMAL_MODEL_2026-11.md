@@ -40,13 +40,21 @@ experiment is still the authoritative cost test. Code: [`tools/thermal_model/`](
 - **The setback program beats a steady hold by a wide margin.** Steady 75°F
   costs **55–66% more**, because it puts ~1,500–1,700 kWh into the 1–7pm DTOD
   peak versus the program's ~85.
-- **A simple 3-period program can beat the current one on cost *and* comfort.**
-  Pre-cool to 22–22.5°C from 3am, then let the house coast from 1pm with a
-  24.5–25°C setpoint. That costs **3–10% less** than the current program with
-  afternoons at ≤76.5–77.4°F instead of 79°F; the price is ~72°F mornings. A
-  day-ahead-price planner does better still (−11 to −13%). Under fixed
-  schedules, each degree of afternoon comfort costs ~$40–50 per summer. See
-  [Comfort vs cost](#comfort-vs-cost).
+- **The system you actually run is program + controller, and the controller
+  is the bigger lever.** Emulated from its own code and checked against its
+  action log (97% hold-timing agreement), the controller cuts the 12-week HVAC
+  bill from ~$227–231 to **~$177 (−22 to −23%)**. See
+  [Schedule × controller](#schedule--controller-four-way-comparison).
+- **A gentler pre-cool baseline gives the controller a better starting point.**
+  With the controller on, a 3-period program (24.0°C night → **23.0°C from 3am
+  → 25.5°C from 1pm**) is cost-neutral to slightly cheaper (−$4 / 12 weeks).
+  It cuts hours above 78°F by ~60% and above 80°F by ~75–85%, with
+  afternoons, evenings and nights all cooler, at the cost of ~1.6°F cooler
+  mornings. The deeper 22.5°C pre-cool first proposed costs **+$7** once the
+  controller is included: it and the controller avoid the same hours.
+- *Schedule-only results* (no controller) in
+  [Comfort vs cost](#comfort-vs-cost) show what each schedule does on its own.
+  They are not a comparison against the current system.
 - **Solar gain is seasonal (new finding).** Sun sensitivity rises every month
   from June to November, consistent with south glazing.
 - **Heating is not modeled yet.**
@@ -343,7 +351,11 @@ by 6am, holds ~72°F to noon, then coasts up to ~76°F by 8pm and back to 75°F
 by 10pm. Nights average ~74°F, below the 75.2°F cap, because overnight
 cooling is cheap.
 
-### Implementable 3-period programs
+### Implementable 3-period programs (schedule only, no controller)
+
+> These compare schedules **without** the spike controller. For the comparison
+> against the system actually running, see
+> [Schedule × controller](#schedule--controller-four-way-comparison).
 
 The CTK04 runs a few program periods in °C half-steps, so the hourly plan was
 approximated with three periods: night (10pm), pre-cool (from 1–4am) and coast
@@ -387,10 +399,119 @@ touches the peak at all. In exchange, mornings run ~72°F (season low ~70°F).
   the real house warms ~1°F more than modelled, so a 24.5°C coast may trigger
   some peak cooling the model doesn't show. The 25.0°C coast has the most margin.
 
+## Schedule × controller (four-way comparison)
+
+`python -m tools.thermal_model fourway`. Window: Jul 6 – Sep 30, 2026 (the
+controller was live, and its config was unchanged throughout).
+
+### Emulating the controller
+
+`controller_sim.py` ports the rev 4.1 decision code (`tiers.evaluate_tier`,
+`holds.compute_target` / `decide`) with the live config:
+- **Tiers:** elevated at ≥10¢ (program + 1.5°C) and scarcity at ≥20¢ (29.5°C
+  absolute). Release takes two confirming buckets 2¢ below the trigger.
+- **Warm-only precondition:** no hold when the program is already at or
+  above the target.
+- **Humidity gate:** blocks at RH ≥ 61% and clears below 58%; it only
+  updates while the controller is in a tier.
+
+It runs on the real ComEd 5-min prices and thermostat RH. The tier sequence
+depends only on price and humidity, so it is identical under any program.
+What changes with the program is the hold *target* and whether a hold
+happens at all.
+
+**Checked against the controller's own log** (`hvac.actions`, 1,400 rows),
+on the current program:
+
+| | Emulated | Actual (from applied pushes/releases) |
+|---|---|---|
+| Hold time | 208 h | 209 h |
+| Hold episodes | 355 | 344 |
+| Timing agreement (5-min) | recall 96.7%, precision 97.1%, Jaccard 0.94 | |
+| Daily hold-hours correlation | 0.99 | |
+
+Hitting that agreement needed a **10-minute price publish lag**: the
+controller can only act once ComEd publishes a bucket. With no lag, agreement
+was 70%.
+
+Each scenario is an independent closed-loop simulation from the same starting
+state, weather and prices. Indoor temperature and AC use are computed from
+that scenario's own setpoints; measured HVAC history is used only to fit and
+check the model. A cooler pre-cooled house therefore gains heat faster in
+the simulation. That is why the pre-cool programs use 10–16% more kWh.
+
+### Results (Jul 6 – Sep 30; stage-1 = 50% / 70%)
+
+Anchors: the measured HVAC bill was **$199** (supply $100 + DTOD $99) on
+2,274 kWh, 172 kWh of it at 1–7pm. Replaying the actual setpoint history
+gives **$195** on 2,352 kWh. "Current program + controller" ($177) is lower
+than both because the real history also includes:
+- program edits (e.g. 23°C in July),
+- manual changes,
+- 52 failed pushes.
+
+The emulated scenarios use one fixed program each.
+
+| Scenario | Bill | Supply / DTOD | kWh | 1–7pm kWh | Controller cost in spike tiers |
+|---|---|---|---|---|---|
+| Current program, no controller | $231 / $227 | $137 / $93 | 2,315 | 56 | $70–72 |
+| **Current program + controller** (today) | **$177 / $177** | $89 / $88 | 2,259 | 29–32 | $7–8 |
+| 3-period 22.5 → 25.0, no controller | $211 / $209 | $108 / $102 | 2,673 | 15–19 | $34–35 |
+| 3-period 22.5 → 25.0 + controller | $184 / $184 | $84 / $100 | 2,628 | 7–11 | $1.2–1.5 |
+| 3-period 23.0 → 25.5, no controller | $196 / $194 | $101 / $95 | 2,529 | 11–14 | $30 |
+| **3-period 23.0 → 25.5 + controller** | **$173 / $173** | $80 / $93 | 2,488 | 4–6 | $1.5–1.6 |
+| 3-period 23.5 → 26.0 + controller | $163 / $163 | $76 / $87 | 2,338 | 2–3 | $1.7 |
+
+Comfort (house mean, hours over the 12 weeks):
+
+| Scenario | Afternoon max (median) | >78°F | >80°F | Season max | Evening 7–10pm | Bedtime 10pm | Sleep | Morning 6–12 | <72°F |
+|---|---|---|---|---|---|---|---|---|---|
+| Current, no controller | 78.3 | 209–224 | 0 | 79.2 | 77.3 | 76.2 | 75.1 | 75.0 | 4–6 |
+| **Current + controller** | 78.3 | **277–298** | **25–30** | 81.4–81.6 | 77.7 | 76.6 | 75.3 | 75.0 | 4–6 |
+| 22.5 → 25.0 + controller | 76.0 | 35–43 | 0 | 79.7–79.9 | 76.1 | 75.8 | 74.3 | 72.5 | 42–46 |
+| **23.0 → 25.5 + controller** | **76.7** | **99–118** | **4–7** | 80.5–80.7 | **76.8–77.0** | 76.5–76.6 | 74.7–74.8 | 73.4 | 15–16.5 |
+| 23.5 → 26.0 + controller | 77.5 | 226–250 | 18–23 | 81.2–81.4 | 77.6 | 77.2 | 75.3 | 74.2 | 8.5–10.5 |
+
+### Reading the four-way
+
+- **The controller is worth ~$50–54 over 12 weeks on the current program**
+  (−22 to −23%). That is larger than any schedule change alone.
+- **Its comfort cost is real.** It adds 25–30 hours above 80°F (holds of
+  27.5–29.5°C), which matches the replayed history (20–23 h). The review's
+  concern is borne out: schedule and controller interact.
+- **On a pre-cooled baseline the controller does less, and both are cheaper.**
+  Its spike-tier cost drops from $7–8 to ~$1.5, because the house enters
+  spikes cooler and the program's afternoon value (25.5°C) makes holds land
+  at 27.0°C instead of 27.5°C. Its marginal value falls from ~$50 to ~$21–23.
+  The two overlap: both avoid the same expensive hours.
+- **Pre-cool depth decides it.** At 22.5°C, the extra pre-cool energy costs
+  more than the overlap saves (+$7). At 23.0°C, it roughly breaks even
+  (−$4) while removing most of the heat excursions the controller causes.
+  At 23.5°C, it saves $14 but keeps most of the excursions.
+- **23.0 → 25.5°C + controller is a comfort improvement at no extra cost, not
+  a savings play.** The $4 is within model error. What is robust across both
+  stage-1 assumptions is: ~60% fewer hours above 78°F, ~75–85% fewer above
+  80°F, and cooler afternoons, evenings and nights. The cost is ~1.6°F cooler
+  mornings and ~15 h below 72°F over 12 weeks.
+- **Bias check.** The model under-predicts 1–7pm energy (measured 172 vs
+  replayed 121 kWh). The current program puts 29–32 kWh there and the
+  candidate 4–6, so correcting the bias would favor the candidate slightly.
+
+### Limits specific to this comparison
+
+- Humidity is replayed from the real history. A pre-cooled house would likely
+  run drier, which matters little here: the gate never blocked in emulation,
+  and the real log has one humidity release.
+- Every push succeeds and there are no manual holds. Both apply equally
+  to every scenario.
+- The real controller sets holds against the program value it reads from the
+  thermostat. That is modelled, but the CTK04 program here is idealized: one
+  fixed 3-period schedule, every day.
+
 ## Reproducibility
 
 `pull` into an empty cache (`THERMAL_MODEL_CACHE=<new dir>`) followed by `fit`,
-`counterfactual`, `validate` and `costcurve` reproduces every number in this
+`counterfactual`, `validate`, `costcurve` and `fourway` reproduces every number in this
 doc exactly (2026-11-19, data through 2026-11-19 18:00 UTC; DTOD rates from
 the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
@@ -412,11 +533,12 @@ the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
 ## Next steps
 
-1. **Trial a 3-period program next summer**, e.g. 24.0°C night, 22.5°C from 3am,
-   25.0°C from 1pm. Run it on matched hot days against the current program,
-   checking 1–7pm kWh and afternoon peak temperature. That is the real test of
-   the "cheaper and 2–3°F cooler" result and of the model's afternoon bias.
-   Arm B's spike holds anchor on the program value, so they stay compatible.
+1. **Don't change the program for savings.** If afternoon comfort matters,
+   trial **24.0°C night → 23.0°C from 3am → 25.5°C from 1pm, with the
+   controller on**, on matched hot days next summer. Compare HVAC $ (supply and
+   DTOD), 1–7pm kWh, hours above 78/80°F, and morning lows against the current
+   program + controller. That is the real test of "cooler for the same money"
+   and of the model's afternoon bias.
 2. **Weather-dependent thermostat offset:** model the thermostat room
    separately on hot afternoons. This is the cheapest fix for half the peak miss.
 3. **Winter refit** from mid-December, with the south-vertical solar term.

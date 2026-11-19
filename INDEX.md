@@ -84,9 +84,11 @@ The science layer: what counts as evidence, how it's validated.
   — first credible thermal model (one-node RC, τ ≈ 40 h, 0.85°F day-ahead
   error on held-out September; leave-one-month-out season energy +0.4%, but
   peak-hour energy ~30% low). Includes the steady-hold vs setback
-  counterfactual (setback wins; steady 75°F costs +55–66% under ComEd DTOD) and
-  the comfort-vs-cost curve (a 3-period pre-cool program is 3–10% cheaper than
-  the current program with ≤77°F afternoons; a day-ahead planner −11–13%).
+  counterfactual (setback wins; steady 75°F costs +55–66% under ComEd DTOD),
+  the comfort-vs-cost curve, and a schedule × controller four-way with the
+  rev 4.1 controller emulated (97% hold-timing match to its log). The
+  controller saves ~22%; a 23.0°C pre-cool baseline under it is cost-neutral
+  with ~60% fewer hours above 78°F.
   Also: the seasonal south-glazing solar finding; heating not yet fit
 
 ## Stack operations
