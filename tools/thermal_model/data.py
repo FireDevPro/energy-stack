@@ -195,7 +195,7 @@ def raw_series(name: str, flux: str, refresh: bool = False) -> pd.DataFrame:
         )
         out.write_text(res.stdout)
     df = _read(out)
-    if not df.empty:
+    if not df.empty and "_time" in df:
         df["_time"] = pd.to_datetime(df["_time"], utc=True).dt.tz_convert(TZ)
     return df
 

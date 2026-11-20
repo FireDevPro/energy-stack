@@ -69,6 +69,13 @@ experiment is still the authoritative cost test. Code: [`tools/thermal_model/`](
     cuts >80°F hours on those days by ~60% and removes nearly all HVAC load
     from the capacity hours (−$68–79/yr more), at ~$0 energy cost. See
     [PJM forecasts](#pjm-forecasts-what-would-they-have-changed).
+- **The biggest non-HVAC item is a ~0.6–0.8 kW continuous load on leg B of
+  the panel.** 41% of house kWh runs through circuits without a CT. Overnight,
+  ~820 W of it sits on leg B (at least ~640 W after allowing for CTs whose leg
+  couldn't be tested) and ~115 W on leg A. So it is one or more 120 V leg-B
+  circuits, not a 240 V appliance. It barely changes with outdoor
+  temperature. A breaker test is next. See
+  [Unmonitored load](#unmonitored-load-before-the-breaker-test).
 - *Schedule-only results* (no controller) in
   [Comfort vs cost](#comfort-vs-cost) show what each schedule does on its own.
   They are not a comparison against the current system.
@@ -678,8 +685,124 @@ almost all **always-on baseline**, the same at 3–5am:
   drops below 1.4 kW (5th percentile; minimum 1.08 kW).
 - **What it is worth.** At ~1 kW continuous it is ~8,800 kWh/yr, on the
   order of **~$850/yr in energy** (~10¢/kWh all-in), plus ~$110–120/yr of capacity per kW. It
-  may be essential (sump, dehumidifier, freezer) or waste; identifying which
-  circuit carries it is the next step.
+  may be essential (sump, dehumidifier, freezer) or waste. See
+  [Unmonitored load](#unmonitored-load-before-the-breaker-test).
+
+## Unmonitored load: before the breaker test
+
+Reproduce with `python -m tools.thermal_model loads` (`tools/thermal_model/loads.py`).
+"Night" is 1–5am local, when cooking, laundry and lighting are off.
+
+### Instruments first
+
+- **Same intervals.** The EAGLE and Refoss comparisons both use hourly means
+  of the 1-min long-term aggregates, on the same hour starts. Overnight they
+  agree within 1% (above).
+- **CT direction.** Over Nov 12–19 (raw 30 s data), 17 of 18 channels never
+  read negative. The exception is **em:18 Dining Room**: negative 84% of the
+  time, PF −0.67, 0.08 A. That is a reversed CT, or a CT on a leg-B circuit
+  referenced to leg A. It is −8 W, so it doesn't move the totals.
+- **Phase assignment.** The EM16P's CT banks (A = em:1–6, B = em:7–12,
+  C = em:13–18 referenced to leg A) do not fix which leg a breaker is on. So
+  each circuit's leg was found from the data. In 1-min data for Nov 12–19
+  (AC off), the test takes minutes where one circuit stepped by > 15 W while
+  every other CT was quiet, and asks which main moved:
+
+  | Circuit | Steps | em:1 (leg A) | em:7 (leg B) | Leg |
+  |---|---|---|---|---|
+  | em:3 Washer/Dryer | 59 | 0.78 | 0.02 | A |
+  | em:6 Bar | 232 | 0.98 | 0.03 | A |
+  | em:13 Basement Fridge/Freezer | 75 | 1.00 | 0.03 | A |
+  | em:9 Furnace | 980 | 0.00 | 0.92 | B |
+  | em:10 Laundry Fridge | 446 | 0.00 | 0.96 | B |
+  | em:11 Kitchen Fridge | 373 | 0.00 | 0.98 | B |
+  | **em:14 Basement Micro/Fridge** | 184 | 0.00 | **0.95** | **B, though in bank C** |
+  | em:4 Family Room / em:5 Master Bedroom | 4 / 4 | 0.94 / 1.00 | −0.22 / 0.18 | A (few steps) |
+
+  - The AC is 240 V, with one CT per leg (em:2, em:8).
+  - **em:12 AV Rack's** own jitter doesn't reach either main, so it can't be
+    step-tested. It must be on leg B: on leg A, the leg-A remainder would be
+    at least its 270 W minimum, and it is ~115 W.
+  - **em:15–18** are too steady to test, and are left on leg A. The leg-B
+    *lower bound* below moves every untested bank-A/C circuit (em:4, em:5,
+    em:15–18) to leg B.
+  - `loads.PHYSICAL_LEG` records this. The old `docs/SERVICES.md` note that
+    em:14 was on the B phase was right; its CT is now reading positive.
+- **Double counting.** A CT on a sub-feed that also carries other CT'd
+  circuits would drive a remainder negative. In 4,253 hours (May 26 – Nov 19)
+  neither leg's remainder was ever negative. The total's 1st percentile is
+  +475 W. With em:14 on the wrong leg, leg A went negative in 0.8% of hours;
+  with it corrected, in none.
+- **Coverage.** 41% of mains kWh since May 26 runs through circuits without a
+  CT. That is *unmonitored*, not *unexplained*.
+
+### The baseline is on one leg
+
+| Night (1–5am), May 26 – Nov 19 | Leg A | Leg B | Leg B, lower bound | Total |
+|---|---|---|---|---|
+| Median | 115 W | **823 W** | 641 W | 958 W |
+| 5th percentile | 87 W | **546 W** | 402 W | 641 W |
+| 95th percentile | 323 W | 1,337 W | 1,133 W | 1,618 W |
+
+| Night mean (W) | May | Jun | Jul | Aug | Sep | Oct | Nov |
+|---|---|---|---|---|---|---|---|
+| Leg A | 170 | 181 | 188 | 147 | 173 | 149 | 133 |
+| Leg B | 1,002 | 1,126 | 888 | 773 | 847 | 866 | 726 |
+| Leg B, lower bound | 769 | 823 | 592 | 647 | 700 | 736 | 536 |
+
+- **Leg A is largely covered by CTs.** Both the persistent floor and most of
+  the month-to-month change are on leg B, even at the lower bound.
+- **It is not a 240 V load.** A dryer, range, water heater or well pump draws
+  on both legs equally, and leg A has only ~115 W unmonitored.
+- **So the target is one or more 120 V circuits on leg B without a CT.** That
+  rules out every leg-A breaker and every two-pole breaker.
+- **At the panel:** the breakers for the confirmed leg-B circuits (Furnace,
+  Laundry Fridge, Kitchen Fridge, Basement Micro/Fridge) show which rows are
+  leg B. Panel rows usually alternate legs.
+
+### Weather sensitivity is weak
+
+| Night outdoor temp | Nights | Leg A | Leg B | Leg B, lower bound | Total | Monitored fridges |
+|---|---|---|---|---|---|---|
+| ≤ 45°F (mean 38.7) | 19 | 145 | **827** | 641 | **972** | 219 |
+| 45–55°F | 26 | 147 | 824 | 668 | 970 | 242 |
+| 55–65°F | 49 | 164 | 912 | 687 | 1,077 | 231 |
+| 65–75°F | 70 | 172 | 908 | 709 | 1,080 | 234 |
+| > 75°F (mean 77.4) | 14 | 184 | 855 | 635 | 1,039 | 237 |
+
+- The four monitored fridge circuits (Laundry, Kitchen, Basement F/F,
+  Basement Micro/Fridge) are flat: +0.2 W/°F.
+- The unmonitored total rises ~100 W from cold to mild nights (+2.9 W/°F
+  overall) but drops again on the hottest nights. That is not a clean
+  fridge-in-a-hot-space signature.
+- **~640–830 W stays on leg B on the coldest nights.** The garage and
+  outdoor-kitchen fridges are unmonitored, but a fridge averages tens to
+  ~100 W, and they barely run at 39°F.
+
+**What this does and doesn't say:** a stable floor doesn't mean one device. It
+can be several small continuous loads. Don't buy CTs or plugs, or model the
+fridges, until the breakers are known.
+
+### Breaker test procedure
+
+On a quiet night with the HVAC idle:
+1. Run `tools/thermal_model/breaker_watch.sh` from any directory. It prints the
+   per-leg remainder every 30 s and appends it to `./breaker_test_<date>.csv`.
+2. Switch off **leg-B, single-pole breakers without a CT**, one at a time.
+   Skip anything critical (sump, freezers you can't interrupt, network gear).
+   Never open or work inside an energized panel; operate the breakers only.
+3. Hold each off through at least two readings, note the clock time, restore
+   it, and confirm the remainder returns.
+4. A drop can understate a circuit if something restarts in a low-power
+   state, and a flip can reset electronics.
+
+Record:
+
+| Breaker | Leg-B drop (W) | Back after restore? | Devices on it | Constant / cycling / intermittent | Likely seasonal? |
+|---|---|---|---|---|---|
+
+If the floor is found and worth tracking, the idle CTs (em:16 Primary Bath
+GFCI ~0 W, em:17 Primary Bedroom ~4 W, em:18 Dining Room) can be moved to it.
 
 ## Ops note: thermostat push failures (Jul 4 – Nov 19)
 
@@ -714,7 +837,7 @@ retry-next-tick absorb the flakiness.
 ## Reproducibility
 
 `pull` into an empty cache (`THERMAL_MODEL_CACHE=<new dir>`) followed by `fit`,
-`counterfactual`, `validate`, `costcurve`, `fourway` and `pjm` reproduces every number in this
+`counterfactual`, `validate`, `costcurve`, `fourway`, `pjm` and `loads` reproduces every number in this
 doc exactly (2026-11-19, data through 2026-11-19 18:00 UTC; DTOD rates from
 the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
@@ -736,27 +859,32 @@ the Jun–Oct 2026 bills, encoded in `counterfactual.DTOD_PERIODS`).
 
 ## Next steps
 
-1. **Don't change the program for savings.** If afternoon comfort matters,
-   trial **24.0°C night → 23.0°C from 3am → 25.5°C from 1pm, with the
+In priority order:
+
+1. **Identify the continuous leg-B load** with the breaker test above. It
+   runs all year, so it is worth more than any schedule change here.
+2. **Capacity protection, in observation mode first.**
+   - A separate capacity mode, independent of price tiers. It would be
+     triggered the day before by the ComEd-zone forecast, then pre-cool to
+     23.0°C from 3am and hold 26.5°C 3–6pm, with a comfort ceiling.
+   - For the first summer, have it log only: the flag, the forecast and its
+     rank, and the action it would have taken and why. It should not move the
+     thermostat yet.
+   - Treat ≥ 19 GW as a candidate threshold, tuned on one summer. Compare it
+     against a ranking rule (e.g. top-N forecast days so far this summer)
+     before automating.
+3. **Confirm the official peaks and billing.** Check PJM's official 2026 5CP
+   and ComEd's zone peak hours against the estimates here, and the June 2027
+   bill against the ~2.4–2.7 kW expected.
+4. **Selective pre-cool, then peak protection.** If afternoon comfort
+   matters, trial **24.0°C night → 23.0°C from 3am → 25.5°C from 1pm, with the
    controller on**, on matched hot days next summer. Compare HVAC $ (supply and
    DTOD), 1–7pm kWh, hours above 78/80°F, and morning lows against the current
-   program + controller. That is the real test of "cooler for the same money"
-   and of the model's afternoon bias.
-2. **Capacity:**
-   - **Validate first.** Check PJM's official 2026 5CP and ComEd's zone peak
-     hours against the estimates here, and the June 2027 bill against the
-     ~2.4–2.7 kW expected.
-   - **Then a separate capacity mode,** independent of price tiers. Triggered
-     the day before by the ComEd-zone forecast (≥ 19 GW, to be checked
-     against prior summers), it would pre-cool to 23.0°C from 3am and hold
-     26.5°C 3–6pm, with a comfort ceiling.
-   - **Identify the ~1 kW always-on unmonitored load.
-3. **Forecast-gated pre-cool:** if afternoon comfort on hot days matters,
-   pre-cool only on days the ComEd-zone forecast (issued the day before) puts
-   at ≥ 17 GW.
-4. **Weather-dependent thermostat offset:** model the thermostat room
+   program + controller. Don't change the program for savings before then.
+5. **Weather-dependent thermostat offset:** model the thermostat room
    separately on hot afternoons. This is the cheapest fix for half the peak miss.
-5. **Winter refit** from mid-December, with the south-vertical solar term.
-6. **Day-ahead planner:** if pursued, it is an Arm B design question for the
+6. **Winter refit** from mid-December, with the south-vertical solar term.
+7. **Day-ahead planner:** if pursued, it is an Arm B design question for the
    2027 experiment, not a mid-season change.
-7. Keep the 2027 A/B as the authoritative cost comparison.
+8. Keep the 2027 A/B as the authoritative cost comparison. Hold off on
+   batteries until the baseline and the capacity numbers are confirmed.

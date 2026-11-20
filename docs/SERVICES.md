@@ -239,23 +239,20 @@ Channel labels (`name` field) are pulled from the device itself via `Refoss.Conf
 | `refoss.channel` | `channel` (`em:1`..`em:18`), `name` | `power_w`, `voltage_v`, `current_a`, `power_factor`, `day_energy_kwh`, `day_ret_energy_kwh`, `week_energy_kwh`, `week_ret_energy_kwh`, `month_energy_kwh`, `month_ret_energy_kwh` |
 | `refoss.system` | (none) | `uptime_s`, `wifi_rssi_dbm`, `cfg_rev` |
 
-**Channel mapping** (Refoss app labels A/B/C ↔ InfluxDB `em:N` tag ↔ monitored circuit). The EM16P device exposes 18 channels; this household monitors 5:
+**Channel mapping** (InfluxDB `em:N` tag ↔ circuit, from the device's `name` labels as of 2026-11-19). All 18 channels are monitored. em:1 and em:7 are the two mains legs. The device's CT banks are A (em:1–6), B (em:7–12) and C (em:13–18, voltage-referenced to leg A), but a bank doesn't fix a circuit's physical leg: `em:14` is in bank C yet on leg B. The physical legs below were found from isolated 1-min load steps (`tools/thermal_model/loads.py`, `PHYSICAL_LEG`; em:15–18 are too steady to test and are assumed leg A).
 
-| Refoss app label | InfluxDB tag | Circuit | Spec role |
-|---|---|---|---|
-| A1 | `em:1` | Mains leg A (split-phase 240V) | mains-sanity subset `em:1 + em:7` per spec §10:420 |
-| B1 | `em:7` | Mains leg B (split-phase 240V) | mains-sanity subset |
-| A2 | `em:2` | HVAC compressor leg A (split-phase 240V) | HVAC analysis subset `em:2 + em:8 + em:9` per spec §4:121 |
-| B2 | `em:8` | HVAC compressor leg B (split-phase 240V) | HVAC analysis subset |
-| B3 | `em:9` | Furnace blower / control board (single-phase 120V) | HVAC analysis subset |
+| Physical leg | Channels |
+|---|---|
+| A | `em:1` Main Breaker (leg A), `em:2` Air Conditioning (leg A), `em:3` Washer/Dryer, `em:4` Family Room, `em:5` Master Bedroom, `em:6` Bar, `em:13` Basement Fridge/Freezer, `em:15` Bedrooms 3 & 4, `em:16` Primary Bath GFCI, `em:17` Primary Bedroom, `em:18` Dining Room |
+| B | `em:7` Main Breaker (leg B), `em:8` Air Conditioning (leg B), `em:9` Furnace (blower / control board), `em:10` Laundry Fridge, `em:11` Kitchen Fridge, `em:12` AV Rack, `em:14` Basement Micro/Fridge (bank C) |
 
-Other `em:N` channels are device-side capacity, not monitored for this study. The A/B/em:N gap (mains = `em:1 + em:7` rather than adjacent numbers) is because the Refoss EM16P puts A-side and B-side channels in different numeric bands — A1 and B1 are physically the two legs of the same split-phase breaker.
+HVAC analysis subset: `em:2 + em:8 + em:9` (spec §4:121). Mains sanity: `em:1 + em:7` (spec §10:420). About 41% of mains kWh runs through circuits with no CT, almost all of it on leg B: `python -m tools.thermal_model loads` reports it per leg, and `docs/THERMAL_MODEL_2026-11.md` § "Unmonitored load" has the analysis.
 
 **Critical: energy fields are bucketed, not lifetime totalizers.** `day_energy_kwh` resets at midnight, `week_energy_kwh` on Monday, `month_energy_kwh` on the 1st — inside the device. For monotonically-increasing cumulative kWh in Grafana, integrate `power_w` over time in Flux.
 
 **Whole-home aggregate:** firmware 3.1.8 returns empty `emmerge:N` rollups, so `em:1 + em:7` (the two split-phase mains) is the correct whole-home aggregate.
 
-**Polarity quirk:** `em:5` (Master Bedroom) and `em:14` (Basement Micro/Fridge) report negative power because the CT polarity is flipped on these B-phase circuits. Fix in the Refoss app by setting per-channel `factor=-1` — poller picks it up automatically on next cfg_rev change.
+**Polarity:** `em:18` (Dining Room) reads negative (84% of readings Nov 12–19 2026, PF −0.67, ~0.08 A): a reversed CT or one on a leg-B circuit. Fix in the Refoss app by setting the channel's `factor=-1`, or by moving the CT. The poller picks the change up on the next `cfg_rev` change. The earlier `em:5` / `em:14` negatives no longer occur (em:14 is a leg-B circuit on a leg-A-referenced bank, and now reads positive).
 
 **Healthcheck:** `/tmp/last_poll_ok` marker.
 

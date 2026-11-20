@@ -1,4 +1,4 @@
-"""CLI: python -m tools.thermal_model {pull,fit,counterfactual}  (run from the repo root)."""
+"""CLI: python -m tools.thermal_model {pull,fit,counterfactual,validate,costcurve,fourway,pjm,loads}  (run from the repo root)."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import pandas as pd
 from . import controller_sim as ctl
 from . import counterfactual as cf
 from . import data
+from . import loads as ld
 from . import optimize as opt
 from . import pjm_value as pjm
 from . import validate as val
@@ -314,6 +315,31 @@ def cmd_pjm(w: pd.DataFrame) -> None:
     _save("pjm", out)
 
 
+def cmd_loads(w: pd.DataFrame) -> None:
+    """CT audit and the unmonitored baseline split by service leg, before a breaker test."""
+    r = ld.analyse(w)
+    print(f"== CT audit, raw 30 s data {ld.AUDIT[0]}..{ld.AUDIT[1]}")
+    print(r["audit"].round(3).to_string())
+    print(f"\n== phase check: isolated 1-min steps, {ld.PHASE_WEEK[0]}..{ld.PHASE_WEEK[1]} (ratio = mains step / circuit step)")
+    print(r["phase"].round(2).to_string())
+    print(f"\n== unmonitored load, {r['hours']} hours {ld.SEASON[0][:10]}..{ld.SEASON[1][:10]}; "
+          f"{r['unmonitored_kwh_share']:.0%} of mains kWh")
+    print("night = 1-5am local:", {k: {kk: round(vv) for kk, vv in v.items()} for k, v in r["night"].items()})
+    print("share of hours negative:", {k: round(v, 4) for k, v in r["negative_hours"].items()},
+          f"| total remainder 1st pct {r['total_p01_w']:.0f} W")
+    print("\nmonthly night mean (W)")
+    print(r["monthly_night"].round(0).to_string())
+    print(f"\n== by night outdoor temp ({r['nights']} nights; monitored fridge circuits: "
+          f"{', '.join(r['fridge_channels'].values())})")
+    print(r["by_outdoor_temp"].round(1).to_string())
+    print("slope W per deg F:", {k: round(v, 2) for k, v in r["slope_w_per_f"].items()})
+    _save("loads", {**{k: v for k, v in r.items() if not isinstance(v, pd.DataFrame)},
+                    "audit": r["audit"].to_dict(orient="index"),
+                    "phase": r["phase"].to_dict(orient="index"),
+                    "monthly_night": r["monthly_night"].to_dict(orient="index"),
+                    "by_outdoor_temp": r["by_outdoor_temp"].astype(float).to_dict(orient="index")})
+
+
 def _fourway_metrics(tr: pd.DataFrame) -> dict[str, float]:
     sm = cf.summarize(tr)
     return {"bill_usd": sm["bill_usd"], "supply_usd": sm["cost_usd"], "delivery_usd": sm["delivery_usd"],
@@ -333,6 +359,7 @@ def main() -> None:
     sub.add_parser("costcurve", help="cheapest cooling per afternoon cap (perfect / day-ahead / hourly-shape planners)")
     sub.add_parser("fourway", help="schedule x controller comparison with the rev 4.1 controller emulated on each schedule")
     sub.add_parser("pjm", help="PJM day-ahead/day-of forecasts: spike predictability, forecast-triggered strategies, 5CP")
+    sub.add_parser("loads", help="CT audit + unmonitored baseline by service leg and outdoor temperature")
     a = ap.parse_args()
     if a.cmd == "pull":
         data.pull(a.start, a.stop, a.refresh)
@@ -340,7 +367,7 @@ def main() -> None:
         return
     w = data.load()
     {"fit": cmd_fit, "counterfactual": cmd_counterfactual, "validate": cmd_validate, "costcurve": cmd_costcurve,
-     "fourway": cmd_fourway, "pjm": cmd_pjm}[a.cmd](w)
+     "fourway": cmd_fourway, "pjm": cmd_pjm, "loads": cmd_loads}[a.cmd](w)
 
 
 if __name__ == "__main__":

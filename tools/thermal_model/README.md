@@ -27,6 +27,8 @@ python -m tools.thermal_model validate        # leave-one-month-out energy, peak
 python -m tools.thermal_model costcurve       # cheapest cooling per afternoon cap (LP planner)
 python -m tools.thermal_model fourway         # schedule x controller, rev 4.1 controller emulated
 python -m tools.thermal_model pjm             # PJM forecasts: spike predictability, forecast-gated strategies, 5CP
+python -m tools.thermal_model loads           # CT audit + unmonitored baseline by service leg and outdoor temp
+tools/thermal_model/breaker_watch.sh          # live per-leg unmonitored load for a breaker test (logs ./breaker_test_<date>.csv)
 ```
 
 Set `THERMAL_MODEL_CACHE=<dir>` to pull into a separate cache. Running `pull` into
@@ -48,6 +50,8 @@ re-runnable (`--refresh` forces a re-pull). Results are written as JSON to
 | `validate.py` | Leave-one-month-out energy replay, peak-event and pulldown checks |
 | `controller_sim.py` | Port of the rev 4.1 spike controller (tiers, warm-only targets, humidity gate, 10-min publish lag), checked against `hvac.actions` |
 | `pjm_value.py` | Day-ahead/day-of predictors, forecast-triggered strategies (controller on), ComEd 10-hour capacity estimate (5 PJM + 5 ComEd peaks, billing factors), circuit breakdown + EAGLE check, selective capacity protocols |
+| `loads.py` | Refoss CT audit (signs, PF, double counting) and the unmonitored remainder per service leg, by month and night outdoor temperature |
+| `breaker_watch.sh` | Live per-leg unmonitored load (same arithmetic as `loads.py`), logged to CSV, for the breaker test |
 | `optimize.py` | LP planner (perfect / day-ahead / hour-of-day price beliefs), re-priced through the simulator; derived fixed programs |
 | `__main__.py` | CLI and the fixed analysis windows |
 
