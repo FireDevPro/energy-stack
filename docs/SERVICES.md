@@ -250,9 +250,9 @@ HVAC analysis subset: `em:2 + em:8 + em:9` (spec §4:121). Mains sanity: `em:1 +
 
 **Critical: energy fields are bucketed, not lifetime totalizers.** `day_energy_kwh` resets at midnight, `week_energy_kwh` on Monday, `month_energy_kwh` on the 1st — inside the device. For monotonically-increasing cumulative kWh in Grafana, integrate `power_w` over time in Flux.
 
-**Whole-home aggregate:** firmware 3.1.8 returns empty `emmerge:N` rollups, so `em:1 + em:7` (the two split-phase mains) is the correct whole-home aggregate.
+**Whole-home aggregate:** firmware 3.1.8 (device on 3.1.12 since 2026-11-19, likely an OTA update; it rebooted 20:56 CST) returns empty `emmerge:N` rollups, so `em:1 + em:7` (the two split-phase mains) is the correct whole-home aggregate.
 
-**Polarity:** `em:18` (Dining Room) reads negative (84% of readings Nov 12–19 2026, PF −0.67, ~0.08 A): a reversed CT or one on a leg-B circuit. Fix in the Refoss app by setting the channel's `factor=-1`, or by moving the CT. The poller picks the change up on the next `cfg_rev` change. The earlier `em:5` / `em:14` negatives no longer occur (em:14 is a leg-B circuit on a leg-A-referenced bank, and now reads positive).
+**Polarity:** `em:18` (Dining Room) reads negative (84% of readings Nov 12–19 2026, PF −0.67, ~0.08 A): a reversed CT or one on a leg-B circuit. Fix in the Refoss app by setting the channel's `factor=-1`, or by moving the CT. The poller picks the change up on the next `cfg_rev` change. The earlier `em:5` / `em:14` negatives no longer occur (em:14 is a leg-B circuit on bank C, whose voltage reference Lc is wired to leg A; `factor: -1` is set on it in the device config, checked 2026-11-19).
 
 **Healthcheck:** `/tmp/last_poll_ok` marker.
 

@@ -693,6 +693,50 @@ almost all **always-on baseline**, the same at 3–5am:
 Reproduce with `python -m tools.thermal_model loads` (`tools/thermal_model/loads.py`).
 "Night" is 1–5am local, when cooking, laundry and lighting are off.
 
+### How the Refoss measures each leg
+
+- **Mains.** em:1 and em:7 clamp the two service hots. Each multiplies its
+  current by its own leg's voltage, so em:1 + em:7 is the whole house (the
+  EAGLE agrees within 1%) and each main is that leg's load. A 120 V circuit
+  draws on one hot (current returns on the neutral), so it shows on one main
+  only. A 240 V load shows on both equally.
+- **Branch CTs only measure current.** The EM16P's voltage harness has three
+  references, La, Lb and Lc. Each CT bank (A = em:1–6, B = em:7–12,
+  C = em:13–18) computes power from its own reference. In a split-phase
+  house La and Lb go to the two legs; Lc can go to either
+  ([Home Network Guy setup guide](https://homenetworkguy.com/hardware/meross-refoss-em16p-energy-monitor-setup/);
+  [Refoss manual](https://support.refoss.net/Support/Downloads)). **Here Lc
+  is on leg A:** bank C's voltage matches em:1 within 0.02 V on average over
+  Nov 12–19, and sits 1.85 V from em:7.
+- **What a negative channel means.** A CT on a circuit fed from the leg
+  *opposite* its bank's reference sees current 180° out of phase with that
+  voltage. So it reads negative power with PF near −1, exactly as a CT clamped
+  backwards would. The app's per-channel `factor = -1` flips the sign. It does
+  not change the leg the device thinks the circuit is on, and it keeps
+  scaling by the other leg's voltage. Legs here differ by up to ~6 V
+  (≤ 5% error on that channel).
+- **This house:**
+  - The device config has `factor: -1` on **em:14 (C2, Basement
+    Micro/Fridge)**, and on no other channel.
+  - C1 (em:13, Basement Fridge/Freezer) and C2 are the two basement fridge
+    circuits. The step test puts C1 on leg A and C2 on leg B, which matches
+    C2's flipped factor. A panel check: if the two breakers sit next to each
+    other in one column (full-size, not a tandem), the bus alone puts them on
+    opposite legs.
+  - **em:18 (C6, Dining Room)** shows the same signature now: −24 W at
+    0.21 A, PF −0.95 on 2026-11-19. It is either on leg B or clamped
+    backwards. Either way `factor = -1` fixes the sign. Flipping its breaker
+    during the breaker test will show which main drops.
+- **So per-leg accounting works,** provided every CT is credited to the leg
+  its breaker is on, not the leg its bank is referenced to. That is what
+  `loads.PHYSICAL_LEG` does.
+- **Leg voltages.** They move apart as the legs are loaded unevenly: V_A − V_B
+  rises ~0.25 Ω × (I_B − I_A), up to ~6 V at the 95th percentile. Leg B is
+  usually the heavier one. That is the service conductors and neutral sharing
+  the load. It has been stable since May (0.20–0.32 Ω by month), so it is not
+  a connection getting worse. Leg A has touched ~128 V on light-load nights
+  in June.
+
 ### Instruments first
 
 - **Same intervals.** The EAGLE and Refoss comparisons both use hourly means
@@ -752,10 +796,13 @@ Reproduce with `python -m tools.thermal_model loads` (`tools/thermal_model/loads
 
 - **Leg A is largely covered by CTs.** Both the persistent floor and most of
   the month-to-month change are on leg B, even at the lower bound.
-- **It is not a 240 V load.** A dryer, range, water heater or well pump draws
+- **It is not a 240 V appliance.** A dryer, range, water heater or well pump draws
   on both legs equally, and leg A has only ~115 W unmonitored.
-- **So the target is one or more 120 V circuits on leg B without a CT.** That
-  rules out every leg-A breaker and every two-pole breaker.
+- **So the target is 120 V load on leg B with no CT.** That rules out every
+  leg-A single-pole breaker. It does **not** rule out a two-pole breaker that
+  feeds a subpanel (garage, outdoor kitchen) or a shared-neutral multi-wire
+  circuit. Those carry 120 V loads on each leg separately, so a garage
+  subpanel with its loads on leg B would look exactly like this.
 - **At the panel:** the breakers for the confirmed leg-B circuits (Furnace,
   Laundry Fridge, Kitchen Fridge, Basement Micro/Fridge) show which rows are
   leg B. Panel rows usually alternate legs.
@@ -788,7 +835,8 @@ fridges, until the breakers are known.
 On a quiet night with the HVAC idle:
 1. Run `tools/thermal_model/breaker_watch.sh` from any directory. It prints the
    per-leg remainder every 30 s and appends it to `./breaker_test_<date>.csv`.
-2. Switch off **leg-B, single-pole breakers without a CT**, one at a time.
+2. Switch off **leg-B single-pole breakers without a CT**, one at a time,
+   then any **two-pole breakers feeding a subpanel or multi-wire circuit**.
    Skip anything critical (sump, freezers you can't interrupt, network gear).
    Never open or work inside an energized panel; operate the breakers only.
 3. Hold each off through at least two readings, note the clock time, restore

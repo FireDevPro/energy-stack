@@ -322,6 +322,10 @@ def cmd_loads(w: pd.DataFrame) -> None:
     print(r["audit"].round(3).to_string())
     print(f"\n== phase check: isolated 1-min steps, {ld.PHASE_WEEK[0]}..{ld.PHASE_WEEK[1]} (ratio = mains step / circuit step)")
     print(r["phase"].round(2).to_string())
+    v = r["volts"]
+    print(f"\n== voltage references: bank C (em:13) - leg A {v['bank_c_minus_leg_a_v']:+.3f} V, "
+          f"- leg B {v['bank_c_minus_leg_b_v']:+.2f} V; leg split V_A - V_B vs (I_B - I_A), 5-min means:")
+    print(v["imbalance_slope_by_month"].round(3).to_string())
     print(f"\n== unmonitored load, {r['hours']} hours {ld.SEASON[0][:10]}..{ld.SEASON[1][:10]}; "
           f"{r['unmonitored_kwh_share']:.0%} of mains kWh")
     print("night = 1-5am local:", {k: {kk: round(vv) for kk, vv in v.items()} for k, v in r["night"].items()})
@@ -333,9 +337,11 @@ def cmd_loads(w: pd.DataFrame) -> None:
           f"{', '.join(r['fridge_channels'].values())})")
     print(r["by_outdoor_temp"].round(1).to_string())
     print("slope W per deg F:", {k: round(v, 2) for k, v in r["slope_w_per_f"].items()})
-    _save("loads", {**{k: v for k, v in r.items() if not isinstance(v, pd.DataFrame)},
+    _save("loads", {**{k: v for k, v in r.items() if not isinstance(v, pd.DataFrame) and k != "volts"},
                     "audit": r["audit"].to_dict(orient="index"),
                     "phase": r["phase"].to_dict(orient="index"),
+                    "volts": {**{k: x for k, x in r["volts"].items() if k != "imbalance_slope_by_month"},
+                              "imbalance_slope_by_month": r["volts"]["imbalance_slope_by_month"].to_dict(orient="index")},
                     "monthly_night": r["monthly_night"].to_dict(orient="index"),
                     "by_outdoor_temp": r["by_outdoor_temp"].astype(float).to_dict(orient="index")})
 

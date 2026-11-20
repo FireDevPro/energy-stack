@@ -113,6 +113,36 @@ def phase_check() -> pd.DataFrame:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def leg_voltages() -> dict[str, Any]:
+    """Which leg bank C's voltage reference (Lc) is on, and how far the legs drift apart under uneven load.
+
+    With 120 V loads, V_A - V_B ~ (R_hot + 2 R_neutral) x (I_B - I_A); the slope is fitted per month on
+    5-min means. A connection getting worse would show as a rising slope.
+    """
+    week = data.raw_series("refoss_volts_amps_1m", f'''from(bucket: "energy-longterm") |> range(start: {AUDIT[0]}, stop: {AUDIT[1]})
+  |> filter(fn: (r) => r._measurement == "refoss.channel" and (r.channel == "em:1" or r.channel == "em:7" or r.channel == "em:13")
+       and (r._field == "voltage_v" or r._field == "current_a"))
+  |> aggregateWindow(every: 1m, fn: mean, createEmpty: false, timeSrc: "_start")
+  |> keep(columns: ["_time", "channel", "_field", "_value"])''')
+    v = week[week["_field"] == "voltage_v"].pivot_table(index="_time", columns="channel", values="_value").dropna()
+    parts = []
+    for a, b in data._month_chunks(pd.Timestamp(SEASON[0]), pd.Timestamp(SEASON[1])):
+        parts.append(data.raw_series(f"refoss_va_5m_{a:%Y%m%d}", f'''from(bucket: "energy-longterm") |> range(start: {a:%Y-%m-%dT%H:%M:%SZ}, stop: {b:%Y-%m-%dT%H:%M:%SZ})
+  |> filter(fn: (r) => r._measurement == "refoss.channel" and (r.channel == "em:1" or r.channel == "em:7") and (r._field == "voltage_v" or r._field == "current_a"))
+  |> aggregateWindow(every: 5m, fn: mean, createEmpty: false, timeSrc: "_start") |> keep(columns: ["_time", "channel", "_field", "_value"])'''))
+    w = pd.concat(parts).pivot_table(index="_time", columns=["channel", "_field"], values="_value").dropna()
+    w = w[(w[(MAINS_A, "voltage_v")] > 90) & (w[(MAINS_B, "voltage_v")] > 90)]  # drop dropout readings
+    dv = w[(MAINS_A, "voltage_v")] - w[(MAINS_B, "voltage_v")]
+    di = w[(MAINS_B, "current_a")] - w[(MAINS_A, "current_a")]
+    monthly = pd.DataFrame({m: {"ohm": float(np.polyfit(di[g], dv[g], 1)[0]), "r": float(np.corrcoef(di[g], dv[g])[0, 1]),
+                                "dv_p95": float(dv[g].quantile(0.95)), "imbalance_p95_a": float(di[g].quantile(0.95)),
+                                "v_a_max": float(w.loc[g, (MAINS_A, "voltage_v")].max())}
+                            for m, g in dv.groupby(dv.index.strftime("%Y-%m")).groups.items()}).T
+    return {"bank_c_minus_leg_a_v": float((v["em:13"] - v[MAINS_A]).mean()),
+            "bank_c_minus_leg_b_v": float((v["em:13"] - v[MAINS_B]).mean()),
+            "imbalance_slope_by_month": monthly}
+
+
 def unmonitored(ch: pd.DataFrame) -> pd.DataFrame:
     a = ch[MAINS_A] - ch[LEG_A].sum(axis=1)
     b = ch[MAINS_B] - ch[LEG_B].sum(axis=1)
@@ -136,6 +166,7 @@ def analyse(w: pd.DataFrame) -> dict[str, Any]:
     audit = ct_audit()
     names = audit["name"]
     phase = phase_check().join(names)
+    volts = leg_voltages()
     ch = channels_hourly()
     u = unmonitored(ch)
     night = u[u.index.hour.isin(NIGHT_HOURS)]
@@ -149,6 +180,7 @@ def analyse(w: pd.DataFrame) -> dict[str, Any]:
     return {
         "audit": audit,
         "phase": phase,
+        "volts": volts,
         "fridge_channels": {c: names[c] for c in fridge_cols},
         "hours": len(u), "nights": len(nights),
         "unmonitored_kwh_share": share,
