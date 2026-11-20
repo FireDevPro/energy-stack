@@ -779,6 +779,22 @@ Reproduce with `python -m tools.thermal_model loads` (`tools/thermal_model/loads
   with it corrected, in none.
 - **Coverage.** 41% of mains kWh since May 26 runs through circuits without a
   CT. That is *unmonitored*, not *unexplained*.
+- **Device counters agree.** This check uses the EM16P's own year-to-date
+  energy counters (web app, 2026-11-19 ~21:00), not the 30 s poll. The counters
+  start before the Influx data, so the totals run ~8% higher.
+
+  | | Leg A | Leg B |
+  |---|---|---|
+  | Mains | 4,049 kWh (A1) | 9,418 kWh (B1) |
+  | Minus CT'd circuits on that leg | 3,190 | 4,685 (B2–B6 + C2) |
+  | Unmonitored | **859** | **4,733** |
+
+  - That is 41.5% of mains unmonitored, 85% of it on leg B. The Influx
+    pipeline gives 41% and 84%.
+  - The AC's two legs read 1,745 kWh (A2) and 1,706 kWh (B2), within 2%, as
+    a 240 V load should.
+  - The app books C6 Dining Room as −16.8 kWh "generation". That is the same
+    flipped sign as em:18 above, counted here as 16.8 kWh of leg-A load.
 
 ### The baseline is on one leg
 
