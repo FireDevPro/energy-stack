@@ -80,6 +80,21 @@ The science layer: what counts as evidence, how it's validated.
   — empirical fit (AC-off drift) sanity-checking hand-tuned constants;
   surfaced the wrong-variable choice in pyControl4 that motivated the
   `indoor_temp_f_hires` telemetry field
+- [docs/THERMAL_MODEL_2026-11.md](docs/THERMAL_MODEL_2026-11.md)
+  — first credible thermal model (one-node RC, τ ≈ 40 h, 0.85°F day-ahead
+  error on held-out September; leave-one-month-out season energy +0.4%, but
+  peak-hour energy ~30% low). Includes the steady-hold vs setback
+  counterfactual (setback wins; steady 75°F costs +55–66% under ComEd DTOD),
+  the comfort-vs-cost curve, and a schedule × controller four-way with the
+  rev 4.1 controller emulated (97% hold-timing match to its log). The
+  controller saves ~22%; a 23.0°C pre-cool baseline under it is cost-neutral
+  with ~60% fewer hours above 78°F. PJM section: forecasts move the energy bill
+  little. Under ComEd's 10-hour capacity method (5 PJM + 5 ComEd peaks), the
+  estimated 2026 hours caught the house at 2.67 kW. That projects a billed
+  obligation of ~2.4–2.7 kW vs 7.01 kW (~$527–557/yr, unconfirmed). A
+  day-before ComEd forecast flags every peak day. Also: ~1 kW always-on
+  unmonitored load; thermostat push-failure audit (~$0.50/season impact).
+  Also: the seasonal south-glazing solar finding; heating not yet fit
 
 ## Stack operations
 
@@ -97,6 +112,9 @@ self-contained mini-projects with their own READMEs.
 
 - [tools/decision-trace-report/README.md](tools/decision-trace-report/README.md)
   — daily decision-trace commissioning report tooling
+- [tools/thermal_model/README.md](tools/thermal_model/README.md)
+  — grey-box thermal model: Influx pull over SSH, fit, replay-gated
+  closed-loop schedule counterfactuals; lists the telemetry unit/naming traps
 
 ---
 
