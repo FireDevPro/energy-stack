@@ -196,9 +196,12 @@ def parse_kwh(text: str) -> int:
 
     # Normal: meter row pattern. After normalization, fixed/transition bills
     # show "Totalk Wh" instead of "Total kWh" because the lower->upper rule
-    # split kWh -- so we use \s* and tolerate that.
+    # split kWh -- so we use \s* and tolerate that. The two reading-type
+    # columns (previous, present) are each "Actual" or "Estimate": ComEd
+    # estimated the present read on the Aug 2026 bill ("Actual Estimate") and
+    # the carried-over previous read on Sep 2026 ("Estimate Actual").
     m = re.search(
-        r"General\s*Service\s+Total\s*k\s*Wh\s+Actual\s+Actual\s+(\d+)",
+        r"General\s*Service\s+Total\s*k\s*Wh\s+(?:Actual|Estimate)\s+(?:Actual|Estimate)\s+(\d+)",
         text,
     )
     if m:
